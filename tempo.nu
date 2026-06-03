@@ -132,47 +132,16 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-# Generate the bloat binary file once (skips if matching marker already exists)
-def bloat-marker-file [bloat_file: string] {
-    $"($bloat_file).meta.json"
-}
-
-def bloat-file-matches [bloat_file: string, bloat_size: int] {
-    if not ($bloat_file | path exists) {
-        return false
-    }
-
-    let marker_file = (bloat-marker-file $bloat_file)
-    if not ($marker_file | path exists) {
-        return false
-    }
-
-    let marker = (try { open $marker_file } catch { null })
-    if $marker == null {
-        return false
-    }
-
-    let marker_tokens = ($marker | get -o tokens | default [])
-    (($marker | get -o bloat_mib | default 0 | into int) == $bloat_size) and ($marker_tokens == $TIP20_TOKEN_IDS)
-}
-
-def write-bloat-file-marker [bloat_file: string, bloat_size: int] {
-    {
-        bloat_mib: $bloat_size
-        tokens: $TIP20_TOKEN_IDS
-    } | to json | save -f (bloat-marker-file $bloat_file)
-}
-
+# Generate the bloat binary file once (skips if already exists)
 def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    if (bloat-file-matches $bloat_file $bloat_size) {
+    if ($bloat_file | path exists) {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
     run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
-    write-bloat-file-marker $bloat_file $bloat_size
 }
 
 # Load the bloat file into a single node's database
@@ -759,8 +728,6 @@ def run-bench-single [
             --git-ref $git_ref
             --build-profile $build_profile
             --benchmark-mode $benchmark_mode
-            --bloat-mib $bloat
-            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
@@ -1769,31 +1736,6 @@ def "main kill" [
     print "Done."
 }
 
-def normalize-block-gas-limit [gas_limit: string] {
-    if $gas_limit == "" {
-        return ""
-    }
-
-    $gas_limit | into int | into string
-}
-
-def genesis-gas-limit-matches [genesis_path: string, gas_limit: string] {
-    if $gas_limit == "" {
-        return true
-    }
-
-    if not ($genesis_path | path exists) {
-        return false
-    }
-
-    let current = (try { open $genesis_path | get -o gasLimit | default "" } catch { "" })
-    if $current == "" {
-        return false
-    }
-
-    (normalize-block-gas-limit $current) == (normalize-block-gas-limit $gas_limit)
-}
-
 # ============================================================================
 # Localnet command
 # ============================================================================
@@ -1815,7 +1757,6 @@ def "main localnet" [
     --skip-build                           # Skip building tempo and tempo-xtask (assumes binaries are already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
-    --gas-limit: string = ""               # Block gas limit for generated genesis (raw number)
 ] {
     validate-mode $mode
     if $epoch_length <= 0 {
@@ -1843,9 +1784,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
     }
 }
 
@@ -1853,7 +1794,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit: string] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1871,21 +1812,18 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         $genesis
     } else {
         let default_genesis = $"($LOCALNET_DIR)/genesis.json"
-        let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
-        let needs_generation = $reset or (not ($default_genesis | path exists)) or (not (genesis-gas-limit-matches $default_genesis $gas_limit))
+        let needs_generation = $reset or (not ($default_genesis | path exists))
 
         if $needs_generation {
             if $reset {
                 print "Resetting localnet data..."
-            } else if not ($default_genesis | path exists) {
-                print "Genesis not found, generating..."
             } else {
-                print $"Genesis gas limit differs from requested ($gas_limit), regenerating..."
+                print "Genesis not found, generating..."
             }
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis" ...$gas_limit_args]
+            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis"]
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1948,85 +1886,18 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def consensus-validator-required-files [] {
-    ["signing.key" "signing.share" "enode.key" "enode.identity"]
-}
-
-def validator-dirs-in-localnet [] {
-    if not ($LOCALNET_DIR | path exists) {
-        return []
-    }
-
-    ls $LOCALNET_DIR
-    | where type == "dir"
-    | get name
-    | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' }
-}
-
-def missing-consensus-validator-files [node_dir: string] {
-    (consensus-validator-required-files)
-    | where { |file| not ($"($node_dir)/($file)" | path exists) }
-}
-
-def consensus-localnet-needs-generation [nodes: int, gas_limit: string] {
-    if not ($LOCALNET_DIR | path exists) {
-        return true
-    }
-
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
-    if not ($genesis_path | path exists) {
-        return true
-    }
-
-    if not (genesis-gas-limit-matches $genesis_path $gas_limit) {
-        return true
-    }
-
-    let validator_dirs = (validator-dirs-in-localnet)
-    if ($validator_dirs | length) != $nodes {
-        return true
-    }
-
-    let incomplete = ($validator_dirs | where { |d| ((missing-consensus-validator-files $d) | length) > 0 })
-    ($incomplete | length) > 0
-}
-
-def assert-consensus-validator-configs [validator_dirs: list<string>] {
-    if ($validator_dirs | length) == 0 {
-        print "Error: no validator configs found. Run `nu tempo.nu localnet --mode consensus --reset` first."
-        exit 1
-    }
-
-    let incomplete = ($validator_dirs | each { |d|
-        {
-            dir: $d
-            missing: (missing-consensus-validator-files $d)
-        }
-    } | where { |item| ($item.missing | length) > 0 })
-
-    if ($incomplete | length) > 0 {
-        print "Error: incomplete validator configs in localnet:"
-        for item in $incomplete {
-            print $"  ($item.dir): missing (($item.missing | str join ', '))"
-        }
-        print "Run `nu tempo.nu localnet --mode consensus --reset` to regenerate localnet data."
-        exit 1
-    }
-}
-
-def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit: string] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
-        let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
-        let needs_generation = $reset or (consensus-localnet-needs-generation $nodes $gas_limit)
+        let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
+            (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
+        )
 
         if $needs_generation {
             if $reset {
                 print "Resetting localnet data..."
-            } else if not ($"($LOCALNET_DIR)/genesis.json" | path exists) {
-                print "Localnet not found, generating..."
             } else {
-                print "Localnet config differs from requested settings, regenerating..."
+                print "Localnet not found, generating..."
             }
             rm -rf $LOCALNET_DIR
 
@@ -2035,14 +1906,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            let generate_cmd = ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force" ...$gas_limit_args]
-            let generate_result = (run-tempo-xtask $profile $skip_build $generate_cmd | complete)
-            if $generate_result.stdout != "" { print $generate_result.stdout }
-            if $generate_result.stderr != "" { print $generate_result.stderr }
-            if $generate_result.exit_code != 0 {
-                print $"Error: generate-localnet failed with exit code ($generate_result.exit_code)"
-                exit $generate_result.exit_code
-            }
+            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force"] | ignore
         }
     }
 
@@ -2050,8 +1914,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     let genesis_path = if $genesis != "" { $genesis } else { $"($LOCALNET_DIR)/genesis.json" }
 
     # Build trusted peers from enode.identity files
-    let validator_dirs = (validator-dirs-in-localnet)
-    assert-consensus-validator-configs $validator_dirs
+    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
         let ip = ($addr | split row ":" | get 0)
@@ -2227,8 +2090,11 @@ def "main follower" [
     }
 
     # Auto-detect validators from localnet directory structure
-    let validator_dirs = (validator-dirs-in-localnet)
-    assert-consensus-validator-configs $validator_dirs
+    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    if ($validator_dirs | length) == 0 {
+        print "Error: no validator configs found. Run `nu tempo.nu localnet --mode consensus --reset` first."
+        exit 1
+    }
 
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
@@ -2426,7 +2292,6 @@ def "main bench-init" [
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
         cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-        write-bloat-file-marker $bloat_file $bloat
     }
 
     bench-clean-datadir $datadir
@@ -2752,7 +2617,7 @@ def "main bench" [
                 rm -rf $feature_genesis_dir
 
                 # Generate bloat file (shared, fork-agnostic)
-                if $bloat > 0 and not (bloat-file-matches $bloat_file $bloat) {
+                if $bloat > 0 and not ($bloat_file | path exists) {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -2763,7 +2628,6 @@ def "main bench" [
                             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
-                    write-bloat-file-marker $bloat_file $bloat
                 }
 
                 # Initialize both datadirs
@@ -2812,7 +2676,7 @@ def "main bench" [
                 print $"Using cached virgin snapshot \(initialized ($marker.initialized_at)\)"
             } else {
                 # Full init: generate genesis + bloat, init db, promote
-                if (not ($genesis_path_std | path exists)) or (not (genesis-gas-limit-matches $genesis_path_std $gas_limit)) {
+                if not ($genesis_path_std | path exists) {
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
@@ -2825,7 +2689,7 @@ def "main bench" [
                     }
                 }
 
-                if $bloat > 0 and not (bloat-file-matches $bloat_file $bloat) {
+                if $bloat > 0 and not ($bloat_file | path exists) {
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
@@ -2836,7 +2700,6 @@ def "main bench" [
                             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                         }
                     }
-                    write-bloat-file-marker $bloat_file $bloat
                 }
 
                 bench-clean-datadir $datadir
@@ -3010,7 +2873,6 @@ def "main bench" [
     | append (if $loud { ["--loud"] } else { [] })
     | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
     | append (if $bloat > 0 { ["--bloat" $"($bloat)"] } else { [] })
-    | append (if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
@@ -3049,8 +2911,6 @@ def "main bench" [
             --git-ref $current_sha
             --build-profile $profile
             --benchmark-mode $mode
-            --bloat-mib $bloat
-            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         $result
     } catch { |e|
@@ -3555,7 +3415,7 @@ def main [] {
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
-    print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 500000000)"
+    print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
     print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
@@ -3570,7 +3430,6 @@ def main [] {
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
-    print "  --gas-limit <N>          Block gas limit for generated genesis (raw number)"
     print ""
     print "Coverage flags:"
     print "  --tests                  Include unit + integration test coverage"
