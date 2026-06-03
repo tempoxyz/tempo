@@ -78,6 +78,7 @@ use tempo_primitives::{
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
+    best::StateAwareBestTransactionsUpdate,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -549,7 +550,7 @@ where
         } else {
             None
         };
-        let mut best_txs = StateAwareBestTransactions::new(
+        let mut best_txs = Some(StateAwareBestTransactions::new(
             if self.enable_prewarming && !self.enable_blockstm_tip20_transfers {
                 Box::new(BestTransactionsPrewarming::new(
                     self.executor.clone(),
@@ -562,7 +563,7 @@ where
             } else {
                 Box::new(best_txs)
             },
-        );
+        ));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -590,12 +591,8 @@ where
                         .map_err(PayloadBuilderError::evm)?;
 
                 let blockstm_start = Instant::now();
-                let _blockstm_prewarm_workers = blockstm::PrewarmWorkerStateGuard::new(
-                    &self.executor,
-                    blockstm_prewarm.as_ref(),
-                );
                 let mut planner = blockstm::Planner::new(
-                    &self.executor,
+                    self.executor.clone(),
                     blockstm::PlanningContext {
                         validator_token,
                         beneficiary,
@@ -605,6 +602,9 @@ where
                         spec: executor.evm().cfg.spec,
                     },
                     blockstm_prewarm,
+                    best_txs
+                        .take()
+                        .expect("best transactions are available before BlockSTM planning"),
                 );
                 let planning_error = |reason: Tip20TransferBlockstmFallback| {
                     self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
@@ -616,8 +616,6 @@ where
                     );
                     PayloadBuilderError::other(blockstm::PayloadBuildError::Planning(reason))
                 };
-                let mut source_exhausted = false;
-                let mut scheduled_count = 0usize;
                 let mut candidate_count = 0usize;
                 let receipt_start = executor.receipts().len();
                 let blockstm_stop_reason = loop {
@@ -637,38 +635,11 @@ where
                         }
                     }
 
-                    while !source_exhausted && planner.can_schedule() {
-                        let Some(pool_tx) = best_txs.next() else {
-                            source_exhausted = true;
-                            break;
-                        };
-                        pool_transactions_yielded += 1;
-
-                        let tx_rlp_length = pool_tx.transaction.encoded_length();
-                        let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
-                        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::OversizedData {
-                                    size: estimated_block_size_with_tx,
-                                    limit: MAX_RLP_BLOCK_SIZE,
-                                },
-                            );
-                            self.metrics.inc_pool_tx_skipped("oversized_block");
-                            skipped_oversized_block = true;
-                            continue;
-                        }
-
-                        scheduled_count += 1;
-                        planner.schedule(pool_tx);
-                    }
-
-                    let planned_tx = match planner.next(!source_exhausted) {
+                    let planned_tx = match planner.next() {
                         blockstm::PlannerNext::Planned(Ok(planned_tx)) => planned_tx,
                         blockstm::PlannerNext::Planned(Err(reason)) => {
                             return Err(planning_error(reason));
                         }
-                        blockstm::PlannerNext::ScheduleMore => continue,
                         blockstm::PlannerNext::Empty => {
                             break if cumulative_gas_used >= non_shared_gas_limit {
                                 BlockBuildStopReason::GasLimit
@@ -681,12 +652,26 @@ where
                     };
 
                     let pool_tx = planned_tx.tx;
+                    let tx_rlp_length = pool_tx.transaction.encoded_length();
+                    let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                        planner.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::OversizedData {
+                                size: estimated_block_size_with_tx,
+                                limit: MAX_RLP_BLOCK_SIZE,
+                            },
+                        );
+                        self.metrics.inc_pool_tx_skipped("oversized_block");
+                        skipped_oversized_block = true;
+                        continue;
+                    }
+
                     let is_payment = if hardfork.is_t5() {
                         pool_tx.transaction.is_payment()
                     } else {
                         pool_tx.transaction.inner().is_payment_v1()
                     };
-                    let tx_rlp_length = pool_tx.transaction.encoded_length();
                     let mut stop_reason = None;
 
                     let execution_result = executor.execute_tip20_transfer_blockstm_planned_tx(
@@ -717,7 +702,9 @@ where
                                 non_payment_gas_used += result.block_gas_used();
                             }
                             total_fees += result.validator_fee();
-                            best_txs.on_new_result(result);
+                            planner.on_state_update(StateAwareBestTransactionsUpdate::from_result(
+                                result,
+                            ));
                             true
                         },
                     );
@@ -747,7 +734,7 @@ where
                             Tip20TransferBlockstmFallback::ExpiringNonceReplay,
                         )) => {
                             let tx_hash = *pool_tx.hash();
-                            best_txs.mark_invalid(
+                            planner.mark_invalid(
                                 &pool_tx,
                                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                                     TempoInvalidTransaction::NonceManagerError(
@@ -768,6 +755,7 @@ where
                         Err(Tip20TransferBlockstmExecutionError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                             let blockstm_elapsed = blockstm_start.elapsed();
+                            let scheduled_count = planner.scheduled_count();
                             info!(
                                 target: "payload_builder",
                                 reason = reason.as_str(),
@@ -785,6 +773,7 @@ where
                             error,
                         }) => {
                             let blockstm_elapsed = blockstm_start.elapsed();
+                            let scheduled_count = planner.scheduled_count();
                             info!(
                                 target: "payload_builder",
                                 transaction_index,
@@ -804,6 +793,8 @@ where
                 };
 
                 let blockstm_elapsed = blockstm_start.elapsed();
+                let scheduled_count = planner.scheduled_count();
+                pool_transactions_yielded += scheduled_count as u64;
 
                 if candidate_count == 0 {
                     info!(
@@ -877,6 +868,9 @@ where
                 }
             }
 
+            let best_txs = best_txs
+                .as_mut()
+                .expect("best transactions are available outside BlockSTM planning");
             let Some(pool_tx) = best_txs.next() else {
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()

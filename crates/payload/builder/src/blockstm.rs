@@ -2,11 +2,16 @@ use alloy_primitives::Address;
 use reth_evm::{Database, Evm};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use std::{
     collections::BTreeMap,
     error::Error,
     fmt,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
@@ -16,7 +21,10 @@ use tempo_evm::{
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
 };
-use tempo_transaction_pool::best::BestTransaction;
+use tempo_transaction_pool::{
+    StateAwareBestTransactions,
+    best::{BestTransaction, StateAwareBestTransactionsUpdate},
+};
 use tracing::trace;
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
@@ -70,172 +78,272 @@ struct PlanningResult {
     item: Result<PlannedTransfer, Tip20TransferBlockstmFallback>,
 }
 
-/// Initializes prewarm worker state for one BlockSTM payload build and clears it on exit.
-pub(crate) struct PrewarmWorkerStateGuard<'a> {
-    pool: Option<&'a WorkerPool>,
-}
-
-impl<'a> PrewarmWorkerStateGuard<'a> {
-    pub(crate) fn new<Provider>(
-        executor: &'a TaskExecutor,
-        prewarm: Option<&PrewarmingExecutionContext<Provider>>,
-    ) -> Self
-    where
-        Provider: StateProviderFactory + Clone + 'static,
-    {
-        let Some(prewarm) = prewarm else {
-            return Self { pool: None };
-        };
-
-        let pool = executor.prewarming_pool();
-        pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-
-        Self { pool: Some(pool) }
-    }
-}
-
-impl Drop for PrewarmWorkerStateGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(pool) = self.pool {
-            pool.clear();
-        }
-    }
-}
-
 /// Ordered TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
-pub(crate) struct Planner<'a, Provider> {
-    pool: &'a WorkerPool,
-    ctx: PlanningContext,
+pub(crate) struct Planner<Provider> {
+    commands_tx: Sender<PlannerCommand>,
+    results_rx: Receiver<PlannerMessage>,
+    stop: Arc<AtomicBool>,
     prewarm: Option<PrewarmingExecutionContext<Provider>>,
-    tx: Sender<PlanningResult>,
-    rx: Receiver<PlanningResult>,
-    next_sequence: usize,
     next_emit: usize,
-    pending_jobs: usize,
-    max_pending_jobs: usize,
+    scheduled_count: usize,
+    final_sequence: Option<usize>,
     buffered: BTreeMap<usize, Result<PlannedTransfer, Tip20TransferBlockstmFallback>>,
 }
 
 pub(crate) enum PlannerNext {
     Planned(Result<PlannedTransfer, Tip20TransferBlockstmFallback>),
-    ScheduleMore,
     Empty,
 }
 
-impl<'a, Provider> Planner<'a, Provider>
+impl<Provider> Planner<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    pub(crate) fn new(
-        executor: &'a TaskExecutor,
+    pub(crate) fn new<Txs>(
+        executor: TaskExecutor,
         ctx: PlanningContext,
         prewarm: Option<PrewarmingExecutionContext<Provider>>,
-    ) -> Self {
-        let pool = executor.prewarming_pool();
-        let (tx, rx) = mpsc::channel();
+        best_txs: StateAwareBestTransactions<Txs>,
+    ) -> Self
+    where
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
+    {
+        let (results_tx, results_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let coordinator_stop = stop.clone();
+
+        let coordinator_executor = executor.clone();
+        let coordinator_commands_tx = commands_tx.clone();
+        let coordinator_prewarm = prewarm.clone();
+        executor.spawn_blocking_named("builder-blockstm-planner", move || {
+            Self::start_planning(
+                coordinator_executor,
+                PlannerContext {
+                    best_txs,
+                    results_tx,
+                    commands_rx,
+                    commands_tx: coordinator_commands_tx,
+                    stop: coordinator_stop,
+                    prewarm: coordinator_prewarm,
+                    ctx,
+                    next_sequence: 0,
+                    source_exhausted: false,
+                },
+            );
+        });
+
         Self {
-            pool,
-            ctx,
+            commands_tx,
+            results_rx,
+            stop,
             prewarm,
-            tx,
-            rx,
-            next_sequence: 0,
             next_emit: 0,
-            pending_jobs: 0,
-            max_pending_jobs: (pool.current_num_threads() * 2).max(1),
+            scheduled_count: 0,
+            final_sequence: None,
             buffered: BTreeMap::new(),
         }
     }
 
-    pub(crate) fn can_schedule(&mut self) -> bool {
-        self.drain_completed();
-        self.pending_jobs < self.max_pending_jobs
+    fn start_planning<Txs>(
+        executor: TaskExecutor,
+        mut planner: PlannerContext<StateAwareBestTransactions<Txs>, Provider>,
+    ) where
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
+    {
+        let pool = executor.prewarming_pool();
+
+        pool.in_place_scope(|scope| {
+            if let Some(prewarm) = planner.prewarm.clone() {
+                scope.spawn(move |_| {
+                    pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                });
+            }
+
+            let advance =
+                |planner: &mut PlannerContext<StateAwareBestTransactions<Txs>, Provider>| {
+                    if planner.source_exhausted || planner.stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let Some(tx) = planner.best_txs.next() else {
+                        planner.source_exhausted = true;
+                        let _ = planner.results_tx.send(PlannerMessage::SourceExhausted {
+                            scheduled_count: planner.next_sequence,
+                        });
+                        return;
+                    };
+
+                    let sequence = planner.next_sequence;
+                    planner.next_sequence += 1;
+                    let _ = planner.results_tx.send(PlannerMessage::Scheduled {
+                        scheduled_count: planner.next_sequence,
+                    });
+
+                    let results_tx = planner.results_tx.clone();
+                    let commands_tx = planner.commands_tx.clone();
+                    let prewarm = planner.prewarm.clone();
+                    let ctx = planner.ctx;
+                    scope.spawn(move |_| {
+                        let item = build_tip20_transfer_blockstm_plan(
+                            &candidate(&tx),
+                            ctx.validator_token,
+                            ctx.beneficiary,
+                            ctx.basefee,
+                            ctx.blob_gasprice,
+                            ctx.spec,
+                        )
+                        .map(|plan| {
+                            if let Some(prewarm) = prewarm {
+                                prewarm_tip20_transfer_plan(
+                                    &prewarm,
+                                    &plan,
+                                    ctx.block_timestamp,
+                                    sequence,
+                                );
+                            }
+                            PlannedTransfer { tx, plan }
+                        });
+                        let _ = results_tx
+                            .send(PlannerMessage::Planned(PlanningResult { sequence, item }));
+                        let _ = commands_tx.send(PlannerCommand::Advance);
+                    });
+                };
+
+            for _ in 0..pool.current_num_threads() * 2 {
+                advance(&mut planner);
+            }
+
+            while let Ok(command) = planner.commands_rx.recv() {
+                match command {
+                    PlannerCommand::Advance => {
+                        advance(&mut planner);
+                    }
+                    PlannerCommand::Invalid { tx, kind } => {
+                        planner.best_txs.mark_invalid(&tx, kind);
+                    }
+                    PlannerCommand::StateUpdate(update) => {
+                        planner.best_txs.apply_update(update);
+                    }
+                    PlannerCommand::Stop => {
+                        planner.stop.store(true, Ordering::Relaxed);
+                        if let Some(prewarm) = &planner.prewarm {
+                            prewarm.stop();
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+
+        if planner.prewarm.is_some() {
+            pool.clear();
+        }
     }
 
-    pub(crate) fn schedule(&mut self, tx: BestTransaction) {
-        let sequence = self.next_sequence;
-        self.next_sequence += 1;
-        self.pending_jobs += 1;
-
-        let result_tx = self.tx.clone();
-        let ctx = self.ctx;
-        let prewarm = self.prewarm.clone();
-        self.pool.spawn(move || {
-            let item = build_tip20_transfer_blockstm_plan(
-                &candidate(&tx),
-                ctx.validator_token,
-                ctx.beneficiary,
-                ctx.basefee,
-                ctx.blob_gasprice,
-                ctx.spec,
-            )
-            .map(|plan| {
-                if let Some(prewarm) = prewarm {
-                    prewarm_tip20_transfer_plan(&prewarm, &plan, ctx.block_timestamp, sequence);
-                }
-                PlannedTransfer { tx, plan }
-            });
-            let _ = result_tx.send(PlanningResult { sequence, item });
+    pub(crate) fn mark_invalid(&self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
+        let _ = self.commands_tx.send(PlannerCommand::Invalid {
+            tx: tx.clone(),
+            kind,
         });
     }
 
-    pub(crate) fn next(&mut self, can_schedule_more: bool) -> PlannerNext {
+    pub(crate) fn on_state_update(&self, update: StateAwareBestTransactionsUpdate) {
+        let _ = self.commands_tx.send(PlannerCommand::StateUpdate(update));
+    }
+
+    pub(crate) fn scheduled_count(&mut self) -> usize {
+        self.drain_messages();
+        self.scheduled_count
+    }
+
+    pub(crate) fn next(&mut self) -> PlannerNext {
         loop {
             if let Some(item) = self.buffered.remove(&self.next_emit) {
                 self.next_emit += 1;
                 return PlannerNext::Planned(item);
             }
-            if self.next_emit == self.next_sequence {
-                return PlannerNext::Empty;
-            }
 
-            self.drain_completed();
+            self.drain_messages();
             if let Some(item) = self.buffered.remove(&self.next_emit) {
                 self.next_emit += 1;
                 return PlannerNext::Planned(item);
             }
-            if self.next_emit == self.next_sequence {
+            if self
+                .final_sequence
+                .is_some_and(|final_sequence| self.next_emit == final_sequence)
+            {
                 return PlannerNext::Empty;
             }
-            if can_schedule_more && self.pending_jobs < self.max_pending_jobs {
-                return PlannerNext::ScheduleMore;
-            }
 
-            let Ok(result) = self.rx.recv() else {
+            let Ok(message) = self.results_rx.recv() else {
                 return PlannerNext::Empty;
             };
-            self.record_completed(result);
+            self.record_message(message);
         }
     }
 
-    fn drain_completed(&mut self) {
-        while let Ok(result) = self.rx.try_recv() {
-            self.record_completed(result);
+    fn drain_messages(&mut self) {
+        while let Ok(message) = self.results_rx.try_recv() {
+            self.record_message(message);
         }
     }
 
-    fn record_completed(&mut self, result: PlanningResult) {
-        self.pending_jobs = self
-            .pending_jobs
-            .checked_sub(1)
-            .expect("completed planning job without pending job");
-        self.buffered.insert(result.sequence, result.item);
+    fn record_message(&mut self, message: PlannerMessage) {
+        match message {
+            PlannerMessage::Scheduled { scheduled_count } => {
+                self.scheduled_count = self.scheduled_count.max(scheduled_count);
+            }
+            PlannerMessage::SourceExhausted { scheduled_count } => {
+                self.scheduled_count = self.scheduled_count.max(scheduled_count);
+                self.final_sequence = Some(scheduled_count);
+            }
+            PlannerMessage::Planned(result) => {
+                self.scheduled_count = self.scheduled_count.max(result.sequence + 1);
+                self.buffered.insert(result.sequence, result.item);
+            }
+        }
     }
 }
 
-impl<Provider> Drop for Planner<'_, Provider> {
+impl<Provider> Drop for Planner<Provider> {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(prewarm) = &self.prewarm {
             prewarm.stop();
         }
-
-        while self.pending_jobs > 0 {
-            match self.rx.recv() {
-                Ok(_) => self.pending_jobs -= 1,
-                Err(_) => break,
-            }
-        }
+        let _ = self.commands_tx.send(PlannerCommand::Stop);
     }
+}
+
+struct PlannerContext<Txs, Provider> {
+    best_txs: Txs,
+    results_tx: Sender<PlannerMessage>,
+    commands_rx: Receiver<PlannerCommand>,
+    commands_tx: Sender<PlannerCommand>,
+    stop: Arc<AtomicBool>,
+    prewarm: Option<PrewarmingExecutionContext<Provider>>,
+    ctx: PlanningContext,
+    next_sequence: usize,
+    source_exhausted: bool,
+}
+
+#[derive(Debug)]
+enum PlannerMessage {
+    Scheduled { scheduled_count: usize },
+    Planned(PlanningResult),
+    SourceExhausted { scheduled_count: usize },
+}
+
+#[derive(Debug)]
+enum PlannerCommand {
+    Advance,
+    Invalid {
+        tx: BestTransaction,
+        kind: InvalidPoolTransactionError,
+    },
+    StateUpdate(StateAwareBestTransactionsUpdate),
+    Stop,
 }
 
 fn prewarm_tip20_transfer_plan<Provider>(
@@ -251,7 +359,7 @@ fn prewarm_tip20_transfer_plan<Provider>(
     }
 
     WorkerPool::with_worker_mut(|worker| {
-        let Some(evm) = worker.get_mut::<PrewarmEvmState>().as_mut() else {
+        let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
             return;
         };
 
