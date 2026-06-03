@@ -532,7 +532,7 @@ where
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
-                execution_cache,
+                execution_cache.clone(),
                 parent_header.hash(),
                 executor.evm().evm_env(),
                 best_txs,

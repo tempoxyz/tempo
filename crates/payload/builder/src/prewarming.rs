@@ -161,6 +161,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
+        // `in_place_scope` lets the calling `builder-prewarm` thread execute scoped work too.
+        // `pool.clear()` only broadcasts to the rayon pool threads, so clear the caller TLS first.
+        WorkerPool::with_worker_mut(|worker| worker.clear());
         pool.clear();
     }
 
