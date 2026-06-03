@@ -52,7 +52,11 @@ pub trait StorageCreditsBackend {
     ) -> Result<StateLoad<U256>, Self::Error>;
 
     /// SSTORE a slot of the storage credits contract (cold load is never skipped here).
-    fn store_credits(&mut self, key: U256, value: U256) -> Result<(), Self::Error>;
+    fn store_credits(
+        &mut self,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error>;
 
     /// Increments the pending refund count held in the storage credits contract's
     /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
@@ -134,7 +138,13 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     if was_changed {
-        backend.store_credits(account_slot, storage_credits.into_word())?;
+        // cold load is already checked above when we loaded the storage credits account.
+        let result = backend.store_credits(account_slot, storage_credits.into_word())?;
+        let gas = backend
+            .gas_params()
+            .sstore_dynamic_gas(false, &result.data, result.is_cold);
+        // TODO TIP-1016 would require state gas charging here.
+        backend.charge_gas(gas)?;
     }
 
     Ok(outcome)

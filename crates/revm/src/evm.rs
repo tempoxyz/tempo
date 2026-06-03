@@ -2058,7 +2058,7 @@ mod tests {
 
         let tx = TxBuilder::new()
             .call(contract, &[])
-            .gas_limit(500_000)
+            .gas_limit(2_000_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
@@ -2082,16 +2082,17 @@ mod tests {
     /// TIP-1060: a single transaction that creates then clears the same storage slot
     /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation modes.
     /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
-    /// - `PreserveTokens` charges the full EVM/state gas as normal,
-    /// - `DirectTokens` has no token to spend at create time (balance starts at 0), so it also
-    ///   charges the full create cost,
-    /// - `RefundTokens` charges the full create gas but accrues a deferred credit that
-    ///   `apply_refund` flushes at end-of-tx, erasing the create gas so the reported gas drops
-    ///   to the intrinsic floor.
+    /// - `Preserve` charges the full EVM/state gas as normal,
+    /// - `Direct` has no credit to spend at create time (balance starts at 0), so it also
+    ///   charges the full create cost (identical to `Preserve`),
+    /// - `Refund` charges the full create gas but accrues a deferred credit that `apply_refund`
+    ///   settles at end-of-tx, erasing 230_000 gas. That erase is more than offset by the extra
+    ///   storage-credits bookkeeping writes (minting and then settling the credit), so `Refund`
+    ///   ends up slightly *more* expensive than `Preserve`/`Direct` here rather than cheaper.
     ///
     /// The gas-token balance corroborates the mechanism: the clear (x->0) leg mints one token in
-    /// every mode, but `RefundTokens` consumes that minted token against its deferred create
-    /// credit at end-of-tx, so it lands at 0 while the others stay at 1.
+    /// every mode, but `Refund` consumes that minted token against its deferred create credit at
+    /// end-of-tx, so it lands at 0 while the others stay at 1.
     #[test]
     fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
         // Contract bytecode: SSTORE 1 at slot 0 (0->1), then SSTORE 0 at slot 0 (1->0), STOP.
@@ -2100,20 +2101,20 @@ mod tests {
 
         // (mode, expected gas used, expected post-tx gas-token balance).
         //
-        // Gas: PreserveTokens and DirectTokens both charge the full create cost (DirectTokens has
-        // no token to spend at create time), so their gas matches. RefundTokens charges the same
-        // create cost during execution, but the deferred credit is flushed in `post_execution`
-        // (before the result gas is snapshotted), erasing the create gas; what remains is below
-        // the EIP-7623 intrinsic floor, so the reported gas clamps to it (21_000).
+        // Gas: `Preserve` and `Direct` both charge the full create cost (`Direct` has no credit to
+        // spend at create time), so their gas matches. `Refund` charges the same create cost during
+        // execution and erases 230_000 at end-of-tx via the deferred credit, but pays extra for the
+        // storage-credits bookkeeping (minting then settling the credit), so it lands slightly
+        // higher than the other two.
         //
-        // Balance: the clear (x->0) leg mints one token in every mode. RefundTokens *additionally*
+        // Balance: the clear (x->0) leg mints one token in every mode. `Refund` *additionally*
         // accrues a deferred credit on the create (0->x) leg into transient storage; at end-of-tx
         // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
         // others keep the minted token at 1.
         let cases = [
-            (CreditMode::Refund, 303_168u64, 0u64),
-            (CreditMode::Preserve, 533_168u64, 1u64),
-            (CreditMode::Direct, 533_168u64, 1u64),
+            (CreditMode::Refund, 553_168u64, 0u64),
+            (CreditMode::Preserve, 535_968u64, 1u64),
+            (CreditMode::Direct, 535_968u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
@@ -2136,7 +2137,7 @@ mod tests {
 
             let tx = TxBuilder::new()
                 .call(contract, &[])
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
@@ -2153,8 +2154,8 @@ mod tests {
                 "T6 create+clear gas should be exact in {mode:?} mode"
             );
 
-            // The gas-token balance corroborates the per-mode gas: RefundTokens consumes its
-            // minted token against the deferred create credit (lands at 0), the others keep it (1).
+            // The gas-token balance corroborates the per-mode gas: Refund consumes its minted
+            // token against the deferred create credit (lands at 0), the others keep it (1).
             assert_eq!(
                 gas_token_balance(&evm, contract),
                 expected_balance,
@@ -2172,12 +2173,12 @@ mod tests {
     /// (SSTORE 0->1 then 1->0), minting a token; with non-empty calldata it does a single
     /// create (SSTORE 0->1) that can consume a previously minted token. We run the minting
     /// transaction first, then the create-only transaction, and assert the create-only gas
-    /// depends on the mode: `DirectTokens` spends the token for a flat charge, while
-    /// `PreserveTokens`/`RefundTokens` pay the full creation cost regardless of balance.
+    /// depends on the mode: `Direct` spends the token for a flat charge, while
+    /// `Preserve`/`Refund` pay the full creation cost regardless of balance.
     ///
     /// The gas-token balance is checked after each transaction to make the mechanism explicit:
-    /// `DirectTokens` consumes the minted token (balance drops to 0), `RefundTokens` keeps
-    /// accruing deferred credits, and `PreserveTokens` leaves the create leg untouched.
+    /// `Direct` consumes the minted token (balance drops to 0), `Refund` settles its deferred
+    /// credits against minted tokens (also 0), and `Preserve` leaves the create leg untouched (1).
     #[test]
     fn test_tip1060_minted_tokens_affect_second_tx() -> eyre::Result<()> {
         // Bytecode:
@@ -2192,19 +2193,20 @@ mod tests {
         // (mode, expected second-tx gas, expected balance after tx1, expected balance after tx2).
         //
         // Gas: the token minted by the first tx's clear leg is only *spent* on the second tx's
-        // create leg under DirectTokens (flat charge instead of full state gas); RefundTokens
-        // and PreserveTokens ignore the balance on a create and pay the full cost.
+        // create leg under `Direct` (flat charge instead of full state gas); `Refund` and
+        // `Preserve` ignore the balance on a create and pay the full cost.
         //
         // Balance traces the mechanism behind the gas:
-        // - RefundTokens: tx1 → 2 (clear mint + deferred create credit), tx2's create accrues
-        //   another deferred credit flushed at end-of-tx → 3. Tokens are never spent here.
-        // - PreserveTokens: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
-        // - DirectTokens: tx1 → 1 (clear mint); tx2's create *consumes* the token → 0, which is
-        //   exactly why the second tx is cheap.
+        // - `Refund`: tx1 mints a token on the clear leg and accrues a deferred create credit;
+        //   `apply_refund` settles the minted token against that credit → 0. tx2's create accrues
+        //   another deferred credit but there is no minted token to settle it against → stays 0.
+        // - `Preserve`: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
+        // - `Direct`: tx1 → 1 (clear mint); tx2's create *consumes* the token → 0, which is exactly
+        //   why the second tx is cheap.
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
-            (CreditMode::Direct, 50_894u64, 1u64, 0u64),
+            (CreditMode::Direct, 53_694u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -2227,7 +2229,7 @@ mod tests {
             let tx1 = TxBuilder::new()
                 .call(contract, &[])
                 .nonce(0)
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx1 = key_pair.sign_tx(tx1)?;
             let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
@@ -2247,7 +2249,7 @@ mod tests {
             let tx2 = TxBuilder::new()
                 .call(contract, &[0x01])
                 .nonce(1)
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx2 = key_pair.sign_tx(tx2)?;
             let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
@@ -2263,9 +2265,9 @@ mod tests {
                 "T6 second-tx create gas should be exact in {mode:?} mode"
             );
 
-            // The post-tx2 balance shows the mechanism behind the gas: DirectTokens spends the
-            // minted token (→ 0), RefundTokens keeps accruing deferred credits (→ 3), and
-            // PreserveTokens leaves the create leg untouched (→ 1).
+            // The post-tx2 balance shows the mechanism behind the gas: `Direct` spends the minted
+            // token (→ 0), `Refund` settles its deferred credits to 0, and `Preserve` leaves the
+            // create leg untouched (→ 1).
             assert_eq!(
                 gas_token_balance(&evm, contract),
                 expected_credit_tx2,
