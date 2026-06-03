@@ -364,8 +364,9 @@ where
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
             None => bail!(
-                "finalization epoch `{finalization_epoch}` behind network identity epoch {}",
-                self.config.network_identity.from_epoch
+                "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`; current epoch `{}`",
+                self.config.network_identity.from_epoch,
+                self.current_epoch
             ),
         };
 
