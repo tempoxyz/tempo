@@ -25,7 +25,10 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::error::{Result, TempoPrecompileError};
+use crate::{
+    error::{Result, TempoPrecompileError},
+    tip20::{RewardFlag, UserState},
+};
 
 /// Low-level storage provider for interacting with the EVM.
 ///
@@ -88,6 +91,34 @@ pub trait PrecompileStorageProvider {
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.sstore(address, key, value)?;
         Ok(value)
+    }
+
+    /// Increments a TIP-20 balance slot and records the semantic balance action.
+    fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        let value = self.sload(address, key)?;
+        let state = UserState::from_storage_word(value, self.spec())?.incremented(delta, flag)?;
+        self.sstore(address, key, state.storage_word_for_spec(self.spec())?)?;
+        Ok(state)
+    }
+
+    /// Decrements a TIP-20 balance slot and records the semantic balance action.
+    fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        let value = self.sload(address, key)?;
+        let state = UserState::from_storage_word(value, self.spec())?.decremented(delta, flag)?;
+        self.sstore(address, key, state.storage_word_for_spec(self.spec())?)?;
+        Ok(state)
     }
 
     /// Performs a TSTORE operation (transient storage write).

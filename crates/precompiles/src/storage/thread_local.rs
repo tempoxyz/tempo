@@ -18,6 +18,7 @@ use crate::{
     Precompile,
     error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    tip20::{RewardFlag, UserState},
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
@@ -165,6 +166,28 @@ impl StorageCtx {
     /// Decrements a persistent storage slot by `delta`, returning the new value.
     pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sdec(address, key, delta))
+    }
+
+    /// Increments a TIP-20 balance slot and records the semantic balance action.
+    pub fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        Self::try_with_storage(|s| s.tip20_balance_sinc(address, key, delta, flag))
+    }
+
+    /// Decrements a TIP-20 balance slot and records the semantic balance action.
+    pub fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        Self::try_with_storage(|s| s.tip20_balance_sdec(address, key, delta, flag))
     }
 
     /// Performs a TSTORE operation (transient storage write).
