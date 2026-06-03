@@ -139,12 +139,16 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     if was_changed {
         // cold load is already checked above when we loaded the storage credits account.
-        let result = backend.store_credits(account_slot, storage_credits.into_word())?;
-        let gas = backend
-            .gas_params()
-            .sstore_dynamic_gas(true, &result.data, result.is_cold);
-        // TODO TIP-1016 would require state gas charging here.
-        backend.charge_gas(gas)?;
+        let result = backend
+            .store_credits(account_slot, storage_credits.into_word())?
+            .data;
+
+        // Only when change happens charge additional gas.
+        // Creation of credit slot is compensated by creation of the contract creation.
+        // And creation and deletion of credit is compansate by EIP-1060, so no additional gas is charged.
+        if result.new_values_changes_present() && result.is_original_eq_present() {
+            backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
+        };
     }
 
     Ok(outcome)

@@ -2086,10 +2086,7 @@ mod tests {
     /// - `Direct` has no storage credit to spend at create time (balance starts at 0), so it also
     ///   charges the full create cost (identical to `Preserve`),
     /// - `Refund` charges the full create gas but accrues a deferred storage credit that
-    ///   `apply_refund` settles at end-of-tx, erasing 230_000 gas. That erase is more than offset
-    ///   by the extra storage-credits bookkeeping writes (minting and then settling the credit),
-    ///   so `Refund` ends up slightly *more* expensive than `Preserve`/`Direct` here rather than
-    ///   cheaper.
+    ///   `apply_refund` settles at end-of-tx, erasing 230_000 gas, so it ends up the cheapest.
     ///
     /// The storage credit balance corroborates the mechanism: the clear (x->0) leg mints one
     /// storage credit in every mode, but `Refund` consumes that minted storage credit against its
@@ -2103,22 +2100,17 @@ mod tests {
         // (mode, expected gas used, expected post-tx storage credit balance).
         //
         // Gas: `Preserve` and `Direct` both charge the full create cost (`Direct` has no storage
-        // credit to spend at create time), so their gas matches. `Refund` charges the same create
-        // cost during execution and erases 230_000 at end-of-tx via the deferred storage credit,
-        // but pays extra for the storage-credits bookkeeping (minting then settling the credit),
-        // so it lands slightly higher than the other two.
+        // credit to spend at create time), so their gas matches. The credit-slot bookkeeping write
+        // is charged a flat reset cost in every mode, so it does not skew the comparison. `Refund`
+        // additionally erases 230_000 at end-of-tx via the deferred storage credit, so it ends up
+        // the cheapest by exactly that amount.
         //
         // Balance: the clear (x->0) leg mints one storage credit in every mode. `Refund`
         // *additionally* accrues a deferred storage credit on the create (0->x) leg into transient
         // storage; at end-of-tx `apply_refund` consumes the minted storage credit against that
         // credit, so it lands at 0 while the others keep the minted storage credit at 1.
-        //
-        // In Refund mode the default state word is zero, so the first mint creates the credit slot
-        // (zero->nonzero SSTORE set) and is charged extra. For the other modes the mode enum is
-        // non-zero, so the word is already non-zero and the write is a cheaper reset — which is why
-        // Preserve and Direct match.
         let cases = [
-            (CreditMode::Refund, 553_168u64, 0u64),
+            (CreditMode::Refund, 305_968u64, 0u64),
             (CreditMode::Preserve, 535_968u64, 1u64),
             (CreditMode::Direct, 535_968u64, 1u64),
         ];
@@ -2448,9 +2440,8 @@ mod tests {
         assert_eq!(storage_credit_balance(&evm, contract), 0);
         assert_eq!(
             result.tx_gas_used(),
-            558_068,
-            "one 230k deferred storage credit is applied, offset by the 250k zero->nonzero \
-             credit-slot mint store (Refund's default state word is zero)"
+            310_868,
+            "one 230k deferred storage credit is applied"
         );
 
         Ok(())
