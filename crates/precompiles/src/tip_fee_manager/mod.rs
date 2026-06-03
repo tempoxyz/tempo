@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageOps},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -275,12 +275,9 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        let collected_fees = self.collected_fees.at_mut(&validator).at_mut(&token);
+        let slot = collected_fees.slot();
+        collected_fees.sinc(slot, amount)?;
 
         Ok(())
     }

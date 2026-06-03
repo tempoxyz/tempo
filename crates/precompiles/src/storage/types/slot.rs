@@ -105,6 +105,12 @@ impl<T> Slot<T> {
         self.slot
     }
 
+    /// Returns the contract address that owns this storage slot.
+    #[inline]
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
     /// Returns the byte offset within the slot (for packed fields).
     ///
     /// Returns `Some(offset)` if this is a packed slot, `None` if it's a full slot.
@@ -123,6 +129,16 @@ impl<T> StorageOps for Slot<T> {
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
+    }
+
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<U256> {
+        let mut storage = StorageCtx;
+        storage.sinc(self.address, slot, delta)
+    }
+
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<U256> {
+        let mut storage = StorageCtx;
+        storage.sdec(self.address, slot, delta)
     }
 }
 

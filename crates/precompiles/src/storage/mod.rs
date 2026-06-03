@@ -25,7 +25,10 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::error::{Result, TempoPrecompileError};
+use crate::{
+    error::{Result, TempoPrecompileError},
+    tip20::{RewardFlag, UserState},
+};
 
 /// Low-level storage provider for interacting with the EVM.
 ///
@@ -69,6 +72,54 @@ pub trait PrecompileStorageProvider {
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Increments a persistent storage slot by `delta`, returning the new value.
+    fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        let value = self
+            .sload(address, key)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore(address, key, value)?;
+        Ok(value)
+    }
+
+    /// Decrements a persistent storage slot by `delta`, returning the new value.
+    fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        let value = self
+            .sload(address, key)?
+            .checked_sub(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore(address, key, value)?;
+        Ok(value)
+    }
+
+    /// Increments a TIP-20 balance slot and records the semantic balance action.
+    fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        let value = self.sload(address, key)?;
+        let state = UserState::decode_storage_word(value, self.spec())?.incremented(delta, flag)?;
+        self.sstore(address, key, state.encode_storage_word(self.spec())?)?;
+        Ok(state)
+    }
+
+    /// Decrements a TIP-20 balance slot and records the semantic balance action.
+    fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        let value = self.sload(address, key)?;
+        let state = UserState::decode_storage_word(value, self.spec())?.decremented(delta, flag)?;
+        self.sstore(address, key, state.encode_storage_word(self.spec())?)?;
+        Ok(state)
+    }
 
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
@@ -169,6 +220,26 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+
+    /// Increments a value at the provided slot by `delta`, returning the new value.
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<U256> {
+        let value = self
+            .load(slot)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.store(slot, value)?;
+        Ok(value)
+    }
+
+    /// Decrements a value at the provided slot by `delta`, returning the new value.
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<U256> {
+        let value = self
+            .load(slot)?
+            .checked_sub(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.store(slot, value)?;
+        Ok(value)
+    }
 }
 
 /// Trait providing access to a contract's address.

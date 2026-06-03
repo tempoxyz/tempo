@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
@@ -8,7 +10,11 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::PrecompileStorageProvider,
+    tip20::{RewardFlag, UserState},
+};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -23,6 +29,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
+    actions: EvmActions,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -45,6 +52,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
+            actions: EvmActions::default(),
         }
     }
 
@@ -79,12 +87,109 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         )
     }
 
+    pub fn with_actions(mut self, actions: EvmActions) -> Self {
+        self.actions = actions;
+        self
+    }
+
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())
+    }
+
+    #[inline]
+    fn record_action(&mut self, action: EvmAction) {
+        if let Some(actions) = self.actions.borrow_mut().as_mut() {
+            actions.push(action);
+        }
+    }
+
+    #[inline]
+    fn sstore_inner(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        action: Option<EvmAction>,
+    ) -> Result<(), TempoPrecompileError> {
+        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
+        } else {
+            false
+        };
+
+        let result = self.internals.load_account_mut(address)?.sstore(
+            key,
+            value,
+            insufficient_gas_for_cold_load,
+        )?;
+        if let Some(action) = action {
+            self.record_action(action);
+        }
+
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        }
+
+        // dynamic gas
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+
+        // Track state gas (cold SSTORE zero->non-zero only)
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+
+        // refund gas.
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+
+        Ok(())
+    }
+
+    #[inline]
+    fn sload_inner(
+        &mut self,
+        address: Address,
+        key: U256,
+        action: Option<EvmAction>,
+    ) -> Result<U256, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_storage_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let value;
+        let is_cold;
+        {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, insufficient_gas_for_cold_load)?;
+            value = val.present_value;
+            is_cold = val.is_cold;
+        };
+        if let Some(action) = action {
+            self.record_action(action);
+        }
+
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
+
+        // dynamic gas
+        if is_cold {
+            self.deduct_gas(additional_cost)?;
+        }
+
+        Ok(value)
     }
 }
 
@@ -175,37 +280,94 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.sstore_static_gas())?;
-            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
-        } else {
-            false
-        };
-
-        let result = self.internals.load_account_mut(address)?.sstore(
+        self.sstore_inner(
+            address,
             key,
             value,
-            insufficient_gas_for_cold_load,
+            Some(EvmAction::Sstore(address, key, value)),
+        )
+    }
+
+    #[inline]
+    fn sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        let value = self
+            .sload_inner(address, key, None)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Sinc(address, key, delta)),
         )?;
+        Ok(value)
+    }
 
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.sstore_static_gas())?;
-        }
-
-        // dynamic gas
-        self.deduct_gas(
-            self.gas_params
-                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+    #[inline]
+    fn sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        let value = self
+            .sload_inner(address, key, None)?
+            .checked_sub(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Sdec(address, key, delta)),
         )?;
+        Ok(value)
+    }
 
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+    #[inline]
+    fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState, TempoPrecompileError> {
+        let state =
+            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+                .incremented(delta, flag)?;
+        let value = state.encode_storage_word(self.spec)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSinc(address, key, delta)),
+        )?;
+        Ok(state)
+    }
 
-        // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
-
-        Ok(())
+    #[inline]
+    fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState, TempoPrecompileError> {
+        let state =
+            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+                .decremented(delta, flag)?;
+        let value = state.encode_storage_word(self.spec)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSdec(address, key, delta)),
+        )?;
+        Ok(state)
     }
 
     #[inline]
@@ -239,36 +401,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_storage_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
-        } else {
-            false
-        };
-
-        let value;
-        let is_cold;
-        {
-            let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, insufficient_gas_for_cold_load)?;
-
-            value = val.present_value;
-            is_cold = val.is_cold;
-        };
-
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-        }
-
-        // dynamic gas
-        if is_cold {
-            self.deduct_gas(additional_cost)?;
-        }
-
-        Ok(value)
+        self.sload_inner(address, key, Some(EvmAction::Sload(address, key)))
     }
 
     #[inline]
@@ -379,6 +512,18 @@ impl EvmPrecompileStorageProvider<'_> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvmAction {
+    Sload(Address, U256),
+    Sstore(Address, U256, U256),
+    Sinc(Address, U256, U256),
+    Sdec(Address, U256, U256),
+    Tip20BalanceSinc(Address, U256, U256),
+    Tip20BalanceSdec(Address, U256, U256),
+}
+
+pub type EvmActions = Rc<RefCell<Option<Vec<EvmAction>>>>;
+
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
 pub fn deduct_gas(
@@ -394,6 +539,13 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
+        storage::{ContractStorage, StorageCtx, StorageKey},
+        test_util::TIP20Setup,
+        tip_fee_manager::{TipFeeManager, slots as tip_fee_manager_slots},
+        tip20::tip20_slots,
+    };
     use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
@@ -505,6 +657,216 @@ mod tests {
         let sload_val = provider.sload(addr, key)?;
         assert_eq!(sload_val, value);
         Ok(())
+    }
+
+    #[test]
+    fn test_sinc_sdec() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+
+        let addr = Address::random();
+        let key = U256::random();
+
+        assert_eq!(provider.sinc(addr, key, U256::from(10))?, U256::from(10));
+        assert_eq!(provider.sinc(addr, key, U256::from(5))?, U256::from(15));
+        assert_eq!(provider.sdec(addr, key, U256::from(3))?, U256::from(12));
+        assert_eq!(provider.sload(addr, key)?, U256::from(12));
+
+        assert!(matches!(
+            provider.sdec(addr, key, U256::from(13)),
+            Err(TempoPrecompileError::Panic(_))
+        ));
+
+        provider.sstore(addr, key, U256::MAX)?;
+        assert!(matches!(
+            provider.sinc(addr, key, U256::ONE),
+            Err(TempoPrecompileError::Panic(_))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_storage_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let addr = Address::random();
+        let key = U256::random();
+
+        provider.sload(addr, key)?;
+        provider.sstore(addr, key, U256::from(10))?;
+        assert_eq!(provider.sinc(addr, key, U256::from(4))?, U256::from(14));
+        assert_eq!(provider.sdec(addr, key, U256::from(2))?, U256::from(12));
+
+        assert_eq!(
+            actions.borrow().as_ref().unwrap().as_slice(),
+            &[
+                EvmAction::Sload(addr, key),
+                EvmAction::Sstore(addr, key, U256::from(10)),
+                EvmAction::Sinc(addr, key, U256::from(4)),
+                EvmAction::Sdec(addr, key, U256::from(2)),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_balance_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let addr = Address::random();
+        let key = U256::random();
+
+        assert_eq!(
+            provider
+                .tip20_balance_sinc(addr, key, U256::from(10), RewardFlag::OptedIn)?
+                .amount(),
+            U256::from(10)
+        );
+        assert_eq!(
+            provider
+                .tip20_balance_sdec(addr, key, U256::from(4), RewardFlag::OptedOut)?
+                .amount(),
+            U256::from(6)
+        );
+
+        assert_eq!(
+            actions.borrow().as_ref().unwrap().as_slice(),
+            &[
+                EvmAction::Tip20BalanceSinc(addr, key, U256::from(10)),
+                EvmAction::Tip20BalanceSdec(addr, key, U256::from(4)),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_fee_transfers_record_balance_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let admin = Address::random();
+        let user = Address::random();
+        let initial_balance = U256::from(100);
+        let pre_fee = U256::from(40);
+        let refund = U256::from(10);
+        let gas_used = U256::from(30);
+        let user_balance_slot = user.mapping_slot(tip20_slots::BALANCES);
+        let fee_manager_balance_slot = TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
+
+        StorageCtx::enter(&mut provider, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(user, initial_balance)
+                .apply()?;
+            let token_address = token.address();
+
+            actions.replace(Some(Vec::new()));
+            token.transfer_fee_pre_tx(user, pre_fee)?;
+            assert_eq!(
+                recorded_tip20_balance_actions(&actions),
+                vec![
+                    EvmAction::Tip20BalanceSdec(token_address, user_balance_slot, pre_fee),
+                    EvmAction::Tip20BalanceSinc(token_address, fee_manager_balance_slot, pre_fee),
+                ]
+            );
+
+            actions.replace(Some(Vec::new()));
+            token.transfer_fee_post_tx(user, refund, gas_used)?;
+            assert_eq!(
+                recorded_tip20_balance_actions(&actions),
+                vec![
+                    EvmAction::Tip20BalanceSdec(token_address, fee_manager_balance_slot, refund),
+                    EvmAction::Tip20BalanceSinc(token_address, user_balance_slot, refund),
+                ]
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx_records_collected_fees_sinc() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+        let initial_fee = U256::from(40);
+        let actual_spending = U256::from(30);
+        let refund = U256::from(10);
+
+        StorageCtx::enter(&mut provider, || {
+            let token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
+                .apply()?;
+            let token_address = token.address();
+            let collected_fees_slot = token_address
+                .mapping_slot(validator.mapping_slot(tip_fee_manager_slots::COLLECTED_FEES));
+
+            actions.replace(Some(Vec::new()));
+            let credited = TipFeeManager::new().collect_fee_post_tx(
+                user,
+                actual_spending,
+                refund,
+                token_address,
+                validator,
+            )?;
+            assert_eq!(credited, actual_spending);
+
+            let recorded_actions = actions.borrow();
+            let recorded_actions = recorded_actions
+                .as_ref()
+                .expect("actions recording should be enabled");
+            assert!(recorded_actions.contains(&EvmAction::Sinc(
+                TIP_FEE_MANAGER_ADDRESS,
+                collected_fees_slot,
+                actual_spending
+            )));
+            assert!(!recorded_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    EvmAction::Sload(address, key)
+                    if *address == TIP_FEE_MANAGER_ADDRESS && *key == collected_fees_slot
+                ) || matches!(
+                    action,
+                    EvmAction::Sstore(address, key, _)
+                    if *address == TIP_FEE_MANAGER_ADDRESS && *key == collected_fees_slot
+                )
+            }));
+
+            Ok(())
+        })
+    }
+
+    fn recorded_tip20_balance_actions(actions: &EvmActions) -> Vec<EvmAction> {
+        actions
+            .borrow()
+            .as_ref()
+            .expect("actions recording should be enabled")
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    EvmAction::Tip20BalanceSinc(..) | EvmAction::Tip20BalanceSdec(..)
+                )
+            })
+            .cloned()
+            .collect()
     }
 
     #[test]

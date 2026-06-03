@@ -18,6 +18,7 @@ tempo-payload-types = { workspace = true, optional = true }
 tempo-precompiles = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
+tempo-precompiles.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -53,7 +54,6 @@ revm.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
-tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]

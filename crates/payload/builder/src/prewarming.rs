@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{info, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -190,55 +190,58 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches = storage_touches_for_transaction(
-                    &tx,
-                    prewarm.evm_env.block_env.beneficiary,
-                    expiring_nonce_offset,
+            // let touched = if is_tip20_transfer_transaction(&tx) {
+            //     let touches = storage_touches_for_transaction(
+            //         &tx,
+            //         prewarm.evm_env.block_env.beneficiary,
+            //         expiring_nonce_offset,
+            //     );
+
+            //     for touch in &touches {
+            //         if prewarm.is_stopped() {
+            //             return;
+            //         }
+            //         if let Err(err) = touch.warm(evm.db_mut()) {
+            //             trace!(
+            //                 target: "payload_builder",
+            //                 %err,
+            //                 ?tx_hash,
+            //                 "Failed to prewarm transaction storage"
+            //             );
+            //             return;
+            //         }
+            //     }
+
+            //     Some(touches.len())
+            // } else {
+            if prewarm.is_stopped() {
+                return;
+            }
+
+            let mut tx_env = tx.transaction.clone_tx_env();
+            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+            }
+
+            if let Err(err) = evm.transact_raw(tx_env) {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    ?tx_hash,
+                    "Failed to prewarm transaction by execution"
                 );
+                return;
+            }
 
-                for touch in &touches {
-                    if prewarm.is_stopped() {
-                        return;
-                    }
-                    if let Err(err) = touch.warm(evm.db_mut()) {
-                        trace!(
-                            target: "payload_builder",
-                            %err,
-                            ?tx_hash,
-                            "Failed to prewarm transaction storage"
-                        );
-                        return;
-                    }
-                }
+            let actions = evm.take_actions();
+            info!("actions: {:?}", actions);
 
-                Some(touches.len())
-            } else {
-                if prewarm.is_stopped() {
-                    return;
-                }
-
-                let mut tx_env = tx.transaction.clone_tx_env();
-                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-                }
-
-                if let Err(err) = evm.transact_raw(tx_env) {
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        ?tx_hash,
-                        "Failed to prewarm transaction by execution"
-                    );
-                    return;
-                }
-
-                None
-            };
+            //     None
+            // };
 
             trace!(
                 target: "payload_builder",
-                touched,
+                // touched,
                 ?tx_hash,
                 "Prewarmed transaction"
             );
@@ -358,7 +361,7 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
+        Some(TempoEvm::new(state_provider, evm_env).with_actions())
     }
 
     pub(crate) fn is_stopped(&self) -> bool {
