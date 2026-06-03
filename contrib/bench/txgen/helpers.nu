@@ -1,7 +1,7 @@
 const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
-const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
+const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 0
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
