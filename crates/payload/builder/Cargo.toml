@@ -17,6 +17,7 @@ tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
+tempo-revm.workspace = true
 
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
@@ -42,6 +43,8 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 
+rayon.workspace = true
+
 metrics.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
@@ -50,3 +53,20 @@ tokio.workspace = true
 [features]
 bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]
+
+[dev-dependencies]
+alloy-evm.workspace = true
+alloy-eips.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+alloy-signer.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+criterion.workspace = true
+reth-trie.workspace = true
+
+[[bench]]
+name = "blockstm_tip20_builder"
+harness = false
+
+[[bench]]
+name = "blockstm_tip20_builder_repeated"
+harness = false

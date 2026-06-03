@@ -11,13 +11,14 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Log, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
 };
+use reth_chainspec::EthereumHardforks;
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
@@ -105,6 +106,95 @@ pub struct TempoTxResult {
     validator_fee: U256,
 }
 
+/// Commit data for a stripped transaction result.
+///
+/// The state changes have already been removed from the transaction result and
+/// will be applied through an ordered semantic commit. This keeps the receipt,
+/// gas, and section/accounting data needed by the block executor.
+#[derive(Debug)]
+pub struct TempoStrippedTxCommit {
+    receipt: TempoReceipt,
+    tx_gas_used: u64,
+    regular_gas_used: u64,
+    state_gas_used: u64,
+    blob_gas_used: u64,
+    next_section: BlockSection,
+    is_payment: bool,
+    tx: Option<TempoTxEnvelope>,
+    block_gas_used: u64,
+}
+
+impl TempoStrippedTxCommit {
+    /// Builds a successful non-shared payment commit for a transaction whose state transition was
+    /// resolved outside the EVM.
+    pub fn successful_non_shared_payment(
+        tx_type: TempoTxType,
+        tx_gas_used: u64,
+        regular_gas_used: u64,
+        state_gas_used: u64,
+        blob_gas_used: u64,
+        block_gas_used: u64,
+        logs: Vec<Log>,
+    ) -> Self {
+        Self {
+            receipt: TempoReceipt {
+                tx_type,
+                success: true,
+                cumulative_gas_used: 0,
+                logs,
+            },
+            tx_gas_used,
+            regular_gas_used,
+            state_gas_used,
+            blob_gas_used,
+            next_section: BlockSection::NonShared,
+            is_payment: true,
+            tx: None,
+            block_gas_used,
+        }
+    }
+
+    /// Applies a correction to regular gas fields after semantic reduction has
+    /// resolved the serial-equivalent gas for covered storage operations.
+    pub fn apply_regular_gas_delta(&mut self, delta: i64) -> Result<(), &'static str> {
+        self.tx_gas_used = apply_gas_delta(self.tx_gas_used, delta)?;
+        self.regular_gas_used = apply_gas_delta(self.regular_gas_used, delta)?;
+        self.block_gas_used = apply_gas_delta(self.block_gas_used, delta)?;
+        Ok(())
+    }
+
+    /// Replaces the final receipt log.
+    pub fn replace_last_log(&mut self, log: Log) -> Result<(), &'static str> {
+        let Some(last) = self.receipt.logs.last_mut() else {
+            return Err("stripped commit has no logs");
+        };
+        *last = log;
+        Ok(())
+    }
+
+    /// Returns the block gas consumed by this stripped transaction.
+    pub fn block_gas_used(&self) -> u64 {
+        self.block_gas_used
+    }
+
+    /// Returns the state gas consumed by this stripped transaction.
+    pub fn state_gas_used(&self) -> u64 {
+        self.state_gas_used
+    }
+}
+
+fn apply_gas_delta(value: u64, delta: i64) -> Result<u64, &'static str> {
+    if delta >= 0 {
+        value
+            .checked_add(delta as u64)
+            .ok_or("positive gas correction overflowed")
+    } else {
+        value
+            .checked_sub(delta.unsigned_abs())
+            .ok_or("negative gas correction underflowed")
+    }
+}
+
 impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
@@ -119,6 +209,67 @@ impl TempoTxResult {
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
     pub fn validator_fee(&self) -> U256 {
         self.validator_fee
+    }
+
+    /// Returns mutable access to the underlying EVM result and state.
+    ///
+    /// The payload builder's Block-STM path uses this to replace storage writes
+    /// covered by ordered semantic actions before handing the result to the
+    /// normal serial commit path.
+    pub fn result_mut(&mut self) -> &mut ResultAndState<TempoHaltReason> {
+        &mut self.inner.result
+    }
+
+    /// Converts an empty-state transaction result into prepared stripped commit data.
+    pub fn into_stripped_commit(self) -> Result<TempoStrippedTxCommit, Self> {
+        if !self.inner.result.state.is_empty() {
+            return Err(self);
+        }
+
+        Ok(self.into_stripped_commit_unchecked())
+    }
+
+    /// Converts a transaction result into stripped commit data while discarding state writes.
+    ///
+    /// This is for callers that have already proven the writes are covered by a separately
+    /// materialized semantic state transition.
+    pub fn into_stripped_commit_unchecked(self) -> TempoStrippedTxCommit {
+        let TempoTxResult {
+            inner,
+            next_section,
+            is_payment,
+            tx,
+            block_gas_used,
+            validator_fee: _,
+        } = self;
+        let EthTxResult {
+            result: ResultAndState { result, state: _ },
+            blob_gas_used,
+            tx_type,
+        } = inner;
+
+        let tx_gas_used = result.gas().tx_gas_used();
+        let regular_gas_used = result.gas().block_regular_gas_used();
+        let state_gas_used = result.gas().block_state_gas_used();
+        let success = result.is_success();
+        let logs = result.into_logs();
+
+        TempoStrippedTxCommit {
+            receipt: TempoReceipt {
+                tx_type,
+                success,
+                cumulative_gas_used: 0,
+                logs,
+            },
+            tx_gas_used,
+            regular_gas_used,
+            state_gas_used,
+            blob_gas_used,
+            next_section,
+            is_payment,
+            tx,
+            block_gas_used,
+        }
     }
 }
 
@@ -180,6 +331,94 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
+    }
+
+    /// Reserves receipt capacity for a batch of transactions.
+    pub fn reserve_receipts(&mut self, additional: usize) {
+        self.inner.receipts.reserve(additional);
+    }
+
+    /// Commits a transaction whose EVM state changes were intentionally stripped.
+    ///
+    /// Block-STM semantic domains synthesize their covered storage writes once after
+    /// ordered semantic resolution. For those transactions the per-transaction state is
+    /// empty, but the builder still needs receipt construction and gas/section
+    /// accounting. This keeps those effects while avoiding empty state-hook and DB
+    /// commits on every transaction.
+    pub fn commit_stripped_transaction(&mut self, output: TempoTxResult) -> GasOutput {
+        match output.into_stripped_commit() {
+            Ok(commit) => self.commit_prepared_stripped_transaction(commit),
+            Err(output) => self.commit_transaction(output),
+        }
+    }
+
+    /// Commits worker-prepared stripped transaction data.
+    pub fn commit_prepared_stripped_transaction(
+        &mut self,
+        commit: TempoStrippedTxCommit,
+    ) -> GasOutput {
+        self.inner.block_regular_gas_used += commit.regular_gas_used;
+        self.inner.block_state_gas_used += commit.state_gas_used;
+        self.inner.cumulative_tx_gas_used += commit.tx_gas_used;
+
+        if commit.blob_gas_used != 0
+            && self
+                .inner
+                .spec
+                .is_cancun_active_at_timestamp(self.inner.evm.block().timestamp.to::<u64>())
+        {
+            self.inner.blob_gas_used = self
+                .inner
+                .blob_gas_used
+                .saturating_add(commit.blob_gas_used);
+        }
+
+        let mut receipt = commit.receipt;
+        receipt.cumulative_gas_used = self.inner.cumulative_tx_gas_used;
+        self.inner.receipts.push(receipt);
+
+        self.section = commit.next_section;
+
+        match self.section {
+            BlockSection::StartOfBlock => {}
+            BlockSection::NonShared => {
+                self.non_shared_gas_left -= commit.block_gas_used;
+                if !commit.is_payment {
+                    self.non_payment_gas_left -= commit.block_gas_used;
+                }
+            }
+            BlockSection::SubBlock { proposer } => {
+                let last_subblock = if let Some(last) = self
+                    .seen_subblocks
+                    .last_mut()
+                    .filter(|(p, _)| *p == proposer)
+                {
+                    last
+                } else {
+                    self.seen_subblocks.push((proposer, Vec::new()));
+                    self.seen_subblocks.last_mut().unwrap()
+                };
+
+                last_subblock
+                    .1
+                    .push(commit.tx.expect("missing tx for subblock transaction"));
+            }
+            BlockSection::GasIncentive => {
+                self.incentive_gas_used += commit.block_gas_used;
+            }
+            BlockSection::System { .. } => {}
+        }
+
+        GasOutput::with_state_gas(commit.tx_gas_used, commit.state_gas_used)
+    }
+
+    /// Commits synthesized semantic state changes for stripped transactions.
+    pub fn commit_semantic_state_changes(&mut self, state: EvmState) {
+        self.inner.system_caller.on_state(
+            StateChangeSource::Transaction(self.inner.receipts.len()),
+            &state,
+        );
+        self.inner.evm.db_mut().commit(state);
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
@@ -1324,6 +1563,113 @@ mod tests {
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
+    }
+
+    #[test]
+    fn test_commit_prepared_stripped_transaction() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::default().with_total_gas_spent(21000),
+                        logs: vec![Log::new_unchecked(
+                            Address::ZERO,
+                            vec![B256::ZERO],
+                            Bytes::new(),
+                        )],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used: 21000,
+            validator_fee: U256::ZERO,
+        };
+
+        let commit = output
+            .into_stripped_commit()
+            .expect("empty state result should prepare stripped commit");
+        let gas_output = executor.commit_prepared_stripped_transaction(commit);
+
+        assert_eq!(gas_output.tx_gas_used(), 21000);
+        assert_eq!(executor.section(), BlockSection::NonShared);
+        assert_eq!(executor.inner.receipts.len(), 1);
+        let receipt = &executor.inner.receipts[0];
+        assert!(receipt.success);
+        assert_eq!(receipt.cumulative_gas_used, 21000);
+        assert_eq!(receipt.logs.len(), 1);
+    }
+
+    #[test]
+    fn test_commit_prepared_stripped_transaction_applies_semantic_corrections() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let original_log = Log::new_unchecked(Address::ZERO, vec![B256::ZERO], Bytes::new());
+        let corrected_log = Log::new_unchecked(
+            Address::repeat_byte(0x20),
+            vec![B256::repeat_byte(0x01)],
+            Bytes::from_static(b"fee"),
+        );
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::default().with_total_gas_spent(50_000),
+                        logs: vec![original_log],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used: 50_000,
+            validator_fee: U256::ZERO,
+        };
+
+        let mut commit = output
+            .into_stripped_commit()
+            .expect("empty state result should prepare stripped commit");
+        commit
+            .apply_regular_gas_delta(-2_100)
+            .expect("negative semantic gas correction should fit");
+        commit
+            .replace_last_log(corrected_log.clone())
+            .expect("stripped commit should have a fee log to replace");
+        let gas_output = executor.commit_prepared_stripped_transaction(commit);
+
+        assert_eq!(gas_output.tx_gas_used(), 47_900);
+        let receipt = &executor.inner.receipts[0];
+        assert_eq!(receipt.cumulative_gas_used, 47_900);
+        assert_eq!(receipt.logs, vec![corrected_log]);
     }
 
     #[test]

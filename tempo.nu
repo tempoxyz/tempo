@@ -96,7 +96,13 @@ def build-tempo [bins: list<string>, profile: string, features: string, --no-def
 
 # Find tempo node process PIDs.
 def find-tempo-pids [] {
-    ps | where name =~ '(^|/)tempo$' | get pid
+    let uid = (id -u | str trim)
+    let result = (^pgrep -u $uid -x tempo | complete)
+    if $result.exit_code == 0 {
+        $result.stdout | lines | each { |pid| $pid | into int }
+    } else {
+        []
+    }
 }
 
 # Initialize node with state bloat
@@ -1728,6 +1734,7 @@ def "main localnet" [
     --skip-build                           # Skip building (assumes binary is already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
+    --gas-limit: string = ""               # Genesis block gas limit
 ] {
     validate-mode $mode
     if $epoch_length <= 0 {
@@ -1755,9 +1762,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat $gas_limit
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat $gas_limit
     }
 }
 
@@ -1765,7 +1772,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int, gas_limit: string] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1794,7 +1801,8 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --epoch-length $epoch_length --no-dkg-in-genesis
+            let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --epoch-length $epoch_length --no-dkg-in-genesis ...$gas_limit_args
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1857,7 +1865,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int, gas_limit: string] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1877,7 +1885,8 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --epoch-length $epoch_length --validators $validators --force | ignore
+            let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --epoch-length $epoch_length --validators $validators --force ...$gas_limit_args | ignore
         }
     }
 
@@ -2843,6 +2852,7 @@ def "main bench" [
     | append (if $loud { ["--loud"] } else { [] })
     | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
     | append (if $bloat > 0 { ["--bloat" $"($bloat)"] } else { [] })
+    | append (if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")

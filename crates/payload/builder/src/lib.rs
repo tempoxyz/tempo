@@ -3,15 +3,29 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod blockstm;
 mod budget;
 mod metrics;
 mod prewarming;
 
+pub use blockstm::BlockStmConfig;
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
+    blockstm::{
+        BlockStmAccessKey, BlockStmExecutionStats, BlockStmMetrics, BlockStmMvMemory,
+        action::production::{
+            BlockStmDirectTip20Execution, BlockStmDirectTip20Template, BlockStmSemanticReduction,
+            BlockStmSemanticState, capture_tip20_semantic_plan, reduce_tip20_semantic_records,
+        },
+        executor::BlockStmAttempt,
+        state_view::{
+            BlockStmMvTrackingDb, BlockStmParentReadCache, BlockStmPrefixDb,
+            account_write_set_from_evm_state, write_set_from_evm_state,
+        },
+    },
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_exhausted, scaled_build_time_multiplier,
@@ -22,8 +36,12 @@ use crate::{
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{
+    Address, B256, Bloom, Bytes, U256,
+    map::{AddressMap, HashSet},
+};
 use alloy_rlp::{Decodable, Encodable};
+use rayon::prelude::*;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -36,9 +54,11 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
-    execute::BlockAssemblerInput,
+    ConfigureEvm, Database, Evm, EvmEnvFor, NextBlockEnvAttributes,
+    block::{
+        BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, TxResult,
+    },
+    execute::{BlockAssemblerInput, WithTxEnv},
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -47,24 +67,34 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
+    State,
+    context::Block,
+    database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
+    state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    HashedPostStateProvider, StateProviderBox, StateProviderFactory, StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    cmp::Reverse,
+    collections::{BinaryHeap, VecDeque},
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    evm::TempoEvm,
+};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -72,12 +102,22 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
+use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
+    best::BestTransaction,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+const RLP_BLOCK_SIZE_SAFETY_MARGIN: usize = 128 * 1024;
+// Keep production Block-STM receipt and gas accounting tied to real EVM execution.
+// The direct TIP-20 semantic template can synthesize a same-shape transfer without
+// running the EVM, but same-shape transfers are not a sufficient proof of identical
+// gas on live txgen workloads. Semantic actions should resolve ordered state writes;
+// gas, logs, and receipts must continue to come from the transaction's EVM result.
+const ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION: bool = false;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -88,6 +128,626 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
                 .is_some_and(|valid| valid.get() <= timestamp)
         })
     })
+}
+
+#[derive(Debug, Clone)]
+struct BlockStmPoolCandidate {
+    tx_index: usize,
+    pool_tx: BestTransaction,
+    tx_with_env: WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>>,
+    max_regular_gas_used: u64,
+    is_payment: bool,
+    tx_rlp_length: usize,
+    tx_debug_repr: String,
+}
+
+#[derive(Debug)]
+struct BlockStmAttemptOutput {
+    execution_result: Option<Result<tempo_evm::TempoTxResult, BlockExecutionError>>,
+    direct_semantic_execution: Option<BlockStmDirectTip20Execution>,
+    elapsed: Duration,
+    semantic_plan: Option<crate::blockstm::action::production::BlockStmSemanticPlan>,
+    blocking_dependency: Option<usize>,
+    account_write_set: alloy_primitives::map::HashMap<Address, reth_revm::state::AccountInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmProductionTaskKind {
+    Execution,
+    Validation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionTask {
+    tx_index: usize,
+    incarnation: usize,
+    validation_generation: usize,
+    kind: BlockStmProductionTaskKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionQueuedTask {
+    key: (usize, u8, usize, usize),
+    task: BlockStmProductionTask,
+}
+
+impl BlockStmProductionQueuedTask {
+    fn new(task: BlockStmProductionTask) -> Self {
+        Self {
+            key: (
+                task.tx_index,
+                blockstm_task_kind_priority(task.kind),
+                task.incarnation,
+                task.validation_generation,
+            ),
+            task,
+        }
+    }
+}
+
+impl PartialOrd for BlockStmProductionQueuedTask {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BlockStmProductionQueuedTask {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
+fn blockstm_task_kind_priority(kind: BlockStmProductionTaskKind) -> u8 {
+    match kind {
+        BlockStmProductionTaskKind::Validation => 0,
+        BlockStmProductionTaskKind::Execution => 1,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmProductionStatus {
+    Ready,
+    Executing,
+    Waiting,
+    Executed,
+    ValidationQueued,
+    Validating,
+    Validated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionTxState {
+    incarnation: usize,
+    validation_generation: usize,
+    revalidate_after_current: bool,
+    status: BlockStmProductionStatus,
+}
+
+#[derive(Debug)]
+struct BlockStmProductionScheduler {
+    inner: Mutex<BlockStmProductionSchedulerInner>,
+    available: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct BlockStmProductionSchedulerInner {
+    queue: BinaryHeap<Reverse<BlockStmProductionQueuedTask>>,
+    active: usize,
+    done: bool,
+}
+
+impl BlockStmProductionScheduler {
+    fn new(tx_count: usize) -> Self {
+        Self {
+            inner: Mutex::new(BlockStmProductionSchedulerInner {
+                queue: (0..tx_count)
+                    .map(|tx_index| BlockStmProductionTask {
+                        tx_index,
+                        incarnation: 0,
+                        validation_generation: 0,
+                        kind: BlockStmProductionTaskKind::Execution,
+                    })
+                    .map(BlockStmProductionQueuedTask::new)
+                    .map(Reverse)
+                    .collect(),
+                active: 0,
+                done: false,
+            }),
+            available: Condvar::new(),
+        }
+    }
+
+    fn next_task(&self) -> Option<BlockStmProductionTask> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        loop {
+            if inner.done {
+                return None;
+            }
+            if let Some(Reverse(queued)) = inner.queue.pop() {
+                inner.active += 1;
+                return Some(queued.task);
+            }
+            if inner.active == 0 {
+                inner.done = true;
+                self.available.notify_all();
+                return None;
+            }
+            inner = self
+                .available
+                .wait(inner)
+                .expect("Block-STM production scheduler poisoned");
+        }
+    }
+
+    fn push_task(&self, task: BlockStmProductionTask) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        if !inner.done {
+            inner
+                .queue
+                .push(Reverse(BlockStmProductionQueuedTask::new(task)));
+            self.available.notify_one();
+        }
+    }
+
+    fn finish_task(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        inner.active = inner
+            .active
+            .checked_sub(1)
+            .expect("active Block-STM task underflow");
+        if inner.queue.is_empty() && inner.active == 0 {
+            inner.done = true;
+            self.available.notify_all();
+        } else {
+            self.available.notify_one();
+        }
+    }
+}
+
+fn execute_blockstm_attempt(
+    state_provider: &StateProviderBox,
+    evm_config: &TempoEvmConfig,
+    evm_env: EvmEnvFor<TempoEvmConfig>,
+    execution_ctx: TempoBlockExecutionCtx<'_>,
+    prefix_cache: Arc<reth_revm::db::CacheState>,
+    parent_read_cache: Arc<BlockStmParentReadCache>,
+    memory: &BlockStmMvMemory,
+    tx_index: usize,
+    attempt: usize,
+    tx: WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>>,
+    pool_tx: &TempoPooledTransaction,
+    capture_semantic_actions: bool,
+    direct_semantic_template: &Arc<Mutex<Option<BlockStmDirectTip20Template>>>,
+    beneficiary: Address,
+) -> Result<BlockStmAttempt<BlockStmAttemptOutput>, BlockExecutionError> {
+    let base_fee = evm_env.block_env.inner.basefee;
+    let block_timestamp = evm_env.block_env.inner.timestamp.to::<u64>();
+    let spec = evm_env.cfg_env.spec;
+    let amsterdam_eip8037_enabled = evm_env.cfg_env.enable_amsterdam_eip8037;
+    if capture_semantic_actions && ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION {
+        let started = Instant::now();
+        let template = direct_semantic_template
+            .lock()
+            .expect("Block-STM direct semantic template poisoned")
+            .clone();
+        if let Some(template) = template
+            && let Some(direct_execution) = template.execute(
+                tx_index,
+                pool_tx,
+                beneficiary,
+                base_fee,
+                block_timestamp,
+                spec,
+                amsterdam_eip8037_enabled,
+            )
+        {
+            let semantic_plan = direct_execution.semantic_plan.clone();
+            return Ok(BlockStmAttempt {
+                tx_index,
+                attempt,
+                read_set: Default::default(),
+                write_set: Default::default(),
+                output: BlockStmAttemptOutput {
+                    execution_result: None,
+                    direct_semantic_execution: Some(direct_execution),
+                    elapsed: started.elapsed(),
+                    semantic_plan: Some(semantic_plan),
+                    blocking_dependency: None,
+                    account_write_set: Default::default(),
+                },
+            });
+        }
+    }
+
+    let state = BlockStmPrefixDb::with_parent_read_cache(
+        StateProviderDatabase::new(state_provider),
+        prefix_cache,
+        parent_read_cache,
+    );
+    let db = State::builder()
+        .with_database(state)
+        .with_bundle_update()
+        .build();
+    let tracking_db = BlockStmMvTrackingDb::new(db, memory, tx_index);
+    let evm = evm_config.evm_with_env(tracking_db, evm_env);
+    let mut executor = BlockExecutorFactory::create_executor(evm_config, evm, execution_ctx);
+
+    let started = Instant::now();
+    let execution_result = executor.execute_transaction_without_commit(tx);
+    let elapsed = started.elapsed();
+    let blocking_dependency = executor.evm().db().blocking_dependency();
+    let mut read_set = executor.evm().db().read_set();
+    let account_write_set = execution_result
+        .as_ref()
+        .map(|result| account_write_set_from_evm_state(&result.result().state))
+        .unwrap_or_default();
+    let mut write_set = execution_result
+        .as_ref()
+        .map(|result| write_set_from_evm_state(&result.result().state))
+        .unwrap_or_default();
+    let semantic_plan = if capture_semantic_actions {
+        execution_result.as_ref().ok().and_then(|result| {
+            capture_tip20_semantic_plan(
+                tx_index,
+                pool_tx,
+                result,
+                &write_set,
+                beneficiary,
+                base_fee,
+            )
+        })
+    } else {
+        None
+    };
+    if ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION
+        && let (Some(semantic_plan), Ok(result)) =
+            (semantic_plan.as_ref(), execution_result.as_ref())
+        && blockstm_result_has_only_semantic_writes(result, semantic_plan.covered_keys())
+        && let Some(template) = BlockStmDirectTip20Template::from_evm_result(
+            pool_tx,
+            result,
+            base_fee,
+            spec,
+            amsterdam_eip8037_enabled,
+        )
+    {
+        let mut guard = direct_semantic_template
+            .lock()
+            .expect("Block-STM direct semantic template poisoned");
+        if guard.is_none() {
+            *guard = Some(template);
+        }
+    }
+    if let Some(semantic_plan) = semantic_plan.as_ref() {
+        read_set = read_set.without_keys(semantic_plan.covered_keys().iter());
+        write_set = write_set.without_keys(semantic_plan.covered_keys().iter());
+    }
+
+    Ok(BlockStmAttempt {
+        tx_index,
+        attempt,
+        read_set,
+        write_set,
+        output: BlockStmAttemptOutput {
+            execution_result: Some(execution_result),
+            direct_semantic_execution: None,
+            elapsed,
+            semantic_plan,
+            blocking_dependency,
+            account_write_set,
+        },
+    })
+}
+
+fn record_blockstm_max_in_flight(max_in_flight: &AtomicU64, active: u64) {
+    let mut observed = max_in_flight.load(Ordering::Relaxed);
+    while active > observed {
+        match max_in_flight.compare_exchange_weak(
+            observed,
+            active,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(next) => observed = next,
+        }
+    }
+}
+
+fn record_blockstm_duration_nanos(total: &AtomicU64, elapsed: Duration) {
+    total.fetch_add(
+        elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
+        Ordering::AcqRel,
+    );
+}
+
+fn load_blockstm_duration(total: &AtomicU64) -> Duration {
+    Duration::from_nanos(total.load(Ordering::Relaxed))
+}
+
+fn schedule_blockstm_validation_for_ready_suffix(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    start: usize,
+) {
+    for tx_index in start..states.len() {
+        schedule_blockstm_validation(scheduler, states, tx_index);
+    }
+}
+
+fn schedule_blockstm_validation(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    tx_index: usize,
+) {
+    let task = {
+        let mut state = states[tx_index]
+            .lock()
+            .expect("Block-STM production transaction state poisoned");
+        match state.status {
+            BlockStmProductionStatus::Executed | BlockStmProductionStatus::Validated => {
+                state.validation_generation += 1;
+                state.revalidate_after_current = false;
+                state.status = BlockStmProductionStatus::ValidationQueued;
+                Some(BlockStmProductionTask {
+                    tx_index,
+                    incarnation: state.incarnation,
+                    validation_generation: state.validation_generation,
+                    kind: BlockStmProductionTaskKind::Validation,
+                })
+            }
+            BlockStmProductionStatus::ValidationQueued => None,
+            BlockStmProductionStatus::Validating => {
+                state.revalidate_after_current = true;
+                None
+            }
+            BlockStmProductionStatus::Ready
+            | BlockStmProductionStatus::Executing
+            | BlockStmProductionStatus::Waiting => None,
+        }
+    };
+
+    if let Some(task) = task {
+        scheduler.push_task(task);
+    }
+}
+
+fn blockstm_dependency_resolved(
+    states: &[Mutex<BlockStmProductionTxState>],
+    tx_index: usize,
+) -> bool {
+    let state = states[tx_index]
+        .lock()
+        .expect("Block-STM production transaction state poisoned");
+    matches!(
+        state.status,
+        BlockStmProductionStatus::Executed
+            | BlockStmProductionStatus::ValidationQueued
+            | BlockStmProductionStatus::Validating
+            | BlockStmProductionStatus::Validated
+    )
+}
+
+fn schedule_blockstm_execution(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    tx_index: usize,
+) {
+    let mut state = states[tx_index]
+        .lock()
+        .expect("Block-STM production transaction state poisoned");
+    if matches!(
+        state.status,
+        BlockStmProductionStatus::Ready | BlockStmProductionStatus::Executing
+    ) {
+        return;
+    }
+    state.incarnation += 1;
+    state.validation_generation += 1;
+    state.revalidate_after_current = false;
+    state.status = BlockStmProductionStatus::Ready;
+    scheduler.push_task(BlockStmProductionTask {
+        tx_index,
+        incarnation: state.incarnation,
+        validation_generation: 0,
+        kind: BlockStmProductionTaskKind::Execution,
+    });
+}
+
+fn schedule_blockstm_dependency_waiters(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    dependencies: &[Mutex<Vec<usize>>],
+    tx_index: usize,
+) {
+    let waiters = dependencies[tx_index]
+        .lock()
+        .expect("Block-STM dependency list poisoned")
+        .drain(..)
+        .collect::<Vec<_>>();
+    for waiter in waiters {
+        schedule_blockstm_execution(scheduler, states, waiter);
+    }
+}
+
+fn register_blockstm_dependency_waiter(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    dependencies: &[Mutex<Vec<usize>>],
+    waiter_tx_index: usize,
+    blocking_tx_index: Option<usize>,
+) {
+    let Some(blocking_tx_index) = blocking_tx_index else {
+        schedule_blockstm_execution(scheduler, states, waiter_tx_index);
+        return;
+    };
+
+    if blockstm_dependency_resolved(states, blocking_tx_index) {
+        schedule_blockstm_execution(scheduler, states, waiter_tx_index);
+        return;
+    }
+
+    {
+        let mut waiters = dependencies[blocking_tx_index]
+            .lock()
+            .expect("Block-STM dependency list poisoned");
+        if !waiters.contains(&waiter_tx_index) {
+            waiters.push(waiter_tx_index);
+        }
+    }
+
+    if blockstm_dependency_resolved(states, blocking_tx_index) {
+        schedule_blockstm_dependency_waiters(scheduler, states, dependencies, blocking_tx_index);
+    }
+}
+
+fn is_blockstm_invalidated_buffered_transaction(
+    invalid: &BestTransaction,
+    candidate: &BestTransaction,
+) -> bool {
+    if invalid.transaction.is_expiring_nonce() {
+        return false;
+    }
+
+    if invalid.transaction.is_aa_2d() {
+        candidate
+            .transaction
+            .aa_transaction_id()
+            .zip(invalid.transaction.aa_transaction_id())
+            .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
+    } else {
+        candidate.transaction.sender() == invalid.transaction.sender()
+    }
+}
+
+fn expand_blockstm_semantic_invalidated_transactions(
+    batch: &[BlockStmPoolCandidate],
+    invalid_tx_indexes: &mut HashSet<usize>,
+) -> bool {
+    let invalid_candidates = batch
+        .iter()
+        .filter(|candidate| invalid_tx_indexes.contains(&candidate.tx_index))
+        .collect::<Vec<_>>();
+    if invalid_candidates.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+    for candidate in batch {
+        if invalid_tx_indexes.contains(&candidate.tx_index) {
+            continue;
+        }
+        if invalid_candidates.iter().any(|invalid| {
+            is_blockstm_invalidated_buffered_transaction(&invalid.pool_tx, &candidate.pool_tx)
+        }) {
+            changed |= invalid_tx_indexes.insert(candidate.tx_index);
+        }
+    }
+
+    changed
+}
+
+fn hydrate_blockstm_commit_cache<DB>(
+    db: &mut DB,
+    result: &tempo_evm::TempoTxResult,
+) -> Result<(), DB::Error>
+where
+    DB: Database,
+{
+    for address in result.result().state.keys() {
+        let _ = db.basic(*address)?;
+    }
+    Ok(())
+}
+
+fn blockstm_result_has_only_semantic_writes(
+    result: &tempo_evm::TempoTxResult,
+    covered_keys: &HashSet<BlockStmAccessKey>,
+) -> bool {
+    result.result().state.iter().all(|(address, account)| {
+        account.info == account.original_info()
+            && account.storage.iter().all(|(slot, value)| {
+                !value.is_changed()
+                    || covered_keys.contains(&BlockStmAccessKey::Storage {
+                        address: *address,
+                        slot: *slot,
+                    })
+            })
+    })
+}
+
+fn materialize_blockstm_semantic_reduction<DB>(
+    db: &mut DB,
+    reduction: &BlockStmSemanticReduction,
+    worker_count: usize,
+) -> Result<EvmState, DB::Error>
+where
+    DB: Database,
+{
+    let mut keys = reduction.touched_keys().iter().copied().collect::<Vec<_>>();
+    keys.sort_unstable();
+
+    let storage_entries = if keys.is_empty() {
+        Vec::new()
+    } else {
+        let worker_count = worker_count.max(1).min(keys.len());
+        let chunk_len = keys.len().div_ceil(worker_count).max(1);
+        keys.par_chunks(chunk_len)
+            .flat_map_iter(|chunk| {
+                let mut entries = Vec::<(Address, U256, Option<U256>, U256)>::new();
+                for key in chunk {
+                    let BlockStmAccessKey::Storage { address, slot } = *key else {
+                        continue;
+                    };
+                    let Some(value) = reduction.storage_value(key) else {
+                        continue;
+                    };
+                    entries.push((
+                        address,
+                        slot,
+                        reduction.original_values().get(key).copied(),
+                        value,
+                    ));
+                }
+                entries
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut changes = AddressMap::<Account>::default();
+
+    for (address, slot, original, value) in storage_entries {
+        let original = match original {
+            Some(original) => original,
+            None => db.storage(address, slot)?,
+        };
+        if original == value {
+            continue;
+        }
+        let account = match changes.entry(address) {
+            alloy_primitives::map::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            alloy_primitives::map::hash_map::Entry::Vacant(entry) => {
+                let info = db.basic(address)?.unwrap_or_default();
+                entry.insert(Account::from(info))
+            }
+        };
+        account.mark_touch();
+        account.storage.insert(
+            slot,
+            EvmStorageSlot::new_changed(original, value, TransactionId::ZERO),
+        );
+    }
+
+    Ok(changes)
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +781,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Block-STM payload-builder configuration.
+    blockstm_config: BlockStmConfig,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -138,6 +800,8 @@ pub struct TempoPayloadBuilderConfig {
     /// above `1.0` stop transaction execution earlier to leave room for
     /// `builder_finish`, which validators also repeat.
     pub build_time_multiplier: f64,
+    /// Block-STM payload-builder configuration.
+    pub blockstm_config: BlockStmConfig,
 }
 
 impl Default for TempoPayloadBuilderConfig {
@@ -147,6 +811,7 @@ impl Default for TempoPayloadBuilderConfig {
             state_provider_metrics: false,
             enable_prewarming: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            blockstm_config: BlockStmConfig::default(),
         }
     }
 }
@@ -174,6 +839,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            blockstm_config: config.blockstm_config,
         }
     }
 
@@ -382,6 +1048,11 @@ where
             .provider
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp);
+        let max_estimated_block_size = if is_osaka {
+            MAX_RLP_BLOCK_SIZE.saturating_sub(RLP_BLOCK_SIZE_SAFETY_MARGIN)
+        } else {
+            usize::MAX
+        };
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit =
@@ -451,7 +1122,7 @@ where
             })
             .collect();
 
-        let next_attributes = TempoNextBlockEnvAttributes {
+        let next_block_attrs = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
                 timestamp: attributes.timestamp,
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
@@ -470,15 +1141,15 @@ where
         };
         let evm_env = self
             .evm_config
-            .next_evm_env(&parent_header, &next_attributes)
+            .next_evm_env(&parent_header, &next_block_attrs)
             .map_err(PayloadBuilderError::other)?;
-        let ctx = self
+        let execution_ctx = self
             .evm_config
-            .context_for_next_block(&parent_header, next_attributes)
+            .context_for_next_block(&parent_header, next_block_attrs)
             .map_err(PayloadBuilderError::other)?;
-
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let mut executor = self.evm_config.create_executor(evm, ctx.clone());
+        let mut executor =
+            ConfigureEvm::create_executor(&self.evm_config, evm, execution_ctx.clone());
 
         check_cancel!();
 
@@ -528,7 +1199,8 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+        let enable_best_txs_prewarming = self.enable_prewarming && !self.blockstm_config.enabled;
+        let mut best_txs = StateAwareBestTransactions::new(if enable_best_txs_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
@@ -555,178 +1227,1379 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
-        let block_build_stop_reason = loop {
-            check_cancel!();
+        let mut blockstm_stats = BlockStmExecutionStats::default();
+        let mut blockstm_batch_setup_elapsed = Duration::ZERO;
+        let mut blockstm_prefix_cache_clone_elapsed = Duration::ZERO;
+        let mut blockstm_worker_elapsed = Duration::ZERO;
+        let mut blockstm_attempt_wall_elapsed_sum = Duration::ZERO;
+        let mut blockstm_evm_execution_elapsed_sum = Duration::ZERO;
+        let mut blockstm_publish_elapsed_sum = Duration::ZERO;
+        let mut blockstm_validation_elapsed_sum = Duration::ZERO;
+        let mut blockstm_fast_semantic_elapsed = Duration::ZERO;
+        let mut blockstm_fast_commit_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_lane_build_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_lane_reduce_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_materialize_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_commit_elapsed = Duration::ZERO;
+        let mut blockstm_validation_tasks = 0u64;
+        let mut blockstm_publish_tasks = 0u64;
+        let mut blockstm_read_keys = 0u64;
+        let mut blockstm_write_keys = 0u64;
+        let mut blockstm_account_write_keys = 0u64;
+        let mut blockstm_semantic_plans = 0u64;
+        let mut blockstm_direct_semantic_executions = 0u64;
+        let mut blockstm_semantic_lanes_reduced = 0u64;
+        let mut blockstm_semantic_fixpoint_iterations = 0u64;
+        let mut blockstm_semantic_invalid_txs = 0u64;
+        let block_build_stop_reason = if self.blockstm_config.enabled && !empty {
+            let max_batch_len = self
+                .blockstm_config
+                .workers
+                .max(1)
+                .saturating_mul(512)
+                .clamp(1, 16_384);
+            let parent_hash = parent_header.hash();
+            let mut pending_candidates = VecDeque::<BlockStmPoolCandidate>::new();
+            let mut next_blockstm_tx_index = 0usize;
+            let mut semantic_state = BlockStmSemanticState::default();
 
-            if let Some(build_budget) = payload_build_budget {
-                let elapsed = start.elapsed();
-                if payload_budget_exhausted(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    build_budget,
-                    marshal_persist,
-                    block_size_used,
-                ) {
-                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
-                    debug!(
-                        target: "payload_builder",
-                        ?elapsed,
-                        ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
-                        ?estimated_marshal_persist,
+            'blockstm_pool_fill: loop {
+                check_cancel!();
+
+                if let Some(build_budget) = payload_build_budget {
+                    let elapsed = start.elapsed();
+                    if payload_budget_exhausted(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        build_budget,
+                        marshal_persist,
                         block_size_used,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                        "stopping pool transaction execution before payload build budget is exhausted"
-                    );
-                    break BlockBuildStopReason::BuildBudget;
-                }
-            }
-
-            let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                    continue;
-                }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
-                } else {
-                    BlockBuildStopReason::TxPoolEmpty
-                };
-                break stop_reason;
-            };
-            pool_transactions_yielded += 1;
-
-            let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
-
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                continue;
-            }
-
-            let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.is_payment()
-            } else {
-                pool_tx.transaction.inner().is_payment_v1()
-            };
-
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                continue;
-            }
-
-            check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
-
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
-            }
-
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
-                |result| {
-                    cumulative_gas_used += result.block_gas_used();
-                    cumulative_state_gas_used += result.state_gas_used();
-                    if !is_payment {
-                        non_payment_gas_used += result.block_gas_used();
-                    }
-
-                    // Score payload value by the validator-credited fee amount that the
-                    // FeeManager precompile actually wrote during this transaction.
-                    total_fees += result.validator_fee();
-
-                    // Notify transactions iterator about the new state.
-                    best_txs.on_new_result(result);
-                },
-            );
-            if let Err(err) = execution_result {
-                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                }) = &err
-                {
-                    invalid_pool_transaction_execution_attempts += 1;
-
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
+                    ) {
+                        let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            ?estimated_marshal_persist,
+                            block_size_used,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping pool transaction execution before payload build budget is exhausted"
                         );
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        break BlockBuildStopReason::BuildBudget;
                     }
+                }
+
+                let mut batch = Vec::with_capacity(max_batch_len);
+                let mut reserved_gas_used = cumulative_gas_used;
+                let mut reserved_non_payment_gas_used = non_payment_gas_used;
+                let mut reserved_block_size_used = block_size_used;
+                let mut exhausted_pool = false;
+
+                while batch.len() < max_batch_len {
+                    let candidate = if let Some(candidate) = pending_candidates.pop_front() {
+                        candidate
+                    } else {
+                        let Some(pool_tx) = best_txs.next() else {
+                            exhausted_pool = true;
+                            break;
+                        };
+                        pool_transactions_yielded += 1;
+
+                        let max_regular_gas_used = core::cmp::min(
+                            pool_tx.gas_limit(),
+                            executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                        );
+                        let is_payment = if hardfork.is_t5() {
+                            pool_tx.transaction.is_payment()
+                        } else {
+                            pool_tx.transaction.inner().is_payment_v1()
+                        };
+                        let tx_rlp_length = pool_tx.transaction.encoded_length();
+                        let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                            .then(|| format!("{:?}", pool_tx.transaction))
+                            .unwrap_or_default();
+                        let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
+                        let tx_index = next_blockstm_tx_index;
+                        next_blockstm_tx_index += 1;
+
+                        BlockStmPoolCandidate {
+                            tx_index,
+                            pool_tx,
+                            tx_with_env,
+                            max_regular_gas_used,
+                            is_payment,
+                            tx_rlp_length,
+                            tx_debug_repr,
+                        }
+                    };
+
+                    if reserved_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
+                        if batch.is_empty() {
+                            if cumulative_gas_used > 0 {
+                                break 'blockstm_pool_fill BlockBuildStopReason::GasLimit;
+                            }
+                            best_txs.mark_invalid(
+                                &candidate.pool_tx,
+                                InvalidPoolTransactionError::ExceedsGasLimit(
+                                    candidate.pool_tx.gas_limit(),
+                                    non_shared_gas_limit - reserved_gas_used,
+                                ),
+                            );
+                            self.metrics
+                                .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                            continue;
+                        }
+
+                        pending_candidates.push_front(candidate);
+                        break;
+                    }
+
+                    if !candidate.is_payment
+                        && reserved_non_payment_gas_used + candidate.max_regular_gas_used
+                            > general_gas_limit
+                    {
+                        if batch.is_empty() {
+                            best_txs.mark_invalid(
+                                &candidate.pool_tx,
+                                InvalidPoolTransactionError::Other(Box::new(
+                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                )),
+                            );
+                            self.metrics
+                                .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                            continue;
+                        }
+
+                        pending_candidates.push_front(candidate);
+                        break;
+                    }
+
+                    let estimated_block_size_with_tx =
+                        reserved_block_size_used + candidate.tx_rlp_length;
+                    if estimated_block_size_with_tx > max_estimated_block_size {
+                        if batch.is_empty() {
+                            if block_size_used > 0 {
+                                break 'blockstm_pool_fill BlockBuildStopReason::RlpBlockSizeLimit;
+                            }
+                            if candidate.is_payment {
+                                payment_transactions += 1;
+                            }
+                            best_txs.mark_invalid(
+                                &candidate.pool_tx,
+                                InvalidPoolTransactionError::OversizedData {
+                                    size: estimated_block_size_with_tx,
+                                    limit: MAX_RLP_BLOCK_SIZE,
+                                },
+                            );
+                            self.metrics.inc_pool_tx_skipped("oversized_block");
+                            skipped_oversized_block = true;
+                            continue;
+                        }
+
+                        pending_candidates.push_front(candidate);
+                        break;
+                    }
+
+                    reserved_gas_used += candidate.max_regular_gas_used;
+                    if !candidate.is_payment {
+                        reserved_non_payment_gas_used += candidate.max_regular_gas_used;
+                    }
+                    reserved_block_size_used += candidate.tx_rlp_length;
+                    batch.push(candidate);
+                }
+
+                if batch.is_empty() {
+                    if exhausted_pool {
+                        if build_once_with_shared_trie
+                            && payload_build_budget.is_some()
+                            && cumulative_gas_used < non_shared_gas_limit
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                            normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                            continue;
+                        }
+
+                        let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                            BlockBuildStopReason::GasLimit
+                        } else if skipped_oversized_block {
+                            BlockBuildStopReason::RlpBlockSizeLimit
+                        } else {
+                            BlockBuildStopReason::TxPoolEmpty
+                        };
+                        break stop_reason;
+                    }
+
                     continue;
-                } else {
+                }
+
+                let batch_setup_started = Instant::now();
+                let prefix_cache_clone_started = Instant::now();
+                let prefix_cache = Arc::new(executor.evm_mut().db_mut().cache.clone());
+                blockstm_prefix_cache_clone_elapsed += prefix_cache_clone_started.elapsed();
+                let parent_read_cache = Arc::new(BlockStmParentReadCache::default());
+                let evm_env = executor.evm().evm_env();
+                let execution_ctx = execution_ctx.clone();
+                let beneficiary = executor.evm().block().beneficiary;
+                let batch_first_tx_index = batch[0].tx_index;
+                let worker_count = self.blockstm_config.workers.max(1);
+                let tip20_actions = self.blockstm_config.tip20_actions;
+                let attempt_slots = (0..batch.len())
+                    .map(|_| Mutex::new(None))
+                    .collect::<Vec<_>>();
+                let memory = BlockStmMvMemory::default();
+                let states = (0..batch.len())
+                    .map(|_| {
+                        Mutex::new(BlockStmProductionTxState {
+                            incarnation: 0,
+                            validation_generation: 0,
+                            revalidate_after_current: false,
+                            status: BlockStmProductionStatus::Ready,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let dependencies = (0..batch.len())
+                    .map(|_| Mutex::new(Vec::<usize>::new()))
+                    .collect::<Vec<_>>();
+                let scheduler = BlockStmProductionScheduler::new(batch.len());
+                let direct_semantic_template =
+                    Arc::new(Mutex::new(None::<BlockStmDirectTip20Template>));
+                let worker_error = Mutex::new(None);
+                let in_flight = AtomicU64::new(0);
+                let max_in_flight = AtomicU64::new(0);
+                let speculative_executions = AtomicU64::new(0);
+                let conflicts = AtomicU64::new(0);
+                let reexecutions = AtomicU64::new(0);
+                let attempt_wall_nanos = AtomicU64::new(0);
+                let evm_execution_nanos = AtomicU64::new(0);
+                let publish_nanos = AtomicU64::new(0);
+                let validation_nanos = AtomicU64::new(0);
+                let validation_task_count = AtomicU64::new(0);
+                let publish_task_count = AtomicU64::new(0);
+                let read_key_count = AtomicU64::new(0);
+                let write_key_count = AtomicU64::new(0);
+                let account_write_key_count = AtomicU64::new(0);
+                let semantic_plan_count = AtomicU64::new(0);
+                let direct_semantic_count = AtomicU64::new(0);
+                blockstm_batch_setup_elapsed += batch_setup_started.elapsed();
+
+                let worker_started = Instant::now();
+                self.executor.prewarming_pool().in_place_scope(|scope| {
+                    let batch_ref = &batch;
+                    for _ in 0..worker_count {
+                        let batch = batch_ref;
+                        let provider = self.provider.clone();
+                        let evm_config = &self.evm_config;
+                        let evm_env = evm_env.clone();
+                        let execution_ctx = execution_ctx.clone();
+                        let prefix_cache = prefix_cache.clone();
+                        let parent_read_cache = parent_read_cache.clone();
+                        let direct_semantic_template = direct_semantic_template.clone();
+                        let attempt_slots = &attempt_slots;
+                        let states = &states;
+                        let dependencies = &dependencies;
+                        let scheduler = &scheduler;
+                        let memory = &memory;
+                        let worker_error = &worker_error;
+                        let in_flight = &in_flight;
+                        let max_in_flight = &max_in_flight;
+                        let speculative_executions = &speculative_executions;
+                        let conflicts = &conflicts;
+                        let reexecutions = &reexecutions;
+                        let attempt_wall_nanos = &attempt_wall_nanos;
+                        let evm_execution_nanos = &evm_execution_nanos;
+                        let publish_nanos = &publish_nanos;
+                        let validation_nanos = &validation_nanos;
+                        let validation_task_count = &validation_task_count;
+                        let publish_task_count = &publish_task_count;
+                        let read_key_count = &read_key_count;
+                        let write_key_count = &write_key_count;
+                        let account_write_key_count = &account_write_key_count;
+                        let semantic_plan_count = &semantic_plan_count;
+                        let direct_semantic_count = &direct_semantic_count;
+
+                        scope.spawn(move |_| {
+                            let mut state_provider = None;
+                            while let Some(task) = scheduler.next_task() {
+                                if worker_error
+                                    .lock()
+                                    .expect("Block-STM worker error poisoned")
+                                    .is_some()
+                                {
+                                    scheduler.finish_task();
+                                    break;
+                                }
+
+                                match task.kind {
+                                    BlockStmProductionTaskKind::Execution => {
+                                        let stale_task = {
+                                            let mut state = states[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM production transaction state poisoned");
+                                            if state.incarnation != task.incarnation
+                                                || state.status != BlockStmProductionStatus::Ready
+                                            {
+                                                true
+                                            } else {
+                                                state.status = BlockStmProductionStatus::Executing;
+                                                false
+                                            }
+                                        };
+                                        if stale_task {
+                                            scheduler.finish_task();
+                                            continue;
+                                        }
+
+                                        let candidate = &batch[task.tx_index];
+                                        if state_provider.is_none() {
+                                            match provider.state_by_block_hash(parent_hash) {
+                                                Ok(provider) => state_provider = Some(provider),
+                                                Err(err) => {
+                                                    let mut worker_error = worker_error
+                                                        .lock()
+                                                        .expect(
+                                                            "Block-STM worker error poisoned",
+                                                        );
+                                                    if worker_error.is_none() {
+                                                        *worker_error = Some(
+                                                            BlockExecutionError::other(err),
+                                                        );
+                                                    }
+                                                    scheduler.finish_task();
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        let state_provider = state_provider
+                                            .as_ref()
+                                            .expect("Block-STM state provider initialized");
+                                        let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                                        record_blockstm_max_in_flight(max_in_flight, active);
+                                        let attempt_started = Instant::now();
+                                        let attempt = execute_blockstm_attempt(
+                                            state_provider,
+                                            evm_config,
+                                            evm_env.clone(),
+                                            execution_ctx.clone(),
+                                            prefix_cache.clone(),
+                                            parent_read_cache.clone(),
+                                            memory,
+                                            candidate.tx_index,
+                                            task.incarnation,
+                                            candidate.tx_with_env.clone(),
+                                            &candidate.pool_tx.transaction,
+                                            tip20_actions,
+                                            &direct_semantic_template,
+                                            beneficiary,
+                                        );
+                                        record_blockstm_duration_nanos(
+                                            attempt_wall_nanos,
+                                            attempt_started.elapsed(),
+                                        );
+                                        in_flight.fetch_sub(1, Ordering::AcqRel);
+                                        speculative_executions.fetch_add(1, Ordering::AcqRel);
+
+                                        match attempt {
+                                            Ok(attempt) => {
+                                                record_blockstm_duration_nanos(
+                                                    evm_execution_nanos,
+                                                    attempt.output.elapsed,
+                                                );
+                                                read_key_count.fetch_add(
+                                                    attempt.read_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                write_key_count.fetch_add(
+                                                    attempt.write_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                account_write_key_count.fetch_add(
+                                                    attempt.output.account_write_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                if attempt.output.semantic_plan.is_some() {
+                                                    semantic_plan_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                }
+                                                if attempt
+                                                    .output
+                                                    .direct_semantic_execution
+                                                    .is_some()
+                                                {
+                                                    direct_semantic_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                }
+                                                if let Some(blocking_tx_index) =
+                                                    attempt.output.blocking_dependency
+                                                {
+                                                    let blocking_batch_index = blocking_tx_index
+                                                        .checked_sub(batch_first_tx_index)
+                                                        .filter(|index| *index < batch.len());
+                                                    {
+                                                        let mut state = states[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM production transaction state poisoned");
+                                                        if state.incarnation == task.incarnation {
+                                                            state.status =
+                                                                BlockStmProductionStatus::Waiting;
+                                                        }
+                                                    }
+                                                    register_blockstm_dependency_waiter(
+                                                        scheduler,
+                                                        states,
+                                                        dependencies,
+                                                        task.tx_index,
+                                                        blocking_batch_index,
+                                                    );
+                                                } else {
+                                                    let version =
+                                                        crate::blockstm::BlockStmVersion::new(
+                                                            candidate.tx_index,
+                                                            task.incarnation,
+                                                        );
+                                                    let publish_started = Instant::now();
+                                                    memory.publish_value(
+                                                        version,
+                                                        &attempt.write_set,
+                                                    );
+                                                    memory.publish_account_values(
+                                                        version,
+                                                        &attempt.output.account_write_set,
+                                                    );
+                                                    record_blockstm_duration_nanos(
+                                                        publish_nanos,
+                                                        publish_started.elapsed(),
+                                                    );
+                                                    publish_task_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                    let publishes_mv_writes =
+                                                        !attempt.write_set.is_empty()
+                                                            || !attempt
+                                                                .output
+                                                                .account_write_set
+                                                                .is_empty();
+                                                    let should_revalidate_suffix = {
+                                                        let mut slot = attempt_slots[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM attempt slot poisoned");
+                                                        let should_revalidate = slot.as_ref().map_or(
+                                                            publishes_mv_writes,
+                                                            |previous: &BlockStmAttempt<
+                                                                BlockStmAttemptOutput,
+                                                            >| {
+                                                                let previously_published_mv_writes =
+                                                                    !previous.write_set.is_empty()
+                                                                        || !previous
+                                                                            .output
+                                                                            .account_write_set
+                                                                            .is_empty();
+                                                                (publishes_mv_writes
+                                                                    || previously_published_mv_writes)
+                                                                    && (previous.write_set
+                                                                        != attempt.write_set
+                                                                        || previous
+                                                                            .output
+                                                                            .account_write_set
+                                                                            != attempt
+                                                                                .output
+                                                                                .account_write_set)
+                                                            },
+                                                        );
+                                                        *slot = Some(attempt);
+                                                        should_revalidate
+                                                    };
+                                                    {
+                                                        let mut state = states[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM production transaction state poisoned");
+                                                        if state.incarnation == task.incarnation {
+                                                            state.status =
+                                                                BlockStmProductionStatus::Executed;
+                                                        }
+                                                    }
+                                                    schedule_blockstm_dependency_waiters(
+                                                        scheduler,
+                                                        states,
+                                                        dependencies,
+                                                        task.tx_index,
+                                                    );
+                                                    schedule_blockstm_validation(
+                                                        scheduler,
+                                                        states,
+                                                        task.tx_index,
+                                                    );
+                                                    if should_revalidate_suffix {
+                                                        schedule_blockstm_validation_for_ready_suffix(
+                                                            scheduler,
+                                                            states,
+                                                            task.tx_index + 1,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                let mut worker_error = worker_error
+                                                    .lock()
+                                                    .expect("Block-STM worker error poisoned");
+                                                if worker_error.is_none() {
+                                                    *worker_error = Some(err);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    BlockStmProductionTaskKind::Validation => {
+                                        let stale_task = {
+                                            let mut state = states[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM production transaction state poisoned");
+                                            if state.incarnation != task.incarnation
+                                                || state.validation_generation
+                                                    != task.validation_generation
+                                                || state.status
+                                                    != BlockStmProductionStatus::ValidationQueued
+                                            {
+                                                true
+                                            } else {
+                                                state.status = BlockStmProductionStatus::Validating;
+                                                false
+                                            }
+                                        };
+                                        if stale_task {
+                                            scheduler.finish_task();
+                                            continue;
+                                        }
+
+                                        let validation_result = {
+                                            let slot = attempt_slots[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM attempt slot poisoned");
+                                            if let Some(attempt) = slot.as_ref() {
+                                                if attempt.attempt != task.incarnation {
+                                                    Some(Ok(()))
+                                                } else {
+                                                    validation_task_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                    let validation_started = Instant::now();
+                                                    let result = memory.validate_reads(
+                                                        batch[task.tx_index].tx_index,
+                                                        &attempt.read_set,
+                                                    );
+                                                    record_blockstm_duration_nanos(
+                                                        validation_nanos,
+                                                        validation_started.elapsed(),
+                                                    );
+                                                    Some(result)
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        let Some(validation_result) = validation_result else {
+                                            let mut state = states[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM production transaction state poisoned");
+                                            if state.incarnation == task.incarnation
+                                                && state.validation_generation
+                                                    == task.validation_generation
+                                                && state.status
+                                                    == BlockStmProductionStatus::Validating
+                                            {
+                                                state.status = BlockStmProductionStatus::Executed;
+                                            }
+                                            scheduler.finish_task();
+                                            continue;
+                                        };
+                                        match validation_result {
+                                            Ok(()) => {
+                                                let task = {
+                                                    let mut state = states[task.tx_index]
+                                                        .lock()
+                                                        .expect("Block-STM production transaction state poisoned");
+                                                    if state.incarnation == task.incarnation
+                                                        && state.validation_generation
+                                                            == task.validation_generation
+                                                        && state.status
+                                                            == BlockStmProductionStatus::Validating
+                                                    {
+                                                        if state.revalidate_after_current {
+                                                            state.validation_generation += 1;
+                                                            state.revalidate_after_current = false;
+                                                            state.status =
+                                                                BlockStmProductionStatus::ValidationQueued;
+                                                            Some(BlockStmProductionTask {
+                                                                tx_index: task.tx_index,
+                                                                incarnation: task.incarnation,
+                                                                validation_generation: state
+                                                                    .validation_generation,
+                                                                kind: BlockStmProductionTaskKind::Validation,
+                                                            })
+                                                        } else {
+                                                            state.status =
+                                                                BlockStmProductionStatus::Validated;
+                                                            None
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                if let Some(task) = task {
+                                                    scheduler.push_task(task);
+                                                }
+                                            }
+                                            Err(_) => {
+                                                conflicts.fetch_add(1, Ordering::AcqRel);
+                                                reexecutions.fetch_add(1, Ordering::AcqRel);
+                                                {
+                                                    let slot = attempt_slots[task.tx_index]
+                                                        .lock()
+                                                        .expect("Block-STM attempt slot poisoned");
+                                                    if let Some(attempt) = slot.as_ref()
+                                                        && attempt.attempt == task.incarnation
+                                                    {
+                                                        let version =
+                                                            crate::blockstm::BlockStmVersion::new(
+                                                                batch[task.tx_index].tx_index,
+                                                                task.incarnation,
+                                                            );
+                                                        memory.mark_estimate(
+                                                            version,
+                                                            &attempt.write_set,
+                                                        );
+                                                        memory.mark_account_estimates(
+                                                            version,
+                                                            &attempt.output.account_write_set,
+                                                        );
+                                                    }
+                                                }
+                                                schedule_blockstm_execution(
+                                                    scheduler,
+                                                    states,
+                                                    task.tx_index,
+                                                );
+                                                schedule_blockstm_validation_for_ready_suffix(
+                                                    scheduler,
+                                                    states,
+                                                    task.tx_index + 1,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                scheduler.finish_task();
+                            }
+                        });
+                    }
+                });
+                blockstm_worker_elapsed += worker_started.elapsed();
+                blockstm_attempt_wall_elapsed_sum += load_blockstm_duration(&attempt_wall_nanos);
+                blockstm_evm_execution_elapsed_sum += load_blockstm_duration(&evm_execution_nanos);
+                blockstm_publish_elapsed_sum += load_blockstm_duration(&publish_nanos);
+                blockstm_validation_elapsed_sum += load_blockstm_duration(&validation_nanos);
+                blockstm_validation_tasks += validation_task_count.load(Ordering::Relaxed);
+                blockstm_publish_tasks += publish_task_count.load(Ordering::Relaxed);
+                blockstm_read_keys += read_key_count.load(Ordering::Relaxed);
+                blockstm_write_keys += write_key_count.load(Ordering::Relaxed);
+                blockstm_account_write_keys += account_write_key_count.load(Ordering::Relaxed);
+                blockstm_semantic_plans += semantic_plan_count.load(Ordering::Relaxed);
+                blockstm_direct_semantic_executions +=
+                    direct_semantic_count.load(Ordering::Relaxed);
+                if let Some(err) = worker_error
+                    .into_inner()
+                    .expect("Block-STM worker error poisoned")
+                {
                     return Err(PayloadBuilderError::evm(err));
                 }
-            };
-            trace!("Transaction executed");
-            executor.evm_mut().db_mut().bump_bal_index();
 
-            pool_transactions_included += 1;
-            block_size_used += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+                blockstm_stats.max_in_flight_real_evm_executions = blockstm_stats
+                    .max_in_flight_real_evm_executions
+                    .max(max_in_flight.load(Ordering::Relaxed));
+                blockstm_stats.speculative_executions_total +=
+                    speculative_executions.load(Ordering::Relaxed);
+                blockstm_stats.conflicts_total += conflicts.load(Ordering::Relaxed);
+                blockstm_stats.reexecutions_total += reexecutions.load(Ordering::Relaxed);
+
+                let mut attempt_slots = attempt_slots
+                    .into_iter()
+                    .map(|slot| slot.into_inner().expect("Block-STM attempt slot poisoned"))
+                    .collect::<Vec<_>>();
+                let mut invalidated = Vec::<BestTransaction>::new();
+
+                let fast_semantic_started = Instant::now();
+                let mut fast_attempt_indices = Vec::with_capacity(batch.len());
+                let fast_semantic_reduction = {
+                    let block_timestamp = executor.evm().block().timestamp.to::<u64>();
+                    let mut fast_gas_used = cumulative_gas_used;
+                    let mut fast_non_payment_gas_used = non_payment_gas_used;
+                    let mut fast_block_size_used = block_size_used;
+                    let mut eligible = true;
+
+                    for (batch_index, candidate) in batch.iter().enumerate() {
+                        if fast_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
+                            eligible = false;
+                            break;
+                        }
+                        if !candidate.is_payment
+                            && fast_non_payment_gas_used + candidate.max_regular_gas_used
+                                > general_gas_limit
+                        {
+                            eligible = false;
+                            break;
+                        }
+                        if fast_block_size_used + candidate.tx_rlp_length > max_estimated_block_size
+                        {
+                            eligible = false;
+                            break;
+                        }
+
+                        let Some(attempt) = attempt_slots[batch_index].as_ref() else {
+                            eligible = false;
+                            break;
+                        };
+                        let Some(semantic_plan) = attempt.output.semantic_plan.as_ref() else {
+                            eligible = false;
+                            break;
+                        };
+                        if attempt.output.direct_semantic_execution.is_none() {
+                            let Some(Ok(result)) = &attempt.output.execution_result else {
+                                eligible = false;
+                                break;
+                            };
+                            if !blockstm_result_has_only_semantic_writes(
+                                result,
+                                semantic_plan.covered_keys(),
+                            ) {
+                                eligible = false;
+                                break;
+                            }
+                        }
+                        fast_attempt_indices.push(batch_index);
+
+                        fast_gas_used += candidate.max_regular_gas_used;
+                        if !candidate.is_payment {
+                            fast_non_payment_gas_used += candidate.max_regular_gas_used;
+                        }
+                        fast_block_size_used += candidate.tx_rlp_length;
+                    }
+
+                    if eligible {
+                        let semantic_records = fast_attempt_indices
+                            .iter()
+                            .map(|batch_index| {
+                                let attempt = attempt_slots[*batch_index]
+                                    .as_ref()
+                                    .expect("fast semantic eligibility checked attempts");
+                                attempt
+                                    .output
+                                    .semantic_plan
+                                    .as_ref()
+                                    .and_then(|plan| plan.to_record(attempt.attempt))
+                            })
+                            .collect::<Option<Vec<_>>>();
+
+                        let mut semantic_invalid_tx_indexes = HashSet::default();
+                        let mut final_reduction = None;
+                        let mut local_lane_build_elapsed = Duration::ZERO;
+                        let mut local_lane_reduce_elapsed = Duration::ZERO;
+                        let mut local_lanes_reduced = 0u64;
+                        let mut local_fixpoint_iterations = 0u64;
+
+                        if let Some(semantic_records) = semantic_records {
+                            loop {
+                                let active_records = semantic_records
+                                    .iter()
+                                    .filter(|record| {
+                                        !semantic_invalid_tx_indexes.contains(&record.tx_index())
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let reduction = match reduce_tip20_semantic_records(
+                                    executor.evm_mut().db_mut(),
+                                    &active_records,
+                                    block_timestamp,
+                                    worker_count,
+                                ) {
+                                    Ok(reduction) => reduction,
+                                    Err(_) => {
+                                        eligible = false;
+                                        break;
+                                    }
+                                };
+                                local_lane_build_elapsed += reduction.timings.lane_build_elapsed;
+                                local_lane_reduce_elapsed += reduction.timings.lane_reduce_elapsed;
+                                local_lanes_reduced += reduction.lane_count as u64;
+                                local_fixpoint_iterations += reduction.fixpoint_iterations as u64;
+
+                                let before_invalid_count = semantic_invalid_tx_indexes.len();
+                                semantic_invalid_tx_indexes
+                                    .extend(reduction.invalid_tx_indexes().iter().copied());
+                                expand_blockstm_semantic_invalidated_transactions(
+                                    &batch,
+                                    &mut semantic_invalid_tx_indexes,
+                                );
+
+                                if semantic_invalid_tx_indexes.len() == before_invalid_count {
+                                    final_reduction = Some(reduction);
+                                    break;
+                                }
+                            }
+                        } else {
+                            eligible = false;
+                        }
+
+                        blockstm_semantic_lane_build_elapsed += local_lane_build_elapsed;
+                        blockstm_semantic_lane_reduce_elapsed += local_lane_reduce_elapsed;
+                        blockstm_semantic_lanes_reduced += local_lanes_reduced;
+                        blockstm_semantic_fixpoint_iterations += local_fixpoint_iterations;
+                        blockstm_semantic_invalid_txs += semantic_invalid_tx_indexes.len() as u64;
+
+                        eligible
+                            .then_some(final_reduction)
+                            .flatten()
+                            .map(|reduction| (reduction, semantic_invalid_tx_indexes))
+                    } else {
+                        None
+                    }
+                };
+                blockstm_fast_semantic_elapsed += fast_semantic_started.elapsed();
+
+                if let Some((semantic_reduction, semantic_invalid_tx_indexes)) =
+                    fast_semantic_reduction
+                {
+                    executor.reserve_receipts(batch.len());
+
+                    let fast_commit_started = Instant::now();
+                    for (batch_index, candidate) in batch.iter().enumerate() {
+                        check_cancel!();
+
+                        if semantic_invalid_tx_indexes.contains(&candidate.tx_index) {
+                            best_txs.mark_invalid(
+                                &candidate.pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            invalidated.push(candidate.pool_tx.clone());
+                            pending_candidates.retain(|pending| {
+                                !is_blockstm_invalidated_buffered_transaction(
+                                    &candidate.pool_tx,
+                                    &pending.pool_tx,
+                                )
+                            });
+                            let _ = attempt_slots[batch_index].take();
+                            continue;
+                        }
+
+                        if candidate.is_payment {
+                            payment_transactions += 1;
+                        }
+
+                        let attempt = attempt_slots[batch_index]
+                            .take()
+                            .expect("Block-STM attempt must be available");
+                        let BlockStmAttempt { output, .. } = attempt;
+                        let BlockStmAttemptOutput {
+                            execution_result,
+                            direct_semantic_execution,
+                            elapsed,
+                            semantic_plan,
+                            ..
+                        } = output;
+                        let semantic_plan =
+                            semantic_plan.expect("fast semantic batch requires semantic plans");
+
+                        blockstm_stats.semantic_actions_total +=
+                            semantic_plan.action_count() as u64;
+                        blockstm_stats.committed_txs_total += 1;
+                        if attempt.attempt == 0 {
+                            blockstm_stats.reused_speculative_results_total += 1;
+                        }
+                        trace!(?elapsed, "Transaction executed through Block-STM");
+
+                        let (mut commit, mut block_gas_used, state_gas_used, mut validator_fee) =
+                            if let Some(direct_execution) = direct_semantic_execution {
+                                (
+                                    direct_execution.commit,
+                                    direct_execution.block_gas_used,
+                                    direct_execution.state_gas_used,
+                                    direct_execution.validator_fee,
+                                )
+                            } else {
+                                let result = execution_result
+                                    .expect("fast semantic batch only contains attempted txs")
+                                    .expect("fast semantic batch only contains valid txs");
+                                let block_gas_used = result.block_gas_used();
+                                let state_gas_used = result.state_gas_used();
+                                let validator_fee = result.validator_fee();
+                                (
+                                    result.into_stripped_commit_unchecked(),
+                                    block_gas_used,
+                                    state_gas_used,
+                                    validator_fee,
+                                )
+                            };
+                        if let Some(update) = semantic_reduction.tx_update(candidate.tx_index) {
+                            commit
+                                .apply_regular_gas_delta(update.gas_delta())
+                                .map_err(|err| {
+                                    PayloadBuilderError::evm(BlockExecutionError::msg(err))
+                                })?;
+                            commit
+                                .replace_last_log(update.fee_log().clone())
+                                .map_err(|err| {
+                                    PayloadBuilderError::evm(BlockExecutionError::msg(err))
+                                })?;
+                            block_gas_used = commit.block_gas_used();
+                            validator_fee = update.validator_fee();
+                        }
+
+                        cumulative_gas_used += block_gas_used;
+                        cumulative_state_gas_used += state_gas_used;
+                        if !candidate.is_payment {
+                            non_payment_gas_used += block_gas_used;
+                        }
+                        total_fees += validator_fee;
+
+                        executor.commit_prepared_stripped_transaction(commit);
+                        executor.evm_mut().db_mut().bump_bal_index();
+                        let _ = roots_tx.send((
+                            BuilderTx::Pooled(candidate.pool_tx.clone()),
+                            executor.receipts().last().unwrap().clone(),
+                        ));
+
+                        pool_transactions_included += 1;
+                        block_size_used += candidate.tx_rlp_length;
+                    }
+                    blockstm_fast_commit_elapsed += fast_commit_started.elapsed();
+
+                    let semantic_materialize_started = Instant::now();
+                    let semantic_changes = materialize_blockstm_semantic_reduction(
+                        executor.evm_mut().db_mut(),
+                        &semantic_reduction,
+                        worker_count,
+                    )
+                    .map_err(|err| PayloadBuilderError::evm(BlockExecutionError::other(err)))?;
+                    blockstm_semantic_materialize_elapsed += semantic_materialize_started.elapsed();
+                    semantic_state.apply_reduction(&semantic_reduction);
+                    best_txs.on_state_changes(&semantic_changes);
+                    if !semantic_changes.is_empty() {
+                        let semantic_commit_started = Instant::now();
+                        executor.commit_semantic_state_changes(semantic_changes);
+                        blockstm_semantic_commit_elapsed += semantic_commit_started.elapsed();
+                    }
+
+                    continue;
+                }
+                for (batch_index, candidate) in batch.iter().enumerate() {
+                    if invalidated.iter().any(|invalid| {
+                        is_blockstm_invalidated_buffered_transaction(invalid, &candidate.pool_tx)
+                    }) {
+                        continue;
+                    }
+
+                    if cumulative_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::ExceedsGasLimit(
+                                candidate.pool_tx.gas_limit(),
+                                non_shared_gas_limit - cumulative_gas_used,
+                            ),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                        invalidated.push(candidate.pool_tx.clone());
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+                    if !candidate.is_payment
+                        && non_payment_gas_used + candidate.max_regular_gas_used > general_gas_limit
+                    {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::Other(Box::new(
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                        invalidated.push(candidate.pool_tx.clone());
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+
+                    check_cancel!();
+
+                    if candidate.is_payment {
+                        payment_transactions += 1;
+                    }
+
+                    let estimated_block_size_with_tx = block_size_used + candidate.tx_rlp_length;
+                    if estimated_block_size_with_tx > max_estimated_block_size {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::OversizedData {
+                                size: estimated_block_size_with_tx,
+                                limit: MAX_RLP_BLOCK_SIZE,
+                            },
+                        );
+                        self.metrics.inc_pool_tx_skipped("oversized_block");
+                        skipped_oversized_block = true;
+                        invalidated.push(candidate.pool_tx.clone());
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+
+                    let attempt = attempt_slots[batch_index]
+                        .take()
+                        .expect("Block-STM attempt must be available");
+
+                    let BlockStmAttempt { output, .. } = attempt;
+                    let BlockStmAttemptOutput {
+                        execution_result,
+                        elapsed,
+                        mut semantic_plan,
+                        ..
+                    } = output;
+
+                    let direct_attempt = matches!(execution_result, None | Some(Err(_)));
+                    let mut execute_against_committed_prefix =
+                        || -> Result<Option<tempo_evm::TempoTxResult>, PayloadBuilderError> {
+                            match executor
+                                .execute_transaction_without_commit(candidate.tx_with_env.clone())
+                            {
+                                Ok(result) => Ok(Some(result)),
+                                Err(err) => {
+                                    if let BlockExecutionError::Validation(
+                                        BlockValidationError::InvalidTx { error, .. },
+                                    ) = &err
+                                    {
+                                        invalid_pool_transaction_execution_attempts += 1;
+
+                                        if error.is_nonce_too_low() {
+                                            trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
+                                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                                        } else {
+                                            trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
+                                            best_txs.mark_invalid(
+                                                &candidate.pool_tx,
+                                                InvalidPoolTransactionError::Consensus(
+                                                    InvalidTransactionError::TxTypeNotSupported,
+                                                ),
+                                            );
+                                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                            invalidated.push(candidate.pool_tx.clone());
+                                            pending_candidates.retain(|pending| {
+                                                !is_blockstm_invalidated_buffered_transaction(
+                                                    &candidate.pool_tx,
+                                                    &pending.pool_tx,
+                                                )
+                                            });
+                                        }
+
+                                        Ok(None)
+                                    } else {
+                                        Err(PayloadBuilderError::evm(err))
+                                    }
+                                }
+                            }
+                        };
+                    let mut result_from_committed_prefix = false;
+                    let mut result = match execution_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(err)) => {
+                            trace!(%err, tx = %candidate.tx_debug_repr, "re-executing speculative invalid Block-STM transaction against committed prefix");
+                            let Some(result) = execute_against_committed_prefix()? else {
+                                continue;
+                            };
+                            result_from_committed_prefix = true;
+                            result
+                        }
+                        None => {
+                            let Some(result) = execute_against_committed_prefix()? else {
+                                continue;
+                            };
+                            result_from_committed_prefix = true;
+                            result
+                        }
+                    };
+                    if semantic_plan.is_some() && !result_from_committed_prefix {
+                        trace!(tx = %candidate.tx_debug_repr, "re-executing semantic Block-STM fallback transaction against committed prefix");
+                        let Some(serial_result) = execute_against_committed_prefix()? else {
+                            continue;
+                        };
+                        result = serial_result;
+                        result_from_committed_prefix = true;
+                    }
+                    if direct_attempt || result_from_committed_prefix {
+                        let write_set = write_set_from_evm_state(&result.result().state);
+                        semantic_plan = capture_tip20_semantic_plan(
+                            candidate.tx_index,
+                            &candidate.pool_tx.transaction,
+                            &result,
+                            &write_set,
+                            beneficiary,
+                            base_fee,
+                        )
+                        .or(semantic_plan);
+                    }
+
+                    if let Some(semantic_plan) = semantic_plan {
+                        if result_from_committed_prefix {
+                            blockstm_stats.semantic_actions_total +=
+                                semantic_plan.action_count() as u64;
+                        } else {
+                            let block_timestamp = executor.evm().block().timestamp.to::<u64>();
+                            match semantic_state.apply_plan(
+                                executor.evm_mut().db_mut(),
+                                &semantic_plan,
+                                &mut result,
+                                block_timestamp,
+                            ) {
+                                Ok(_resolved_write_set) => {
+                                    blockstm_stats.semantic_actions_total +=
+                                        semantic_plan.action_count() as u64;
+                                }
+                                Err(err) => {
+                                    trace!(%err, tx = %candidate.tx_debug_repr, "skipping semantically invalid transaction and its descendants");
+                                    best_txs.mark_invalid(
+                                        &candidate.pool_tx,
+                                        InvalidPoolTransactionError::Consensus(
+                                            InvalidTransactionError::TxTypeNotSupported,
+                                        ),
+                                    );
+                                    self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                    invalidated.push(candidate.pool_tx.clone());
+                                    pending_candidates.retain(|pending| {
+                                        !is_blockstm_invalidated_buffered_transaction(
+                                            &candidate.pool_tx,
+                                            &pending.pool_tx,
+                                        )
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    blockstm_stats.committed_txs_total += 1;
+                    if attempt.attempt == 0 {
+                        blockstm_stats.reused_speculative_results_total += 1;
+                    }
+                    trace!(?elapsed, "Transaction executed through Block-STM");
+
+                    cumulative_gas_used += result.block_gas_used();
+                    cumulative_state_gas_used += result.state_gas_used();
+                    if !candidate.is_payment {
+                        non_payment_gas_used += result.block_gas_used();
+                    }
+                    total_fees += result.validator_fee();
+                    best_txs.on_new_result(&result);
+
+                    hydrate_blockstm_commit_cache(executor.evm_mut().db_mut(), &result)
+                        .map_err(|err| PayloadBuilderError::evm(BlockExecutionError::other(err)))?;
+                    executor.commit_transaction(result);
+                    executor.evm_mut().db_mut().bump_bal_index();
+                    let _ = roots_tx.send((
+                        BuilderTx::Pooled(candidate.pool_tx.clone()),
+                        executor.receipts().last().unwrap().clone(),
+                    ));
+
+                    pool_transactions_included += 1;
+                    block_size_used += candidate.tx_rlp_length;
+                }
+            }
+        } else {
+            loop {
+                check_cancel!();
+
+                if let Some(build_budget) = payload_build_budget {
+                    let elapsed = start.elapsed();
+                    if payload_budget_exhausted(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        build_budget,
+                        marshal_persist,
+                        block_size_used,
+                    ) {
+                        let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            ?estimated_marshal_persist,
+                            block_size_used,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping pool transaction execution before payload build budget is exhausted"
+                        );
+                        break BlockBuildStopReason::BuildBudget;
+                    }
+                }
+
+                let Some(pool_tx) = best_txs.next() else {
+                    if build_once_with_shared_trie
+                        && payload_build_budget.is_some()
+                        && cumulative_gas_used < non_shared_gas_limit
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
+                };
+                pool_transactions_yielded += 1;
+
+                let max_regular_gas_used = core::cmp::min(
+                    pool_tx.gas_limit(),
+                    executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                );
+
+                // Ensure we still have capacity for this transaction within the non-shared gas limit.
+                // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+                // be consumed by proposer's pool transactions.
+                if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                    // Mark this transaction as invalid since it doesn't fit
+                    // The iterator will handle lane switching internally when appropriate
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            non_shared_gas_limit - cumulative_gas_used,
+                        ),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                    continue;
+                }
+
+                let is_payment = if hardfork.is_t5() {
+                    pool_tx.transaction.is_payment()
+                } else {
+                    pool_tx.transaction.inner().is_payment_v1()
+                };
+
+                // If the tx is not a payment and will exceed the general gas limit
+                // mark the tx as invalid and continue
+                if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::Other(Box::new(
+                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                        )),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                    continue;
+                }
+
+                check_cancel!();
+                if is_payment {
+                    payment_transactions += 1;
+                }
+
+                let tx_rlp_length = pool_tx.transaction.encoded_length();
+                let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+
+                if estimated_block_size_with_tx > max_estimated_block_size {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    self.metrics.inc_pool_tx_skipped("oversized_block");
+                    skipped_oversized_block = true;
+                    continue;
+                }
+
+                let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                    .then(|| format!("{:?}", pool_tx.transaction))
+                    .unwrap_or_default();
+
+                let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
+                let execution_result =
+                    executor.execute_transaction_with_result_closure(tx_with_env, |result| {
+                        cumulative_gas_used += result.block_gas_used();
+                        cumulative_state_gas_used += result.state_gas_used();
+                        if !is_payment {
+                            non_payment_gas_used += result.block_gas_used();
+                        }
+
+                        // Score payload value by the validator-credited fee amount that the
+                        // FeeManager precompile actually wrote during this transaction.
+                        total_fees += result.validator_fee();
+
+                        // Notify transactions iterator about the new state.
+                        best_txs.on_new_result(result);
+                    });
+
+                if let Err(err) = execution_result {
+                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    }) = &err
+                    {
+                        invalid_pool_transaction_execution_attempts += 1;
+
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        }
+                        continue;
+                    } else {
+                        return Err(PayloadBuilderError::evm(err));
+                    }
+                };
+                trace!("Transaction executed");
+                executor.evm_mut().db_mut().bump_bal_index();
+                let _ = roots_tx.send((
+                    BuilderTx::Pooled(pool_tx.clone()),
+                    executor.receipts().last().unwrap().clone(),
+                ));
+
+                pool_transactions_included += 1;
+                block_size_used += tx_rlp_length;
+            }
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -738,6 +2611,45 @@ where
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
+        if self.blockstm_config.enabled && !empty {
+            blockstm_stats.built_blocks_total = 1;
+            debug!(
+                target: "payload_builder",
+                speculative = blockstm_stats.speculative_executions_total,
+                committed = blockstm_stats.committed_txs_total,
+                reused_speculative = blockstm_stats.reused_speculative_results_total,
+                conflicts = blockstm_stats.conflicts_total,
+                reexecutions = blockstm_stats.reexecutions_total,
+                serial_fallback = blockstm_stats.serial_fallback_total,
+                max_in_flight = blockstm_stats.max_in_flight_real_evm_executions,
+                semantic_actions = blockstm_stats.semantic_actions_total,
+                ?blockstm_batch_setup_elapsed,
+                ?blockstm_prefix_cache_clone_elapsed,
+                ?blockstm_worker_elapsed,
+                ?blockstm_attempt_wall_elapsed_sum,
+                ?blockstm_evm_execution_elapsed_sum,
+                ?blockstm_publish_elapsed_sum,
+                ?blockstm_validation_elapsed_sum,
+                blockstm_validation_tasks,
+                blockstm_publish_tasks,
+                blockstm_read_keys,
+                blockstm_write_keys,
+                blockstm_account_write_keys,
+                blockstm_semantic_plans,
+                blockstm_direct_semantic_executions,
+                ?blockstm_fast_semantic_elapsed,
+                ?blockstm_fast_commit_elapsed,
+                ?blockstm_semantic_lane_build_elapsed,
+                ?blockstm_semantic_lane_reduce_elapsed,
+                ?blockstm_semantic_materialize_elapsed,
+                ?blockstm_semantic_commit_elapsed,
+                blockstm_semantic_lanes_reduced,
+                blockstm_semantic_fixpoint_iterations,
+                blockstm_semantic_invalid_txs,
+                "Block-STM production execution stats"
+            );
+            BlockStmMetrics.emit_block(blockstm_stats);
+        }
         let normal_transaction_fill_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_fill_duration_seconds
@@ -943,7 +2855,7 @@ where
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
                 evm_env,
-                ctx,
+                execution_ctx,
                 &parent_header,
                 transactions,
                 &execution_result,
@@ -958,7 +2870,6 @@ where
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
-
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .builder_finish_duration_seconds
@@ -1270,6 +3181,9 @@ impl BuilderTx {
         }
     }
 }
+
+#[cfg(test)]
+mod blockstm_benchmark_tests;
 
 #[cfg(test)]
 mod tests {
