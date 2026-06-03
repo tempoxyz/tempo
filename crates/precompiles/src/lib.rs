@@ -105,11 +105,19 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
-/// Returns the full Tempo precompiles for the given config and shared container for [`EvmAction`]s.
+/// Returns the full Tempo precompiles for the given config.
 ///
 /// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
-pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> PrecompilesMap {
+pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+    tempo_precompiles_with_actions(cfg, EvmActions::default())
+}
+
+/// Returns the full Tempo precompiles for the given config and shared container for [`EvmAction`]s.
+pub fn tempo_precompiles_with_actions(
+    cfg: &CfgEnv<TempoHardfork>,
+    actions: EvmActions,
+) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
     } else {
