@@ -66,7 +66,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidatorValidationShape, marshal_persist_estimate,
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -563,7 +563,7 @@ where
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
-                let validator_validation_shape = ValidatorValidationShape::new(
+                let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
@@ -574,7 +574,7 @@ where
                     marshal_persist,
                     block_size_used,
                     validation_latency,
-                    validator_validation_shape,
+                    current_workload,
                 );
                 if budget_decision.total_reserved >= build_budget {
                     debug!(
@@ -586,7 +586,7 @@ where
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
                         marshal_persist = ?budget_decision.marshal_persist,
-                        ?validator_validation_shape,
+                        ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         block_size_used,
@@ -1066,9 +1066,9 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
-        let final_validation_shape = ValidatorValidationShape::new(gas_used, total_transactions);
+        let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
-            .and_then(|estimate| estimate.estimate(final_validation_shape))
+            .and_then(|estimate| estimate.estimate(final_workload))
             .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);

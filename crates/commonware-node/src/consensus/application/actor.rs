@@ -48,7 +48,7 @@ use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidatorValidationShape,
+    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
@@ -901,7 +901,7 @@ impl Inner<Init> {
             if let Ok(mut estimator) = self.validation_latency_estimator.lock() {
                 estimator.observe(
                     block.height().get(),
-                    ValidatorValidationShape::new(
+                    ValidationLatencyWorkload::new(
                         block.block().gas_used(),
                         block.block().body().transaction_count(),
                     ),
