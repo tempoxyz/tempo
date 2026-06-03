@@ -185,12 +185,12 @@ impl ReceivePolicyConfig {
             admin: Address::ZERO,
         }
     }
+}
 
-    fn receive_policy_type(policy_type: u8) -> Result<PolicyType> {
-        policy_type
-            .try_into()
-            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
-    }
+fn policy_type(policy_type: u8) -> Result<PolicyType> {
+    policy_type
+        .try_into()
+        .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
 }
 
 impl TIP403Registry {
@@ -296,8 +296,8 @@ impl TIP403Registry {
         let config = self.receive_policies[account].config.read()?;
         let (sender_policy_type, token_filter_type) = if self.storage.spec().is_t6() {
             (
-                ReceivePolicyConfig::receive_policy_type(config.sender_policy_type)?,
-                ReceivePolicyConfig::receive_policy_type(config.token_filter_type)?,
+                policy_type(config.sender_policy_type)?,
+                policy_type(config.token_filter_type)?,
             )
         } else {
             (
@@ -850,9 +850,7 @@ impl TIP403Registry {
     /// Returns the [`PolicyType`] of a receive-policy slot.
     fn receive_policy_type(&self, policy_id: u64) -> Result<PolicyType> {
         if self.builtin_authorization(policy_id).is_some() {
-            return (policy_id as u8)
-                .try_into()
-                .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into());
+            return policy_type(policy_id as u8);
         }
 
         let data = self.get_policy_data(policy_id)?;
