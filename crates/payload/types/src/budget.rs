@@ -200,11 +200,11 @@ impl ValidatorValidationEstimate {
 /// rates from differently shaped blocks while still reserving validator
 /// headroom when the builder grows beyond the shapes that produced the feedback.
 #[derive(Clone, Debug, Default)]
-pub struct ValidatorValidationEstimator {
+pub struct ValidationLatencyEstimator {
     samples: BTreeMap<u64, ValidatorValidationSample>,
 }
 
-impl ValidatorValidationEstimator {
+impl ValidationLatencyEstimator {
     /// Records local time spent validating a block through the execution layer.
     pub fn observe(&mut self, sample_id: u64, shape: ValidatorValidationShape, elapsed: Duration) {
         if elapsed == Duration::ZERO {
@@ -257,7 +257,7 @@ mod tests {
         sample_shape: ValidatorValidationShape,
         current_shape: ValidatorValidationShape,
     ) -> Option<Duration> {
-        let mut estimator = ValidatorValidationEstimator::default();
+        let mut estimator = ValidationLatencyEstimator::default();
         estimator.observe(1, sample_shape, Duration::from_millis(100));
         estimator
             .estimate()
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn validator_validation_estimate_uses_tail_discounted_recent_elapsed() {
-        let mut estimator = ValidatorValidationEstimator::default();
+        let mut estimator = ValidationLatencyEstimator::default();
         let sample_shape = ValidatorValidationShape::new(100, 0);
         let current_shape = ValidatorValidationShape::new(100, 0);
         for (sample_id, elapsed) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
@@ -298,7 +298,7 @@ mod tests {
             Some(Duration::from_nanos(36))
         );
 
-        estimator = ValidatorValidationEstimator::default();
+        estimator = ValidationLatencyEstimator::default();
         for elapsed in 1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64 {
             estimator.observe(
                 elapsed,

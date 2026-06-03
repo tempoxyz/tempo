@@ -48,7 +48,7 @@ use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidatorValidationEstimator, ValidatorValidationShape,
+    TempoPayloadAttributes, ValidationLatencyEstimator, ValidatorValidationShape,
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
@@ -127,7 +127,7 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
-                validator_validation_estimator: Default::default(),
+                validation_latency_estimator: Default::default(),
 
                 metrics,
 
@@ -228,7 +228,7 @@ struct Inner<TState> {
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
-    validator_validation_estimator: Arc<Mutex<ValidatorValidationEstimator>>,
+    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 
@@ -705,7 +705,7 @@ impl Inner<Init> {
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
         let validator_validation_estimate = self
-            .validator_validation_estimator
+            .validation_latency_estimator
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate());
@@ -898,7 +898,7 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = validation_duration {
-            if let Ok(mut estimator) = self.validator_validation_estimator.lock() {
+            if let Ok(mut estimator) = self.validation_latency_estimator.lock() {
                 estimator.observe(
                     block.height().get(),
                     ValidatorValidationShape::new(
@@ -957,7 +957,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
-            validator_validation_estimator: self.validator_validation_estimator,
+            validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
         };
 

@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 #[cfg(test)]
-use tempo_payload_types::ValidatorValidationEstimator;
+use tempo_payload_types::ValidationLatencyEstimator;
 use tempo_payload_types::{
     MarshalPersistEstimator, ValidatorValidationEstimate, ValidatorValidationShape,
 };
@@ -165,7 +165,7 @@ mod tests {
         shape: ValidatorValidationShape,
         elapsed: Duration,
     ) -> Option<ValidatorValidationEstimate> {
-        let mut estimator = ValidatorValidationEstimator::default();
+        let mut estimator = ValidationLatencyEstimator::default();
         estimator.observe(1, shape, elapsed);
         estimator.estimate()
     }
