@@ -73,16 +73,20 @@ impl AmmLiquidityCache {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
 
+            if inner.unique_tokens.is_empty() {
+                return Ok(false);
+            }
+
+            // Validators always accept fees in their own token, so no swap math is needed.
+            if inner.unique_tokens.contains(&user_token) {
+                return Ok(true);
+            }
+
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
-            let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
+            let mut out2 = None;
 
             for &validator_token in &inner.unique_tokens {
-                // Validators always accept fees in their own token.
-                if validator_token == user_token {
-                    return Ok(true);
-                }
-
                 let direct = inner
                     .pool_cache
                     .get(&(user_token, validator_token))
@@ -94,9 +98,17 @@ impl AmmLiquidityCache {
                     None => true,     // Direct reserve is missing.
                 };
 
-                if let Some(out2) = out2 {
+                if hardfork.is_t5() {
                     if let Some(hop) = inner.quote_token_cache.get(&user_token).copied() {
                         if !hop.is_zero() && hop != validator_token {
+                            let out2 = match out2 {
+                                Some(out2) => out2,
+                                None => {
+                                    let computed = calc_swap(out1)?;
+                                    out2 = Some(computed);
+                                    computed
+                                }
+                            };
                             let r1 = inner.pool_cache.get(&(user_token, hop)).copied();
                             let r2 = inner.pool_cache.get(&(hop, validator_token)).copied();
                             match (r1, r2) {
@@ -428,6 +440,20 @@ mod tests {
         assert!(
             result.unwrap(),
             "Should return true when user token matches validator token"
+        );
+
+        let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Accepted validator tokens should not require AMM swap math"
+        );
+
+        let non_validator_token = address!("2222222222222222222222222222222222222222");
+        let result = cache.has_enough_liquidity(non_validator_token, U256::MAX, &state);
+        assert!(
+            result.is_err(),
+            "AMM-routed tokens should still validate swap arithmetic"
         );
     }
 
