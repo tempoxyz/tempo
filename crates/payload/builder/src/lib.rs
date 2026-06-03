@@ -746,6 +746,7 @@ where
                         Err(Tip20TransferBlockstmExecutionError::Fallback(
                             Tip20TransferBlockstmFallback::ExpiringNonceReplay,
                         )) => {
+                            let tx_hash = *pool_tx.hash();
                             best_txs.mark_invalid(
                                 &pool_tx,
                                 InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
@@ -754,10 +755,12 @@ where
                                     ),
                                 )),
                             );
+                            let removed_count = self.pool.remove_transactions(vec![tx_hash]).len();
                             self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                             trace!(
                                 target: "payload_builder",
-                                tx_hash = ?pool_tx.hash(),
+                                ?tx_hash,
+                                removed_count,
                                 "Skipping BlockSTM TIP-20 transaction with replayed expiring nonce"
                             );
                             continue;
