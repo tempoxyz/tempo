@@ -180,6 +180,7 @@ where
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
+            failures: Vec::new(),
         }
     }
 
