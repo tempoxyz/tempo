@@ -62,13 +62,14 @@ use tempo_primitives::{
     TempoAddressExt,
     transaction::{
         InitMultisig, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, multisig_digest, validate_calls,
+        calc_gas_balance_spending, multisig_digest, validate_calls, validate_multisig_config,
         verify_multisig_owner_signatures,
     },
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
+    TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -112,6 +113,31 @@ fn native_multisig_validation_error<DB: Database>(
         reason: reason.into(),
     }
     .into()
+}
+
+fn validate_rpc_multisig_mock_signatures(
+    config: &InitMultisig,
+    signature_count: usize,
+) -> Result<(), &'static str> {
+    validate_multisig_config(config)?;
+    if signature_count == 0 {
+        return Err("multisig signatures cannot be empty");
+    }
+    if signature_count > config.owners.len() {
+        return Err("too many multisig signatures");
+    }
+
+    let mut signed_weight = 0u64;
+    for owner in config.owners.iter().take(signature_count) {
+        signed_weight = signed_weight
+            .checked_add(u64::from(owner.weight))
+            .ok_or("multisig recovered owner weight overflow")?;
+    }
+    if signed_weight < u64::from(config.threshold) {
+        return Err("multisig signature weight below threshold");
+    }
+
+    Ok(())
 }
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
@@ -1057,6 +1083,8 @@ where
         if spec.is_t6() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
+            let is_rpc_simulation =
+                tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
             let account_has_code_or_delegation = !caller_account_info.is_empty_code_hash()
                 || caller_account_info
                     .code
@@ -1184,16 +1212,28 @@ where
                                 multisig_signature.config_id,
                             )
                             .map_err(map_native_multisig_error::<DB>)?;
-                        verify_multisig_owner_signatures(
-                            digest,
-                            &multisig_signature.signatures,
-                            &config,
-                        )
-                        .map_err(|reason| {
-                            TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason: reason.to_string(),
-                            }
-                        })?;
+                        if is_rpc_simulation {
+                            validate_rpc_multisig_mock_signatures(
+                                &config,
+                                multisig_signature.signatures.len(),
+                            )
+                            .map_err(|reason| {
+                                TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                    reason: reason.to_string(),
+                                }
+                            })?;
+                        } else {
+                            verify_multisig_owner_signatures(
+                                digest,
+                                &multisig_signature.signatures,
+                                &config,
+                            )
+                            .map_err(|reason| {
+                                TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                    reason: reason.to_string(),
+                                }
+                            })?;
+                        }
                     } else {
                         let init_config = multisig_signature.init.as_ref().ok_or_else(|| {
                             TempoInvalidTransaction::NativeMultisigValidationFailed {
@@ -1249,16 +1289,28 @@ where
                             .into());
                         }
 
-                        verify_multisig_owner_signatures(
-                            digest,
-                            &multisig_signature.signatures,
-                            init_config,
-                        )
-                        .map_err(|reason| {
-                            TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason: reason.to_string(),
-                            }
-                        })?;
+                        if is_rpc_simulation {
+                            validate_rpc_multisig_mock_signatures(
+                                init_config,
+                                multisig_signature.signatures.len(),
+                            )
+                            .map_err(|reason| {
+                                TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                    reason: reason.to_string(),
+                                }
+                            })?;
+                        } else {
+                            verify_multisig_owner_signatures(
+                                digest,
+                                &multisig_signature.signatures,
+                                init_config,
+                            )
+                            .map_err(|reason| {
+                                TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                    reason: reason.to_string(),
+                                }
+                            })?;
+                        }
                         native_multisig_bootstrap = Some((
                             multisig_signature.account,
                             multisig_signature.config_id,
@@ -3270,6 +3322,36 @@ mod tests {
             Ok::<_, TempoPrecompileError>(())
         })
         .expect("stored native multisig config should be readable");
+    }
+
+    #[test]
+    fn test_t6_rpc_simulation_accepts_mock_registered_multisig_signature() {
+        let config = native_multisig_config();
+        let config_id = config.config_id().unwrap();
+        let account = config.account().unwrap();
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature {
+                account,
+                config_id,
+                signatures: vec![Bytes::from_static(&[0xaa; 65])],
+                init: None,
+            }),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+            tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
+        });
+        store_native_multisig_account(&mut test, &config);
+
+        test.validate_against_state_and_deduct_caller()
+            .expect("RPC simulation should accept mock native multisig signatures");
     }
 
     #[test]

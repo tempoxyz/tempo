@@ -170,6 +170,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || self.key_type.is_some()
             || self.key_data.is_some()
             || self.multisig_init.is_some()
+            || self.multisig_config_id.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -542,6 +543,15 @@ mod tests {
                     weight: 1,
                 }],
             }),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_multisig_config_id_is_aa() {
+        let req = TempoTransactionRequest {
+            multisig_config_id: Some(B256::repeat_byte(0x44)),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);
