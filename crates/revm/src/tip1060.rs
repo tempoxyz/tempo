@@ -143,11 +143,15 @@ impl<DB: Database> StorageCreditsBackend for InterpreterStorageCredits<'_, '_, D
     }
 
     #[inline]
-    fn store_credits(&mut self, key: U256, value: U256) -> Result<(), Self::Error> {
+    fn store_credits(
+        &mut self,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         self.context
             .host
-            .sstore_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, value, false)?;
-        Ok(())
+            .sstore_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, value, false)
+            .map_err(Into::into)
     }
 
     #[inline]
