@@ -1406,7 +1406,23 @@ mod tests {
     const WARM_STORAGE_READ_GAS: u64 = 100;
     const COLD_SSTORE_CLEAR_GAS: u64 = 7_100;
     const WARM_SSTORE_CLEAR_GAS: u64 = 5_000;
+    const TIP1000_STORAGE_CREATE_GAS: u64 = 250_000;
     const ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS: u64 = 15_000;
+    const ACCESS_KEY_CREATION_BUFFER_GAS: u64 = 20_000;
+    const ACCESS_KEY_EXPIRY_PREMIUM_PER_SLOT_DAY_GAS: u64 = 1_000;
+    const BENCHMARK_TIMESTAMP: u64 = 1_000;
+    const BENCHMARK_TTL_DAYS: u64 = 7;
+    const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Tip1048BenchmarkRow {
+        label: &'static str,
+        temporary_slots: u64,
+        create_without_tip_gas: u64,
+        create_with_tip_gas: u64,
+        prune_execution_gas: u64,
+        prune_refund_gas: u64,
+    }
 
     // Helper function to assert unauthorized error
     fn assert_unauthorized_error(error: TempoPrecompileError) {
@@ -1445,30 +1461,88 @@ mod tests {
         }
     }
 
-    fn assert_prune_expiry_cleanup_refund_covers_storage(
-        label: &str,
-        storage: &HashMapStorageProvider,
-    ) -> u64 {
-        let estimated_storage_gas = storage.counter_cold_sload() * COLD_SLOAD_GAS
+    fn estimated_storage_gas(storage: &HashMapStorageProvider) -> u64 {
+        storage.counter_cold_sload() * COLD_SLOAD_GAS
             + storage.counter_warm_sload() * WARM_STORAGE_READ_GAS
             + storage.counter_cold_sstore() * COLD_SSTORE_CLEAR_GAS
-            + storage.counter_warm_sstore() * WARM_SSTORE_CLEAR_GAS;
-        let cleanup_refund = storage.counter_sstore() * ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS;
+            + storage.counter_warm_sstore() * WARM_SSTORE_CLEAR_GAS
+    }
 
-        eprintln!(
-            "{label}: {} cold SLOAD, {} warm SLOAD, {} cold SSTORE, {} warm SSTORE; estimated storage gas = {estimated_storage_gas}; cleanup refund = {cleanup_refund}",
-            storage.counter_cold_sload(),
-            storage.counter_warm_sload(),
-            storage.counter_cold_sstore(),
-            storage.counter_warm_sstore(),
+    fn tip1048_create_cost(temporary_slots: u64, ttl_days: u64) -> u64 {
+        temporary_slots * ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS
+            + ACCESS_KEY_CREATION_BUFFER_GAS
+            + temporary_slots * ttl_days * ACCESS_KEY_EXPIRY_PREMIUM_PER_SLOT_DAY_GAS
+    }
+
+    fn run_tip1048_access_key_benchmark(
+        label: &'static str,
+        config: impl FnOnce(u64) -> KeyRestrictions,
+    ) -> eyre::Result<Tip1048BenchmarkRow> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let expiry = BENCHMARK_TIMESTAMP + BENCHMARK_TTL_DAYS * SECONDS_PER_DAY;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(BENCHMARK_TIMESTAMP));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            TIP20Setup::path_usd(account).apply()?;
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: config(expiry),
+                },
+            )
+        })?;
+        let temporary_slots = storage.counter_zero_to_nonzero_sstore();
+        assert_ne!(temporary_slots, 0, "{label} must create temporary slots");
+
+        storage.set_timestamp(U256::from(expiry));
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            let pruned = AccountKeychain::new().prune_expiry(
+                Address::random(),
+                pruneExpiryCall {
+                    account,
+                    keyId: key_id,
+                },
+            )?;
+            assert!(pruned, "{label} must prune after expiry");
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        let prune_execution_gas = estimated_storage_gas(&storage);
+        let prune_refund_gas =
+            storage.counter_nonzero_to_zero_sstore() * ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS;
+        assert_eq!(
+            prune_refund_gas,
+            temporary_slots * ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS,
+            "{label} must refund exactly the measured temporary slots"
         );
-
         assert!(
-            cleanup_refund > estimated_storage_gas,
-            "{label}: cleanup refund {cleanup_refund} must exceed estimated storage gas {estimated_storage_gas}"
+            prune_refund_gas > prune_execution_gas,
+            "{label}: refund {prune_refund_gas} must exceed prune cost {prune_execution_gas}"
         );
 
-        cleanup_refund
+        Ok(Tip1048BenchmarkRow {
+            label,
+            temporary_slots,
+            create_without_tip_gas: temporary_slots * TIP1000_STORAGE_CREATE_GAS,
+            create_with_tip_gas: tip1048_create_cost(temporary_slots, BENCHMARK_TTL_DAYS),
+            prune_execution_gas,
+            prune_refund_gas,
+        })
     }
 
     #[test]
@@ -3919,161 +3993,145 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_prune_expiry_storage_accounting_benchmark() -> eyre::Result<()> {
-        let account = Address::random();
-        let key_id = Address::random();
-        let expiry = 1_060u64;
+    fn test_t3_access_key_tip_1048_benchmark_table() -> eyre::Result<()> {
+        let scoped_recipient = Address::repeat_byte(0x44);
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        storage.set_timestamp(U256::from(1_000u64));
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
+        let rows = vec![
+            run_tip1048_access_key_benchmark("bare key", |expiry| KeyRestrictions {
+                expiry,
+                enforceLimits: false,
+                limits: vec![],
+                allowAnyCalls: true,
+                allowedCalls: vec![],
+            })?,
+            run_tip1048_access_key_benchmark("one spending limit", |expiry| KeyRestrictions {
+                expiry,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token: Address::repeat_byte(0x11),
+                    amount: U256::from(100),
+                    period: 0,
+                }],
+                allowAnyCalls: true,
+                allowedCalls: vec![],
+            })?,
+            run_tip1048_access_key_benchmark("three spending limits", |expiry| KeyRestrictions {
+                expiry,
+                enforceLimits: true,
+                limits: vec![
+                    TokenLimit {
+                        token: Address::repeat_byte(0x11),
+                        amount: U256::from(100),
+                        period: 0,
                     },
-                },
-            )
-        })?;
-
-        storage.set_timestamp(U256::from(expiry));
-        storage.reset_counters();
-        StorageCtx::enter(&mut storage, || {
-            AccountKeychain::new().prune_expiry(
-                Address::random(),
-                pruneExpiryCall {
-                    account,
-                    keyId: key_id,
-                },
-            )
-        })?;
-        assert_eq!(storage.counter_sload(), 4);
-        assert_eq!(storage.counter_sstore(), 1);
-        assert_eq!(
-            assert_prune_expiry_cleanup_refund_covers_storage("bare temporary key", &storage),
-            15_000
-        );
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        storage.set_timestamp(U256::from(1_000u64));
-        let key_id = Address::random();
-        let tokens = [
-            Address::repeat_byte(0x11),
-            Address::repeat_byte(0x22),
-            Address::repeat_byte(0x33),
-        ];
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry,
-                        enforceLimits: true,
-                        limits: tokens
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, token)| TokenLimit {
-                                token,
-                                amount: U256::from(100 + index),
-                                period: index as u64 * 30,
-                            })
-                            .collect(),
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
+                    TokenLimit {
+                        token: Address::repeat_byte(0x22),
+                        amount: U256::from(200),
+                        period: 30,
                     },
-                },
-            )
-        })?;
-
-        storage.set_timestamp(U256::from(expiry));
-        storage.reset_counters();
-        StorageCtx::enter(&mut storage, || {
-            AccountKeychain::new().prune_expiry(
-                Address::random(),
-                pruneExpiryCall {
-                    account,
-                    keyId: key_id,
-                },
-            )
-        })?;
-        assert_eq!(storage.counter_sload(), 12);
-        assert_eq!(storage.counter_sstore(), 14);
-        assert_eq!(
-            assert_prune_expiry_cleanup_refund_covers_storage(
-                "temporary key with three spending limits",
-                &storage,
-            ),
-            210_000
-        );
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        storage.set_timestamp(U256::from(1_000u64));
-        let key_id = Address::random();
-        let recipient = Address::repeat_byte(0x44);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-            TIP20Setup::path_usd(account).apply()?;
-            keychain.authorize_key(
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: false,
-                        allowedCalls: vec![CallScope {
-                            target: DEFAULT_FEE_TOKEN,
-                            selectorRules: vec![SelectorRule {
-                                selector: TIP20_TRANSFER_SELECTOR.into(),
-                                recipients: vec![recipient],
-                            }],
+                    TokenLimit {
+                        token: Address::repeat_byte(0x33),
+                        amount: U256::from(300),
+                        period: 60,
+                    },
+                ],
+                allowAnyCalls: true,
+                allowedCalls: vec![],
+            })?,
+            run_tip1048_access_key_benchmark("one scoped call", |expiry| KeyRestrictions {
+                expiry,
+                enforceLimits: false,
+                limits: vec![],
+                allowAnyCalls: false,
+                allowedCalls: vec![CallScope {
+                    target: DEFAULT_FEE_TOKEN,
+                    selectorRules: vec![SelectorRule {
+                        selector: TIP20_TRANSFER_SELECTOR.into(),
+                        recipients: vec![scoped_recipient],
+                    }],
+                }],
+            })?,
+            run_tip1048_access_key_benchmark("one limit and one scoped call", |expiry| {
+                KeyRestrictions {
+                    expiry,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: Address::repeat_byte(0x11),
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    allowAnyCalls: false,
+                    allowedCalls: vec![CallScope {
+                        target: DEFAULT_FEE_TOKEN,
+                        selectorRules: vec![SelectorRule {
+                            selector: TIP20_TRANSFER_SELECTOR.into(),
+                            recipients: vec![scoped_recipient],
                         }],
-                    },
-                },
-            )
-        })?;
+                    }],
+                }
+            })?,
+        ];
 
-        storage.set_timestamp(U256::from(expiry));
-        storage.reset_counters();
-        StorageCtx::enter(&mut storage, || {
-            AccountKeychain::new().prune_expiry(
-                Address::random(),
-                pruneExpiryCall {
-                    account,
-                    keyId: key_id,
-                },
-            )
-        })?;
-        assert_eq!(storage.counter_sload(), 17);
-        assert_eq!(storage.counter_sstore(), 11);
+        eprintln!(
+            "| config | slots | create without TIP | create after TIP | prune execution | prune refund |"
+        );
+        eprintln!("| --- | ---: | ---: | ---: | ---: | ---: |");
+        for row in &rows {
+            eprintln!(
+                "| {} | {} | {} | {} | {} | {} |",
+                row.label,
+                row.temporary_slots,
+                row.create_without_tip_gas,
+                row.create_with_tip_gas,
+                row.prune_execution_gas,
+                row.prune_refund_gas
+            );
+        }
+
         assert_eq!(
-            assert_prune_expiry_cleanup_refund_covers_storage(
-                "temporary key with one target/selector/recipient scope",
-                &storage,
-            ),
-            165_000
+            rows,
+            vec![
+                Tip1048BenchmarkRow {
+                    label: "bare key",
+                    temporary_slots: 1,
+                    create_without_tip_gas: 250_000,
+                    create_with_tip_gas: 42_000,
+                    prune_execution_gas: 13_400,
+                    prune_refund_gas: 15_000,
+                },
+                Tip1048BenchmarkRow {
+                    label: "one spending limit",
+                    temporary_slots: 6,
+                    create_without_tip_gas: 1_500_000,
+                    create_with_tip_gas: 152_000,
+                    prune_execution_gas: 47_100,
+                    prune_refund_gas: 90_000,
+                },
+                Tip1048BenchmarkRow {
+                    label: "three spending limits",
+                    temporary_slots: 14,
+                    create_without_tip_gas: 3_500_000,
+                    create_with_tip_gas: 328_000,
+                    prune_execution_gas: 104_100,
+                    prune_refund_gas: 210_000,
+                },
+                Tip1048BenchmarkRow {
+                    label: "one scoped call",
+                    temporary_slots: 11,
+                    create_without_tip_gas: 2_750_000,
+                    create_with_tip_gas: 262_000,
+                    prune_execution_gas: 81_000,
+                    prune_refund_gas: 165_000,
+                },
+                Tip1048BenchmarkRow {
+                    label: "one limit and one scoped call",
+                    temporary_slots: 16,
+                    create_without_tip_gas: 4_000_000,
+                    create_with_tip_gas: 372_000,
+                    prune_execution_gas: 114_700,
+                    prune_refund_gas: 240_000,
+                },
+            ]
         );
 
         Ok(())

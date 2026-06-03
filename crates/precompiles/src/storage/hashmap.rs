@@ -29,6 +29,8 @@ pub struct HashMapStorageProvider {
     counter_sstore: u64,
     counter_cold_sstore: u64,
     counter_warm_sstore: u64,
+    counter_zero_to_nonzero_sstore: u64,
+    counter_nonzero_to_zero_sstore: u64,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -77,6 +79,8 @@ impl HashMapStorageProvider {
             counter_sstore: 0,
             counter_cold_sstore: 0,
             counter_warm_sstore: 0,
+            counter_zero_to_nonzero_sstore: 0,
+            counter_nonzero_to_zero_sstore: 0,
         }
     }
 
@@ -131,6 +135,17 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             self.counter_cold_sstore += 1;
         } else {
             self.counter_warm_sstore += 1;
+        }
+
+        let previous = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        if previous.is_zero() && !value.is_zero() {
+            self.counter_zero_to_nonzero_sstore += 1;
+        } else if !previous.is_zero() && value.is_zero() {
+            self.counter_nonzero_to_zero_sstore += 1;
         }
 
         self.counter_sstore += 1;
@@ -324,6 +339,14 @@ impl HashMapStorageProvider {
         self.counter_warm_sstore
     }
 
+    pub fn counter_zero_to_nonzero_sstore(&self) -> u64 {
+        self.counter_zero_to_nonzero_sstore
+    }
+
+    pub fn counter_nonzero_to_zero_sstore(&self) -> u64 {
+        self.counter_nonzero_to_zero_sstore
+    }
+
     pub fn reset_counters(&mut self) {
         self.accessed_storage.clear();
         self.counter_sload = 0;
@@ -332,6 +355,8 @@ impl HashMapStorageProvider {
         self.counter_sstore = 0;
         self.counter_cold_sstore = 0;
         self.counter_warm_sstore = 0;
+        self.counter_zero_to_nonzero_sstore = 0;
+        self.counter_nonzero_to_zero_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.
