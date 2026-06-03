@@ -152,6 +152,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    failures: Vec<String>,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -531,6 +532,10 @@ where
 
         let inner = result?;
 
+        if !inner.result.result.is_success() {
+            self.failures.push(format!("{:?}", inner.result.result));
+        }
+
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
@@ -618,6 +623,10 @@ where
             } => seen_subblocks_signatures,
             _ => false,
         };
+
+        if self.evm().block.number > 100 {
+            tracing::info!("failures: {:?}", self.failures);
+        }
 
         // Post T4, if subblocks metadata transaction was not seen, imply empty metadata.
         if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
