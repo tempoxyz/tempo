@@ -94,6 +94,35 @@ def build-tempo [bins: list<string>, profile: string, features: string, --no-def
     }
 }
 
+def tempo-xtask-bin [profile: string] {
+    if $profile == "dev" {
+        "./target/debug/tempo-xtask"
+    } else {
+        $"./target/($profile)/tempo-xtask"
+    }
+}
+
+def build-tempo-xtask [profile: string] {
+    let build_cmd = ["cargo" "build" "-p" "tempo-xtask" "--profile" $profile]
+    print $"Building tempo-xtask: `($build_cmd | str join ' ')`..."
+    run-external ($build_cmd | first) ...($build_cmd | skip 1)
+}
+
+def run-tempo-xtask [profile: string, skip_build: bool, args: list<string>] {
+    if $skip_build {
+        let xtask_bin = (tempo-xtask-bin $profile)
+        if not ($xtask_bin | path exists) {
+            print $"Error: --skip-build requires ($xtask_bin). Build it first with `cargo build -p tempo-xtask --profile ($profile)`."
+            exit 1
+        }
+        run-external $xtask_bin ...$args
+    } else {
+        let run_cmd = ["cargo" "run" "-p" "tempo-xtask" "--profile" $profile "--"]
+            | append $args
+        run-external ($run_cmd | first) ...($run_cmd | skip 1)
+    }
+}
+
 # Find tempo node process PIDs.
 def find-tempo-pids [] {
     ps | where name =~ '(^|/)tempo$' | get pid
@@ -104,7 +133,7 @@ def find-tempo-pids [] {
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
 # Generate the bloat binary file once (skips if already exists)
-def generate-bloat-file [bloat_size: int, profile: string] {
+def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
     if ($bloat_file | path exists) {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
@@ -112,7 +141,7 @@ def generate-bloat-file [bloat_size: int, profile: string] {
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
 }
 
 # Load the bloat file into a single node's database
@@ -1725,7 +1754,7 @@ def "main localnet" [
     --features: string = $DEFAULT_FEATURES # Cargo features
     --loud                                 # Show all node logs (WARN/ERROR shown by default)
     --node-args: string = ""               # Additional node arguments (space-separated)
-    --skip-build                           # Skip building (assumes binary is already built)
+    --skip-build                           # Skip building tempo and tempo-xtask (assumes binaries are already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
 ] {
@@ -1755,9 +1784,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
     }
 }
 
@@ -1765,7 +1794,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1777,7 +1806,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
     let genesis_path = if $genesis != "" {
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
-            generate-bloat-file $bloat $profile
+            generate-bloat-file $bloat $profile $skip_build
             load-bloat-into-node $tempo_bin $genesis $datadir
         }
         $genesis
@@ -1794,12 +1823,12 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --epoch-length $epoch_length --no-dkg-in-genesis
+            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis"]
         }
 
         # Apply state bloat if requested (requires fresh init)
         if $bloat > 0 {
-            generate-bloat-file $bloat $profile
+            generate-bloat-file $bloat $profile $skip_build
             load-bloat-into-node $tempo_bin $default_genesis $datadir
         }
 
@@ -1857,7 +1886,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1877,7 +1906,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --epoch-length $epoch_length --validators $validators --force | ignore
+            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force"] | ignore
         }
     }
 
@@ -1922,7 +1951,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
 
     # Apply state bloat to each node's datadir if requested
     if $bloat > 0 {
-        generate-bloat-file $bloat $profile
+        generate-bloat-file $bloat $profile $skip_build
         for node_dir in $validator_dirs {
             load-bloat-into-node $tempo_bin $genesis_path $node_dir
         }
@@ -2816,8 +2845,9 @@ def "main bench" [
         docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
     }
 
-    # Build tempo first
+    # Build tempo and xtask first
     build-tempo ["tempo"] $profile $features
+    build-tempo-xtask $profile
 
     # Start nodes in background (skip build since we already compiled)
     let num_nodes = if $mode == "dev" { 1 } else { $nodes }
