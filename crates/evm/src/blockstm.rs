@@ -17,7 +17,10 @@ use reth_revm::{
     interpreter::InitialAndFloorGas,
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 use tempo_chainspec::{
     constants::gas::tempo_t6_discounted_payment_effective_gas_price, hardfork::TempoHardfork,
 };
@@ -167,46 +170,97 @@ pub struct Tip20TransferBlockstmPlan {
     fee_reserve: Tip20FeeReserveAction,
     transfer: Tip20TransferAction,
     fee_settle: Tip20FeeSettleAction,
+    accesses: Tip20TransferBlockstmPlanAccesses,
 }
 
 impl Tip20TransferBlockstmPlan {
-    fn base_accesses(&self) -> Tip20BlockstmBaseAccesses {
-        let mut storage = self.read_set();
-        storage.extend(self.write_set());
-        let mut accounts = storage
-            .iter()
-            .map(|key| key.address)
-            .collect::<HashSet<_>>();
-        accounts.insert(self.nonce.caller);
-
-        Tip20BlockstmBaseAccesses { storage, accounts }
+    fn new(
+        nonce: Tip20ExpiringNonceAction,
+        fee_reserve: Tip20FeeReserveAction,
+        transfer: Tip20TransferAction,
+        fee_settle: Tip20FeeSettleAction,
+    ) -> Self {
+        let accesses =
+            Tip20TransferBlockstmPlanAccesses::new(&nonce, &fee_reserve, &transfer, &fee_settle);
+        Self {
+            nonce,
+            fee_reserve,
+            transfer,
+            fee_settle,
+            accesses,
+        }
     }
 
-    fn read_set(&self) -> HashSet<StorageKey> {
-        self.nonce
-            .read_set()
-            .into_iter()
-            .chain(self.fee_reserve.read_set())
-            .chain(self.transfer.read_set())
-            .chain(self.fee_settle.read_set())
-            .collect()
+    fn base_accesses(&self) -> &Tip20BlockstmBaseAccesses {
+        &self.accesses.base
     }
 
-    fn write_set(&self) -> HashSet<StorageKey> {
-        self.nonce
-            .write_set()
-            .into_iter()
-            .chain(self.fee_reserve.write_set())
-            .chain(self.transfer.write_set())
-            .chain(self.fee_settle.write_set())
-            .collect()
+    fn read_set(&self) -> &[StorageKey] {
+        &self.accesses.read_set
+    }
+
+    fn write_set(&self) -> &[StorageKey] {
+        &self.accesses.write_set
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tip20TransferBlockstmPlanAccesses {
+    read_set: Box<[StorageKey]>,
+    write_set: Box<[StorageKey]>,
+    base: Tip20BlockstmBaseAccesses,
+}
+
+impl Tip20TransferBlockstmPlanAccesses {
+    fn new(
+        nonce: &Tip20ExpiringNonceAction,
+        fee_reserve: &Tip20FeeReserveAction,
+        transfer: &Tip20TransferAction,
+        fee_settle: &Tip20FeeSettleAction,
+    ) -> Self {
+        let read_set = unique_values(
+            nonce
+                .read_set()
+                .chain(fee_reserve.read_set())
+                .chain(transfer.read_set())
+                .chain(fee_settle.read_set()),
+        );
+        let write_set = unique_values(
+            nonce
+                .write_set()
+                .chain(fee_reserve.write_set())
+                .chain(transfer.write_set())
+                .chain(fee_settle.write_set()),
+        );
+        let storage = unique_values(read_set.iter().copied().chain(write_set.iter().copied()));
+        let accounts = unique_values(storage.iter().map(|key| key.address).chain([nonce.caller]));
+
+        Self {
+            read_set,
+            write_set,
+            base: Tip20BlockstmBaseAccesses { storage, accounts },
+        }
+    }
+}
+
+fn unique_values<T>(values: impl IntoIterator<Item = T>) -> Box<[T]>
+where
+    T: Copy + Eq + Hash,
+{
+    let mut unique = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        if seen.insert(value) {
+            unique.push(value);
+        }
+    }
+    unique.into_boxed_slice()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Tip20BlockstmBaseAccesses {
-    storage: HashSet<StorageKey>,
-    accounts: HashSet<Address>,
+    storage: Box<[StorageKey]>,
+    accounts: Box<[Address]>,
 }
 
 pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
@@ -216,7 +270,7 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
 ) -> Result<(), DB::Error> {
     let accesses = plan.base_accesses();
 
-    for key in accesses.storage {
+    for key in accesses.storage.iter().copied() {
         let _ = db.storage(key.address, key.slot)?;
     }
     read_expiring_nonce_base_storage(
@@ -231,7 +285,7 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
         },
     )?;
 
-    for account in accesses.accounts {
+    for account in accesses.accounts.iter().copied() {
         let _ = db.basic(account)?;
     }
 
@@ -279,14 +333,15 @@ struct Tip20ExpiringNonceAction {
 }
 
 impl Tip20ExpiringNonceAction {
-    fn read_set(self) -> Vec<StorageKey> {
-        vec![
+    fn read_set(&self) -> impl Iterator<Item = StorageKey> {
+        [
             expiring_nonce_ring_ptr_key(),
             expiring_nonce_seen_key(self.replay_hash),
         ]
+        .into_iter()
     }
 
-    fn write_set(self) -> Vec<StorageKey> {
+    fn write_set(&self) -> impl Iterator<Item = StorageKey> {
         self.read_set()
     }
 }
@@ -299,7 +354,7 @@ struct Tip20FeeReserveAction {
 }
 
 impl Tip20FeeReserveAction {
-    fn read_set(&self) -> Vec<StorageKey> {
+    fn read_set(&self) -> impl Iterator<Item = StorageKey> {
         token_state_read_set(self.token)
             .into_iter()
             .chain(reward_inactive_read_set(self.token, self.fee_payer))
@@ -307,14 +362,14 @@ impl Tip20FeeReserveAction {
                 self.token,
                 TIP_FEE_MANAGER_ADDRESS,
             ))
-            .collect()
     }
 
-    fn write_set(&self) -> Vec<StorageKey> {
-        vec![
+    fn write_set(&self) -> impl Iterator<Item = StorageKey> {
+        [
             balance_key(self.token, self.fee_payer),
             balance_key(self.token, TIP_FEE_MANAGER_ADDRESS),
         ]
+        .into_iter()
     }
 }
 
@@ -327,7 +382,7 @@ struct Tip20FeeSettleAction {
 }
 
 impl Tip20FeeSettleAction {
-    fn read_set(&self) -> Vec<StorageKey> {
+    fn read_set(&self) -> impl Iterator<Item = StorageKey> {
         reward_inactive_read_set(self.token, self.fee_payer)
             .into_iter()
             .chain(reward_inactive_read_set(
@@ -335,15 +390,15 @@ impl Tip20FeeSettleAction {
                 TIP_FEE_MANAGER_ADDRESS,
             ))
             .chain([collected_fees_key(self.beneficiary, self.token)])
-            .collect()
     }
 
-    fn write_set(&self) -> Vec<StorageKey> {
-        vec![
+    fn write_set(&self) -> impl Iterator<Item = StorageKey> {
+        [
             balance_key(self.token, self.fee_payer),
             balance_key(self.token, TIP_FEE_MANAGER_ADDRESS),
             collected_fees_key(self.beneficiary, self.token),
         ]
+        .into_iter()
     }
 }
 
@@ -362,20 +417,20 @@ impl Tip20TransferAction {
         self.calldata_len
     }
 
-    fn read_set(&self) -> Vec<StorageKey> {
+    fn read_set(&self) -> impl Iterator<Item = StorageKey> {
         token_state_read_set(self.token)
             .into_iter()
             .chain(reward_inactive_read_set(self.token, self.from))
             .chain(reward_inactive_read_set(self.token, self.to))
             .chain([receive_policy_key(self.to)])
-            .collect()
     }
 
-    fn write_set(&self) -> [StorageKey; 2] {
+    fn write_set(&self) -> impl Iterator<Item = StorageKey> {
         [
             balance_key(self.token, self.from),
             balance_key(self.token, self.to),
         ]
+        .into_iter()
     }
 }
 
@@ -550,7 +605,7 @@ where
         let accesses = plan.base_accesses();
 
         let mut storage = HashMap::with_capacity(accesses.storage.len());
-        for key in accesses.storage {
+        for key in accesses.storage.iter().copied() {
             let value = self.read_storage(key.address, key.slot)?;
             storage.insert(key, value);
         }
@@ -567,7 +622,7 @@ where
         )?;
 
         let mut account_infos = HashMap::with_capacity(accesses.accounts.len());
-        for account in accesses.accounts {
+        for account in accesses.accounts.iter().copied() {
             let info = self.read_account_info(account)?;
             account_infos.insert(account, info);
         }
@@ -708,21 +763,21 @@ pub fn build_tip20_transfer_blockstm_plan(
         })
         .map_err(|_| Tip20TransferBlockstmFallback::InvalidFeeCharge)?;
 
-    Ok(Tip20TransferBlockstmPlan {
+    Ok(Tip20TransferBlockstmPlan::new(
         nonce,
-        fee_reserve: Tip20FeeReserveAction {
+        Tip20FeeReserveAction {
             token: tx.fee_token,
             fee_payer,
             amount: max_fee,
         },
         transfer,
-        fee_settle: Tip20FeeSettleAction {
+        Tip20FeeSettleAction {
             token: tx.fee_token,
             fee_payer,
             beneficiary,
             max_amount: max_fee,
         },
-    })
+    ))
 }
 
 fn execute_tip20_transfer_plan_with_deltas(
@@ -732,11 +787,11 @@ fn execute_tip20_transfer_plan_with_deltas(
     block_timestamp: u64,
 ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmFallback> {
     let mut execution = Tip20BlockstmTxExecution {
-        reads: HashMap::new(),
-        writes: HashMap::new(),
+        reads: HashMap::with_capacity(plan.read_set().len()),
+        writes: HashMap::with_capacity(plan.write_set().len()),
     };
 
-    for key in plan.read_set() {
+    for key in plan.read_set().iter().copied() {
         let value = ledger.read(key);
         execution.reads.insert(key, value);
     }
