@@ -37,7 +37,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_consensus_config::{SigningKey, SigningShare};
+use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
@@ -614,9 +615,9 @@ impl GenesisArgs {
 
         // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
         let base_fee: u128 = if self.t1_time == 0 {
-            TempoHardfork::T1.base_fee().into()
+            u128::from(TEMPO_T1_BASE_FEE)
         } else {
-            TempoHardfork::T0.base_fee().into()
+            u128::from(TEMPO_T0_BASE_FEE)
         };
 
         let mut genesis = Genesis::default()

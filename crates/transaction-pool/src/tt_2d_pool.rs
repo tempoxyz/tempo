@@ -2172,7 +2172,7 @@ mod tests {
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
@@ -5296,7 +5296,7 @@ mod tests {
         config: AA2dPoolConfig,
     ) -> (AA2dPool, B256, B256) {
         let mut pool = AA2dPool::new(config);
-        pool.set_base_fee(TempoHardfork::T1.base_fee());
+        pool.set_base_fee(TEMPO_T1_BASE_FEE);
 
         let high_at_insert_low_at_block = TxBuilder::aa(Address::random())
             .nonce_key(U256::from(1))
@@ -5330,7 +5330,7 @@ mod tests {
 
     #[test]
     fn test_best_transactions_with_base_fee_reprioritizes_regular_transactions() {
-        let block_base_fee = TempoHardfork::T1.base_fee() + 10_000_000_000;
+        let block_base_fee = TEMPO_T1_BASE_FEE + 10_000_000_000;
         let (pool, expected_first, expected_second) = priority_flip_pool(block_base_fee);
 
         let hashes = pool
@@ -5343,7 +5343,7 @@ mod tests {
 
     #[test]
     fn test_discard_reprices_eviction_priorities() {
-        let block_base_fee = TempoHardfork::T1.base_fee() + 10_000_000_000;
+        let block_base_fee = TEMPO_T1_BASE_FEE + 10_000_000_000;
         let (mut pool, expected_kept, expected_evicted) = priority_flip_pool_with_config(
             block_base_fee,
             AA2dPoolConfig {
@@ -5384,7 +5384,7 @@ mod tests {
     #[test]
     fn test_best_transactions_with_base_fee_filters_underpriced_regular_sequence() {
         let mut pool = AA2dPool::default();
-        let block_base_fee = TempoHardfork::T1.base_fee() + 10_000_000_000;
+        let block_base_fee = TEMPO_T1_BASE_FEE + 10_000_000_000;
         let sequence_sender = Address::random();
 
         let underpriced_parent = TxBuilder::aa(sequence_sender)
@@ -5425,7 +5425,7 @@ mod tests {
     #[test]
     fn test_best_transactions_with_base_fee_filters_underpriced_expiring_nonce() {
         let mut pool = AA2dPool::default();
-        let block_base_fee = TempoHardfork::T1.base_fee() + 10_000_000_000;
+        let block_base_fee = TEMPO_T1_BASE_FEE + 10_000_000_000;
 
         let underpriced = TxBuilder::aa(Address::random())
             .nonce_key(U256::MAX)

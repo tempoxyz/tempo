@@ -278,6 +278,7 @@ mod tests {
         shared_gas_limit: Option<u64>,
         general_gas_limit: Option<u64>,
         base_fee: Option<u64>,
+        gas_used: u64,
     }
 
     impl TestHeaderBuilder {
@@ -327,6 +328,11 @@ mod tests {
             self
         }
 
+        fn gas_used(mut self, gas_used: u64) -> Self {
+            self.gas_used = gas_used;
+            self
+        }
+
         fn build(self) -> TempoHeader {
             let shared_gas_limit = self.shared_gas_limit.unwrap_or(0);
             // Default to T1 fixed general gas limit
@@ -337,6 +343,7 @@ mod tests {
             TempoHeader {
                 inner: Header {
                     gas_limit: self.gas_limit,
+                    gas_used: self.gas_used,
                     timestamp: self.timestamp,
                     number: self.number,
                     parent_hash: self.parent_hash,
@@ -534,6 +541,47 @@ mod tests {
                 "epochLength": 21600,
                 "t0Time": 0,
                 "t1Time": 0
+            },
+            "nonce": "0x42",
+            "timestamp": "0x0",
+            "extraData": "0x",
+            "gasLimit": "0x1dcd6500",
+            "difficulty": "0x0",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {}
+        }"#;
+        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
+        Arc::new(TempoChainSpec::from_genesis(genesis))
+    }
+
+    /// Creates a chainspec with T6 active at timestamp 10.
+    fn create_t6_chainspec() -> Arc<TempoChainSpec> {
+        let genesis_json = r#"{
+            "config": {
+                "chainId": 100000,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "epochLength": 21600,
+                "t0Time": 0,
+                "t1Time": 0,
+                "t6Time": 10
             },
             "nonce": "0x42",
             "timestamp": "0x0",
@@ -757,6 +805,85 @@ mod tests {
         assert!(
             matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
             "Expected BaseFeeDiff error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_t6_dynamic_base_fee() {
+        use tempo_chainspec::spec::{TEMPO_T6_BASE_FEE_CAP, TEMPO_T6_BASE_FEE_FLOOR};
+
+        let chainspec = create_t6_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(10)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T6_BASE_FEE_CAP)
+            .gas_used(0)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(11)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T6_BASE_FEE_CAP * 7 / 8)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        assert!(
+            consensus
+                .validate_header_against_parent(&child_sealed, &parent_sealed)
+                .is_ok()
+        );
+
+        let bad_child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(11)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T6_BASE_FEE_CAP)
+            .build();
+        let bad_child_sealed = SealedHeader::seal_slow(bad_child);
+        let result = consensus.validate_header_against_parent(&bad_child_sealed, &parent_sealed);
+        assert!(
+            matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
+            "Expected BaseFeeDiff error, got: {result:?}"
+        );
+
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(10)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T6_BASE_FEE_FLOOR)
+            .gas_used(0)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(11)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T6_BASE_FEE_FLOOR)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        assert!(
+            consensus
+                .validate_header_against_parent(&child_sealed, &parent_sealed)
+                .is_ok()
         );
     }
 
