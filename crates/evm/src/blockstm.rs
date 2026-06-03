@@ -157,14 +157,8 @@ struct Tip20BlockstmBaseState {
 
 #[derive(Debug, Clone)]
 struct Tip20BlockstmTxExecution {
-    reads: HashMap<StorageKey, VersionedValue>,
+    reads: HashMap<StorageKey, U256>,
     writes: HashMap<StorageKey, U256>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VersionedValue {
-    version: Option<usize>,
-    value: U256,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,26 +406,14 @@ where
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
         let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
-        let mut tx_execution = execute_tip20_transfer_plan_with_deltas(
-            transaction_index,
-            &plan,
-            &mut ledger,
-            is_t6,
-            block_timestamp,
-        )
-        .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let mut tx_execution =
+            execute_tip20_transfer_plan_with_deltas(&plan, &mut ledger, is_t6, block_timestamp)
+                .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &base_state, &cfg)
             .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
-        settle_actual_fee_with_deltas(
-            transaction_index,
-            &plan,
-            &mut tx_execution,
-            &mut ledger,
-            actual_fee,
-            is_t6,
-        )
-        .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        settle_actual_fee_with_deltas(&plan, &mut tx_execution, &mut ledger, actual_fee, is_t6)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let tx_gas_used = gas.tx_gas_used();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
             gas.block_regular_gas_used()
@@ -744,7 +726,6 @@ pub fn build_tip20_transfer_blockstm_plan(
 }
 
 fn execute_tip20_transfer_plan_with_deltas(
-    tx_index: usize,
     plan: &Tip20TransferBlockstmPlan,
     ledger: &mut Tip20DeltaLedger<'_>,
     is_t6: bool,
@@ -766,7 +747,6 @@ fn execute_tip20_transfer_plan_with_deltas(
         plan.nonce.expiring_nonce_idx,
         &mut execution,
         ledger,
-        tx_index,
         block_timestamp,
     )?;
     reserve_fee_balance(
@@ -776,7 +756,6 @@ fn execute_tip20_transfer_plan_with_deltas(
         is_t6,
         &mut execution,
         ledger,
-        tx_index,
     )?;
     transfer_balance(
         plan.transfer.token,
@@ -786,7 +765,6 @@ fn execute_tip20_transfer_plan_with_deltas(
         is_t6,
         &mut execution,
         ledger,
-        tx_index,
     )?;
 
     Ok(execution)
@@ -798,7 +776,6 @@ fn apply_expiring_nonce_action(
     expiring_nonce_idx: Option<usize>,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
     block_timestamp: u64,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if valid_before <= block_timestamp
@@ -825,35 +802,27 @@ fn apply_expiring_nonce_action(
         if old_expiry != U256::ZERO && old_expiry > U256::from(block_timestamp) {
             return Err(Tip20TransferBlockstmFallback::ExpiringNonceSetFull);
         }
-        write_value(execution, ledger, tx_index, old_seen_key, U256::ZERO);
+        write_value(execution, ledger, old_seen_key, U256::ZERO);
     }
 
     write_value(
         execution,
         ledger,
-        tx_index,
         ring_key,
         expiring_nonce_hash_to_word(replay_hash),
     );
-    write_value(
-        execution,
-        ledger,
-        tx_index,
-        seen_key,
-        U256::from(valid_before),
-    );
+    write_value(execution, ledger, seen_key, U256::from(valid_before));
 
     let next_ptr = expiring_nonce_next_ring_ptr(idx);
-    write_value(execution, ledger, tx_index, ptr_key, U256::from(next_ptr));
+    write_value(execution, ledger, ptr_key, U256::from(next_ptr));
     if expiring_nonce_idx.is_some() {
-        write_value(execution, ledger, tx_index, ptr_key, U256::from(ptr));
+        write_value(execution, ledger, ptr_key, U256::from(ptr));
     }
 
     Ok(())
 }
 
 fn settle_actual_fee_with_deltas(
-    tx_index: usize,
     plan: &Tip20TransferBlockstmPlan,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
@@ -873,7 +842,7 @@ fn settle_actual_fee_with_deltas(
 
     let refund = max_amount - actual_fee;
     if !refund.is_zero() {
-        refund_fee_balance(token, fee_payer, refund, is_t6, execution, ledger, tx_index)?;
+        refund_fee_balance(token, fee_payer, refund, is_t6, execution, ledger)?;
     }
 
     let collected_key = collected_fees_key(beneficiary, token);
@@ -881,7 +850,7 @@ fn settle_actual_fee_with_deltas(
     let new_collected = collected
         .checked_add(actual_fee)
         .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
-    write_value(execution, ledger, tx_index, collected_key, new_collected);
+    write_value(execution, ledger, collected_key, new_collected);
 
     Ok(())
 }
@@ -904,11 +873,7 @@ fn execution_state(
             account.mark_touch();
             account
         });
-        let original = execution
-            .reads
-            .get(key)
-            .map(|read| read.value)
-            .unwrap_or_default();
+        let original = execution.reads.get(key).copied().unwrap_or_default();
         account.storage.insert(
             key.slot,
             EvmStorageSlot::new_changed(original, *value, TransactionId::ZERO),
@@ -922,7 +887,6 @@ fn execution_state(
 struct Tip20DeltaLedger<'a> {
     base_storage: &'a HashMap<StorageKey, U256>,
     current: HashMap<StorageKey, U256>,
-    last_writer: HashMap<StorageKey, usize>,
 }
 
 impl<'a> Tip20DeltaLedger<'a> {
@@ -930,24 +894,18 @@ impl<'a> Tip20DeltaLedger<'a> {
         Self {
             base_storage,
             current: HashMap::new(),
-            last_writer: HashMap::new(),
         }
     }
 
-    fn read(&self, key: StorageKey) -> VersionedValue {
-        VersionedValue {
-            version: self.last_writer.get(&key).copied(),
-            value: self
-                .current
-                .get(&key)
-                .copied()
-                .unwrap_or_else(|| *self.base_storage.get(&key).unwrap_or(&U256::ZERO)),
-        }
+    fn read(&self, key: StorageKey) -> U256 {
+        self.current
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| *self.base_storage.get(&key).unwrap_or(&U256::ZERO))
     }
 
-    fn write(&mut self, tx_index: usize, key: StorageKey, value: U256) {
+    fn write(&mut self, key: StorageKey, value: U256) {
         self.current.insert(key, value);
-        self.last_writer.insert(key, tx_index);
     }
 }
 
@@ -973,7 +931,6 @@ fn reserve_fee_balance(
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -985,7 +942,6 @@ fn reserve_fee_balance(
         BalanceWriteFlag::Preserve,
         execution,
         ledger,
-        tx_index,
     )
 }
 
@@ -996,7 +952,6 @@ fn refund_fee_balance(
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -1008,7 +963,6 @@ fn refund_fee_balance(
         BalanceWriteFlag::Inactive,
         execution,
         ledger,
-        tx_index,
     )
 }
 
@@ -1020,7 +974,6 @@ fn transfer_balance(
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -1032,7 +985,6 @@ fn transfer_balance(
         BalanceWriteFlag::Inactive,
         execution,
         ledger,
-        tx_index,
     )
 }
 
@@ -1047,7 +999,6 @@ fn transfer_balance_with_flags(
     to_write_flag: BalanceWriteFlag,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if amount.is_zero() {
         return Ok(());
@@ -1064,7 +1015,6 @@ fn transfer_balance_with_flags(
     write_value(
         execution,
         ledger,
-        tx_index,
         from_key,
         encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
     );
@@ -1081,7 +1031,6 @@ fn transfer_balance_with_flags(
     write_value(
         execution,
         ledger,
-        tx_index,
         to_key,
         encode_balance(new_to, to_write_flag.resolve(to_balance), is_t6),
     );
@@ -1109,18 +1058,17 @@ fn read_for_write(
 
     let value = ledger.read(key);
     execution.reads.entry(key).or_insert(value);
-    value.value
+    value
 }
 
 fn write_value(
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
     key: StorageKey,
     value: U256,
 ) {
     execution.writes.insert(key, value);
-    ledger.write(tx_index, key, value);
+    ledger.write(key, value);
 }
 
 fn synthetic_tip20_result_gas(
@@ -1594,7 +1542,7 @@ fn tx_storage_value(
     execution
         .reads
         .get(&key)
-        .map(|read| read.value)
+        .copied()
         .or_else(|| base_state.storage.get(&key).copied())
         .unwrap_or_default()
 }
@@ -2451,22 +2399,14 @@ mod tests {
         let mut executions = Vec::with_capacity(plans.len());
         let mut actual_fees = Vec::with_capacity(plans.len());
 
-        for (tx_index, (tx, plan)) in txs.iter().zip(plans).enumerate() {
+        for (tx, plan) in txs.iter().zip(plans) {
             let mut execution =
-                execute_tip20_transfer_plan_with_deltas(tx_index, plan, &mut ledger, true, 1)
-                    .unwrap();
+                execute_tip20_transfer_plan_with_deltas(plan, &mut ledger, true, 1).unwrap();
             let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, &base_state, &cfg)
                 .unwrap();
             let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, 1, true);
-            settle_actual_fee_with_deltas(
-                tx_index,
-                plan,
-                &mut execution,
-                &mut ledger,
-                actual_fee,
-                true,
-            )
-            .unwrap();
+            settle_actual_fee_with_deltas(plan, &mut execution, &mut ledger, actual_fee, true)
+                .unwrap();
 
             executions.push(execution);
             actual_fees.push(actual_fee);
