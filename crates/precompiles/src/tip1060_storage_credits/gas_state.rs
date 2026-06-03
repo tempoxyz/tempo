@@ -14,6 +14,7 @@ use revm::{
     context_interface::cfg::GasParams,
     interpreter::{SStoreResult, StateLoad, instruction_context::GasStateOutcome},
 };
+use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
 
 /// Storage and gas operations required by [`sstore_storage_credits`].
 ///
@@ -82,6 +83,19 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     if values.is_new_eq_present() {
         return Ok(outcome);
+    }
+
+    // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
+    // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
+    if owner == STORAGE_CREDITS_ADDRESS {
+        if values.new_values_changes_present() && values.is_original_eq_present() {
+            backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
+        }
+
+        return Ok(GasStateOutcome {
+            skip_gas: true,
+            skip_refund: true,
+        });
     }
 
     // 0→x: slot create (charged EIP-8037 state gas today).
