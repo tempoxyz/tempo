@@ -143,6 +143,13 @@ struct SpeculativeBuild {
 }
 
 #[cfg(feature = "bal")]
+impl Drop for SpeculativeBuild {
+    fn drop(&mut self) {
+        self.build_control.cancel();
+    }
+}
+
+#[cfg(feature = "bal")]
 impl SpeculativeBuildRegistry {
     async fn replace(&self, execution_node: Arc<TempoFullNode>, build: SpeculativeBuild) {
         self.track_build_control(build.build_control.clone()).await;
@@ -270,7 +277,17 @@ impl SpeculativeBuild {
             .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
             .await
         {
-            Ok(fut) => fut,
+            Ok(Some(fut)) => fut,
+            Ok(None) => {
+                debug!(
+                    %payload_id,
+                    parent.digest = %self.parent_digest,
+                    parent.height = %self.parent_height,
+                    reason,
+                    "speculative payload build was already gone before cancellation",
+                );
+                return;
+            }
             Err(error) => {
                 warn!(
                     %error,
@@ -804,7 +821,11 @@ impl Inner<Init> {
                 .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
                 .await
             {
-                Ok(fut) => fut,
+                Ok(Some(fut)) => fut,
+                Ok(None) => {
+                    debug!(%payload_id, reason, "payload build was already gone before cancellation");
+                    return;
+                }
                 Err(error) => {
                     warn!(%error, %payload_id, reason, "failed resolving payload while cancelling build");
                     return;

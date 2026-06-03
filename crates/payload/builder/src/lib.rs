@@ -1189,7 +1189,11 @@ where
             if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match recv_sparse_trie_with_cancel(handle.take_state_root_rx(), &build_cancelled) {
+                let state_root_rx = handle.take_state_root_rx();
+                let state_root_result = recv_sparse_trie_with_cancel(state_root_rx, &build_cancelled);
+                drop(handle);
+
+                match state_root_result {
                     CancelableRecv::Received(Ok(outcome)) => {
                         let elapsed = state_root_wait_start.elapsed();
                         self.metrics
