@@ -10,6 +10,7 @@ interface ITempoStreamChannel {
     struct Channel {
         bool finalized;
         uint64 closeRequestedAt;
+        uint64 expiresAt;
         address payer;
         address payee;
         address token;
@@ -19,6 +20,7 @@ interface ITempoStreamChannel {
     }
 
     function CLOSE_GRACE_PERIOD() external view returns (uint64);
+    function MAX_TEMPORARY_TTL() external view returns (uint64);
     function VOUCHER_TYPEHASH() external view returns (bytes32);
 
     function open(
@@ -27,6 +29,17 @@ interface ITempoStreamChannel {
         uint128 deposit,
         bytes32 salt,
         address authorizedSigner
+    )
+        external
+        returns (bytes32 channelId);
+
+    function openExpiring(
+        address payee,
+        address token,
+        uint128 deposit,
+        bytes32 salt,
+        address authorizedSigner,
+        uint64 expiresAt
     )
         external
         returns (bytes32 channelId);
@@ -41,6 +54,8 @@ interface ITempoStreamChannel {
 
     function withdraw(bytes32 channelId) external;
 
+    function finalizeChannel(bytes32 channelId) external;
+
     function getChannel(bytes32 channelId) external view returns (Channel memory);
 
     function getChannelsBatch(bytes32[] calldata channelIds)
@@ -54,6 +69,18 @@ interface ITempoStreamChannel {
         address token,
         bytes32 salt,
         address authorizedSigner
+    )
+        external
+        view
+        returns (bytes32);
+
+    function computeExpiringChannelId(
+        address payer,
+        address payee,
+        address token,
+        bytes32 salt,
+        address authorizedSigner,
+        uint64 expiresAt
     )
         external
         view
@@ -77,6 +104,17 @@ interface ITempoStreamChannel {
         address authorizedSigner,
         bytes32 salt,
         uint256 deposit
+    );
+
+    event ExpiringChannelOpened(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        address token,
+        address authorizedSigner,
+        bytes32 salt,
+        uint256 deposit,
+        uint64 expiresAt
     );
 
     event Settled(
@@ -131,5 +169,7 @@ interface ITempoStreamChannel {
     error InvalidToken();
     error ZeroDeposit();
     error DepositOverflow();
+    error InvalidExpiry();
+    error ChannelNotExpired();
 
 }

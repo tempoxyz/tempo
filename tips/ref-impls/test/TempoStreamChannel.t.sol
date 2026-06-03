@@ -44,6 +44,11 @@ contract TempoStreamChannelTest is BaseTest {
         return channel.open(payee, address(token), DEPOSIT, SALT, address(0));
     }
 
+    function _openExpiringChannel(uint64 expiresAt) internal returns (bytes32) {
+        vm.prank(payer);
+        return channel.openExpiring(payee, address(token), DEPOSIT, SALT, address(0), expiresAt);
+    }
+
     function _signVoucher(bytes32 channelId, uint128 amount) internal view returns (bytes memory) {
         bytes32 digest = channel.getVoucherDigest(channelId, amount);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerKey, digest);
@@ -73,6 +78,35 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         vm.expectRevert(ITempoStreamChannel.ChannelAlreadyExists.selector);
         channel.open(payee, address(token), DEPOSIT, SALT, address(0));
+    }
+
+    function test_openExpiring_success() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.payer, payer);
+        assertEq(ch.payee, payee);
+        assertEq(ch.token, address(token));
+        assertEq(ch.deposit, DEPOSIT);
+        assertEq(ch.expiresAt, expiresAt);
+        assertFalse(ch.finalized);
+    }
+
+    function test_openExpiring_revert_pastExpiry() public {
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.InvalidExpiry.selector);
+        channel.openExpiring(
+            payee, address(token), DEPOSIT, SALT, address(0), uint64(block.timestamp)
+        );
+    }
+
+    function test_openExpiring_revert_tooLong() public {
+        uint64 expiresAt = uint64(block.timestamp + channel.MAX_TEMPORARY_TTL() + 1);
+
+        vm.prank(payer);
+        vm.expectRevert(ITempoStreamChannel.InvalidExpiry.selector);
+        channel.openExpiring(payee, address(token), DEPOSIT, SALT, address(0), expiresAt);
     }
 
     // --- Settle Tests ---
@@ -270,6 +304,142 @@ contract TempoStreamChannelTest is BaseTest {
         vm.prank(payer);
         vm.expectRevert(ITempoStreamChannel.ChannelFinalized.selector);
         channel.withdraw(channelId);
+    }
+
+    // --- Finalize Expired Channel Tests ---
+
+    function test_finalizeChannel_fullRefund() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        address finalizer = makeAddr("finalizer");
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+        uint256 finalizerBalanceBefore = token.balanceOf(finalizer);
+
+        vm.prank(finalizer);
+        channel.finalizeChannel(channelId);
+
+        TempoStreamChannel.Channel memory ch = channel.getChannel(channelId);
+        assertEq(ch.payer, address(0));
+        assertEq(ch.deposit, 0);
+        assertEq(ch.settled, 0);
+        assertEq(ch.expiresAt, 0);
+        assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
+        assertEq(token.balanceOf(finalizer), finalizerBalanceBefore);
+    }
+
+    function test_finalizeChannel_partialSettleRefundsRemainder() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        bytes memory sig = _signVoucher(channelId, 300_000);
+        vm.prank(payee);
+        channel.settle(channelId, 300_000, sig);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+        uint256 payeeBalanceBefore = token.balanceOf(payee);
+
+        vm.prank(makeAddr("finalizer"));
+        channel.finalizeChannel(channelId);
+
+        assertEq(token.balanceOf(payer), payerBalanceBefore + (DEPOSIT - 300_000));
+        assertEq(token.balanceOf(payee), payeeBalanceBefore);
+        assertEq(channel.getChannel(channelId).payer, address(0));
+    }
+
+    function test_finalizeChannel_noRefundWhenFullySettled() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        bytes memory sig = _signVoucher(channelId, DEPOSIT);
+        vm.prank(payee);
+        channel.settle(channelId, DEPOSIT, sig);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        uint256 payerBalanceBefore = token.balanceOf(payer);
+
+        vm.prank(makeAddr("finalizer"));
+        channel.finalizeChannel(channelId);
+
+        assertEq(token.balanceOf(payer), payerBalanceBefore);
+        assertEq(token.balanceOf(address(channel)), 0);
+        assertEq(channel.getChannel(channelId).payer, address(0));
+    }
+
+    function test_finalizeChannel_revert_beforeExpiryGrace() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD() - 1);
+
+        vm.expectRevert(ITempoStreamChannel.ChannelNotExpired.selector);
+        channel.finalizeChannel(channelId);
+    }
+
+    function test_finalizeChannel_revert_permanentChannel() public {
+        bytes32 channelId = _openChannel();
+
+        vm.warp(block.timestamp + channel.MAX_TEMPORARY_TTL() + channel.CLOSE_GRACE_PERIOD());
+
+        vm.expectRevert(ITempoStreamChannel.ChannelNotExpired.selector);
+        channel.finalizeChannel(channelId);
+    }
+
+    function test_gas_finalizeChannel_fullRefund() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        vm.prank(makeAddr("finalizer"));
+        uint256 gasBefore = gasleft();
+        channel.finalizeChannel(channelId);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("finalizeChannel_fullRefund", gasUsed);
+        assertEq(channel.getChannel(channelId).payer, address(0));
+    }
+
+    function test_gas_finalizeChannel_partialSettle() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        bytes memory sig = _signVoucher(channelId, 300_000);
+        vm.prank(payee);
+        channel.settle(channelId, 300_000, sig);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        vm.prank(makeAddr("finalizer"));
+        uint256 gasBefore = gasleft();
+        channel.finalizeChannel(channelId);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("finalizeChannel_partialSettle", gasUsed);
+        assertEq(channel.getChannel(channelId).payer, address(0));
+    }
+
+    function test_gas_finalizeChannel_noRefund() public {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        bytes32 channelId = _openExpiringChannel(expiresAt);
+
+        bytes memory sig = _signVoucher(channelId, DEPOSIT);
+        vm.prank(payee);
+        channel.settle(channelId, DEPOSIT, sig);
+
+        vm.warp(expiresAt + channel.CLOSE_GRACE_PERIOD());
+
+        vm.prank(makeAddr("finalizer"));
+        uint256 gasBefore = gasleft();
+        channel.finalizeChannel(channelId);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("finalizeChannel_noRefund", gasUsed);
+        assertEq(channel.getChannel(channelId).payer, address(0));
     }
 
     // --- Batch Read Test ---
@@ -881,6 +1051,7 @@ contract TempoStreamChannelTest is BaseTest {
         (
             bool rawFinalized,
             uint64 rawCloseRequestedAt,
+            uint64 rawExpiresAt,
             address rawPayer,
             address rawPayee,
             address rawToken,
@@ -896,6 +1067,7 @@ contract TempoStreamChannelTest is BaseTest {
         assertEq(rawDeposit, 0);
         assertEq(rawSettled, 0);
         assertEq(rawCloseRequestedAt, 0);
+        assertEq(rawExpiresAt, 0);
         assertTrue(rawFinalized);
 
         assertTrue(channel.getChannel(channelId).finalized);

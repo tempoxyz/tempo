@@ -21,8 +21,11 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
 
     bytes32 public constant VOUCHER_TYPEHASH =
         keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
+    bytes32 public constant EXPIRING_CHANNEL_DOMAIN =
+        keccak256("TempoStreamChannel.expiringChannel.v1");
 
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
+    uint64 public constant MAX_TEMPORARY_TTL = 30 days;
 
     // --- State ---
 
@@ -86,6 +89,7 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
             deposit: deposit,
             settled: 0,
             closeRequestedAt: 0,
+            expiresAt: 0,
             finalized: false
         });
 
@@ -95,6 +99,70 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
         }
 
         emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
+    }
+
+    /**
+     * @notice Open a bounded-lifetime payment channel with escrowed funds.
+     * @param payee Address authorized to close with a voucher
+     * @param token TIP-20 token address
+     * @param deposit Amount to deposit
+     * @param salt Random salt for channel ID generation
+     * @param authorizedSigner Address authorized to sign vouchers (0 = use msg.sender)
+     * @param expiresAt Timestamp when the channel starts its expiry grace window
+     * @return channelId The unique expiring channel identifier
+     */
+    function openExpiring(
+        address payee,
+        address token,
+        uint128 deposit,
+        bytes32 salt,
+        address authorizedSigner,
+        uint64 expiresAt
+    )
+        external
+        override
+        returns (bytes32 channelId)
+    {
+        if (payee == address(0)) {
+            revert InvalidPayee();
+        }
+        if (!TempoUtilities.isTIP20(token)) {
+            revert InvalidToken();
+        }
+        if (deposit == 0) {
+            revert ZeroDeposit();
+        }
+        if (expiresAt <= block.timestamp || expiresAt > block.timestamp + MAX_TEMPORARY_TTL) {
+            revert InvalidExpiry();
+        }
+
+        channelId =
+            computeExpiringChannelId(msg.sender, payee, token, salt, authorizedSigner, expiresAt);
+
+        if (channels[channelId].payer != address(0) || channels[channelId].finalized) {
+            revert ChannelAlreadyExists();
+        }
+
+        channels[channelId] = Channel({
+            payer: msg.sender,
+            payee: payee,
+            token: token,
+            authorizedSigner: authorizedSigner,
+            deposit: deposit,
+            settled: 0,
+            closeRequestedAt: 0,
+            expiresAt: expiresAt,
+            finalized: false
+        });
+
+        bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
+        if (!success) {
+            revert TransferFailed();
+        }
+
+        emit ExpiringChannelOpened(
+            channelId, msg.sender, payee, token, authorizedSigner, salt, deposit, expiresAt
+        );
     }
 
     /**
@@ -345,6 +413,46 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
         emit ChannelClosed(channelId, payer, payee, settledAmount, refund);
     }
 
+    /**
+     * @notice Finalize an expired channel and refund unsettled funds to the payer.
+     * @dev Callable by anyone after expiresAt + CLOSE_GRACE_PERIOD.
+     * @param channelId The expired channel to finalize
+     */
+    function finalizeChannel(bytes32 channelId) external override {
+        Channel storage channel = channels[channelId];
+
+        if (channel.finalized) {
+            revert ChannelFinalized();
+        }
+        if (channel.payer == address(0)) {
+            revert ChannelNotFound();
+        }
+        if (channel.expiresAt == 0) {
+            revert ChannelNotExpired();
+        }
+        if (block.timestamp < channel.expiresAt + CLOSE_GRACE_PERIOD) {
+            revert ChannelNotExpired();
+        }
+
+        address token = channel.token;
+        address payer = channel.payer;
+        address payee = channel.payee;
+        uint128 settledAmount = channel.settled;
+        uint128 refund = channel.deposit - settledAmount;
+
+        delete channels[channelId];
+
+        if (refund > 0) {
+            bool success = ITIP20(token).transfer(payer, refund);
+            if (!success) {
+                revert TransferFailed();
+            }
+        }
+
+        emit ChannelExpired(channelId, payer, payee);
+        emit ChannelClosed(channelId, payer, payee, settledAmount, refund);
+    }
+
     // --- View Functions ---
 
     /**
@@ -376,6 +484,38 @@ contract TempoStreamChannel is ITempoStreamChannel, EIP712 {
     {
         return keccak256(
             abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid)
+        );
+    }
+
+    /**
+     * @notice Compute the channel ID for an expiring channel.
+     * @dev Includes a domain separator and expiresAt to avoid legacy channel ID collisions.
+     */
+    function computeExpiringChannelId(
+        address payer,
+        address payee,
+        address token,
+        bytes32 salt,
+        address authorizedSigner,
+        uint64 expiresAt
+    )
+        public
+        view
+        override
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                EXPIRING_CHANNEL_DOMAIN,
+                payer,
+                payee,
+                token,
+                salt,
+                authorizedSigner,
+                expiresAt,
+                address(this),
+                block.chainid
+            )
         );
     }
 
