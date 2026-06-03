@@ -1,7 +1,9 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate_void, view};
+use crate::{
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate, mutate_void, view,
+};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
@@ -17,6 +19,7 @@ const T3_ADDED: &[[u8; 4]] = &[
     authorizeKeyCall::SELECTOR,
     IAccountKeychain::setAllowedCallsCall::SELECTOR,
     IAccountKeychain::removeAllowedCallsCall::SELECTOR,
+    IAccountKeychain::pruneExpiryCall::SELECTOR,
     IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
     IAccountKeychain::getAllowedCallsCall::SELECTOR,
 ];
@@ -124,6 +127,9 @@ impl Precompile for AccountKeychain {
                     mutate_void(call, msg_sender, |sender, c| {
                         self.remove_allowed_calls(sender, c)
                     })
+                }
+                IAccountKeychainCalls::pruneExpiry(call) => {
+                    mutate(call, msg_sender, |sender, c| self.prune_expiry(sender, c))
                 }
                 IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
                 IAccountKeychainCalls::getRemainingLimit(call) => {
