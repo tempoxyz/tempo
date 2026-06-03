@@ -73,8 +73,10 @@ pub trait StorageCreditsBackend {
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
-    values: &SStoreResult,
+    state_load: &StateLoad<SStoreResult>,
 ) -> Result<GasStateOutcome, B::Error> {
+    let (values, is_cold) = (&state_load.data, state_load.is_cold);
+
     // TIP-1060 removes the legacy storage-clearing gas refunds.
     let mut outcome = GasStateOutcome {
         skip_gas: false,
@@ -88,6 +90,9 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
     // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
     if owner == STORAGE_CREDITS_ADDRESS {
+        if is_cold {
+            backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+        }
         if values.new_values_changes_present() && values.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         }
@@ -134,7 +139,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             CreditMode::Direct => {
                 // Only if there is a credit available, skip gas
                 if storage_credits.balance > 0 {
-                    // Consume the storage credit and charge 20k for the SSTORE.
+                    // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
+                    if state_load.is_cold {
+                        backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+                    }
                     backend.charge_gas(20_000)?;
                     storage_credits.balance -= 1;
                     was_changed = true;
