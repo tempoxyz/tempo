@@ -67,9 +67,10 @@ pub(crate) struct PayloadBudgetDecision {
 /// the proposer-only time spent waiting for more transactions, which is not
 /// replayed by validators and therefore counts once.
 /// `validation_latency` is an estimate of validator-side replay work from
-/// previously validated proposals. If absent, or if it cannot estimate the
-/// current block shape, the conservative builder-work projection is reused for
-/// the validator side.
+/// previously validated proposals. If no latency estimate is usable for the
+/// current block shape, the validator reserve falls back to
+/// `predicted_builder_work`, which is the replayable proposer work projected
+/// from this build.
 /// `current_validation_shape` describes the block currently being assembled.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
