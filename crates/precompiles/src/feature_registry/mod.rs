@@ -6,9 +6,11 @@ use crate::{
     FEATURE_REGISTRY_ADDRESS, SYSTEM_CALLER_ADDRESS,
     error::Result,
     storage::{Handler, Mapping},
+    validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, U256};
-use tempo_contracts::precompiles::{FeatureRegistryError, IFeatureRegistry};
+use tempo_chainspec::epoch::block_to_epoch;
+use tempo_contracts::precompiles::{FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
@@ -37,6 +39,18 @@ impl FeatureRegistry {
         self.__initialize()
     }
 
+    pub fn owner(&self) -> Result<Address> {
+        ValidatorConfigV2::new().owner()
+    }
+
+    fn check_owner(&self, msg_sender: Address) -> Result<()> {
+        if self.owner()? != msg_sender {
+            return Err(FeatureRegistryError::unauthorized().into());
+        }
+
+        Ok(())
+    }
+
     /// Returns the highest active protocol feature ID.
     pub fn features_tip(&self) -> Result<u64> {
         self.features_tip.read()
@@ -63,6 +77,49 @@ impl FeatureRegistry {
     /// Returns the latest feature tip reported as supported by `validator`.
     pub fn validator_supported_features_tip(&self, validator: Address) -> Result<u64> {
         self.validator_supported_features_tip[validator].read()
+    }
+
+    pub fn schedule_features_tip(
+        &mut self,
+        msg_sender: Address,
+        call: IFeatureRegistry::scheduleFeaturesTipCall,
+    ) -> Result<()> {
+        self.check_owner(msg_sender)?;
+
+        if call.featuresTip <= self.features_tip.read()? {
+            return Err(FeatureRegistryError::features_tip_not_increasing().into());
+        }
+
+        if self.scheduled_features_tip.read()? != 0 {
+            return Err(FeatureRegistryError::features_tip_already_scheduled().into());
+        }
+
+        if call.activationEpoch <= block_to_epoch(self.storage.block_number()) {
+            return Err(FeatureRegistryError::activation_epoch_not_future().into());
+        }
+
+        self.scheduled_features_tip.write(call.featuresTip)?;
+        self.scheduled_activation_epoch
+            .write(call.activationEpoch)?;
+        self.emit_event(FeatureRegistryEvent::features_tip_scheduled(
+            call.featuresTip,
+            call.activationEpoch,
+        ))
+    }
+
+    pub fn cancel_scheduled_features_tip(&mut self, msg_sender: Address) -> Result<()> {
+        self.check_owner(msg_sender)?;
+
+        let scheduled_features_tip = self.scheduled_features_tip.read()?;
+        if scheduled_features_tip == 0 {
+            return Err(FeatureRegistryError::features_tip_not_scheduled().into());
+        }
+
+        self.scheduled_features_tip.write(0)?;
+        self.scheduled_activation_epoch.write(0)?;
+        self.emit_event(FeatureRegistryEvent::features_tip_schedule_cancelled(
+            scheduled_features_tip,
+        ))
     }
 
     /// Activates the scheduled feature tip from the block-level system caller.
