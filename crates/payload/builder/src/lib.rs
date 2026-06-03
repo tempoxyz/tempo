@@ -620,7 +620,7 @@ where
                         }
                     }
 
-                    while !source_exhausted && !planner.is_full() {
+                    while !source_exhausted && planner.can_schedule() {
                         let Some(pool_tx) = best_txs.next() else {
                             source_exhausted = true;
                             break;
@@ -646,22 +646,21 @@ where
                         planner.schedule(pool_tx);
                     }
 
-                    if !planner.has_pending() {
-                        break if cumulative_gas_used >= non_shared_gas_limit {
-                            BlockBuildStopReason::GasLimit
-                        } else if skipped_oversized_block {
-                            BlockBuildStopReason::RlpBlockSizeLimit
-                        } else {
-                            BlockBuildStopReason::TxPoolEmpty
-                        };
-                    }
-
-                    let planned_tx = match planner.next() {
-                        Some(Ok(planned_tx)) => planned_tx,
-                        Some(Err(reason)) => {
+                    let planned_tx = match planner.next(!source_exhausted) {
+                        blockstm::PlannerNext::Planned(Ok(planned_tx)) => planned_tx,
+                        blockstm::PlannerNext::Planned(Err(reason)) => {
                             return Err(planning_error(reason));
                         }
-                        None => continue,
+                        blockstm::PlannerNext::ScheduleMore => continue,
+                        blockstm::PlannerNext::Empty => {
+                            break if cumulative_gas_used >= non_shared_gas_limit {
+                                BlockBuildStopReason::GasLimit
+                            } else if skipped_oversized_block {
+                                BlockBuildStopReason::RlpBlockSizeLimit
+                            } else {
+                                BlockBuildStopReason::TxPoolEmpty
+                            };
+                        }
                     };
 
                     let pool_tx = planned_tx.tx;

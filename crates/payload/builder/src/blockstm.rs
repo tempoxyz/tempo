@@ -73,9 +73,15 @@ pub(crate) struct Planner<'a> {
     rx: Receiver<PlanningResult>,
     next_sequence: usize,
     next_emit: usize,
-    in_flight: usize,
-    max_in_flight: usize,
+    pending_jobs: usize,
+    max_pending_jobs: usize,
     buffered: BTreeMap<usize, Result<PlannedTransfer, Tip20TransferBlockstmFallback>>,
+}
+
+pub(crate) enum PlannerNext {
+    Planned(Result<PlannedTransfer, Tip20TransferBlockstmFallback>),
+    ScheduleMore,
+    Empty,
 }
 
 impl<'a> Planner<'a> {
@@ -89,24 +95,21 @@ impl<'a> Planner<'a> {
             rx,
             next_sequence: 0,
             next_emit: 0,
-            in_flight: 0,
-            max_in_flight: (pool.current_num_threads() * 2).max(1),
+            pending_jobs: 0,
+            max_pending_jobs: (pool.current_num_threads() * 2).max(1),
             buffered: BTreeMap::new(),
         }
     }
 
-    pub(crate) fn is_full(&self) -> bool {
-        self.in_flight >= self.max_in_flight
-    }
-
-    pub(crate) fn has_pending(&self) -> bool {
-        self.in_flight > 0
+    pub(crate) fn can_schedule(&mut self) -> bool {
+        self.drain_completed();
+        self.pending_jobs < self.max_pending_jobs
     }
 
     pub(crate) fn schedule(&mut self, tx: BestTransaction) {
         let sequence = self.next_sequence;
         self.next_sequence += 1;
-        self.in_flight += 1;
+        self.pending_jobs += 1;
 
         let result_tx = self.tx.clone();
         let ctx = self.ctx;
@@ -124,22 +127,47 @@ impl<'a> Planner<'a> {
         });
     }
 
-    pub(crate) fn next(
-        &mut self,
-    ) -> Option<Result<PlannedTransfer, Tip20TransferBlockstmFallback>> {
+    pub(crate) fn next(&mut self, can_schedule_more: bool) -> PlannerNext {
         loop {
             if let Some(item) = self.buffered.remove(&self.next_emit) {
                 self.next_emit += 1;
-                self.in_flight -= 1;
-                return Some(item);
+                return PlannerNext::Planned(item);
             }
-            if self.in_flight == 0 {
-                return None;
+            if self.next_emit == self.next_sequence {
+                return PlannerNext::Empty;
             }
 
-            let result = self.rx.recv().ok()?;
-            self.buffered.insert(result.sequence, result.item);
+            self.drain_completed();
+            if let Some(item) = self.buffered.remove(&self.next_emit) {
+                self.next_emit += 1;
+                return PlannerNext::Planned(item);
+            }
+            if self.next_emit == self.next_sequence {
+                return PlannerNext::Empty;
+            }
+            if can_schedule_more && self.pending_jobs < self.max_pending_jobs {
+                return PlannerNext::ScheduleMore;
+            }
+
+            let Ok(result) = self.rx.recv() else {
+                return PlannerNext::Empty;
+            };
+            self.record_completed(result);
         }
+    }
+
+    fn drain_completed(&mut self) {
+        while let Ok(result) = self.rx.try_recv() {
+            self.record_completed(result);
+        }
+    }
+
+    fn record_completed(&mut self, result: PlanningResult) {
+        self.pending_jobs = self
+            .pending_jobs
+            .checked_sub(1)
+            .expect("completed planning job without pending job");
+        self.buffered.insert(result.sequence, result.item);
     }
 }
 
