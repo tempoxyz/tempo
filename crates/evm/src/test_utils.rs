@@ -4,10 +4,10 @@ use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes};
 use reth_chainspec::EthChainSpec;
 use reth_evm::block::StateDB;
-use reth_revm::context::BlockEnv;
+use reth_revm::context::{BlockEnv, CfgEnv};
 use revm::inspector::NoOpInspector;
-use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
-use tempo_revm::TempoBlockEnv;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
+use tempo_revm::{TempoBlockEnv, gas_params::tempo_gas_params_with_amsterdam};
 
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
 use alloy_evm::eth::EthBlockExecutionCtx;
@@ -54,6 +54,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) consensus_context: Option<TempoConsensusContext>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    pub(crate) runtime_spec: Option<TempoHardfork>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
     pub(crate) amsterdam_eip8037_enabled: bool,
     // Test state to seed into the executor after creation
@@ -73,6 +74,7 @@ impl Default for TestExecutorBuilder {
             consensus_context: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
+            runtime_spec: None,
             amsterdam_eip8037_enabled: false,
             initial_section: None,
             initial_seen_subblocks: Vec::new(),
@@ -112,6 +114,11 @@ impl TestExecutorBuilder {
         self
     }
 
+    pub(crate) fn with_runtime_spec(mut self, spec: TempoHardfork) -> Self {
+        self.runtime_spec = Some(spec);
+        self
+    }
+
     /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
     /// behavior independently of the T4 hardfork.
     pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
@@ -146,8 +153,14 @@ impl TestExecutorBuilder {
         db: DB,
         chainspec: &'a Arc<TempoChainSpec>,
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
-        let mut cfg_env = revm::context::CfgEnv::default();
+        let mut cfg_env = CfgEnv::default();
         cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+        if let Some(spec) = self.runtime_spec {
+            cfg_env = cfg_env.with_spec_and_gas_params(
+                spec,
+                tempo_gas_params_with_amsterdam(spec, self.amsterdam_eip8037_enabled),
+            );
+        }
 
         let evm = TempoEvm::new(
             db,

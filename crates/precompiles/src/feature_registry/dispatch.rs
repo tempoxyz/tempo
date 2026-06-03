@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, error::TempoPrecompileError, storage::StorageCtx,
-    view,
+    Precompile, charge_input_cost, dispatch_call, error::TempoPrecompileError, mutate_void,
+    storage::StorageCtx, view,
 };
 use alloy::{
     primitives::Address,
@@ -17,7 +17,7 @@ fn unsupported<T: SolCall>() -> PrecompileResult {
 }
 
 impl Precompile for FeatureRegistry {
-    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
@@ -41,6 +41,11 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::scheduleFeaturesTip(_) => {
                     unsupported::<IFeatureRegistry::scheduleFeaturesTipCall>()
                 }
+                IFeatureRegistryCalls::activateScheduledFeaturesTip(call) => {
+                    mutate_void(call, msg_sender, |sender, call| {
+                        self.activate_scheduled_features_tip_from_system(sender, call.currentEpoch)
+                    })
+                }
                 IFeatureRegistryCalls::cancelScheduledFeaturesTip(_) => {
                     unsupported::<IFeatureRegistry::cancelScheduledFeaturesTipCall>()
                 }
@@ -61,13 +66,16 @@ impl Precompile for FeatureRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        SYSTEM_CALLER_ADDRESS,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+    };
     use alloy::{
         primitives::U256,
         sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
-    use tempo_contracts::precompiles::UnknownFunctionSelector;
+    use tempo_contracts::precompiles::{FeatureRegistryError, UnknownFunctionSelector};
 
     #[test]
     fn features_tip_defaults_to_zero() -> eyre::Result<()> {
@@ -186,6 +194,44 @@ mod tests {
             assert!(registry.activate_scheduled_features_tip(21)?);
             assert_eq!(registry.features_tip()?, 13);
 
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 0);
+            assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_features_tip_dispatch_requires_system_caller() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let call = IFeatureRegistry::activateScheduledFeaturesTipCall { currentEpoch: 21 };
+
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(result.is_revert());
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, FeatureRegistryError::unauthorized());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_features_tip_dispatch_allows_system_caller() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            let call = IFeatureRegistry::activateScheduledFeaturesTipCall { currentEpoch: 21 };
+            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
+            assert!(!result.is_revert());
+
+            assert_eq!(registry.features_tip()?, 13);
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 0);
             assert_eq!(scheduled.activationEpoch, 0);

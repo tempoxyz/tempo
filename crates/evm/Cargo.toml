@@ -34,6 +34,7 @@ alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
 
 derive_more.workspace = true
@@ -45,7 +46,6 @@ alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
-alloy-sol-types.workspace = true
 criterion.workspace = true
 revm.workspace = true
 reth-execution-cache.workspace = true

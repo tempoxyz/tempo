@@ -1,6 +1,5 @@
 use crate::{TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
@@ -16,26 +15,12 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    feature_registry::FeatureRegistry,
-    storage::{Handler, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
-
-/// Activates the scheduled protocol feature tip if its target epoch has arrived.
-pub fn activate_scheduled_features_tip<DB: Database + core::fmt::Debug>(
-    ctx: &mut crate::evm::TempoContext<DB>,
-    current_epoch: u64,
-) -> TempoResult<bool> {
-    let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
-
-    StorageCtx::enter(&mut provider, || {
-        FeatureRegistry::new().activate_scheduled_features_tip(current_epoch)
-    })
-}
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.

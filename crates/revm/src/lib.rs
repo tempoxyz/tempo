@@ -9,7 +9,7 @@ mod block;
 use tracing as _;
 
 mod common;
-pub use common::{TempoStateAccess, TempoTx, activate_scheduled_features_tip};
+pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
 pub mod evm;
 pub mod exec;
