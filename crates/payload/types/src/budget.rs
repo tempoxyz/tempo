@@ -236,9 +236,10 @@ impl ValidationLatencyEstimate {
 /// the builder grows beyond the workloads that produced the feedback.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationLatencyEstimator {
-    /// Samples are keyed by id for retention; count maps are keyed by observed
-    /// values so estimate snapshots can read percentiles without sorting.
-    samples: BTreeMap<u64, ValidationLatencySample>,
+    /// Samples are kept in id order for retention; count maps are keyed by
+    /// observed values so estimate snapshots can read percentiles without
+    /// sorting.
+    sample_window: Vec<(u64, ValidationLatencySample)>,
     elapsed_counts: BTreeMap<Duration, usize>,
     gas_used_counts: BTreeMap<u64, usize>,
     transaction_count_counts: BTreeMap<usize, usize>,
@@ -263,6 +264,27 @@ impl ValidationLatencyEstimator {
         );
     }
 
+    fn insert_sample(&mut self, sample_id: u64, sample: ValidationLatencySample) {
+        let insert_index = match self
+            .sample_window
+            .binary_search_by_key(&sample_id, |(id, _)| *id)
+        {
+            Ok(index) => {
+                let (_, replaced) = self.sample_window.remove(index);
+                self.remove_sample_counts(replaced);
+                index
+            }
+            Err(index) => index,
+        };
+
+        self.insert_sample_counts(sample);
+        self.sample_window.insert(insert_index, (sample_id, sample));
+        while self.sample_window.len() > VALIDATION_LATENCY_SAMPLE_WINDOW {
+            let (_, evicted) = self.sample_window.remove(0);
+            self.remove_sample_counts(evicted);
+        }
+    }
+
     /// Records local time spent validating a block through the execution layer.
     pub fn observe(
         &mut self,
@@ -275,23 +297,14 @@ impl ValidationLatencyEstimator {
         }
 
         let sample = ValidationLatencySample { workload, elapsed };
-        if let Some(replaced) = self.samples.insert(sample_id, sample) {
-            self.remove_sample_counts(replaced);
-        }
-        self.insert_sample_counts(sample);
-        while self.samples.len() > VALIDATION_LATENCY_SAMPLE_WINDOW {
-            let Some((_, evicted)) = self.samples.pop_first() else {
-                break;
-            };
-            self.remove_sample_counts(evicted);
-        }
+        self.insert_sample(sample_id, sample);
 
         debug!(
             sample_id,
             workload = ?workload,
             elapsed = ?elapsed,
             estimate = ?self.estimate(),
-            samples = self.samples.len(),
+            samples = self.sample_window.len(),
             "updated validation latency estimate"
         );
     }
@@ -302,7 +315,7 @@ impl ValidationLatencyEstimator {
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
     pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
-        let sample_count = self.samples.len();
+        let sample_count = self.sample_window.len();
         let (p50_elapsed, p90_elapsed) = p50_p90_from_counts(&self.elapsed_counts, sample_count)?;
         let p90_floor = scale_duration(p90_elapsed, VALIDATION_LATENCY_P90_FLOOR_SCALE);
         Some(ValidationLatencyEstimate {
@@ -387,6 +400,22 @@ mod tests {
                 .estimate()
                 .and_then(|estimate| estimate.estimate(ValidationLatencyWorkload::new(1, 0))),
             Some(Duration::from_nanos(54))
+        );
+    }
+
+    #[test]
+    fn validation_latency_estimate_replaces_existing_sample_id() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        let workload = ValidationLatencyWorkload::new(100, 0);
+
+        estimator.observe(1, workload, Duration::from_millis(100));
+        estimator.observe(1, workload, Duration::from_millis(200));
+
+        assert_eq!(
+            estimator
+                .estimate()
+                .and_then(|estimate| estimate.estimate(workload)),
+            Some(Duration::from_millis(200))
         );
     }
 
