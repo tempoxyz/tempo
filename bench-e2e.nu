@@ -26,7 +26,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
-    "--builder.enable-prewarming"
+    "--engine.share-execution-cache-with-payload-builder"
     "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
