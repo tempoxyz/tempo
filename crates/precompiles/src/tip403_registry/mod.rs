@@ -186,14 +186,8 @@ impl ReceivePolicyConfig {
         }
     }
 
-    fn sender_policy_type(&self) -> Result<PolicyType> {
-        self.sender_policy_type
-            .try_into()
-            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
-    }
-
-    fn token_filter_type(&self) -> Result<PolicyType> {
-        self.token_filter_type
+    fn receive_policy_type(policy_type: u8) -> Result<PolicyType> {
+        policy_type
             .try_into()
             .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
     }
@@ -301,7 +295,10 @@ impl TIP403Registry {
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let config = self.receive_policies[account].config.read()?;
         let (sender_policy_type, token_filter_type) = if self.storage.spec().is_t6() {
-            (config.sender_policy_type()?, config.token_filter_type()?)
+            (
+                ReceivePolicyConfig::receive_policy_type(config.sender_policy_type)?,
+                ReceivePolicyConfig::receive_policy_type(config.token_filter_type)?,
+            )
         } else {
             (
                 self.receive_policy_type(config.sender_policy_id)?,
