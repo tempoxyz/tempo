@@ -400,18 +400,18 @@ vergen-git2 = "9.1.0"
 
 [patch.crates-io]
 # revm with TIP-1060 changes
-revm = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-bytecode = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-context = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-context-interface = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-database = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-database-interface = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-handler = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-inspector = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-interpreter = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-precompile = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-primitives = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
-revm-state = { git = "https://github.com/bluealloy/revm", branch = "tip1060" }
+revm = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-bytecode = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-context = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-context-interface = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-database = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-database-interface = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-handler = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-inspector = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-interpreter = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-precompile = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-primitives = { git = "https://github.com/bluealloy/revm", branch = "main" }
+revm-state = { git = "https://github.com/bluealloy/revm", branch = "main" }
 
 # Commonware at HEAD after PR #3588 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }

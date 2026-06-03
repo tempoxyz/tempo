@@ -2269,7 +2269,7 @@ mod tests {
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
-            (CreditMode::Direct, 53_694u64, 1u64, 0u64),
+            (CreditMode::Direct, 55_794u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -2565,9 +2565,9 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            303_662,
+            305_762,
             "Direct gets the synchronous discount without an additional 230k settlement refund \
-             (plus the 2.8k nonzero->nonzero credit-slot store)"
+             (plus the retained cold access cost and 2.8k nonzero->nonzero credit-slot store)"
         );
         assert_eq!(
             refund.tx_gas_used(),
