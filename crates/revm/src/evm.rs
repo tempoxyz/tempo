@@ -2034,6 +2034,52 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1060 clearing regression: deleting a nonzero slot should mint one token, but the
+    /// pre-existing SSTORE clearing refund must be removed.
+    #[test]
+    fn test_tip1060_sstore_clear_mints_token_without_legacy_refund() -> eyre::Result<()> {
+        // PUSH1 0x00 PUSH1 0x00 SSTORE STOP: clear slot 0.
+        let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x63);
+
+        let mut evm = create_funded_evm_t6(caller);
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(clear_bytecode),
+                ..Default::default()
+            },
+        );
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(500_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "clear tx should succeed");
+        assert_eq!(
+            result.gas().inner_refunded(),
+            0,
+            "TIP-1060 removes the legacy SSTORE clearing refund"
+        );
+        assert_eq!(
+            gas_token_balance(&evm, contract),
+            1,
+            "clearing a nonzero slot should mint one storage gas token"
+        );
+
+        Ok(())
+    }
+
     /// TIP-1060: a single transaction that creates then clears the same storage slot
     /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation modes.
     /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
