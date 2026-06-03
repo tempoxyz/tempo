@@ -219,9 +219,7 @@ impl BestTransactionsPrewarming {
                 }
 
                 let mut tx_env = tx.transaction.clone_tx_env();
-                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-                }
+                tx_env.expiring_nonce_idx = expiring_nonce_offset;
 
                 if let Err(err) = evm.transact_raw(tx_env) {
                     trace!(
