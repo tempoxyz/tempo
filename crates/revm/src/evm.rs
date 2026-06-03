@@ -2034,6 +2034,68 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1060 storage-credit bookkeeping regression: writes to the storage-credits precompile's
+    /// own storage are protocol bookkeeping and must not be treated as TIP-1000 storage creation or
+    /// recursively fed back into TIP-1060 accounting.
+    #[test]
+    fn test_tip1060_storage_credits_address_exempt_from_tip1000_and_tip1060() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let mut evm = create_funded_evm_t6(caller);
+        evm.ctx.db_mut().insert_account_info(
+            caller,
+            AccountInfo {
+                balance: U256::from(DEFAULT_BALANCE),
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
+        seed_storage_credits_state(&mut evm, STORAGE_CREDITS_ADDRESS, 1, CreditMode::Refund);
+
+        let calldata = ITIP1060StorageCredits::setModeCall {
+            newMode: Mode::Preserve,
+        }
+        .abi_encode();
+
+        let tx = TxBuilder::new()
+            .call(STORAGE_CREDITS_ADDRESS, &calldata)
+            .nonce(1)
+            // should succeed because the storage-credits precompile is exempt from TIP-1000.
+            .gas_limit(50_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(
+            result.is_success(),
+            "setMode should not need the 250k TIP-1000 storage-creation charge"
+        );
+        assert!(
+            result.tx_gas_used() < 50_000,
+            "setMode should fit under the low gas limit when storage-credit state is exempt"
+        );
+
+        let caller_state = storage_credits_state(&evm, caller);
+        assert_eq!(
+            caller_state.balance, 0,
+            "setMode must not mint caller credits"
+        );
+        assert_eq!(caller_state.mode, CreditMode::Preserve);
+
+        // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
+        let self_state = storage_credits_state(&evm, STORAGE_CREDITS_ADDRESS);
+        assert_eq!(
+            self_state.balance, 1,
+            "storage-credits bookkeeping must not recursively consume its own storage credits"
+        );
+        assert_eq!(self_state.mode, CreditMode::Refund);
+
+        Ok(())
+    }
+
     /// TIP-1060 clearing regression: deleting a nonzero slot should mint one storage credit, but the
     /// pre-existing SSTORE clearing refund must be removed.
     #[test]
