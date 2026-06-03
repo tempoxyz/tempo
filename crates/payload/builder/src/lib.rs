@@ -18,7 +18,7 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -60,7 +60,7 @@ use reth_transaction_pool::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -538,6 +538,17 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
+        let blockstm_prewarm = if self.enable_prewarming && self.enable_blockstm_tip20_transfers {
+            Some(PrewarmingExecutionContext::new(
+                self.provider.clone(),
+                execution_cache.clone(),
+                parent_header.hash(),
+                executor.evm().evm_env(),
+                Arc::new(AtomicBool::new(false)),
+            ))
+        } else {
+            None
+        };
         let mut best_txs = StateAwareBestTransactions::new(
             if self.enable_prewarming && !self.enable_blockstm_tip20_transfers {
                 Box::new(BestTransactionsPrewarming::new(
@@ -586,8 +597,10 @@ where
                         beneficiary,
                         basefee: base_fee as u128,
                         blob_gasprice: executor.evm().block().blob_gasprice().unwrap_or_default(),
+                        block_timestamp: executor.evm().block().timestamp().saturating_to::<u64>(),
                         spec: executor.evm().cfg.spec,
                     },
+                    blockstm_prewarm,
                 );
                 let planning_error = |reason: Tip20TransferBlockstmFallback| {
                     self.metrics.inc_blockstm_tip20_fallback(reason.as_str());

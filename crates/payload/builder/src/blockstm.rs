@@ -1,5 +1,6 @@
 use alloy_primitives::Address;
-use reth_evm::Database;
+use reth_evm::{Database, Evm};
+use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use std::{
     collections::BTreeMap,
@@ -10,12 +11,15 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
     Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
-    build_tip20_transfer_blockstm_plan,
+    build_tip20_transfer_blockstm_plan, prewarm_tip20_transfer_blockstm_plan,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
 };
 use tempo_transaction_pool::best::BestTransaction;
+use tracing::trace;
+
+use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 
 #[derive(Debug)]
 pub(crate) enum PayloadBuildError {
@@ -50,6 +54,7 @@ pub(crate) struct PlanningContext {
     pub(crate) beneficiary: Address,
     pub(crate) basefee: u128,
     pub(crate) blob_gasprice: u128,
+    pub(crate) block_timestamp: u64,
     pub(crate) spec: TempoHardfork,
 }
 
@@ -66,9 +71,10 @@ struct PlanningResult {
 }
 
 /// Ordered TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
-pub(crate) struct Planner<'a> {
+pub(crate) struct Planner<'a, Provider> {
     pool: &'a WorkerPool,
     ctx: PlanningContext,
+    prewarm: Option<PrewarmingExecutionContext<Provider>>,
     tx: Sender<PlanningResult>,
     rx: Receiver<PlanningResult>,
     next_sequence: usize,
@@ -84,13 +90,21 @@ pub(crate) enum PlannerNext {
     Empty,
 }
 
-impl<'a> Planner<'a> {
-    pub(crate) fn new(executor: &'a TaskExecutor, ctx: PlanningContext) -> Self {
+impl<'a, Provider> Planner<'a, Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    pub(crate) fn new(
+        executor: &'a TaskExecutor,
+        ctx: PlanningContext,
+        prewarm: Option<PrewarmingExecutionContext<Provider>>,
+    ) -> Self {
         let pool = executor.prewarming_pool();
         let (tx, rx) = mpsc::channel();
         Self {
             pool,
             ctx,
+            prewarm,
             tx,
             rx,
             next_sequence: 0,
@@ -113,6 +127,7 @@ impl<'a> Planner<'a> {
 
         let result_tx = self.tx.clone();
         let ctx = self.ctx;
+        let prewarm = self.prewarm.clone();
         self.pool.spawn(move || {
             let item = build_tip20_transfer_blockstm_plan(
                 &candidate(&tx),
@@ -122,7 +137,12 @@ impl<'a> Planner<'a> {
                 ctx.blob_gasprice,
                 ctx.spec,
             )
-            .map(|plan| PlannedTransfer { tx, plan });
+            .map(|plan| {
+                if let Some(prewarm) = prewarm {
+                    prewarm_tip20_transfer_plan(&prewarm, &plan, ctx.block_timestamp, sequence);
+                }
+                PlannedTransfer { tx, plan }
+            });
             let _ = result_tx.send(PlanningResult { sequence, item });
         });
     }
@@ -169,6 +189,35 @@ impl<'a> Planner<'a> {
             .expect("completed planning job without pending job");
         self.buffered.insert(result.sequence, result.item);
     }
+}
+
+fn prewarm_tip20_transfer_plan<Provider>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    plan: &Tip20TransferBlockstmPlan,
+    block_timestamp: u64,
+    sequence: usize,
+) where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    if prewarm.is_stopped() {
+        return;
+    }
+
+    WorkerPool::with_worker_mut(|worker| {
+        let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+            return;
+        };
+
+        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan, block_timestamp)
+        {
+            trace!(
+                target: "payload_builder",
+                ?err,
+                sequence,
+                "Failed to prewarm BlockSTM TIP-20 plan storage"
+            );
+        }
+    });
 }
 
 /// Builds an executor-owned BlockSTM candidate from a pooled transaction.

@@ -5,7 +5,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, IntoLogData, Log, TxKind, U256};
 use alloy_sol_types::SolInterface;
-use reth_evm::block::StateDB;
+use reth_evm::{Database, block::StateDB};
 use reth_primitives_traits::Recovered;
 use reth_revm::{
     Inspector,
@@ -195,6 +195,61 @@ impl Tip20TransferBlockstmPlan {
             .chain(self.fee_settle.write_set())
             .collect()
     }
+}
+
+pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
+    db: &mut DB,
+    plan: &Tip20TransferBlockstmPlan,
+    block_timestamp: u64,
+) -> Result<(), DB::Error> {
+    let mut keys = plan.read_set();
+    keys.extend(plan.write_set());
+    let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
+    accounts.insert(plan.nonce.caller);
+
+    for key in keys {
+        let _ = db.storage(key.address, key.slot)?;
+    }
+    prewarm_expiring_nonce_base_state(db, plan, block_timestamp)?;
+
+    for account in accounts {
+        let _ = db.basic(account)?;
+    }
+
+    Ok(())
+}
+
+fn prewarm_expiring_nonce_base_state<DB: Database>(
+    db: &mut DB,
+    plan: &Tip20TransferBlockstmPlan,
+    block_timestamp: u64,
+) -> Result<(), DB::Error> {
+    let Tip20ExpiringNonceAction {
+        replay_hash,
+        valid_before: _,
+        expiring_nonce_idx,
+        ..
+    } = plan.nonce;
+
+    let seen_key = expiring_nonce_seen_key(replay_hash);
+    let seen_expiry = db.storage(seen_key.address, seen_key.slot)?;
+    if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
+        return Ok(());
+    }
+
+    let ptr_key = expiring_nonce_ring_ptr_key();
+    let ptr = db.storage(ptr_key.address, ptr_key.slot)?.to::<u32>();
+    let offset = expiring_nonce_idx.unwrap_or_default() % EXPIRING_NONCE_SET_CAPACITY as usize;
+    let idx = ((u64::from(ptr) + offset as u64) % u64::from(EXPIRING_NONCE_SET_CAPACITY)) as u32;
+    let ring_key = expiring_nonce_ring_key(idx);
+    let old_hash_word = db.storage(ring_key.address, ring_key.slot)?;
+
+    if old_hash_word != U256::ZERO {
+        let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
+        let _ = db.storage(old_seen_key.address, old_seen_key.slot)?;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
