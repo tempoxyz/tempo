@@ -18,7 +18,7 @@ use std::time::Duration;
 #[cfg(test)]
 use tempo_payload_types::ValidationLatencyEstimator;
 use tempo_payload_types::{
-    MarshalPersistEstimator, ValidatorValidationEstimate, ValidatorValidationShape,
+    MarshalPersistEstimator, ValidationLatencyEstimate, ValidatorValidationShape,
 };
 
 /// Fixed-point scale for build time multipliers.
@@ -66,7 +66,7 @@ pub(crate) struct PayloadBudgetDecision {
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
 /// replayed by validators and therefore counts once.
-/// `validator_validation` is an estimate of validator-side replay work from
+/// `validation_latency` is an estimate of validator-side replay work from
 /// previously validated proposals. If absent, or if it cannot estimate the
 /// current block shape, the conservative builder-work projection is reused for
 /// the validator side.
@@ -81,14 +81,14 @@ pub(crate) fn payload_budget_decision(
     multiplier: u64,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
-    validator_validation: Option<ValidatorValidationEstimate>,
+    validation_latency: Option<ValidationLatencyEstimate>,
     current_validation_shape: ValidatorValidationShape,
 ) -> PayloadBudgetDecision {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let validator_validation_estimate =
-        validator_validation.and_then(|estimate| estimate.estimate(current_validation_shape));
-    let predicted_validator_work = validator_validation_estimate.unwrap_or(predicted_builder_work);
+    let validation_latency_estimate =
+        validation_latency.and_then(|estimate| estimate.estimate(current_validation_shape));
+    let predicted_validator_work = validation_latency_estimate.unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
@@ -111,7 +111,7 @@ fn payload_budget_exhausted(
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
-    validator_validation: Option<ValidatorValidationEstimate>,
+    validation_latency: Option<ValidationLatencyEstimate>,
     current_validation_shape: ValidatorValidationShape,
 ) -> bool {
     payload_budget_decision(
@@ -120,7 +120,7 @@ fn payload_budget_exhausted(
         multiplier,
         marshal_persist,
         block_size_bytes,
-        validator_validation,
+        validation_latency,
         current_validation_shape,
     )
     .total_reserved
@@ -161,10 +161,10 @@ pub(crate) fn decay_build_time_multiplier(current: u64, observed: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn validator_validation_estimate(
+    fn validation_latency_estimate(
         shape: ValidatorValidationShape,
         elapsed: Duration,
-    ) -> Option<ValidatorValidationEstimate> {
+    ) -> Option<ValidationLatencyEstimate> {
         let mut estimator = ValidationLatencyEstimator::default();
         estimator.observe(1, shape, elapsed);
         estimator.estimate()
@@ -234,14 +234,14 @@ mod tests {
     #[test]
     fn payload_budget_uses_validator_feedback_when_available() {
         let shape = ValidatorValidationShape::new(100, 0);
-        let validator_validation = validator_validation_estimate(shape, Duration::from_millis(80));
+        let validation_latency = validation_latency_estimate(shape, Duration::from_millis(80));
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
-            validator_validation,
+            validation_latency,
             shape,
         );
 
@@ -256,7 +256,7 @@ mod tests {
             Duration::from_millis(215),
             MarshalPersistEstimator::default(),
             0,
-            validator_validation,
+            validation_latency,
             shape,
         ));
         assert!(!payload_budget_exhausted(
@@ -266,14 +266,14 @@ mod tests {
             Duration::from_millis(216),
             MarshalPersistEstimator::default(),
             0,
-            validator_validation,
+            validation_latency,
             shape,
         ));
     }
 
     #[test]
     fn payload_budget_scales_validator_feedback_for_larger_current_block() {
-        let validator_validation = validator_validation_estimate(
+        let validation_latency = validation_latency_estimate(
             ValidatorValidationShape::new(100, 10),
             Duration::from_millis(100),
         );
@@ -283,7 +283,7 @@ mod tests {
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
-            validator_validation,
+            validation_latency,
             ValidatorValidationShape::new(200, 10),
         );
 

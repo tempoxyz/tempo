@@ -83,7 +83,7 @@ impl MarshalPersistEstimator {
     }
 }
 
-/// Current or observed block shape used to estimate validator validation cost.
+/// Current or observed block shape used to estimate validation latency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValidatorValidationShape {
     gas_used: u64,
@@ -156,16 +156,16 @@ fn scale_duration(elapsed: Duration, scale: u128) -> Duration {
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
-/// Point-in-time validation cost estimate from recent proposal validation.
+/// Point-in-time validation latency estimate from recent proposal validation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ValidatorValidationEstimate {
+pub struct ValidationLatencyEstimate {
     elapsed: Duration,
     p90_gas_used: u64,
     p90_transaction_count: usize,
 }
 
-impl ValidatorValidationEstimate {
-    /// Estimates validator-side validation time for the supplied block shape.
+impl ValidationLatencyEstimate {
+    /// Estimates validation latency for the supplied block shape.
     ///
     /// Recent elapsed validation feedback is the floor so faster replay feedback
     /// still reclaims budget without shrinking smaller current blocks. If the
@@ -192,9 +192,9 @@ impl ValidatorValidationEstimate {
     }
 }
 
-/// Tracks recent local execution-layer block validation durations.
+/// Tracks recent local execution-layer block validation latency.
 ///
-/// The estimate uses recent successful proposal validations as an absolute
+/// The validation latency estimate uses recent successful proposal validations as an absolute
 /// floor, then scales that floor up when the current block exceeds the recent
 /// P90 gas or transaction count. This avoids combining independent per-unit
 /// rates from differently shaped blocks while still reserving validator
@@ -223,7 +223,7 @@ impl ValidationLatencyEstimator {
             elapsed = ?elapsed,
             estimate = ?self.estimate(),
             samples = self.samples.len(),
-            "updated validator validation estimate"
+            "updated validation latency estimate"
         );
     }
 
@@ -232,11 +232,11 @@ impl ValidationLatencyEstimator {
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidatorValidationEstimate> {
+    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let p50_elapsed = p50(self.samples.values().map(|sample| sample.elapsed))?;
         let p90_elapsed = p90(self.samples.values().map(|sample| sample.elapsed))?;
         let p90_floor = scale_duration(p90_elapsed, VALIDATOR_VALIDATION_P90_FLOOR_SCALE);
-        Some(ValidatorValidationEstimate {
+        Some(ValidationLatencyEstimate {
             elapsed: p50_elapsed.max(p90_floor),
             p90_gas_used: p90(self.samples.values().map(|sample| sample.shape.gas_used))
                 .unwrap_or_default(),
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_uses_tail_discounted_recent_elapsed() {
+    fn validation_latency_estimate_uses_tail_discounted_recent_elapsed() {
         let mut estimator = ValidationLatencyEstimator::default();
         let sample_shape = ValidatorValidationShape::new(100, 0);
         let current_shape = ValidatorValidationShape::new(100, 0);
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_does_not_scale_down() {
+    fn validation_latency_estimate_does_not_scale_down() {
         assert_eq!(
             estimate_with_sample(
                 ValidatorValidationShape::new(1_000, 10),
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_scales_up_by_gas_or_transactions() {
+    fn validation_latency_estimate_scales_up_by_gas_or_transactions() {
         let sample = ValidatorValidationShape::new(1_000, 10);
 
         assert_eq!(
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_requires_non_empty_shape_feedback() {
+    fn validation_latency_estimate_requires_non_empty_shape_feedback() {
         let empty = ValidatorValidationShape::new(0, 0);
 
         assert_eq!(

@@ -9,7 +9,7 @@ mod budget;
 use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
-    MarshalPersistEstimator, ValidationLatencyEstimator, ValidatorValidationEstimate,
+    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidatorValidationShape, marshal_persist_estimate, observe_marshal_persist,
 };
 use std::{sync::Arc, time::Duration};
@@ -47,7 +47,7 @@ pub struct TempoBuiltPayload {
     /// execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
     /// Time validators are expected to spend validating this payload.
-    validator_validation_duration: Duration,
+    validation_latency_duration: Duration,
 }
 
 impl TempoBuiltPayload {
@@ -57,14 +57,14 @@ impl TempoBuiltPayload {
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
-        validator_validation_duration: Duration,
+        validation_latency_duration: Duration,
     ) -> Self {
         Self {
             inner,
             block_access_list,
             executed_block,
             validation_work_duration,
-            validator_validation_duration,
+            validation_latency_duration,
         }
     }
 
@@ -82,8 +82,8 @@ impl TempoBuiltPayload {
     }
 
     /// Returns the time validators are expected to spend validating this payload.
-    pub fn validator_validation_duration(&self) -> Duration {
-        self.validator_validation_duration
+    pub fn validation_latency_duration(&self) -> Duration {
+        self.validation_latency_duration
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

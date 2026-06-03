@@ -557,7 +557,7 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
-        let validator_validation = attributes.validator_validation_estimate();
+        let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -573,7 +573,7 @@ where
                     build_time_multiplier,
                     marshal_persist,
                     block_size_used,
-                    validator_validation,
+                    validation_latency,
                     validator_validation_shape,
                 );
                 if budget_decision.total_reserved >= build_budget {
@@ -1067,7 +1067,7 @@ where
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_validation_shape = ValidatorValidationShape::new(gas_used, total_transactions);
-        let validator_validation_duration = validator_validation
+        let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_validation_shape))
             .unwrap_or(validation_work_duration);
 
@@ -1101,7 +1101,7 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
-            ?validator_validation_duration,
+            ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
@@ -1134,7 +1134,7 @@ where
             block_access_list,
             Some(executed_block),
             validation_work_duration,
-            validator_validation_duration,
+            validation_latency_duration,
         );
 
         drop(db);
