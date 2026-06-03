@@ -3,12 +3,12 @@
 pub mod dispatch;
 
 use crate::{
-    FEATURE_REGISTRY_ADDRESS,
+    FEATURE_REGISTRY_ADDRESS, SYSTEM_CALLER_ADDRESS,
     error::Result,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, U256};
-use tempo_contracts::precompiles::IFeatureRegistry;
+use tempo_contracts::precompiles::{FeatureRegistryError, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
@@ -63,5 +63,45 @@ impl FeatureRegistry {
     /// Returns the latest feature tip reported as supported by `validator`.
     pub fn validator_supported_features_tip(&self, validator: Address) -> Result<u64> {
         self.validator_supported_features_tip[validator].read()
+    }
+
+    /// Activates the scheduled feature tip from the block-level system caller.
+    pub fn activate_scheduled_features_tip_from_system(
+        &mut self,
+        msg_sender: Address,
+        current_epoch: u64,
+    ) -> Result<()> {
+        if msg_sender != SYSTEM_CALLER_ADDRESS {
+            return Err(FeatureRegistryError::unauthorized().into());
+        }
+
+        self.activate_scheduled_features_tip(current_epoch)?;
+        Ok(())
+    }
+
+    /// Activates the scheduled feature tip if its target epoch has arrived.
+    ///
+    /// Quorum enforcement is intentionally not implemented in this scaffold. The full activation
+    /// path should enforce validator support once TIP-1070 lands.
+    pub fn activate_scheduled_features_tip(&mut self, current_epoch: u64) -> Result<bool> {
+        let scheduled_features_tip = self.scheduled_features_tip.read()?;
+        let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
+
+        if scheduled_features_tip == 0
+            || scheduled_activation_epoch == 0
+            || scheduled_activation_epoch > current_epoch
+        {
+            return Ok(false);
+        }
+
+        let active_features_tip = self.features_tip.read()?;
+        if scheduled_features_tip > active_features_tip {
+            self.features_tip.write(scheduled_features_tip)?;
+        }
+
+        self.scheduled_features_tip.write(0)?;
+        self.scheduled_activation_epoch.write(0)?;
+
+        Ok(scheduled_features_tip > active_features_tip)
     }
 }

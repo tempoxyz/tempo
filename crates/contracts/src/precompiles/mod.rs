@@ -53,3 +53,4 @@ pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
 pub const FEATURE_REGISTRY_ADDRESS: Address =
     address!("0xFEA7000000000000000000000000000000000000");
+pub const SYSTEM_CALLER_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");

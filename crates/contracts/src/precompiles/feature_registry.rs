@@ -28,6 +28,9 @@ crate::sol! {
         /// @notice Schedules a higher feature tip for activation at the target epoch.
         function scheduleFeaturesTip(uint64 featuresTip, uint64 activationEpoch) external;
 
+        /// @notice Activates the scheduled feature tip during block processing. System caller only.
+        function activateScheduledFeaturesTip(uint64 currentEpoch) external;
+
         /// @notice Cancels the scheduled feature tip before activation.
         function cancelScheduledFeaturesTip() external;
 

@@ -13,6 +13,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
+use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -21,17 +22,18 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, IFeatureRegistry,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
@@ -146,6 +148,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
+    consensus_context: Option<TempoConsensusContext>,
     shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
@@ -167,6 +170,7 @@ where
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
+            consensus_context: ctx.consensus_context,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
@@ -207,6 +211,40 @@ where
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
+    }
+
+    /// Activates a scheduled feature tip once the consensus epoch reaches the target epoch.
+    fn activate_scheduled_features_tip(&mut self) -> Result<(), BlockExecutionError> {
+        let Some(consensus_context) = self.consensus_context else {
+            return Ok(());
+        };
+
+        let call = IFeatureRegistry::activateScheduledFeaturesTipCall {
+            currentEpoch: consensus_context.epoch,
+        };
+        let result_and_state = self
+            .evm_mut()
+            .transact_system_call(
+                SYSTEM_CALLER_ADDRESS,
+                FEATURE_REGISTRY_ADDRESS,
+                call.abi_encode().into(),
+            )
+            .map_err(|err| {
+                BlockExecutionError::msg(format!("feature registry activation failed: {err}"))
+            })?;
+
+        match result_and_state.result {
+            ExecutionResult::Success { .. } => {
+                self.evm_mut().db_mut().commit(result_and_state.state);
+                Ok(())
+            }
+            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
+                "feature registry activation reverted: {output}"
+            ))),
+            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
+                "feature registry activation halted: {reason:?}"
+            ))),
+        }
     }
 
     /// Validates a system transaction.
@@ -495,6 +533,7 @@ where
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
             // TODO(TIP-1063): update this gate to T7 before merging.
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
+            self.activate_scheduled_features_tip()?;
         }
 
         Ok(())
@@ -700,10 +739,10 @@ mod tests {
     use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
-        database::EmptyDB,
+        database::{EmptyDB, states::plain_account::PlainStorage},
     };
     use std::sync::{Arc, Mutex};
-    use tempo_chainspec::spec::DEV;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
@@ -736,6 +775,34 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn packed_feature_registry_tips(
+        features_tip: u64,
+        scheduled_features_tip: u64,
+        scheduled_activation_epoch: u64,
+    ) -> U256 {
+        // FeatureRegistry stores the three u64 cursor fields packed into slot zero.
+        U256::from(features_tip)
+            | (U256::from(scheduled_features_tip) << 64)
+            | (U256::from(scheduled_activation_epoch) << 128)
+    }
+
+    fn feature_registry_storage(
+        features_tip: u64,
+        scheduled_features_tip: u64,
+        scheduled_activation_epoch: u64,
+    ) -> PlainStorage {
+        let mut storage = PlainStorage::default();
+        storage.insert(
+            U256::ZERO,
+            packed_feature_registry_tips(
+                features_tip,
+                scheduled_features_tip,
+                scheduled_activation_epoch,
+            ),
+        );
+        storage
     }
 
     #[test]
@@ -1680,6 +1747,77 @@ mod tests {
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_activates_scheduled_features_tip_at_epoch() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(7, 13, 21),
+        );
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T6)
+            .with_consensus_epoch(21)
+            .build(&mut db, &chainspec);
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
+        assert_eq!(
+            acc.storage_slot(U256::ZERO).unwrap(),
+            packed_feature_registry_tips(13, 0, 0)
+        );
+
+        let calls = hook_calls.lock().unwrap();
+        let slot = calls
+            .iter()
+            .find_map(|state| {
+                state
+                    .get(&FEATURE_REGISTRY_ADDRESS)
+                    .and_then(|account| account.storage.get(&U256::ZERO))
+            })
+            .expect("state hook should contain feature registry storage update");
+        assert_eq!(slot.present_value, packed_feature_registry_tips(13, 0, 0));
+    }
+
+    #[test]
+    fn test_apply_pre_execution_waits_for_scheduled_features_tip_epoch() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(7, 13, 21),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T6)
+            .with_consensus_epoch(20)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
+        assert_eq!(
+            acc.storage_slot(U256::ZERO).unwrap(),
+            packed_feature_registry_tips(7, 13, 21)
+        );
     }
 
     #[test]
