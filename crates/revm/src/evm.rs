@@ -2111,6 +2111,9 @@ mod tests {
         // accrues a deferred credit on the create (0->x) leg into transient storage; at end-of-tx
         // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
         // others keep the minted token at 1.
+        //
+        // In Refund mode gas the default value is zero, so when new slot is created additional gas is charged.
+        // For other modes the enum is not zero so this was a reason why all of these are same.
         let cases = [
             (CreditMode::Refund, 553_168u64, 0u64),
             (CreditMode::Preserve, 535_968u64, 1u64),

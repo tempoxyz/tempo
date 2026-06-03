@@ -142,7 +142,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         let result = backend.store_credits(account_slot, storage_credits.into_word())?;
         let gas = backend
             .gas_params()
-            .sstore_dynamic_gas(false, &result.data, result.is_cold);
+            .sstore_dynamic_gas(true, &result.data, result.is_cold);
         // TODO TIP-1016 would require state gas charging here.
         backend.charge_gas(gas)?;
     }
