@@ -1954,8 +1954,7 @@ mod tests {
         }
     }
 
-    /// Appends bytecode that calls the TIP-1060 precompile's `setMode(mode)` as the
-    /// currently executing contract.
+    /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
     fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
         let input_bytes = ITIP1060StorageCredits::setModeCall {
             newMode: tip1060_abi_mode(mode),
@@ -1964,6 +1963,7 @@ mod tests {
 
         for (i, &byte) in input_bytes.iter().enumerate() {
             assert!(i <= u8::MAX as usize);
+            // PUSH1 <byte> PUSH1 <offset> MSTORE8  (write calldata byte at memory[offset])
             bytecode_bytes.extend_from_slice(&[
                 opcode::PUSH1,
                 byte,
@@ -1973,40 +1973,21 @@ mod tests {
             ]);
         }
 
-        bytecode_bytes.extend_from_slice(&[
-            opcode::PUSH1,
-            0x00, // retSize
-            opcode::PUSH1,
-            0x00, // retOffset
-            opcode::PUSH1,
-            input_bytes.len() as u8, // argsSize
-            opcode::PUSH1,
-            0x00, // argsOffset
-            opcode::PUSH1,
-            0x00, // value
-        ]);
+        // PUSH1 0x00 PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00 PUSH1 0x00
+        // (retSize=0, retOffset=0, argsSize=input length, argsOffset=0, value=0)
+        bytecode_bytes.extend_from_slice(&bytes!("60006000"));
+        bytecode_bytes.extend_from_slice(&[opcode::PUSH1, input_bytes.len() as u8]);
+        bytecode_bytes.extend_from_slice(&bytes!("60006000"));
+        // PUSH20 <STORAGE_CREDITS_ADDRESS>
         bytecode_bytes.push(opcode::PUSH20);
         bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
-        bytecode_bytes.extend_from_slice(&[
-            opcode::PUSH3,
-            0x0f,
-            0x42,
-            0x40, // gas = 1_000_000
-            opcode::CALL,
-            opcode::POP,
-        ]);
+        // PUSH3 0x0f4240 CALL POP  (call with 1_000_000 gas and discard success flag)
+        bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
     }
 
-    fn create_then_set_mode_bytecode(mode: CreditMode) -> Bytecode {
-        let mut bytecode_bytes = vec![opcode::PUSH1, 0x01, opcode::PUSH1, 0x00, opcode::SSTORE];
-        append_tip1060_set_mode_call(&mut bytecode_bytes, mode);
-        bytecode_bytes.push(opcode::STOP);
-        Bytecode::new_raw(bytecode_bytes.into())
-    }
-
-    /// TIP-1060 settlement regression: a RefundTokens-mode create records a pending
-    /// refund-eligible creation, but if the account ends the transaction with zero token balance,
-    /// settlement must not treat mode bits as spendable tokens.
+    /// TIP-1060: First SSTORE runs in Refund (default) mode  and creates a pending refund-eligible
+    /// creation, then a precompile call selects the final mode. Since no account slot is cleared,
+    /// it ends the transaction with zero token balance.
     #[test]
     fn test_tip1060_pending_refund_settlement_ignores_mode_bits() -> eyre::Result<()> {
         for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
@@ -2014,18 +1995,21 @@ mod tests {
             let caller = key_pair.address;
             let contract = Address::repeat_byte(0x62);
 
+            // Bytecode starts with a 0->1 create in RefundTokens mode:
+            // PUSH1 0x01 PUSH1 0x00 SSTORE  (store 0x01 at slot 0)
+            let mut bytecode = bytes!("6001600055").to_vec();
+            append_tip1060_set_mode_call(&mut bytecode, mode);
+            bytecode.push(opcode::STOP);
+
             let mut evm = create_funded_evm_t6(caller);
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
-                    code: Some(create_then_set_mode_bytecode(mode)),
+                    code: Some(Bytecode::new_raw(bytecode.into())),
                     ..Default::default()
                 },
             );
 
-            // The first SSTORE runs in the default RefundTokens mode and creates one pending
-            // refund-eligible creation. The subsequent precompile call selects the final mode;
-            // no storage is cleared, so the account has no token to settle against.
             let tx = TxBuilder::new()
                 .call(contract, &[])
                 .gas_limit(2_000_000)
@@ -2034,10 +2018,7 @@ mod tests {
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact_commit(tx_env)?;
-            assert!(
-                result.is_success(),
-                "pending-refund mode-change tx should succeed in {mode:?} mode"
-            );
+            assert!(result.is_success());
 
             let state = gas_token_state(&evm, contract);
             assert_eq!(
