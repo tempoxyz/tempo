@@ -300,12 +300,21 @@ impl TIP403Registry {
     /// Returns `account`'s receive-policy configuration.
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let config = self.receive_policies[account].config.read()?;
+        let (sender_policy_type, token_filter_type) = if self.storage.spec().is_t6() {
+            (config.sender_policy_type()?, config.token_filter_type()?)
+        } else {
+            (
+                self.receive_policy_type(config.sender_policy_id)?,
+                self.receive_policy_type(config.token_filter_id)?,
+            )
+        };
+
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
-            senderPolicyType: config.sender_policy_type()?,
+            senderPolicyType: sender_policy_type,
             tokenFilterId: config.token_filter_id,
-            tokenFilterType: config.token_filter_type()?,
+            tokenFilterType: token_filter_type,
             recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
         })
     }
@@ -841,6 +850,21 @@ impl TIP403Registry {
         Ok(data.policy_type)
     }
 
+    /// Returns the [`PolicyType`] of a receive-policy slot.
+    fn receive_policy_type(&self, policy_id: u64) -> Result<PolicyType> {
+        if self.builtin_authorization(policy_id).is_some() {
+            return (policy_id as u8)
+                .try_into()
+                .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into());
+        }
+
+        let data = self.get_policy_data(policy_id)?;
+        if !data.is_simple() {
+            return Err(TIP403RegistryError::invalid_receive_policy_type().into());
+        }
+        data.policy_type()
+    }
+
     // Internal helper functions
 
     /// Returns policy data for the given policy ID.
@@ -1235,6 +1259,39 @@ mod tests {
             assert_eq!(
                 registry.receive_policies[account].recovery_address.read()?,
                 Address::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_receive_policy_pre_t6_reads_types_from_policy_ids() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let account = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.receive_policies[account]
+                .config
+                .write(ReceivePolicyConfig {
+                    has_receive_policy: true,
+                    sender_policy_id: ALLOW_ALL_POLICY_ID,
+                    sender_policy_type: PolicyType::WHITELIST as u8,
+                    token_filter_id: ALLOW_ALL_POLICY_ID,
+                    token_filter_type: PolicyType::WHITELIST as u8,
+                    recovery_mode: RecoveryMode::Originator,
+                })?;
+
+            let policy = registry.receive_policy(account)?;
+            assert_eq!(policy.senderPolicyId, ALLOW_ALL_POLICY_ID);
+            assert_eq!(
+                policy.senderPolicyType,
+                ITIP403Registry::PolicyType::BLACKLIST
+            );
+            assert_eq!(policy.tokenFilterId, ALLOW_ALL_POLICY_ID);
+            assert_eq!(
+                policy.tokenFilterType,
+                ITIP403Registry::PolicyType::BLACKLIST
             );
 
             Ok(())
