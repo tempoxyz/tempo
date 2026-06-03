@@ -346,55 +346,127 @@ where
         let is_t6 = cfg.spec.is_t6();
         let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
 
-        for (index, (tx, plan)) in txs.into_iter().zip(&plans).enumerate() {
-            let mut tx_execution = execute_tip20_transfer_plan_with_deltas(
+        for (index, (tx, plan)) in txs.into_iter().zip(plans.into_iter()).enumerate() {
+            let committed = self.execute_tip20_transfer_blockstm_planned_with_state(
+                tx,
+                &plan,
                 index,
-                plan,
-                &mut ledger,
-                is_t6,
                 block_timestamp,
-            )
-            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let gas =
-                synthetic_tip20_result_gas(&tx.tx_env, plan, &tx_execution, &base_state, &cfg)
-                    .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
-            settle_actual_fee_with_deltas(
-                index,
-                plan,
-                &mut tx_execution,
-                &mut ledger,
-                actual_fee,
                 is_t6,
-            )
-            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let tx_gas_used = gas.tx_gas_used();
-            let block_gas_used = if self.inner.evm.cfg.enable_amsterdam_eip8037 {
-                gas.block_regular_gas_used()
-            } else {
-                tx_gas_used
-            };
-            let next_section = self
-                .validate_tx(tx.recovered.tx(), block_gas_used)
-                .map_err(|error| Tip20TransferBlockstmBatchError::Execution {
-                    transaction_index: index,
-                    error: error.into(),
-                })?;
-            let result = TempoTxResult::new_blockstm_tip20_success(
-                tx.recovered.tx(),
-                execution_state(&tx_execution, &base_state),
-                synthetic_tip20_logs(plan, actual_fee),
-                gas,
-                next_section,
-                self.is_payment(tx.recovered.tx()),
-                block_gas_used,
-                actual_fee,
-            );
-            on_result(index, &result);
-            self.commit_transaction(result);
+                basefee,
+                &base_state,
+                &mut ledger,
+                &cfg,
+                |result| {
+                    on_result(index, result);
+                    true
+                },
+            )?;
+            debug_assert!(committed);
         }
 
         Ok(())
+    }
+
+    /// Executes one pre-built BlockSTM TIP-20 transfer plan.
+    ///
+    /// `should_commit` observes the synthetic result before state mutation. Returning `false`
+    /// leaves executor state unchanged, allowing the payload builder to stop at the exact block
+    /// gas boundary instead of reserving the pooled transaction gas limit up front.
+    pub fn execute_tip20_transfer_blockstm_planned_tx<'tx>(
+        &mut self,
+        tx: Tip20TransferBlockstmTx<'tx>,
+        plan: Tip20TransferBlockstmPlan,
+        transaction_index: usize,
+        should_commit: impl FnOnce(&TempoTxResult) -> bool,
+    ) -> Result<bool, Tip20TransferBlockstmBatchError> {
+        let block = self.inner.evm.block();
+        let block_timestamp = block.timestamp().saturating_to::<u64>();
+        let basefee = block.basefee as u128;
+
+        self.validate_tip20_transfer_state(std::slice::from_ref(&plan))?;
+
+        let base_state = self.read_plan_base_state(std::slice::from_ref(&plan), block_timestamp)?;
+        let cfg = self.inner.evm.cfg.clone();
+        let is_t6 = cfg.spec.is_t6();
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+
+        self.execute_tip20_transfer_blockstm_planned_with_state(
+            tx,
+            &plan,
+            transaction_index,
+            block_timestamp,
+            is_t6,
+            basefee,
+            &base_state,
+            &mut ledger,
+            &cfg,
+            should_commit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_tip20_transfer_blockstm_planned_with_state<'tx>(
+        &mut self,
+        tx: Tip20TransferBlockstmTx<'tx>,
+        plan: &Tip20TransferBlockstmPlan,
+        transaction_index: usize,
+        block_timestamp: u64,
+        is_t6: bool,
+        basefee: u128,
+        base_state: &Tip20BlockstmBaseState,
+        ledger: &mut Tip20DeltaLedger<'_>,
+        cfg: &CfgEnv<TempoHardfork>,
+        should_commit: impl FnOnce(&TempoTxResult) -> bool,
+    ) -> Result<bool, Tip20TransferBlockstmBatchError> {
+        let mut tx_execution = execute_tip20_transfer_plan_with_deltas(
+            transaction_index,
+            plan,
+            ledger,
+            is_t6,
+            block_timestamp,
+        )
+        .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &tx_execution, base_state, cfg)
+            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
+        settle_actual_fee_with_deltas(
+            transaction_index,
+            plan,
+            &mut tx_execution,
+            ledger,
+            actual_fee,
+            is_t6,
+        )
+        .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        let tx_gas_used = gas.tx_gas_used();
+        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
+            gas.block_regular_gas_used()
+        } else {
+            tx_gas_used
+        };
+        let next_section = self
+            .validate_tx(tx.recovered.tx(), block_gas_used)
+            .map_err(|error| Tip20TransferBlockstmBatchError::Execution {
+                transaction_index,
+                error: error.into(),
+            })?;
+        let result = TempoTxResult::new_blockstm_tip20_success(
+            tx.recovered.tx(),
+            execution_state(&tx_execution, base_state),
+            synthetic_tip20_logs(plan, actual_fee),
+            gas,
+            next_section,
+            self.is_payment(tx.recovered.tx()),
+            block_gas_used,
+            actual_fee,
+        );
+        if !should_commit(&result) {
+            return Ok(false);
+        }
+        self.commit_transaction(result);
+
+        Ok(true)
     }
 
     fn validate_tip20_transfer_state(
@@ -2965,6 +3037,66 @@ mod tests {
             validation_poststate,
             "STM post-state differs from payload re-execution post-state:\n{}",
             describe_trie_state_diff(&validation_poststate, &blockstm_poststate)
+        );
+    }
+
+    #[test]
+    fn planned_tx_can_be_rejected_before_commit() {
+        let chainspec = test_chainspec();
+        let signer = txgen_signers(1).pop().unwrap();
+        let recipient = address!("10000000000000000000000000000000000000c1");
+        let sender_balance = U256::from(1_000_000_000);
+        let db = path_usd_state_with_balances_and_reward_flag(
+            [(signer.address(), sender_balance), (recipient, U256::ZERO)],
+            REWARD_FLAG_OPTED_OUT,
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(10_000_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T6)
+            .build(db, &chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(1);
+        executor.evm_mut().ctx_mut().block.basefee = 1;
+        executor
+            .apply_pre_execution_changes()
+            .expect("pre-execution changes");
+        executor.evm_mut().db_mut().bump_bal_index();
+
+        let (recovered, tx_env) =
+            signed_expiring_tip20_transfer(&signer, recipient, U256::from(1), 30, 350_000, 1);
+        let tx = Tip20TransferBlockstmTx {
+            tx_env,
+            recovered: &recovered,
+            fee_token: tempo_precompiles::PATH_USD_ADDRESS,
+        };
+        let beneficiary = executor.evm().block().beneficiary;
+        let plan = build_tip20_transfer_blockstm_plan(
+            &tx,
+            tempo_precompiles::PATH_USD_ADDRESS,
+            beneficiary,
+            1,
+            0,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+
+        let committed = executor
+            .execute_tip20_transfer_blockstm_planned_tx(tx, plan, 0, |result| {
+                assert!(result.block_gas_used() > 0);
+                false
+            })
+            .unwrap();
+
+        assert!(!committed);
+        assert!(executor.receipts().is_empty());
+        assert_eq!(
+            executor
+                .read_storage(
+                    tempo_precompiles::PATH_USD_ADDRESS,
+                    balance_slot(signer.address())
+                )
+                .unwrap(),
+            encode_balance(sender_balance, REWARD_FLAG_OPTED_OUT, true)
         );
     }
 

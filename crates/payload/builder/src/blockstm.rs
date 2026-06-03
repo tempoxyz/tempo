@@ -99,6 +99,10 @@ impl<'a> Planner<'a> {
         self.in_flight >= self.max_in_flight
     }
 
+    pub(crate) fn has_pending(&self) -> bool {
+        self.in_flight > 0
+    }
+
     pub(crate) fn schedule(&mut self, tx: BestTransaction) {
         let sequence = self.next_sequence;
         self.next_sequence += 1;

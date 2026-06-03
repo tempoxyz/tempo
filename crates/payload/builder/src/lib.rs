@@ -578,7 +578,7 @@ where
                         .map_err(BlockExecutionError::other)
                         .map_err(PayloadBuilderError::evm)?;
 
-                let collect_start = Instant::now();
+                let blockstm_start = Instant::now();
                 let mut planner = blockstm::Planner::new(
                     &self.executor,
                     blockstm::PlanningContext {
@@ -589,10 +589,6 @@ where
                         spec: executor.evm().cfg.spec,
                     },
                 );
-                let mut planned = Vec::new();
-                let mut projected_cumulative_gas_used = cumulative_gas_used;
-                let mut projected_non_payment_gas_used = non_payment_gas_used;
-                let mut projected_block_size_used = block_size_used;
                 let planning_error = |reason: Tip20TransferBlockstmFallback| {
                     self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                     info!(
@@ -603,20 +599,12 @@ where
                     );
                     PayloadBuilderError::other(blockstm::PayloadBuildError::Planning(reason))
                 };
-                let blockstm_collection_stop_reason = loop {
+                let mut source_exhausted = false;
+                let mut scheduled_count = 0usize;
+                let mut candidate_count = 0usize;
+                let receipt_start = executor.receipts().len();
+                let blockstm_stop_reason = loop {
                     check_cancel!();
-
-                    while planner.is_full() {
-                        let Some(planned_tx) = planner.next() else {
-                            break;
-                        };
-                        match planned_tx {
-                            Ok(planned_tx) => planned.push(planned_tx),
-                            Err(reason) => {
-                                return Err(planning_error(reason));
-                            }
-                        }
-                    }
 
                     if let Some(build_budget) = attributes.payload_build_budget() {
                         let elapsed = start.elapsed();
@@ -626,13 +614,39 @@ where
                             self.build_time_multiplier(),
                             build_budget,
                             marshal_persist_estimate(),
-                            projected_block_size_used,
+                            block_size_used,
                         ) {
                             break BlockBuildStopReason::BuildBudget;
                         }
                     }
 
-                    let Some(pool_tx) = best_txs.next() else {
+                    while !source_exhausted && !planner.is_full() {
+                        let Some(pool_tx) = best_txs.next() else {
+                            source_exhausted = true;
+                            break;
+                        };
+                        pool_transactions_yielded += 1;
+
+                        let tx_rlp_length = pool_tx.transaction.encoded_length();
+                        let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+                        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::OversizedData {
+                                    size: estimated_block_size_with_tx,
+                                    limit: MAX_RLP_BLOCK_SIZE,
+                                },
+                            );
+                            self.metrics.inc_pool_tx_skipped("oversized_block");
+                            skipped_oversized_block = true;
+                            continue;
+                        }
+
+                        scheduled_count += 1;
+                        planner.schedule(pool_tx);
+                    }
+
+                    if !planner.has_pending() {
                         break if cumulative_gas_used >= non_shared_gas_limit {
                             BlockBuildStopReason::GasLimit
                         } else if skipped_oversized_block {
@@ -640,181 +654,89 @@ where
                         } else {
                             BlockBuildStopReason::TxPoolEmpty
                         };
-                    };
-                    pool_transactions_yielded += 1;
-
-                    let max_regular_gas_used = core::cmp::min(
-                        pool_tx.gas_limit(),
-                        executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                    );
-                    if projected_cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::ExceedsGasLimit(
-                                pool_tx.gas_limit(),
-                                non_shared_gas_limit - projected_cumulative_gas_used,
-                            ),
-                        );
-                        self.metrics
-                            .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                        continue;
                     }
 
+                    let planned_tx = match planner.next() {
+                        Some(Ok(planned_tx)) => planned_tx,
+                        Some(Err(reason)) => {
+                            return Err(planning_error(reason));
+                        }
+                        None => continue,
+                    };
+
+                    let pool_tx = planned_tx.tx;
                     let is_payment = if hardfork.is_t5() {
                         pool_tx.transaction.is_payment()
                     } else {
                         pool_tx.transaction.inner().is_payment_v1()
                     };
-                    if !is_payment
-                        && projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
-                    {
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Other(Box::new(
-                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                            )),
-                        );
-                        self.metrics
-                            .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                        continue;
-                    }
-
                     let tx_rlp_length = pool_tx.transaction.encoded_length();
-                    let estimated_block_size_with_tx = projected_block_size_used + tx_rlp_length;
-                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::OversizedData {
-                                size: estimated_block_size_with_tx,
-                                limit: MAX_RLP_BLOCK_SIZE,
-                            },
-                        );
-                        self.metrics.inc_pool_tx_skipped("oversized_block");
-                        skipped_oversized_block = true;
-                        continue;
-                    }
+                    let mut stop_reason = None;
 
-                    projected_cumulative_gas_used += max_regular_gas_used;
-                    if !is_payment {
-                        projected_non_payment_gas_used += max_regular_gas_used;
-                    }
-                    projected_block_size_used = estimated_block_size_with_tx;
-                    planner.schedule(pool_tx);
-
-                    if projected_cumulative_gas_used >= non_shared_gas_limit {
-                        break BlockBuildStopReason::GasLimit;
-                    }
-                };
-
-                while let Some(planned_tx) = planner.next() {
-                    match planned_tx {
-                        Ok(planned_tx) => planned.push(planned_tx),
-                        Err(reason) => {
-                            return Err(planning_error(reason));
-                        }
-                    }
-                }
-
-                if planned.is_empty() {
-                    let blockstm_elapsed = collect_start.elapsed();
-                    info!(
-                        target: "payload_builder",
-                        stop_reason = blockstm_collection_stop_reason.as_str(),
-                        ?blockstm_elapsed,
-                        "BlockSTM TIP-20 fast path planned no transactions"
-                    );
-                    blockstm_completed_stop_reason = Some(blockstm_collection_stop_reason);
-                } else {
-                    let candidate_count = planned.len();
-                    let collect_elapsed = collect_start.elapsed();
-                    info!(
-                        target: "payload_builder",
+                    let execution_result = executor.execute_tip20_transfer_blockstm_planned_tx(
+                        blockstm::candidate(&pool_tx),
+                        planned_tx.plan,
                         candidate_count,
-                        stop_reason = blockstm_collection_stop_reason.as_str(),
-                        projected_cumulative_gas_used,
-                        projected_non_payment_gas_used,
-                        projected_block_size_used,
-                        ?collect_elapsed,
-                        "planned BlockSTM TIP-20 transfer transactions"
-                    );
-
-                    let receipt_start = executor.receipts().len();
-                    let (candidates, plans): (Vec<_>, Vec<_>) = planned
-                        .into_iter()
-                        .map(|planned| (planned.tx, planned.plan))
-                        .unzip();
-                    let payment_flags = candidates
-                        .iter()
-                        .map(|pool_tx| {
-                            if hardfork.is_t5() {
-                                pool_tx.transaction.is_payment()
-                            } else {
-                                pool_tx.transaction.inner().is_payment_v1()
+                        |result| {
+                            if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit
+                            {
+                                stop_reason = Some(BlockBuildStopReason::GasLimit);
+                                return false;
                             }
-                        })
-                        .collect::<Vec<_>>();
-                    let batch = candidates.iter().map(blockstm::candidate).collect();
-                    match executor.execute_tip20_transfer_blockstm_planned_batch(
-                        batch,
-                        plans,
-                        |index, result| {
+                            if !is_payment
+                                && non_payment_gas_used + result.block_gas_used()
+                                    > general_gas_limit
+                            {
+                                stop_reason = Some(BlockBuildStopReason::GasLimit);
+                                return false;
+                            }
+                            if is_osaka && block_size_used + tx_rlp_length > MAX_RLP_BLOCK_SIZE {
+                                stop_reason = Some(BlockBuildStopReason::RlpBlockSizeLimit);
+                                return false;
+                            }
+
                             cumulative_gas_used += result.block_gas_used();
                             cumulative_state_gas_used += result.state_gas_used();
-                            if !payment_flags[index] {
+                            if !is_payment {
                                 non_payment_gas_used += result.block_gas_used();
                             }
                             total_fees += result.validator_fee();
                             best_txs.on_new_result(result);
+                            true
                         },
-                    ) {
-                        Ok(()) => {
-                            self.metrics.inc_blockstm_tip20_succeeded();
-                            let blockstm_elapsed = collect_start.elapsed();
-                            self.metrics
-                                .blockstm_tip20_duration_seconds
-                                .record(blockstm_elapsed);
-                            self.metrics
-                                .blockstm_tip20_transaction_count
-                                .record(candidate_count as f64);
-                            info!(
-                                target: "payload_builder",
-                                transaction_count = candidate_count,
-                                receipt_count = executor.receipts().len().saturating_sub(receipt_start),
-                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
-                                ?blockstm_elapsed,
-                                "completed BlockSTM TIP-20 fast path"
-                            );
+                    );
 
-                            for (pool_tx, receipt) in candidates
-                                .into_iter()
-                                .zip(&executor.receipts()[receipt_start..])
-                            {
-                                if hardfork.is_t5() {
-                                    if pool_tx.transaction.is_payment() {
-                                        payment_transactions += 1;
-                                    }
-                                } else if pool_tx.transaction.inner().is_payment_v1() {
-                                    payment_transactions += 1;
-                                }
-                                pool_transactions_included += 1;
-                                block_size_used += pool_tx.transaction.encoded_length();
-                                let _ =
-                                    roots_tx.send((BuilderTx::Pooled(pool_tx), receipt.clone()));
+                    match execution_result {
+                        Ok(true) => {
+                            candidate_count += 1;
+                            if is_payment {
+                                payment_transactions += 1;
                             }
+                            pool_transactions_included += 1;
+                            block_size_used += tx_rlp_length;
+                            let _ = roots_tx.send((
+                                BuilderTx::Pooled(pool_tx),
+                                executor.receipts().last().unwrap().clone(),
+                            ));
+                            executor.evm_mut().db_mut().bump_bal_index();
 
-                            blockstm_completed_stop_reason = Some(blockstm_collection_stop_reason);
+                            if cumulative_gas_used >= non_shared_gas_limit {
+                                break BlockBuildStopReason::GasLimit;
+                            }
+                        }
+                        Ok(false) => {
+                            break stop_reason.unwrap_or(BlockBuildStopReason::GasLimit);
                         }
                         Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
-                            let blockstm_elapsed = collect_start.elapsed();
+                            let blockstm_elapsed = blockstm_start.elapsed();
                             info!(
                                 target: "payload_builder",
                                 reason = reason.as_str(),
                                 transaction_count = candidate_count,
-                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
-                                ?collect_elapsed,
+                                scheduled_count,
                                 ?blockstm_elapsed,
-                                "BlockSTM TIP-20 planned execution failed"
+                                "BlockSTM TIP-20 streamed execution failed"
                             );
                             return Err(PayloadBuilderError::other(
                                 blockstm::PayloadBuildError::Execution(reason),
@@ -824,13 +746,13 @@ where
                             transaction_index,
                             error,
                         }) => {
-                            let blockstm_elapsed = collect_start.elapsed();
+                            let blockstm_elapsed = blockstm_start.elapsed();
                             info!(
                                 target: "payload_builder",
                                 transaction_index,
                                 committed_prefix = transaction_index,
-                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
-                                ?collect_elapsed,
+                                transaction_count = candidate_count,
+                                scheduled_count,
                                 ?blockstm_elapsed,
                                 ?error,
                                 "BlockSTM TIP-20 synthetic execution failed"
@@ -841,7 +763,38 @@ where
                             return Err(PayloadBuilderError::evm(error));
                         }
                     }
+                };
+
+                let blockstm_elapsed = blockstm_start.elapsed();
+
+                if candidate_count == 0 {
+                    info!(
+                        target: "payload_builder",
+                        stop_reason = blockstm_stop_reason.as_str(),
+                        scheduled_count,
+                        ?blockstm_elapsed,
+                        "BlockSTM TIP-20 fast path executed no transactions"
+                    );
+                } else {
+                    self.metrics.inc_blockstm_tip20_succeeded();
+                    self.metrics
+                        .blockstm_tip20_duration_seconds
+                        .record(blockstm_elapsed);
+                    self.metrics
+                        .blockstm_tip20_transaction_count
+                        .record(candidate_count as f64);
+                    info!(
+                        target: "payload_builder",
+                        transaction_count = candidate_count,
+                        receipt_count = executor.receipts().len().saturating_sub(receipt_start),
+                        scheduled_count,
+                        stop_reason = blockstm_stop_reason.as_str(),
+                        ?blockstm_elapsed,
+                        "completed BlockSTM TIP-20 fast path"
+                    );
                 }
+
+                blockstm_completed_stop_reason = Some(blockstm_stop_reason);
             }
         }
 
