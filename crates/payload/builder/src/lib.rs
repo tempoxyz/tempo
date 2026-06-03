@@ -70,8 +70,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    evm::TempoEvm,
+};
+use tempo_payload_types::{
+    PayloadBuildControl, TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate,
+};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
@@ -117,6 +122,52 @@ fn recv_sparse_trie_with_cancel<T>(
             Ok(value) => return CancelableRecv::Received(value),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return CancelableRecv::Disconnected,
+        }
+    }
+}
+
+enum ProposalContextWait {
+    Attached,
+    Cancelled,
+}
+
+fn builder_elapsed_excluding_proposal_wait_at(
+    payload_build_control: Option<&PayloadBuildControl>,
+    start: Instant,
+    proposal_context_wait_elapsed: Duration,
+    now: Instant,
+) -> Duration {
+    payload_build_control
+        .map(|control| control.snapshot_at(now).builder_elapsed())
+        .unwrap_or_else(|| now.saturating_duration_since(start))
+        .saturating_sub(proposal_context_wait_elapsed)
+}
+
+fn wait_for_late_proposal_context(
+    ctx: &mut TempoBlockExecutionCtx<'_>,
+    control: &PayloadBuildControl,
+    should_cancel: &dyn Fn() -> bool,
+    wait_elapsed: &mut Duration,
+) -> Result<ProposalContextWait, PayloadBuilderError> {
+    if ctx.consensus_context.is_some() {
+        return Ok(ProposalContextWait::Attached);
+    }
+
+    let wait_start = Instant::now();
+    match control.wait_for_proposal_context_while(|| should_cancel()) {
+        Ok(proposal_context) => {
+            *wait_elapsed += wait_start.elapsed();
+            ctx.inner.extra_data = proposal_context.extra_data().clone();
+            ctx.consensus_context = Some(proposal_context.consensus_context());
+            Ok(ProposalContextWait::Attached)
+        }
+        Err(_) if control.is_cancelled() || should_cancel() => {
+            *wait_elapsed += wait_start.elapsed();
+            Ok(ProposalContextWait::Cancelled)
+        }
+        Err(error) => {
+            *wait_elapsed += wait_start.elapsed();
+            Err(PayloadBuilderError::other(error))
         }
     }
 }
@@ -568,6 +619,8 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
+        let mut proposal_context_wait_elapsed = Duration::ZERO;
+
         if let Some(ref handle) = trie_handle {
             if attributes.consensus_context().is_none()
                 && let Some(control) = attributes.payload_build_control().cloned()
@@ -608,27 +661,6 @@ where
         })?;
         executor.evm_mut().db_mut().bump_bal_index();
 
-        check_cancel!();
-
-        if attributes.consensus_context().is_none()
-            && let Some(control) = payload_build_control.as_ref()
-        {
-            debug!(
-                target: "payload_builder",
-                id = %payload_id,
-                "waiting for proposal context before executing speculative payload"
-            );
-            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
-                Ok(proposal_context) => {
-                    ctx.inner.extra_data = proposal_context.extra_data().clone();
-                    ctx.consensus_context = Some(proposal_context.consensus_context());
-                }
-                Err(_) if cancel.is_cancelled() || control.is_cancelled() => {
-                    return Ok(BuildOutcome::Cancelled);
-                }
-                Err(error) => return Err(PayloadBuilderError::other(error)),
-            }
-        }
         check_cancel!();
 
         debug!("building new payload");
@@ -705,10 +737,12 @@ where
                 .as_ref()
                 .map(|snapshot| snapshot.proposal_return_budget());
             if let Some(build_budget) = active_build_budget {
-                let elapsed = build_budget_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.builder_elapsed())
-                    .unwrap_or_else(|| start.elapsed());
+                let elapsed = builder_elapsed_excluding_proposal_wait_at(
+                    payload_build_control.as_ref(),
+                    start,
+                    proposal_context_wait_elapsed,
+                    Instant::now(),
+                );
                 if payload_budget_exhausted(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
@@ -737,11 +771,31 @@ where
                 let proposal_context_attached = payload_build_control
                     .as_ref()
                     .map_or(true, |control| control.proposal_timing_attached());
-                let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
-                    && is_budgeted_build
-                    && build_once_with_shared_trie
-                    && proposal_context_attached;
+                let can_wait_for_pool =
+                    cumulative_gas_used < non_shared_gas_limit
+                        && is_budgeted_build
+                        && build_once_with_shared_trie;
                 if can_wait_for_pool {
+                    if !proposal_context_attached {
+                        if let Some(control) = payload_build_control.as_ref() {
+                            debug!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                "waiting for proposal context before waiting for more pool transactions"
+                            );
+                            match wait_for_late_proposal_context(
+                                &mut ctx,
+                                control,
+                                &|| cancel.is_cancelled(),
+                                &mut proposal_context_wait_elapsed,
+                            )? {
+                                ProposalContextWait::Attached => {}
+                                ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
+                            }
+                            check_cancel!();
+                            continue;
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -895,16 +949,19 @@ where
         // finalization begins.
         drop(best_txs);
 
-        let elapsed_at_tx_cutoff = payload_build_control
-            .as_ref()
-            .map(|control| control.snapshot().builder_elapsed())
-            .unwrap_or_else(|| start.elapsed());
+        let elapsed_at_tx_cutoff = builder_elapsed_excluding_proposal_wait_at(
+            payload_build_control.as_ref(),
+            start,
+            proposal_context_wait_elapsed,
+            Instant::now(),
+        );
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
-        let normal_transaction_fill_elapsed = execution_start.elapsed();
+        let normal_transaction_fill_elapsed =
+            execution_start.elapsed().saturating_sub(proposal_context_wait_elapsed);
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
@@ -1042,21 +1099,22 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        if attributes.consensus_context().is_none()
-            && let Some(control) = attributes.payload_build_control()
-        {
-            debug!(
-                target: "payload_builder",
-                id = %payload_id,
-                "waiting for proposal context before finalizing speculative payload"
-            );
-            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
-                Ok(proposal_context) => {
-                    ctx.inner.extra_data = proposal_context.extra_data().clone();
-                    ctx.consensus_context = Some(proposal_context.consensus_context());
+        if attributes.consensus_context().is_none() && ctx.consensus_context.is_none() {
+            if let Some(control) = attributes.payload_build_control() {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    "waiting for proposal context before finalizing speculative payload"
+                );
+                match wait_for_late_proposal_context(
+                    &mut ctx,
+                    control,
+                    &|| cancel.is_cancelled(),
+                    &mut proposal_context_wait_elapsed,
+                )? {
+                    ProposalContextWait::Attached => {}
+                    ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
                 }
-                Err(_) if cancel.is_cancelled() => return Ok(BuildOutcome::Cancelled),
-                Err(error) => return Err(PayloadBuilderError::other(error)),
             }
         }
         check_cancel!();
@@ -1252,10 +1310,12 @@ where
             .pool_transactions_inclusion_ratio_last
             .set(pool_transactions_inclusion_ratio);
 
-        let elapsed = payload_build_control
-            .as_ref()
-            .map(|control| control.snapshot().builder_elapsed())
-            .unwrap_or_else(|| start.elapsed());
+        let elapsed = builder_elapsed_excluding_proposal_wait_at(
+            payload_build_control.as_ref(),
+            start,
+            proposal_context_wait_elapsed,
+            Instant::now(),
+        );
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if is_budgeted_build {
             self.update_build_time_multiplier(
@@ -1299,6 +1359,7 @@ where
             ?validation_work_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ?proposal_context_wait_elapsed,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
@@ -1548,6 +1609,37 @@ mod tests {
             recv_sparse_trie_with_cancel(rx, || cancel.is_cancelled()),
             CancelableRecv::Cancelled
         ));
+    }
+
+    #[test]
+    fn builder_elapsed_subtracts_proposal_context_wait() {
+        let start = Instant::now();
+        let control = PayloadBuildControl::new_at(Duration::from_millis(300), start);
+
+        assert_eq!(
+            builder_elapsed_excluding_proposal_wait_at(
+                Some(&control),
+                start,
+                Duration::from_millis(40),
+                start + Duration::from_millis(125),
+            ),
+            Duration::from_millis(85)
+        );
+    }
+
+    #[test]
+    fn builder_elapsed_subtracts_proposal_context_wait_without_control() {
+        let start = Instant::now();
+
+        assert_eq!(
+            builder_elapsed_excluding_proposal_wait_at(
+                None,
+                start,
+                Duration::from_millis(40),
+                start + Duration::from_millis(125),
+            ),
+            Duration::from_millis(85)
+        );
     }
 
     trait TestExt {

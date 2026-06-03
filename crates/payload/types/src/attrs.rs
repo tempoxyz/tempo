@@ -302,12 +302,12 @@ pub struct PayloadBuildControlSnapshot {
 }
 
 impl PayloadBuildControl {
-    /// Creates a build-control handle whose replayable work budget starts now.
+    /// Creates a build-control handle whose dispatch clock starts now.
     pub fn new(proposal_return_budget: Duration) -> Self {
         Self::new_at(proposal_return_budget, Instant::now())
     }
 
-    /// Creates a build-control handle with an explicit builder start time.
+    /// Creates a build-control handle with an explicit dispatch start time.
     pub fn new_at(proposal_return_budget: Duration, builder_start: Instant) -> Self {
         Self {
             inner: Arc::new(PayloadBuildControlInner {
@@ -465,7 +465,10 @@ impl PayloadBuildControlSnapshot {
         self.proposal_return_budget
     }
 
-    /// Returns elapsed replayable build work time since verify-time dispatch.
+    /// Returns elapsed time since verify-time dispatch.
+    ///
+    /// Callers that wait for late proposal context must subtract that
+    /// non-replayable wait before using this as validator work.
     pub fn builder_elapsed(&self) -> Duration {
         self.builder_elapsed
     }
