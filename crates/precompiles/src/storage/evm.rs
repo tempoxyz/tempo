@@ -10,7 +10,11 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::PrecompileStorageProvider,
+    tip20::{RewardFlag, UserState},
+};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -325,6 +329,46 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState, TempoPrecompileError> {
+        let state = UserState::from_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+            .incremented(delta, flag)?;
+        let value = state.storage_word_for_spec(self.spec)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSinc(address, key, delta, flag)),
+        )?;
+        Ok(state)
+    }
+
+    #[inline]
+    fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState, TempoPrecompileError> {
+        let state = UserState::from_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+            .decremented(delta, flag)?;
+        let value = state.storage_word_for_spec(self.spec)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSdec(address, key, delta, flag)),
+        )?;
+        Ok(state)
+    }
+
+    #[inline]
     fn tstore(
         &mut self,
         address: Address,
@@ -472,6 +516,8 @@ pub enum EvmAction {
     Sstore(Address, U256, U256),
     Sinc(Address, U256, U256),
     Sdec(Address, U256, U256),
+    Tip20BalanceSinc(Address, U256, U256, RewardFlag),
+    Tip20BalanceSdec(Address, U256, U256, RewardFlag),
 }
 
 pub type EvmActions = Rc<RefCell<Option<Vec<EvmAction>>>>;
@@ -653,6 +699,40 @@ mod tests {
                 EvmAction::Sstore(addr, key, U256::from(10)),
                 EvmAction::Sinc(addr, key, U256::from(4)),
                 EvmAction::Sdec(addr, key, U256::from(2)),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_balance_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let addr = Address::random();
+        let key = U256::random();
+
+        assert_eq!(
+            provider
+                .tip20_balance_sinc(addr, key, U256::from(10), RewardFlag::OptedIn)?
+                .amount(),
+            U256::from(10)
+        );
+        assert_eq!(
+            provider
+                .tip20_balance_sdec(addr, key, U256::from(4), RewardFlag::OptedOut)?
+                .amount(),
+            U256::from(6)
+        );
+
+        assert_eq!(
+            actions.borrow().as_ref().unwrap().as_slice(),
+            &[
+                EvmAction::Tip20BalanceSinc(addr, key, U256::from(10), RewardFlag::OptedIn),
+                EvmAction::Tip20BalanceSdec(addr, key, U256::from(4), RewardFlag::OptedOut),
             ]
         );
 

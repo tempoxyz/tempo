@@ -105,6 +105,12 @@ impl<T> Slot<T> {
         self.slot
     }
 
+    /// Returns the contract address that owns this storage slot.
+    #[inline]
+    pub const fn address(&self) -> Address {
+        self.address
+    }
+
     /// Returns the byte offset within the slot (for packed fields).
     ///
     /// Returns `Some(offset)` if this is a packed slot, `None` if it's a full slot.
