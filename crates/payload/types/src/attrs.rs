@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fmt,
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext, TempoHeader};
@@ -261,6 +264,7 @@ pub struct PayloadBuildControl {
 struct PayloadBuildControlInner {
     proposal_return_budget: Mutex<Duration>,
     builder_start: Instant,
+    proposal_timing_attached: AtomicBool,
     proposal_timing: Mutex<Option<ProposalTiming>>,
     proposal_timing_changed: Condvar,
 }
@@ -308,6 +312,7 @@ impl PayloadBuildControl {
             inner: Arc::new(PayloadBuildControlInner {
                 proposal_return_budget: Mutex::new(proposal_return_budget),
                 builder_start,
+                proposal_timing_attached: AtomicBool::new(false),
                 proposal_timing: Mutex::new(None),
                 proposal_timing_changed: Condvar::new(),
             }),
@@ -331,6 +336,9 @@ impl PayloadBuildControl {
                 consensus_context,
             },
         });
+        self.inner
+            .proposal_timing_attached
+            .store(true, Ordering::Release);
         self.inner.proposal_timing_changed.notify_all();
         Ok(())
     }
@@ -358,13 +366,16 @@ impl PayloadBuildControl {
                 consensus_context,
             },
         });
+        self.inner
+            .proposal_timing_attached
+            .store(true, Ordering::Release);
         self.inner.proposal_timing_changed.notify_all();
         Ok(())
     }
 
     /// Returns true once proposer timing has been attached.
     pub fn proposal_timing_attached(&self) -> bool {
-        self.proposal_timing().is_some()
+        self.inner.proposal_timing_attached.load(Ordering::Acquire)
     }
 
     /// Returns the attached proposal context, if one has been provided.

@@ -559,7 +559,23 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            if handle.is_deferred_parent_pending() {
+            if attributes.consensus_context().is_none()
+                && let Some(control) = attributes.payload_build_control().cloned()
+            {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    "flattening payload-builder sparse-trie updates until proposal context is attached"
+                );
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .set_state_hook(Some(Box::new(handle.state_hook_flatten_until(move || {
+                        control.proposal_timing_attached()
+                    }))));
+            } else if handle.is_deferred_parent_pending() {
                 debug!(
                     target: "payload_builder",
                     id = %payload_id,
@@ -999,6 +1015,25 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
+        if attributes.consensus_context().is_none()
+            && let Some(control) = attributes.payload_build_control()
+        {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                "waiting for proposal context before finalizing speculative payload"
+            );
+            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
+                Ok(proposal_context) => {
+                    ctx.inner.extra_data = proposal_context.extra_data().clone();
+                    ctx.consensus_context = Some(proposal_context.consensus_context());
+                }
+                Err(_) if cancel.is_cancelled() => return Ok(BuildOutcome::Cancelled),
+                Err(error) => return Err(PayloadBuilderError::other(error)),
+            }
+        }
+        check_cancel!();
+
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
@@ -1087,19 +1122,6 @@ where
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
         check_cancel!();
-
-        if attributes.consensus_context().is_none()
-            && let Some(control) = attributes.payload_build_control()
-        {
-            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
-                Ok(proposal_context) => {
-                    ctx.inner.extra_data = proposal_context.extra_data().clone();
-                    ctx.consensus_context = Some(proposal_context.consensus_context());
-                }
-                Err(_) if cancel.is_cancelled() => return Ok(BuildOutcome::Cancelled),
-                Err(error) => return Err(PayloadBuilderError::other(error)),
-            }
-        }
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
