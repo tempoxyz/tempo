@@ -182,20 +182,12 @@ impl Slot<UserState> {
         self.slot()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once TIP-20 transfers emit balance actions")
-    )]
     pub(super) fn increment_balance(&mut self, delta: U256, flag: RewardFlag) -> Result<UserState> {
         debug_assert!(self.offset().is_none(), "`UserState` requires a full slot");
         let mut storage = StorageCtx;
         storage.tip20_balance_sinc(self.address(), self.slot(), delta, flag)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once TIP-20 transfers emit balance actions")
-    )]
     pub(super) fn decrement_balance(&mut self, delta: U256, flag: RewardFlag) -> Result<UserState> {
         debug_assert!(self.offset().is_none(), "`UserState` requires a full slot");
         let mut storage = StorageCtx;

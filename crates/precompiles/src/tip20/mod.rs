@@ -35,7 +35,7 @@ use crate::{
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
+    sol_types::{PanicKind, SolValue},
 };
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -1152,30 +1152,30 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let from_balance = self.get_balance(from)?;
-        if amount > from_balance.amount() {
-            return Err(TIP20Error::insufficient_balance(
-                from_balance.amount(),
-                amount,
-                self.address,
-            )
-            .into());
-        }
-
         let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        self.set_balance(
-            from,
-            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
-        )?;
+        match self
+            .balances
+            .at_mut(&from)
+            .decrement_balance(amount, from_flag)
+        {
+            Ok(_) => {}
+            Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow)) => {
+                return Err(TIP20Error::insufficient_balance(
+                    self.get_balance(from)?.amount(),
+                    amount,
+                    self.address,
+                )
+                .into());
+            }
+            Err(err) => return Err(err),
+        }
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
-            self.set_balance(
-                to.target,
-                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
-            )?;
+            self.balances
+                .at_mut(&to.target)
+                .increment_balance(amount, to_flag)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
