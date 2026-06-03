@@ -1266,36 +1266,73 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_policy_pre_t6_reads_types_from_policy_ids() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let account = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.receive_policies[account]
-                .config
-                .write(ReceivePolicyConfig {
-                    has_receive_policy: true,
-                    sender_policy_id: ALLOW_ALL_POLICY_ID,
-                    sender_policy_type: PolicyType::WHITELIST as u8,
-                    token_filter_id: ALLOW_ALL_POLICY_ID,
-                    token_filter_type: PolicyType::WHITELIST as u8,
-                    recovery_mode: RecoveryMode::Originator,
-                })?;
+    fn test_receive_policy_type_cache_t5_t6_boundary() -> eyre::Result<()> {
+        for (hardfork, expected_sender_type, expected_token_type, expected_sloads) in [
+            (
+                TempoHardfork::T5,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                ITIP403Registry::PolicyType::WHITELIST,
+                3,
+            ),
+            (
+                TempoHardfork::T6,
+                ITIP403Registry::PolicyType::WHITELIST,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                1,
+            ),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let account = Address::random();
+            let admin = Address::random();
+            let (sender_policy_id, token_filter_id) = StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP403Registry::new();
+                let sender_policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+                let token_filter_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                )?;
+                registry.receive_policies[account]
+                    .config
+                    .write(ReceivePolicyConfig {
+                        has_receive_policy: true,
+                        sender_policy_id,
+                        sender_policy_type: PolicyType::WHITELIST as u8,
+                        token_filter_id,
+                        token_filter_type: PolicyType::BLACKLIST as u8,
+                        recovery_mode: RecoveryMode::Originator,
+                    })?;
 
-            let policy = registry.receive_policy(account)?;
-            assert_eq!(policy.senderPolicyId, ALLOW_ALL_POLICY_ID);
-            assert_eq!(
-                policy.senderPolicyType,
-                ITIP403Registry::PolicyType::BLACKLIST
-            );
-            assert_eq!(policy.tokenFilterId, ALLOW_ALL_POLICY_ID);
-            assert_eq!(
-                policy.tokenFilterType,
-                ITIP403Registry::PolicyType::BLACKLIST
-            );
+                Ok::<_, TempoPrecompileError>((sender_policy_id, token_filter_id))
+            })?;
 
-            Ok(())
-        })
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                let registry = TIP403Registry::new();
+                let policy = registry.receive_policy(account)?;
+                assert_eq!(policy.senderPolicyId, sender_policy_id);
+                assert_eq!(policy.senderPolicyType, expected_sender_type);
+                assert_eq!(policy.tokenFilterId, token_filter_id);
+                assert_eq!(policy.tokenFilterType, expected_token_type);
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+            assert_eq!(
+                storage.counter_sload(),
+                expected_sloads,
+                "{hardfork:?} receive_policy SLOAD count"
+            );
+        }
+
+        Ok(())
     }
 
     #[test]
