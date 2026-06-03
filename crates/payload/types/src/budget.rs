@@ -106,31 +106,66 @@ struct ValidationLatencySample {
     elapsed: Duration,
 }
 
-fn percentile<T: Copy + Ord>(
-    values: impl Iterator<Item = T>,
-    numerator: usize,
-    denominator: usize,
-) -> Option<T> {
+fn insert_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
+    *counts.entry(value).or_default() += 1;
+}
+
+fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
+    let count = counts
+        .get_mut(&value)
+        .expect("validation latency sample index out of sync");
+    *count -= 1;
+    if *count == 0 {
+        counts.remove(&value);
+    }
+}
+
+fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
     debug_assert!(numerator > 0);
     debug_assert!(denominator > 0);
     debug_assert!(numerator <= denominator);
 
-    let mut sorted = values.collect::<Vec<_>>();
-    if sorted.is_empty() {
+    if len == 0 {
         return None;
     }
-
-    sorted.sort_unstable();
-    let index = ((sorted.len() * numerator).div_ceil(denominator)).saturating_sub(1);
-    Some(sorted[index])
+    Some((len * numerator).div_ceil(denominator))
 }
 
-fn p50<T: Copy + Ord>(values: impl Iterator<Item = T>) -> Option<T> {
-    percentile(values, 1, 2)
+fn percentile_from_counts<T: Copy + Ord>(
+    counts: &BTreeMap<T, usize>,
+    len: usize,
+    numerator: usize,
+    denominator: usize,
+) -> Option<T> {
+    let target = percentile_rank(len, numerator, denominator)?;
+    let mut seen = 0;
+    for (value, count) in counts {
+        seen += *count;
+        if seen >= target {
+            return Some(*value);
+        }
+    }
+    debug_assert!(false, "validation latency sample index out of sync");
+    None
 }
 
-fn p90<T: Copy + Ord>(values: impl Iterator<Item = T>) -> Option<T> {
-    percentile(values, 9, 10)
+fn p50_p90_from_counts<T: Copy + Ord>(counts: &BTreeMap<T, usize>, len: usize) -> Option<(T, T)> {
+    let p50_target = percentile_rank(len, 1, 2)?;
+    let p90_target = percentile_rank(len, 9, 10)?;
+    let mut seen = 0;
+    let mut p50 = None;
+    for (value, count) in counts {
+        seen += *count;
+        if p50.is_none() && seen >= p50_target {
+            p50 = Some(*value);
+        }
+        if seen >= p90_target {
+            return Some((p50.unwrap_or(*value), *value));
+        }
+    }
+
+    debug_assert!(false, "validation latency sample index out of sync");
+    None
 }
 
 fn scale_above_baseline(current: u128, baseline: u128) -> Option<u128> {
@@ -201,10 +236,33 @@ impl ValidationLatencyEstimate {
 /// the builder grows beyond the workloads that produced the feedback.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationLatencyEstimator {
+    /// Samples are keyed by id for retention; count maps are keyed by observed
+    /// values so estimate snapshots can read percentiles without sorting.
     samples: BTreeMap<u64, ValidationLatencySample>,
+    elapsed_counts: BTreeMap<Duration, usize>,
+    gas_used_counts: BTreeMap<u64, usize>,
+    transaction_count_counts: BTreeMap<usize, usize>,
 }
 
 impl ValidationLatencyEstimator {
+    fn insert_sample_counts(&mut self, sample: ValidationLatencySample) {
+        insert_count(&mut self.elapsed_counts, sample.elapsed);
+        insert_count(&mut self.gas_used_counts, sample.workload.gas_used);
+        insert_count(
+            &mut self.transaction_count_counts,
+            sample.workload.transaction_count,
+        );
+    }
+
+    fn remove_sample_counts(&mut self, sample: ValidationLatencySample) {
+        remove_count(&mut self.elapsed_counts, sample.elapsed);
+        remove_count(&mut self.gas_used_counts, sample.workload.gas_used);
+        remove_count(
+            &mut self.transaction_count_counts,
+            sample.workload.transaction_count,
+        );
+    }
+
     /// Records local time spent validating a block through the execution layer.
     pub fn observe(
         &mut self,
@@ -216,10 +274,16 @@ impl ValidationLatencyEstimator {
             return;
         }
 
-        self.samples
-            .insert(sample_id, ValidationLatencySample { workload, elapsed });
+        let sample = ValidationLatencySample { workload, elapsed };
+        if let Some(replaced) = self.samples.insert(sample_id, sample) {
+            self.remove_sample_counts(replaced);
+        }
+        self.insert_sample_counts(sample);
         while self.samples.len() > VALIDATION_LATENCY_SAMPLE_WINDOW {
-            self.samples.pop_first();
+            let Some((_, evicted)) = self.samples.pop_first() else {
+                break;
+            };
+            self.remove_sample_counts(evicted);
         }
 
         debug!(
@@ -238,17 +302,19 @@ impl ValidationLatencyEstimator {
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
     pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
-        let p50_elapsed = p50(self.samples.values().map(|sample| sample.elapsed))?;
-        let p90_elapsed = p90(self.samples.values().map(|sample| sample.elapsed))?;
+        let sample_count = self.samples.len();
+        let (p50_elapsed, p90_elapsed) = p50_p90_from_counts(&self.elapsed_counts, sample_count)?;
         let p90_floor = scale_duration(p90_elapsed, VALIDATION_LATENCY_P90_FLOOR_SCALE);
         Some(ValidationLatencyEstimate {
             elapsed: p50_elapsed.max(p90_floor),
-            p90_gas_used: p90(self.samples.values().map(|sample| sample.workload.gas_used))
+            p90_gas_used: percentile_from_counts(&self.gas_used_counts, sample_count, 9, 10)
                 .unwrap_or_default(),
-            p90_transaction_count: p90(self
-                .samples
-                .values()
-                .map(|sample| sample.workload.transaction_count))
+            p90_transaction_count: percentile_from_counts(
+                &self.transaction_count_counts,
+                sample_count,
+                9,
+                10,
+            )
             .unwrap_or_default(),
         })
     }
