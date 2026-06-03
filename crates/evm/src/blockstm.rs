@@ -176,6 +176,18 @@ pub struct Tip20TransferBlockstmPlan {
 }
 
 impl Tip20TransferBlockstmPlan {
+    fn base_accesses(&self) -> Tip20BlockstmBaseAccesses {
+        let mut storage = self.read_set();
+        storage.extend(self.write_set());
+        let mut accounts = storage
+            .iter()
+            .map(|key| key.address)
+            .collect::<HashSet<_>>();
+        accounts.insert(self.nonce.caller);
+
+        Tip20BlockstmBaseAccesses { storage, accounts }
+    }
+
     fn read_set(&self) -> HashSet<StorageKey> {
         self.nonce
             .read_set()
@@ -197,33 +209,47 @@ impl Tip20TransferBlockstmPlan {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct Tip20BlockstmBaseAccesses {
+    storage: HashSet<StorageKey>,
+    accounts: HashSet<Address>,
+}
+
 pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
     db: &mut DB,
     plan: &Tip20TransferBlockstmPlan,
     block_timestamp: u64,
 ) -> Result<(), DB::Error> {
-    let mut keys = plan.read_set();
-    keys.extend(plan.write_set());
-    let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
-    accounts.insert(plan.nonce.caller);
+    let accesses = plan.base_accesses();
 
-    for key in keys {
+    for key in accesses.storage {
         let _ = db.storage(key.address, key.slot)?;
     }
-    prewarm_expiring_nonce_base_state(db, plan, block_timestamp)?;
+    read_expiring_nonce_base_storage(
+        plan,
+        block_timestamp,
+        |key| db.storage(key.address, key.slot),
+        |ptr_word, expiring_nonce_idx| -> Result<u32, DB::Error> {
+            let ptr = ptr_word.to::<u32>();
+            let offset =
+                expiring_nonce_idx.unwrap_or_default() % EXPIRING_NONCE_SET_CAPACITY as usize;
+            Ok(((u64::from(ptr) + offset as u64) % u64::from(EXPIRING_NONCE_SET_CAPACITY)) as u32)
+        },
+    )?;
 
-    for account in accounts {
+    for account in accesses.accounts {
         let _ = db.basic(account)?;
     }
 
     Ok(())
 }
 
-fn prewarm_expiring_nonce_base_state<DB: Database>(
-    db: &mut DB,
+fn read_expiring_nonce_base_storage<E>(
     plan: &Tip20TransferBlockstmPlan,
     block_timestamp: u64,
-) -> Result<(), DB::Error> {
+    mut read_storage: impl FnMut(StorageKey) -> Result<U256, E>,
+    mut ring_index: impl FnMut(U256, Option<usize>) -> Result<u32, E>,
+) -> Result<(), E> {
     let Tip20ExpiringNonceAction {
         replay_hash,
         valid_before: _,
@@ -232,21 +258,19 @@ fn prewarm_expiring_nonce_base_state<DB: Database>(
     } = plan.nonce;
 
     let seen_key = expiring_nonce_seen_key(replay_hash);
-    let seen_expiry = db.storage(seen_key.address, seen_key.slot)?;
+    let seen_expiry = read_storage(seen_key)?;
     if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
         return Ok(());
     }
 
     let ptr_key = expiring_nonce_ring_ptr_key();
-    let ptr = db.storage(ptr_key.address, ptr_key.slot)?.to::<u32>();
-    let offset = expiring_nonce_idx.unwrap_or_default() % EXPIRING_NONCE_SET_CAPACITY as usize;
-    let idx = ((u64::from(ptr) + offset as u64) % u64::from(EXPIRING_NONCE_SET_CAPACITY)) as u32;
+    let idx = ring_index(read_storage(ptr_key)?, expiring_nonce_idx)?;
     let ring_key = expiring_nonce_ring_key(idx);
-    let old_hash_word = db.storage(ring_key.address, ring_key.slot)?;
+    let old_hash_word = read_storage(ring_key)?;
 
     if old_hash_word != U256::ZERO {
         let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-        let _ = db.storage(old_seen_key.address, old_seen_key.slot)?;
+        let _ = read_storage(old_seen_key)?;
     }
 
     Ok(())
@@ -541,20 +565,27 @@ where
         plan: &Tip20TransferBlockstmPlan,
         block_timestamp: u64,
     ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmExecutionError> {
-        let mut keys = plan.read_set();
-        keys.extend(plan.write_set());
-        let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
-        accounts.insert(plan.nonce.caller);
+        let accesses = plan.base_accesses();
 
-        let mut storage = HashMap::with_capacity(keys.len());
-        for key in keys {
+        let mut storage = HashMap::with_capacity(accesses.storage.len());
+        for key in accesses.storage {
             let value = self.read_storage(key.address, key.slot)?;
             storage.insert(key, value);
         }
-        self.read_expiring_nonce_base_state(plan, block_timestamp, &mut storage)?;
+        read_expiring_nonce_base_storage(
+            plan,
+            block_timestamp,
+            |key| self.read_base_storage(&mut storage, key),
+            |ptr_word, expiring_nonce_idx| {
+                let ptr = expiring_nonce_ring_ptr_from_word(ptr_word)
+                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+                expiring_nonce_ring_index(ptr, expiring_nonce_idx)
+                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)
+            },
+        )?;
 
-        let mut account_infos = HashMap::with_capacity(accounts.len());
-        for account in accounts {
+        let mut account_infos = HashMap::with_capacity(accesses.accounts.len());
+        for account in accesses.accounts {
             let info = self.read_account_info(account)?;
             account_infos.insert(account, info);
         }
@@ -573,42 +604,6 @@ where
             storage,
             accounts: account_infos,
         })
-    }
-
-    fn read_expiring_nonce_base_state(
-        &mut self,
-        plan: &Tip20TransferBlockstmPlan,
-        block_timestamp: u64,
-        storage: &mut HashMap<StorageKey, U256>,
-    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-        let Tip20ExpiringNonceAction {
-            replay_hash,
-            valid_before: _,
-            expiring_nonce_idx,
-            ..
-        } = plan.nonce;
-
-        let seen_key = expiring_nonce_seen_key(replay_hash);
-        let seen_expiry = self.read_base_storage(storage, seen_key)?;
-        if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
-            return Ok(());
-        }
-
-        let ptr_key = expiring_nonce_ring_ptr_key();
-        let ptr = expiring_nonce_ring_ptr_from_word(self.read_base_storage(storage, ptr_key)?)
-            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
-        let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)
-            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
-        let ring_key = expiring_nonce_ring_key(idx);
-        let old_hash_word = self.read_base_storage(storage, ring_key)?;
-
-        if old_hash_word != U256::ZERO {
-            let old_seen_key =
-                expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-            let _ = self.read_base_storage(storage, old_seen_key)?;
-        }
-
-        Ok(())
     }
 
     fn read_base_storage(
