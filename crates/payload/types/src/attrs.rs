@@ -9,8 +9,8 @@ use std::{
     error::Error,
     fmt,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -265,6 +265,7 @@ struct PayloadBuildControlInner {
     proposal_return_budget: Mutex<Duration>,
     builder_start: Instant,
     proposal_timing_attached: AtomicBool,
+    cancelled: AtomicBool,
     proposal_timing: Mutex<Option<ProposalTiming>>,
     proposal_timing_changed: Condvar,
 }
@@ -313,6 +314,7 @@ impl PayloadBuildControl {
                 proposal_return_budget: Mutex::new(proposal_return_budget),
                 builder_start,
                 proposal_timing_attached: AtomicBool::new(false),
+                cancelled: AtomicBool::new(false),
                 proposal_timing: Mutex::new(None),
                 proposal_timing_changed: Condvar::new(),
             }),
@@ -378,6 +380,17 @@ impl PayloadBuildControl {
         self.inner.proposal_timing_attached.load(Ordering::Acquire)
     }
 
+    /// Requests cancellation of the associated payload build.
+    pub fn cancel(&self) {
+        self.inner.cancelled.store(true, Ordering::Release);
+        self.inner.proposal_timing_changed.notify_all();
+    }
+
+    /// Returns true once cancellation has been requested for this build.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::Acquire)
+    }
+
     /// Returns the attached proposal context, if one has been provided.
     pub fn proposal_context(&self) -> Option<PayloadProposalContext> {
         self.proposal_timing()
@@ -398,7 +411,7 @@ impl PayloadBuildControl {
             {
                 return Ok(payload_context);
             }
-            if should_cancel() {
+            if self.is_cancelled() || should_cancel() {
                 return Err(PayloadProposalContextCancelled);
             }
 
@@ -901,6 +914,19 @@ mod tests {
 
         assert_eq!(
             control.wait_for_proposal_context_while(|| true),
+            Err(PayloadProposalContextCancelled)
+        );
+    }
+
+    #[test]
+    fn payload_build_control_cancel_is_observable() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+
+        assert!(!control.is_cancelled());
+        control.cancel();
+        assert!(control.is_cancelled());
+        assert_eq!(
+            control.wait_for_proposal_context_while(|| false),
             Err(PayloadProposalContextCancelled)
         );
     }

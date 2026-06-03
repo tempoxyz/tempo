@@ -51,7 +51,7 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, cancelled::CancelOnDrop, context::Block, database::StateProviderDatabase,
+    State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
@@ -104,9 +104,12 @@ enum CancelableRecv<T> {
     Disconnected,
 }
 
-fn recv_sparse_trie_with_cancel<T>(rx: Receiver<T>, cancel: &CancelOnDrop) -> CancelableRecv<T> {
+fn recv_sparse_trie_with_cancel<T>(
+    rx: Receiver<T>,
+    should_cancel: impl Fn() -> bool,
+) -> CancelableRecv<T> {
     loop {
-        if cancel.is_cancelled() {
+        if should_cancel() {
             return CancelableRecv::Cancelled;
         }
 
@@ -360,9 +363,16 @@ where
             trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
+        let payload_build_control = attributes.payload_build_control().cloned();
+        let build_cancelled = || {
+            cancel.is_cancelled()
+                || payload_build_control
+                    .as_ref()
+                    .is_some_and(|control| control.is_cancelled())
+        };
         macro_rules! check_cancel {
             () => {
-                if cancel.is_cancelled() {
+                if build_cancelled() {
                     return Ok(BuildOutcome::Cancelled);
                 }
             };
@@ -569,12 +579,9 @@ where
                     parent_number = parent_header.number(),
                     "flattening payload-builder sparse-trie updates until proposal context is attached"
                 );
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook_flatten_until(move || {
-                        control.proposal_timing_attached()
-                    }))));
+                executor.evm_mut().db_mut().set_state_hook(Some(Box::new(
+                    handle.state_hook_flatten_until(move || control.proposal_timing_attached()),
+                )));
             } else if handle.is_deferred_parent_pending() {
                 debug!(
                     target: "payload_builder",
@@ -601,6 +608,27 @@ where
         })?;
         executor.evm_mut().db_mut().bump_bal_index();
 
+        check_cancel!();
+
+        if attributes.consensus_context().is_none()
+            && let Some(control) = payload_build_control.as_ref()
+        {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                "waiting for proposal context before executing speculative payload"
+            );
+            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
+                Ok(proposal_context) => {
+                    ctx.inner.extra_data = proposal_context.extra_data().clone();
+                    ctx.consensus_context = Some(proposal_context.consensus_context());
+                }
+                Err(_) if cancel.is_cancelled() || control.is_cancelled() => {
+                    return Ok(BuildOutcome::Cancelled);
+                }
+                Err(error) => return Err(PayloadBuilderError::other(error)),
+            }
+        }
         check_cancel!();
 
         debug!("building new payload");
@@ -664,7 +692,6 @@ where
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_control = attributes.payload_build_control().cloned();
         let is_budgeted_build = payload_build_control.is_some();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
@@ -1043,7 +1070,7 @@ where
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx())
         {
-            match recv_sparse_trie_with_cancel(hashed_state_rx, &cancel) {
+            match recv_sparse_trie_with_cancel(hashed_state_rx, &build_cancelled) {
                 CancelableRecv::Received(hashed_state) => hashed_state,
                 CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
                 CancelableRecv::Disconnected => {
@@ -1060,7 +1087,7 @@ where
             if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match recv_sparse_trie_with_cancel(handle.take_state_root_rx(), &cancel) {
+                match recv_sparse_trie_with_cancel(handle.take_state_root_rx(), &build_cancelled) {
                     CancelableRecv::Received(Ok(outcome)) => {
                         let elapsed = state_root_wait_start.elapsed();
                         self.metrics
@@ -1477,6 +1504,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::Block as _;
+    use reth_revm::cancelled::CancelOnDrop;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1491,10 +1519,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(7u64).unwrap();
 
-        let cancel = CancelOnDrop::default();
-
         assert!(matches!(
-            recv_sparse_trie_with_cancel(rx, &cancel),
+            recv_sparse_trie_with_cancel(rx, || false),
             CancelableRecv::Received(7)
         ));
     }
@@ -1507,7 +1533,7 @@ mod tests {
         let cancel = CancelOnDrop::default();
 
         assert!(matches!(
-            recv_sparse_trie_with_cancel(rx, &cancel),
+            recv_sparse_trie_with_cancel(rx, || cancel.is_cancelled()),
             CancelableRecv::Disconnected
         ));
     }
@@ -1519,7 +1545,7 @@ mod tests {
         drop(cancel.clone());
 
         assert!(matches!(
-            recv_sparse_trie_with_cancel(rx, &cancel),
+            recv_sparse_trie_with_cancel(rx, || cancel.is_cancelled()),
             CancelableRecv::Cancelled
         ));
     }

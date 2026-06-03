@@ -129,6 +129,7 @@ struct ProposalReturn {
 #[derive(Clone, Debug, Default)]
 struct SpeculativeBuildRegistry {
     active: Arc<AsyncMutex<Option<SpeculativeBuild>>>,
+    current_control: Arc<AsyncMutex<Option<PayloadBuildControl>>>,
 }
 
 #[cfg(feature = "bal")]
@@ -144,6 +145,7 @@ struct SpeculativeBuild {
 #[cfg(feature = "bal")]
 impl SpeculativeBuildRegistry {
     async fn replace(&self, execution_node: Arc<TempoFullNode>, build: SpeculativeBuild) {
+        self.track_build_control(build.build_control.clone()).await;
         let old = self.active.lock().await.replace(build);
         if let Some(old) = old {
             Self::spawn_cancel(execution_node, old, "replaced_by_new_verify");
@@ -151,6 +153,7 @@ impl SpeculativeBuildRegistry {
     }
 
     async fn stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        self.cancel_current_control(reason).await;
         if let Some(build) = self.active.lock().await.take() {
             Self::spawn_cancel(execution_node, build, reason);
         }
@@ -175,6 +178,7 @@ impl SpeculativeBuildRegistry {
         }) else {
             return;
         };
+        build.build_control.cancel();
         Self::spawn_cancel(execution_node, build, reason);
     }
 
@@ -190,11 +194,27 @@ impl SpeculativeBuildRegistry {
         }
     }
 
+    async fn track_build_control(&self, build_control: PayloadBuildControl) {
+        self.current_control.lock().await.replace(build_control);
+    }
+
+    async fn cancel_current_control(&self, reason: &'static str) {
+        let Some(control) = self.current_control.lock().await.take() else {
+            return;
+        };
+        control.cancel();
+        debug!(
+            reason,
+            "cancelled current speculative payload build control"
+        );
+    }
+
     fn spawn_cancel(
         execution_node: Arc<TempoFullNode>,
         mut build: SpeculativeBuild,
         reason: &'static str,
     ) {
+        build.build_control.cancel();
         debug!(
             parent.digest = %build.parent_digest,
             parent.height = %build.parent_height,
@@ -733,6 +753,12 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
+        #[cfg(feature = "bal")]
+        self.state
+            .speculative_builds
+            .stop_active(self.execution_node.clone(), "new_handle_verify")
+            .await;
+
         let result = select!(
             () = response.closed() => {
                 Err(eyre!(
@@ -962,6 +988,10 @@ impl Inner<Init> {
             .take_matching(parent_digest)
             .await
         {
+            self.state
+                .speculative_builds
+                .track_build_control(speculative_build.build_control.clone())
+                .await;
             let consensus_context = consensus_context
                 .expect("proposal consensus context is constructed immediately above");
             let build_budget = if nullified_view_recovery {
@@ -1060,7 +1090,6 @@ impl Inner<Init> {
                 )
                 .await
                 .wrap_err("failed starting missing-slot speculative BAL payload build")?;
-
             debug!(
                 parent.digest = %parent.digest(),
                 parent.height = %parent.height(),
@@ -1222,6 +1251,10 @@ impl Inner<Init> {
         consensus_context: Option<TempoConsensusContext>,
         reason: &'static str,
     ) -> eyre::Result<SpeculativeBuild> {
+        self.state
+            .speculative_builds
+            .track_build_control(build_control.clone())
+            .await;
         let block_access_list = block.required_block_access_list().clone();
 
         let mut epoch_millis = context.current().epoch_millis();
@@ -1438,12 +1471,6 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<bool> {
-        #[cfg(feature = "bal")]
-        self.state
-            .speculative_builds
-            .stop_active(self.execution_node.clone(), "new_handle_verify")
-            .await;
-
         let block_request = self
             .marshal
             .subscribe_by_digest(Some(round), payload)
