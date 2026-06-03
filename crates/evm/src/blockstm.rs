@@ -1941,7 +1941,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use reth_trie::{HashedPostState, KeccakKeyHasher};
-    use revm::database::{EmptyDB, states::plain_account::PlainStorage};
+    use revm::database::{CacheDB, EmptyDB, states::plain_account::PlainStorage};
     use std::{
         collections::BTreeSet,
         fmt::Write as _,
@@ -2149,6 +2149,22 @@ mod tests {
         ] {
             if !inserted_accounts.contains(&address) {
                 db.insert_account(address, precompile_marker_info());
+            }
+        }
+        db
+    }
+
+    fn path_usd_parent_db_with_balances_and_reward_flag(
+        balances: impl IntoIterator<Item = (Address, U256)>,
+        reward_flag: u8,
+    ) -> CacheDB<EmptyDB> {
+        let state = path_usd_state_with_balances_and_reward_flag(balances, reward_flag);
+        let mut db = CacheDB::new(EmptyDB::default());
+        for (address, account) in state.cache.trie_account() {
+            db.insert_account_info(address, account.info.clone());
+            for (slot, value) in &account.storage {
+                db.insert_account_storage(address, *slot, *value)
+                    .expect("cache DB storage insert must succeed");
             }
         }
         db
@@ -3083,14 +3099,17 @@ mod tests {
         let recipient = address!("10000000000000000000000000000000000000c2");
         let sender_balance = U256::from(1_000_000_000_000_000_000u128);
         let block_timestamp = 1_700_000_000u64;
-        let db = path_usd_state_with_balances_and_reward_flag(
+        let parent_db = path_usd_parent_db_with_balances_and_reward_flag(
             [(signer.address(), sender_balance), (recipient, U256::ZERO)],
             REWARD_FLAG_OPTED_OUT,
         );
 
         let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
         let captured = updates.clone();
-        let mut db = db;
+        let mut db = State::builder()
+            .with_database(parent_db)
+            .with_bundle_update()
+            .build();
         db.set_state_hook(Some(Box::new(move |state: &EvmState| {
             captured.lock().unwrap().push(state.clone());
         })));
