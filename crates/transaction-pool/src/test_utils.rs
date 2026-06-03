@@ -372,6 +372,7 @@ pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoCh
 ///         expiry: u64::MAX,
 ///         enforce_limits: false,
 ///         is_revoked: false,
+///         is_temporary: false,
 ///     })
 /// });
 /// ```
