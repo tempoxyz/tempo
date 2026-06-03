@@ -9,7 +9,10 @@ use reth_evm::{Database, block::StateDB};
 use reth_primitives_traits::Recovered;
 use reth_revm::{
     Inspector,
-    context::{Block as _, Cfg as _, CfgEnv, Transaction as _, result::ResultGas},
+    context::{
+        Block as _, Cfg as _, CfgEnv, Transaction as _,
+        result::{ExecutionResult, ResultGas},
+    },
     context_interface::{
         cfg::{GasId, GasParams, gas},
         context::SStoreResult,
@@ -28,9 +31,9 @@ use tempo_contracts::precompiles::{ITIP20, TIP20Event};
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, input_cost,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY},
-    storage::StorageKey as _,
+    storage::{StorageKey as _, evm::EvmAction},
     tip_fee_manager::TipFeeManager,
-    tip20::{U128_MAX, decode_tip20_balance, tip20_slots},
+    tip20::{RewardFlag, U128_MAX, UserState, decode_tip20_balance, tip20_slots},
     tip403_registry::{ALLOW_ALL_POLICY_ID, tip403_registry_slots},
 };
 use tempo_primitives::{
@@ -38,8 +41,8 @@ use tempo_primitives::{
     transaction::{TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending},
 };
 use tempo_revm::{
-    TempoTxEnv, calculate_aa_batch_intrinsic_gas, evm::TempoContext, gas_params::SSTORE_SET_COST,
-    handler::EXPIRING_NONCE_GAS,
+    TempoHaltReason, TempoTxEnv, calculate_aa_batch_intrinsic_gas, evm::TempoContext,
+    gas_params::SSTORE_SET_COST, handler::EXPIRING_NONCE_GAS,
 };
 
 /// One payload-builder candidate for the BlockSTM TIP-20 transfer path.
@@ -51,6 +54,14 @@ pub struct Tip20TransferBlockstmTx<'tx> {
     pub recovered: &'tx Recovered<TempoTxEnvelope>,
     /// Fee token resolved by pool validation.
     pub fee_token: Address,
+}
+
+/// Precomputed TIP-20 transfer result plus semantic precompile storage actions.
+#[derive(Debug)]
+pub struct Tip20TransferActionReplay {
+    pub result: ExecutionResult<TempoHaltReason>,
+    pub actions: Vec<EvmAction>,
+    pub validator_fee: U256,
 }
 
 /// Reason the BlockSTM TIP-20 transfer path cannot be used.
@@ -88,6 +99,9 @@ pub enum Tip20TransferBlockstmFallback {
     TransferPolicy,
     ReceivePolicy,
     RewardActive,
+    ActionExecutionFailed,
+    MissingActions,
+    ActionReplayFailed,
 }
 
 impl Tip20TransferBlockstmFallback {
@@ -126,6 +140,9 @@ impl Tip20TransferBlockstmFallback {
             Self::TransferPolicy => "transfer_policy",
             Self::ReceivePolicy => "receive_policy",
             Self::RewardActive => "reward_active",
+            Self::ActionExecutionFailed => "action_execution_failed",
+            Self::MissingActions => "missing_actions",
+            Self::ActionReplayFailed => "action_replay_failed",
         }
     }
 }
@@ -431,6 +448,81 @@ where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
 {
+    /// Commits one precomputed TIP-20 transfer by replaying recorded precompile storage actions.
+    ///
+    /// `should_commit` observes the synthetic result before state mutation. Returning `false`
+    /// leaves executor state unchanged, allowing the payload builder to stop at the exact block
+    /// gas boundary instead of reserving the pooled transaction gas limit up front.
+    pub fn execute_tip20_transfer_action_replay_tx<'tx>(
+        &mut self,
+        tx: Tip20TransferBlockstmTx<'tx>,
+        plan: Tip20TransferBlockstmPlan,
+        replay: Tip20TransferActionReplay,
+        transaction_index: usize,
+        should_commit: impl FnOnce(&TempoTxResult) -> bool,
+    ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
+        if !replay.result.is_success() {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::ActionExecutionFailed,
+            ));
+        }
+
+        let block = self.inner.evm.block();
+        let block_timestamp = block.timestamp().saturating_to::<u64>();
+        let basefee = block.basefee as u128;
+
+        self.validate_tip20_transfer_state(&plan)?;
+
+        let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
+        let cfg = self.inner.evm.cfg.clone();
+        let is_t6 = cfg.spec.is_t6();
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+        let mut tx_execution =
+            execute_tip20_transfer_plan_with_deltas(&plan, &mut ledger, is_t6, block_timestamp)
+                .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &base_state, &cfg)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
+        settle_actual_fee_with_deltas(&plan, &mut tx_execution, &mut ledger, actual_fee, is_t6)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        if *replay.result.gas() != gas
+            || replay.validator_fee != actual_fee
+            || replay.result.logs() != synthetic_tip20_logs(&plan, actual_fee)
+        {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::ActionReplayFailed,
+            ));
+        }
+
+        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
+            gas.block_regular_gas_used()
+        } else {
+            gas.tx_gas_used()
+        };
+        let next_section = self
+            .validate_tx(tx.recovered.tx(), block_gas_used)
+            .map_err(|error| Tip20TransferBlockstmExecutionError::Execution {
+                transaction_index,
+                error: error.into(),
+            })?;
+        let state = action_replay_state(self.inner.evm.db_mut(), &replay.actions, cfg.spec)?;
+        let result = TempoTxResult::new_precomputed(
+            tx.recovered.tx(),
+            replay.result,
+            state,
+            next_section,
+            self.is_payment(tx.recovered.tx()),
+            block_gas_used,
+            replay.validator_fee,
+        );
+        if !should_commit(&result) {
+            return Ok(false);
+        }
+        self.commit_transaction(result);
+
+        Ok(true)
+    }
+
     /// Executes one pre-built BlockSTM TIP-20 transfer plan.
     ///
     /// `should_commit` observes the synthetic result before state mutation. Returning `false`
@@ -928,6 +1020,163 @@ fn execution_state(
     }
 
     state
+}
+
+fn action_replay_state<DB: StateDB>(
+    db: &mut DB,
+    actions: &[EvmAction],
+    spec: TempoHardfork,
+) -> Result<EvmState, Tip20TransferBlockstmExecutionError> {
+    if actions.is_empty() {
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
+            Tip20TransferBlockstmFallback::MissingActions,
+        ));
+    }
+
+    let mut originals = HashMap::<StorageKey, U256>::new();
+    let mut writes = HashMap::<StorageKey, U256>::new();
+
+    for action in actions {
+        match *action {
+            EvmAction::Sload(address, slot) => {
+                let key = StorageKey { address, slot };
+                let _ = action_current_value(db, &writes, &mut originals, key)?;
+            }
+            EvmAction::Sstore(address, slot, value) => {
+                action_write_value(
+                    db,
+                    &mut writes,
+                    &mut originals,
+                    StorageKey { address, slot },
+                    value,
+                )?;
+            }
+            EvmAction::Sinc(address, slot, delta) => {
+                let key = StorageKey { address, slot };
+                let value = action_current_value(db, &writes, &mut originals, key)?
+                    .checked_add(delta)
+                    .ok_or_else(action_replay_failed)?;
+                writes.insert(key, value);
+            }
+            EvmAction::Sdec(address, slot, delta) => {
+                let key = StorageKey { address, slot };
+                let value = action_current_value(db, &writes, &mut originals, key)?
+                    .checked_sub(delta)
+                    .ok_or_else(action_replay_failed)?;
+                writes.insert(key, value);
+            }
+            EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
+                let key = StorageKey { address, slot };
+                let value = action_tip20_balance_value(
+                    action_current_value(db, &writes, &mut originals, key)?,
+                    spec,
+                    delta,
+                    flag,
+                    true,
+                )?;
+                writes.insert(key, value);
+            }
+            EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
+                let key = StorageKey { address, slot };
+                let value = action_tip20_balance_value(
+                    action_current_value(db, &writes, &mut originals, key)?,
+                    spec,
+                    delta,
+                    flag,
+                    false,
+                )?;
+                writes.insert(key, value);
+            }
+        }
+    }
+
+    let mut state = EvmState::default();
+    for (key, value) in writes {
+        if !state.contains_key(&key.address) {
+            let mut account = Account::from(action_account_info(db, key.address)?);
+            account.mark_touch();
+            state.insert(key.address, account);
+        }
+        let account = state
+            .get_mut(&key.address)
+            .expect("action replay account inserted");
+        let original = originals.get(&key).copied().unwrap_or_default();
+        account.storage.insert(
+            key.slot,
+            EvmStorageSlot::new_changed(original, value, TransactionId::ZERO),
+        );
+    }
+
+    Ok(state)
+}
+
+fn action_current_value<DB: StateDB>(
+    db: &mut DB,
+    writes: &HashMap<StorageKey, U256>,
+    originals: &mut HashMap<StorageKey, U256>,
+    key: StorageKey,
+) -> Result<U256, Tip20TransferBlockstmExecutionError> {
+    if let Some(value) = writes.get(&key) {
+        return Ok(*value);
+    }
+    if let Some(value) = originals.get(&key) {
+        return Ok(*value);
+    }
+
+    let value = db
+        .storage(key.address, key.slot)
+        .map_err(BlockExecutionError::other)
+        .map_err(Tip20TransferBlockstmExecutionError::Database)?;
+    originals.insert(key, value);
+    Ok(value)
+}
+
+fn action_write_value<DB: StateDB>(
+    db: &mut DB,
+    writes: &mut HashMap<StorageKey, U256>,
+    originals: &mut HashMap<StorageKey, U256>,
+    key: StorageKey,
+    value: U256,
+) -> Result<(), Tip20TransferBlockstmExecutionError> {
+    if !originals.contains_key(&key) {
+        let _ = action_current_value(db, writes, originals, key)?;
+    }
+    writes.insert(key, value);
+    Ok(())
+}
+
+fn action_tip20_balance_value(
+    current: U256,
+    spec: TempoHardfork,
+    delta: U256,
+    flag: RewardFlag,
+    increment: bool,
+) -> Result<U256, Tip20TransferBlockstmExecutionError> {
+    let state =
+        UserState::decode_storage_word(current, spec).map_err(|_| action_replay_failed())?;
+    let state = if increment {
+        state.incremented(delta, flag)
+    } else {
+        state.decremented(delta, flag)
+    }
+    .map_err(|_| action_replay_failed())?;
+    state
+        .encode_storage_word(spec)
+        .map_err(|_| action_replay_failed())
+}
+
+fn action_account_info<DB: StateDB>(
+    db: &mut DB,
+    address: Address,
+) -> Result<AccountInfo, Tip20TransferBlockstmExecutionError> {
+    db.basic(address)
+        .map_err(BlockExecutionError::other)
+        .map_err(Tip20TransferBlockstmExecutionError::Database)
+        .map(|account| account.unwrap_or_default())
+}
+
+fn action_replay_failed() -> Tip20TransferBlockstmExecutionError {
+    Tip20TransferBlockstmExecutionError::Fallback(Tip20TransferBlockstmFallback::ActionReplayFailed)
 }
 
 #[derive(Debug)]
@@ -2965,6 +3214,36 @@ mod tests {
             execution.txs[1].writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
             encode_balance(total_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
+    }
+
+    #[test]
+    fn action_replay_tip20_balance_actions_apply_against_current_state() {
+        let holder = address!("10000000000000000000000000000000000000f1");
+        let key = balance_key(TOKEN, holder);
+        let original = encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true);
+        let expected = encode_balance(U256::from(120), REWARD_FLAG_OPTED_OUT, true);
+
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(TOKEN, precompile_marker_info());
+        db.insert_account_storage(TOKEN, key.slot, original)
+            .expect("storage insert must succeed");
+
+        let state = action_replay_state(
+            &mut db,
+            &[
+                EvmAction::Tip20BalanceSinc(TOKEN, key.slot, U256::from(25), RewardFlag::OptedOut),
+                EvmAction::Tip20BalanceSdec(TOKEN, key.slot, U256::from(5), RewardFlag::OptedOut),
+            ],
+            TempoHardfork::T6,
+        )
+        .expect("action replay succeeds");
+
+        let slot = state
+            .get(&TOKEN)
+            .and_then(|account| account.storage.get(&key.slot))
+            .expect("balance slot must be updated");
+        assert_eq!(slot.original_value, original);
+        assert_eq!(slot.present_value, expected);
     }
 
     #[test]

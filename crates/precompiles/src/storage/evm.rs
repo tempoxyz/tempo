@@ -344,7 +344,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             address,
             key,
             value,
-            Some(EvmAction::Tip20BalanceSinc(address, key, delta)),
+            Some(EvmAction::Tip20BalanceSinc(address, key, delta, flag)),
         )?;
         Ok(state)
     }
@@ -365,7 +365,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             address,
             key,
             value,
-            Some(EvmAction::Tip20BalanceSdec(address, key, delta)),
+            Some(EvmAction::Tip20BalanceSdec(address, key, delta, flag)),
         )?;
         Ok(state)
     }
@@ -518,8 +518,8 @@ pub enum EvmAction {
     Sstore(Address, U256, U256),
     Sinc(Address, U256, U256),
     Sdec(Address, U256, U256),
-    Tip20BalanceSinc(Address, U256, U256),
-    Tip20BalanceSdec(Address, U256, U256),
+    Tip20BalanceSinc(Address, U256, U256, RewardFlag),
+    Tip20BalanceSdec(Address, U256, U256, RewardFlag),
 }
 
 pub type EvmActions = Rc<RefCell<Option<Vec<EvmAction>>>>;
@@ -740,8 +740,8 @@ mod tests {
         assert_eq!(
             actions.borrow().as_ref().unwrap().as_slice(),
             &[
-                EvmAction::Tip20BalanceSinc(addr, key, U256::from(10)),
-                EvmAction::Tip20BalanceSdec(addr, key, U256::from(4)),
+                EvmAction::Tip20BalanceSinc(addr, key, U256::from(10), RewardFlag::OptedIn),
+                EvmAction::Tip20BalanceSdec(addr, key, U256::from(4), RewardFlag::OptedOut),
             ]
         );
 
@@ -776,8 +776,18 @@ mod tests {
             assert_eq!(
                 recorded_tip20_balance_actions(&actions),
                 vec![
-                    EvmAction::Tip20BalanceSdec(token_address, user_balance_slot, pre_fee),
-                    EvmAction::Tip20BalanceSinc(token_address, fee_manager_balance_slot, pre_fee),
+                    EvmAction::Tip20BalanceSdec(
+                        token_address,
+                        user_balance_slot,
+                        pre_fee,
+                        RewardFlag::OptedOut,
+                    ),
+                    EvmAction::Tip20BalanceSinc(
+                        token_address,
+                        fee_manager_balance_slot,
+                        pre_fee,
+                        RewardFlag::Uninitialized,
+                    ),
                 ]
             );
 
@@ -786,8 +796,18 @@ mod tests {
             assert_eq!(
                 recorded_tip20_balance_actions(&actions),
                 vec![
-                    EvmAction::Tip20BalanceSdec(token_address, fee_manager_balance_slot, refund),
-                    EvmAction::Tip20BalanceSinc(token_address, user_balance_slot, refund),
+                    EvmAction::Tip20BalanceSdec(
+                        token_address,
+                        fee_manager_balance_slot,
+                        refund,
+                        RewardFlag::Uninitialized,
+                    ),
+                    EvmAction::Tip20BalanceSinc(
+                        token_address,
+                        user_balance_slot,
+                        refund,
+                        RewardFlag::OptedOut,
+                    ),
                 ]
             );
 

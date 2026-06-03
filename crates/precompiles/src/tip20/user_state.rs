@@ -117,15 +117,15 @@ impl UserState {
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
-    pub(crate) fn incremented(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
+    pub fn incremented(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
         Self::new(self.checked_add(amount)?, flag)
     }
 
-    pub(crate) fn decremented(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
+    pub fn decremented(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
         Self::new(self.checked_sub(amount)?, flag)
     }
 
-    pub(crate) fn decode_storage_word(value: U256, spec: TempoHardfork) -> Result<Self> {
+    pub fn decode_storage_word(value: U256, spec: TempoHardfork) -> Result<Self> {
         if !spec.is_t6() {
             let amount =
                 u128::try_from(value).map_err(|_| TempoPrecompileError::under_overflow())?;
@@ -147,7 +147,7 @@ impl UserState {
         }
     }
 
-    pub(crate) fn encode_storage_word(&self, spec: TempoHardfork) -> Result<U256> {
+    pub fn encode_storage_word(&self, spec: TempoHardfork) -> Result<U256> {
         if !spec.is_t6() {
             return Ok(U256::from(self.amount));
         }

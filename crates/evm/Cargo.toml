@@ -15,7 +15,6 @@ workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
-tempo-precompiles = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 tempo-precompiles.workspace = true
@@ -54,12 +53,13 @@ revm.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
-engine = ["dep:tempo-payload-types", "dep:rayon", "dep:tempo-precompiles", "dep:alloy-sol-types"]
+engine = ["dep:tempo-payload-types", "dep:rayon", "dep:alloy-sol-types"]
 
 [[bench]]
 name = "tip20_execution"

@@ -538,7 +538,7 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let blockstm_prewarm = if self.enable_prewarming && self.enable_blockstm_tip20_transfers {
+        let blockstm_prewarm = if self.enable_blockstm_tip20_transfers {
             Some(PrewarmingExecutionContext::new(
                 self.provider.clone(),
                 execution_cache.clone(),
@@ -597,7 +597,6 @@ where
                         beneficiary,
                         basefee: base_fee as u128,
                         blob_gasprice: executor.evm().block().blob_gasprice().unwrap_or_default(),
-                        block_timestamp: executor.evm().block().timestamp().saturating_to::<u64>(),
                         spec: executor.evm().cfg.spec,
                     },
                     blockstm_prewarm,
@@ -685,9 +684,10 @@ where
                     let tx_rlp_length = pool_tx.transaction.encoded_length();
                     let mut stop_reason = None;
 
-                    let execution_result = executor.execute_tip20_transfer_blockstm_planned_tx(
+                    let execution_result = executor.execute_tip20_transfer_action_replay_tx(
                         blockstm::candidate(&pool_tx),
                         planned_tx.plan,
+                        planned_tx.replay,
                         candidate_count,
                         |result| {
                             if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit

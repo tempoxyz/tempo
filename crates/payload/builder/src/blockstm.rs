@@ -10,8 +10,8 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
-    build_tip20_transfer_blockstm_plan, prewarm_tip20_transfer_blockstm_plan,
+    Tip20TransferActionReplay, Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan,
+    Tip20TransferBlockstmTx, build_tip20_transfer_blockstm_plan,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
@@ -54,7 +54,6 @@ pub(crate) struct PlanningContext {
     pub(crate) beneficiary: Address,
     pub(crate) basefee: u128,
     pub(crate) blob_gasprice: u128,
-    pub(crate) block_timestamp: u64,
     pub(crate) spec: TempoHardfork,
 }
 
@@ -62,6 +61,7 @@ pub(crate) struct PlanningContext {
 pub(crate) struct PlannedTransfer {
     pub(crate) tx: BestTransaction,
     pub(crate) plan: Tip20TransferBlockstmPlan,
+    pub(crate) replay: Tip20TransferActionReplay,
 }
 
 #[derive(Debug)]
@@ -129,20 +129,23 @@ where
         let ctx = self.ctx;
         let prewarm = self.prewarm.clone();
         self.pool.spawn(move || {
-            let item = build_tip20_transfer_blockstm_plan(
-                &candidate(&tx),
-                ctx.validator_token,
-                ctx.beneficiary,
-                ctx.basefee,
-                ctx.blob_gasprice,
-                ctx.spec,
-            )
-            .map(|plan| {
-                if let Some(prewarm) = prewarm {
-                    prewarm_tip20_transfer_plan(&prewarm, &plan, ctx.block_timestamp, sequence);
-                }
-                PlannedTransfer { tx, plan }
-            });
+            let item = (|| {
+                let candidate = candidate_with_expiring_nonce_offset(&tx, Some(sequence));
+                let plan = build_tip20_transfer_blockstm_plan(
+                    &candidate,
+                    ctx.validator_token,
+                    ctx.beneficiary,
+                    ctx.basefee,
+                    ctx.blob_gasprice,
+                    ctx.spec,
+                )?;
+                let Some(prewarm) = prewarm else {
+                    return Err(Tip20TransferBlockstmFallback::MissingActions);
+                };
+                let replay = prewarm_tip20_transfer_actions(&prewarm, candidate, sequence)?;
+                Ok((plan, replay))
+            })()
+            .map(|(plan, replay)| PlannedTransfer { tx, plan, replay });
             let _ = result_tx.send(PlanningResult { sequence, item });
         });
     }
@@ -191,39 +194,75 @@ where
     }
 }
 
-fn prewarm_tip20_transfer_plan<Provider>(
+fn prewarm_tip20_transfer_actions<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
-    plan: &Tip20TransferBlockstmPlan,
-    block_timestamp: u64,
+    candidate: Tip20TransferBlockstmTx<'_>,
     sequence: usize,
-) where
+) -> Result<Tip20TransferActionReplay, Tip20TransferBlockstmFallback>
+where
     Provider: StateProviderFactory + Clone + 'static,
 {
     if prewarm.is_stopped() {
-        return;
+        return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
     }
 
     WorkerPool::with_worker_mut(|worker| {
         let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-            return;
+            return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         };
 
-        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan, block_timestamp)
-        {
+        let _ = evm.take_actions();
+        let result = evm.transact_raw(candidate.tx_env).map_err(|err| {
             trace!(
                 target: "payload_builder",
                 ?err,
                 sequence,
-                "Failed to prewarm BlockSTM TIP-20 plan storage"
+                "Failed to prewarm BlockSTM TIP-20 transfer actions"
             );
+            Tip20TransferBlockstmFallback::ActionExecutionFailed
+        })?;
+        if !result.result.is_success() {
+            trace!(
+                target: "payload_builder",
+                sequence,
+                result = ?result.result,
+                "BlockSTM TIP-20 action prewarm produced non-success result"
+            );
+            return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         }
-    });
+
+        let actions = evm
+            .take_actions()
+            .filter(|actions| !actions.is_empty())
+            .ok_or(Tip20TransferBlockstmFallback::MissingActions)?;
+
+        Ok(Tip20TransferActionReplay {
+            result: result.result,
+            actions,
+            validator_fee: evm.validator_fee(),
+        })
+    })
 }
 
 /// Builds an executor-owned BlockSTM candidate from a pooled transaction.
 pub(crate) fn candidate(tx: &BestTransaction) -> Tip20TransferBlockstmTx<'_> {
+    candidate_with_expiring_nonce_offset(tx, None)
+}
+
+fn candidate_with_expiring_nonce_offset(
+    tx: &BestTransaction,
+    expiring_nonce_offset: Option<usize>,
+) -> Tip20TransferBlockstmTx<'_> {
+    let mut tx_env = tx.transaction.clone_tx_env();
+    if let Some(expiring_nonce_offset) = expiring_nonce_offset
+        && tx.transaction.is_expiring_nonce()
+        && let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut()
+    {
+        tempo_tx_env.expiring_nonce_idx = Some(expiring_nonce_offset);
+    }
+
     Tip20TransferBlockstmTx {
-        tx_env: tx.transaction.clone_tx_env(),
+        tx_env,
         recovered: tx.transaction.inner(),
         fee_token: tx.transaction.effective_fee_token(),
     }

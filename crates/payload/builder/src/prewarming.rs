@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::{info, trace};
+use tracing::trace;
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -233,8 +233,7 @@ impl BestTransactionsPrewarming {
                 return;
             }
 
-            let actions = evm.take_actions();
-            info!("actions: {:?}", actions);
+            let _ = evm.take_actions();
 
             //     None
             // };

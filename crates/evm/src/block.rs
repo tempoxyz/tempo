@@ -11,7 +11,9 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_primitives::{Address, B256, U256};
+#[cfg(feature = "engine")]
+use alloy_primitives::{Bytes, Log};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -19,9 +21,11 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_evm::block::StateDB;
+#[cfg(feature = "engine")]
+use reth_revm::context::result::{ExecutionResult, Output, ResultGas, SuccessReason};
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason},
+    context::result::ResultAndState,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -107,6 +111,7 @@ pub struct TempoTxResult {
 
 impl TempoTxResult {
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "engine")]
     pub(crate) fn new_blockstm_tip20_success(
         tx: &TempoTxEnvelope,
         state: EvmState,
@@ -128,6 +133,30 @@ impl TempoTxResult {
                     },
                     state,
                 ),
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section,
+            is_payment,
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
+            block_gas_used,
+            validator_fee,
+        }
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn new_precomputed(
+        tx: &TempoTxEnvelope,
+        result: ExecutionResult<TempoHaltReason>,
+        state: EvmState,
+        next_section: BlockSection,
+        is_payment: bool,
+        block_gas_used: u64,
+        validator_fee: U256,
+    ) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: ResultAndState::new(result, state),
                 blob_gas_used: 0,
                 tx_type: tx.tx_type(),
             },
