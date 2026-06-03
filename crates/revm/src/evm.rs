@@ -56,8 +56,13 @@ pub struct TempoEvm<DB: Database, I> {
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
-    pub fn new(ctx: TempoContext<DB>, inspector: I, actions: EvmActions) -> Self {
-        let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg, actions);
+    pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        Self::new_with_actions(ctx, inspector, EvmActions::default())
+    }
+
+    /// Create a new Tempo EVM with a shared precompile action buffer.
+    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: EvmActions) -> Self {
+        let precompiles = tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions);
 
         Self::new_inner(Evm {
             instruction: instructions::tempo_instructions(ctx.cfg.spec),

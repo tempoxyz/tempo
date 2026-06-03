@@ -83,7 +83,7 @@ impl<DB: Database> TempoEvm<DB> {
 
         let actions = EvmActions::default();
         Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}, actions.clone()),
+            inner: tempo_revm::TempoEvm::new_with_actions(ctx, NoOpInspector {}, actions.clone()),
             actions,
             inspect: false,
         }
