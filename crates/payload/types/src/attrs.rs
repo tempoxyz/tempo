@@ -424,6 +424,44 @@ impl PayloadBuildControl {
         }
     }
 
+    /// Waits up to `timeout` for proposal context to attach.
+    pub fn wait_for_proposal_context_timeout_while(
+        &self,
+        timeout: Duration,
+        should_cancel: impl Fn() -> bool,
+    ) -> Result<Option<PayloadProposalContext>, PayloadProposalContextCancelled> {
+        let deadline = Instant::now() + timeout;
+        let mut proposal_timing = self.proposal_timing();
+        loop {
+            if let Some(payload_context) = proposal_timing
+                .as_ref()
+                .map(|timing| timing.payload_context.clone())
+            {
+                return Ok(Some(payload_context));
+            }
+            if self.is_cancelled() || should_cancel() {
+                return Err(PayloadProposalContextCancelled);
+            }
+
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Ok(None);
+            };
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+
+            let (guard, wait_result) = self
+                .inner
+                .proposal_timing_changed
+                .wait_timeout(proposal_timing, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            proposal_timing = guard;
+            if wait_result.timed_out() {
+                continue;
+            }
+        }
+    }
+
     /// Returns a consistent snapshot of the control state at `Instant::now()`.
     pub fn snapshot(&self) -> PayloadBuildControlSnapshot {
         self.snapshot_at(Instant::now())
@@ -909,6 +947,41 @@ mod tests {
         assert_eq!(context.extra_data(), &extra_data);
         assert_eq!(context.consensus_context(), consensus_context);
         assert_eq!(control.proposal_context(), Some(context));
+    }
+
+    #[test]
+    fn payload_build_control_timeout_wait_returns_pending_context() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+
+        assert_eq!(
+            control
+                .wait_for_proposal_context_timeout_while(Duration::from_millis(1), || false)
+                .expect("timeout wait should not cancel"),
+            None
+        );
+    }
+
+    #[test]
+    fn payload_build_control_timeout_wait_returns_attached_context() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+        let extra_data = Bytes::from_static(b"dkg");
+
+        control
+            .attach_proposal_context(extra_data.clone(), consensus_context)
+            .unwrap();
+
+        let context = control
+            .wait_for_proposal_context_timeout_while(Duration::from_millis(1), || false)
+            .expect("timeout wait should observe attached context")
+            .expect("proposal context should be attached");
+        assert_eq!(context.extra_data(), &extra_data);
+        assert_eq!(context.consensus_context(), consensus_context);
     }
 
     #[test]

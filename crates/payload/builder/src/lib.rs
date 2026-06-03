@@ -102,6 +102,7 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 }
 
 const SPARSE_TRIE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PROPOSAL_CONTEXT_POOL_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 enum CancelableRecv<T> {
     Received(T),
@@ -164,6 +165,42 @@ fn wait_for_late_proposal_context(
         Err(_) if control.is_cancelled() || should_cancel() => {
             *wait_elapsed += wait_start.elapsed();
             Ok(ProposalContextWait::Cancelled)
+        }
+        Err(error) => {
+            *wait_elapsed += wait_start.elapsed();
+            Err(PayloadBuilderError::other(error))
+        }
+    }
+}
+
+fn poll_late_proposal_context(
+    ctx: &mut TempoBlockExecutionCtx<'_>,
+    control: &PayloadBuildControl,
+    should_cancel: &dyn Fn() -> bool,
+    wait_elapsed: &mut Duration,
+) -> Result<Option<ProposalContextWait>, PayloadBuilderError> {
+    if ctx.consensus_context.is_some() {
+        return Ok(Some(ProposalContextWait::Attached));
+    }
+
+    let wait_start = Instant::now();
+    match control.wait_for_proposal_context_timeout_while(
+        PROPOSAL_CONTEXT_POOL_POLL_INTERVAL,
+        || should_cancel(),
+    ) {
+        Ok(Some(proposal_context)) => {
+            *wait_elapsed += wait_start.elapsed();
+            ctx.inner.extra_data = proposal_context.extra_data().clone();
+            ctx.consensus_context = Some(proposal_context.consensus_context());
+            Ok(Some(ProposalContextWait::Attached))
+        }
+        Ok(None) => {
+            *wait_elapsed += wait_start.elapsed();
+            Ok(None)
+        }
+        Err(_) if control.is_cancelled() || should_cancel() => {
+            *wait_elapsed += wait_start.elapsed();
+            Ok(Some(ProposalContextWait::Cancelled))
         }
         Err(error) => {
             *wait_elapsed += wait_start.elapsed();
@@ -713,6 +750,7 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut logged_proposal_context_pool_poll = false;
         let excluded_pool_transaction_hashes =
             (!attributes.excluded_pool_transaction_hashes().is_empty()).then(|| {
                 attributes
@@ -778,26 +816,32 @@ where
                 if can_wait_for_pool {
                     if !proposal_context_attached {
                         if let Some(control) = payload_build_control.as_ref() {
-                            debug!(
-                                target: "payload_builder",
-                                id = %payload_id,
-                                "waiting for proposal context before waiting for more pool transactions"
-                            );
-                            match wait_for_late_proposal_context(
+                            if !logged_proposal_context_pool_poll {
+                                debug!(
+                                    target: "payload_builder",
+                                    id = %payload_id,
+                                    "polling for proposal context while waiting for more pool transactions"
+                                );
+                                logged_proposal_context_pool_poll = true;
+                            }
+                            match poll_late_proposal_context(
                                 &mut ctx,
                                 control,
                                 &|| cancel.is_cancelled(),
                                 &mut proposal_context_wait_elapsed,
                             )? {
-                                ProposalContextWait::Attached => {}
-                                ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
+                                Some(ProposalContextWait::Attached) => {}
+                                Some(ProposalContextWait::Cancelled) => {
+                                    return Ok(BuildOutcome::Cancelled);
+                                }
+                                None => {}
                             }
                             check_cancel!();
                             continue;
                         }
                     }
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    std::thread::sleep(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL);
+                    normal_transaction_fill_idle_elapsed += PROPOSAL_CONTEXT_POOL_POLL_INTERVAL;
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
