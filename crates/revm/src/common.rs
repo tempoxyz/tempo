@@ -441,10 +441,6 @@ where
         unreachable!("'block_number' not implemented in read-only context yet")
     }
 
-    fn consensus_epoch(&self) -> Option<u64> {
-        None
-    }
-
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
         unreachable!("'tload' not implemented in read-only context yet")
     }

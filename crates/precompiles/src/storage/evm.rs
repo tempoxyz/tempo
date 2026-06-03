@@ -18,7 +18,6 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_tracker: GasTracker,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
-    consensus_epoch: Option<u64>,
     is_static: bool,
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
@@ -42,17 +41,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
             amsterdam_eip8037_enabled,
-            consensus_epoch: None,
             is_static,
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
-    }
-
-    pub fn with_consensus_epoch(mut self, consensus_epoch: Option<u64>) -> Self {
-        self.consensus_epoch = consensus_epoch;
-        self
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
@@ -110,10 +103,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn block_number(&self) -> u64 {
         self.internals.block_env().number().to::<u64>()
-    }
-
-    fn consensus_epoch(&self) -> Option<u64> {
-        self.consensus_epoch
     }
 
     #[inline]

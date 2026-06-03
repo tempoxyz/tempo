@@ -266,7 +266,7 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(FeatureRegistryError::invalid_features_tip().into())
+                Err(FeatureRegistryError::features_tip_not_increasing().into())
             );
 
             let result = registry.schedule_features_tip(
@@ -313,7 +313,8 @@ mod tests {
 
     #[test]
     fn schedule_features_tip_rejects_non_future_activation_epoch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_consensus_epoch(21);
+        let mut storage = HashMapStorageProvider::new(1);
+        storage.set_block_number(FEATURE_REGISTRY_EPOCH_LENGTH * 21);
         let owner = Address::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
             initialize_validator_config_owner(owner)?;

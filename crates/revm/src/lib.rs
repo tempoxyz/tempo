@@ -24,7 +24,3 @@ pub use evm::TempoEvm;
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tx::{TempoBatchCallEnv, TempoTxEnv};
-
-pub fn enter_consensus_epoch<R>(consensus_epoch: Option<u64>, f: impl FnOnce() -> R) -> R {
-    tempo_precompiles::storage::StorageCtx::enter_consensus_epoch(consensus_epoch, f)
-}

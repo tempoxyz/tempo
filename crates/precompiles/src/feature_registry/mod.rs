@@ -15,6 +15,7 @@ use tempo_precompiles_macros::contract;
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
 const ACTIVATION_QUORUM_NUMERATOR: u64 = 4;
 const ACTIVATION_QUORUM_DENOMINATOR: u64 = 5;
+const FEATURE_REGISTRY_EPOCH_LENGTH: u64 = 21_600;
 
 /// Protocol feature registry.
 ///
@@ -85,10 +86,6 @@ impl FeatureRegistry {
     ) -> Result<()> {
         self.check_owner(msg_sender)?;
 
-        if call.featuresTip == 0 {
-            return Err(FeatureRegistryError::invalid_features_tip().into());
-        }
-
         if call.featuresTip <= self.features_tip.read()? {
             return Err(FeatureRegistryError::features_tip_not_increasing().into());
         }
@@ -97,12 +94,7 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::features_tip_already_scheduled().into());
         }
 
-        if call.activationEpoch == 0
-            || self
-                .storage
-                .consensus_epoch()
-                .is_some_and(|epoch| call.activationEpoch <= epoch)
-        {
+        if call.activationEpoch <= self.storage.block_number() / FEATURE_REGISTRY_EPOCH_LENGTH {
             return Err(FeatureRegistryError::activation_epoch_not_future().into());
         }
 
