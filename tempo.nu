@@ -14,6 +14,7 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
+const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
@@ -30,6 +31,18 @@ def port-to-node-index [port: int] {
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
     if $loud { [] } else { ["--log.stdout.filter" "info"] }
+}
+
+def prepare-localnet-consensus-secret-fifo [node_dir: string] {
+    let secret_path = $"($node_dir)/consensus-secret.fifo"
+    rm -f $secret_path
+    mkfifo $secret_path
+    chmod 600 $secret_path
+    $secret_path
+}
+
+def start-localnet-consensus-secret-writer [secret_path: string] {
+    job spawn { $"($LOCALNET_SIGNING_KEY_SECRET)\n" | save -f $secret_path } | ignore
 }
 
 # Wrap command with samply if enabled
@@ -865,7 +878,12 @@ def generate-summary [
     --reference-epoch: int = 0,
     --baseline-hardfork: string = "",
     --feature-hardfork: string = "",
+    --summary-warmup-blocks: int = 0,
 ] {
+    if $summary_warmup_blocks < 0 {
+        error make { msg: "--summary-warmup-blocks must be non-negative" }
+    }
+
     let run_order_path = $"($results_dir)/run-order.txt"
     let candidate_run_labels = if ($run_order_path | path exists) {
         open $run_order_path | lines | where { |label| $label != "" }
@@ -1092,9 +1110,59 @@ def generate-summary [
             continue
         }
         let report = (open $report_path)
+        let report_blocks = ($report | get blocks | each { |b|
+            let tx_count = ($b | get tx_count)
+            let timestamp = if (($b | get -o timestamp | default null) != null) {
+                $b | get timestamp
+            } else {
+                $b | get timestamp_ms
+            }
+            {
+                number: ($b | get number)
+                timestamp: $timestamp
+                tx_count: $tx_count
+                ok_count: ($b | get -o ok_count | default $tx_count)
+                err_count: ($b | get -o err_count | default 0)
+                gas_used: ($b | get gas_used)
+                block_time_ms: ($b | get -o block_time_ms | default null)
+            }
+        })
+        if ($report_blocks | length) == 0 {
+            print $"Warning: ($label) report has no blocks, skipping"
+            continue
+        }
+
+        let sorted_blocks = ($report_blocks | sort-by timestamp)
+        let warmup_blocks = ([$summary_warmup_blocks ($sorted_blocks | length)] | math min)
+        let blocks = ($sorted_blocks | skip $warmup_blocks)
+        if ($blocks | length) == 0 {
+            print $"Warning: ($label) report has no summary blocks after excluding ($warmup_blocks) warmup blocks, skipping"
+            continue
+        }
+
+        let first_report_block_ms = ($sorted_blocks | first | get timestamp)
+        let timestamps = ($blocks | get timestamp)
+        let summary_from_ms = ($timestamps | first)
+        let summary_from_offset_ms = $summary_from_ms - $first_report_block_ms
+        let block_interval_blocks = if $warmup_blocks > 0 { $blocks | skip 1 } else { $blocks }
+        let block_intervals = ($block_interval_blocks | where block_time_ms != null | get block_time_ms)
+
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
         let samples_gz_path = $"($samples_path).gz"
-        let metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
+        let raw_metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
+        let metric_samples = if $warmup_blocks > 0 {
+            $raw_metric_samples | where { |sample|
+                let offset_ms = ($sample | get -o offset_ms | default null)
+                if $offset_ms != null {
+                    ($offset_ms | into int) >= $summary_from_offset_ms
+                } else {
+                    let unix_ms = ($sample | get -o unix_ms | default 0 | into int)
+                    $unix_ms >= $summary_from_ms
+                }
+            }
+        } else {
+            $raw_metric_samples
+        }
         let optional_counter_metric_values = { |metric: string, scale: float|
             do $optional_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
@@ -1119,31 +1187,6 @@ def generate-summary [
         let serialized_block_size_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_rlp_block_size_bytes" 1.0)
         let serialized_block_tx_count_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_total_transactions" 1.0)
         let serialized_block_size_per_tx_values = do $paired_ratio_values $serialized_block_size_values $serialized_block_tx_count_values $label
-        let blocks = ($report | get blocks | each { |b|
-            let tx_count = ($b | get tx_count)
-            let timestamp = if (($b | get -o timestamp | default null) != null) {
-                $b | get timestamp
-            } else {
-                $b | get timestamp_ms
-            }
-            {
-                number: ($b | get number)
-                timestamp: $timestamp
-                tx_count: $tx_count
-                ok_count: ($b | get -o ok_count | default $tx_count)
-                err_count: ($b | get -o err_count | default 0)
-                gas_used: ($b | get gas_used)
-                block_time_ms: ($b | get -o block_time_ms | default null)
-            }
-        })
-        if ($blocks | length) == 0 {
-            print $"Warning: ($label) report has no blocks, skipping"
-            continue
-        }
-
-        let sorted_blocks = ($blocks | sort-by timestamp)
-        let timestamps = ($sorted_blocks | get timestamp)
-        let block_intervals = ($sorted_blocks | where block_time_ms != null | get block_time_ms)
 
         let run_bt = do $compute_block_time_stats $block_intervals
 
@@ -1211,6 +1254,7 @@ def generate-summary [
 
         $run_data = ($run_data | append [{
             label: $label
+            summary_warmup_blocks: $warmup_blocks
             blocks: $num_blocks
             total_tx: $total_tx
             ok: $total_ok
@@ -1395,6 +1439,9 @@ def generate-summary [
         $"- Baseline blocks: ($b_block_time.n)"
         $"- Feature blocks: ($f_block_time.n)"
     ])
+    if $summary_warmup_blocks > 0 {
+        $config_lines = ($config_lines | append $"- Summary warmup blocks: ($summary_warmup_blocks)")
+    }
     if $baseline_hardfork != "" {
         $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
     }
@@ -1480,6 +1527,7 @@ def generate-summary [
             tps: $tps
             duration: $duration
             run_pairs: $run_pairs
+            summary_warmup_blocks: $summary_warmup_blocks
             derek_command: $derek_bench_command
             baseline_hardfork: $baseline_hardfork
             feature_hardfork: $feature_hardfork
@@ -1912,11 +1960,12 @@ def run-consensus-node [
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (port-to-node-index $port)
     let http_port = 8545 + $node_index
+    let consensus_secret = (prepare-localnet-consensus-secret-fifo $node_dir)
 
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
 
-    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $port $log_dir)
+    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $port $log_dir $consensus_secret)
         | append (log-filter-args $loud)
         | append $extra_args
 
@@ -1925,25 +1974,27 @@ def run-consensus-node [
     print $"  Node ($addr) -> http://localhost:($http_port)(if $background { '' } else { ' (foreground)' })"
 
     if $background {
+        start-localnet-consensus-secret-writer $consensus_secret
         job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
     } else {
         print $"  Running: ($cmd | str join ' ')"
+        start-localnet-consensus-secret-writer $consensus_secret
         run-external ($cmd | first) ...($cmd | skip 1)
     }
 }
 
 # Build full node arguments for consensus mode
-def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, port: int, log_dir: string] {
+def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, port: int, log_dir: string, consensus_secret: string] {
     let node_index = (port-to-node-index $port)
     let http_port = 8545 + $node_index
     let reth_metrics_port = 9001 + $node_index
 
     (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
-        | append (build-consensus-args $node_dir $trusted_peers $port)
+        | append (build-consensus-args $node_dir $trusted_peers $port $consensus_secret)
 }
 
 # Build consensus mode specific arguments
-def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+def build-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_secret: string] {
     let addr = ($node_dir | path basename)
     let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
@@ -1957,6 +2008,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 
     [
         "--consensus.signing-key" $signing_key
+        "--consensus.secret" $consensus_secret
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"0.0.0.0:($metrics_port)"
