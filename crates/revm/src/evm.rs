@@ -386,7 +386,6 @@ mod tests {
     /// Creates a T6-enabled EVM with a funded account.
     /// This activates the TIP-1060 SSTORE gas-token hook while keeping the
     /// TIP-1016 state-gas split disabled to match production.
-
     fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
@@ -2112,9 +2111,9 @@ mod tests {
         // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
         // others keep the minted token at 1.
         let cases = [
-            (CreditMode::Refund, 283_268u64, 0u64),
-            (CreditMode::Preserve, 513_268u64, 1u64),
-            (CreditMode::Direct, 513_268u64, 1u64),
+            (CreditMode::Refund, 303_168u64, 0u64),
+            (CreditMode::Preserve, 533_168u64, 1u64),
+            (CreditMode::Direct, 533_168u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {

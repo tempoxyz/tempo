@@ -71,8 +71,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     values: &SStoreResult,
 ) -> Result<GasStateOutcome, B::Error> {
     // TIP-1060 removes the legacy storage-clearing gas refunds.
-    let mut outcome = GasStateOutcome::default();
-    outcome.skip_refund = true;
+    let mut outcome = GasStateOutcome {
+        skip_gas: false,
+        skip_refund: true,
+    };
 
     if values.is_new_eq_present() {
         return Ok(outcome);
