@@ -1930,15 +1930,17 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_eips::eip2930::{AccessList, AccessListItem};
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Signature, address};
+    use alloy_primitives::{Signature, address, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::Account as RethAccount;
     use reth_revm::{
         State,
+        db::states::bundle_state::BundleRetention,
         state::{AccountInfo, Bytecode},
     };
+    use reth_trie::{HashedPostState, KeccakKeyHasher};
     use revm::database::{EmptyDB, states::plain_account::PlainStorage};
     use std::{
         collections::BTreeSet,
@@ -2240,6 +2242,46 @@ mod tests {
         }
     }
 
+    fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
+        let mut hashed_state = HashedPostState::with_capacity(update.len());
+
+        for (address, account) in update {
+            if !account.is_touched() {
+                continue;
+            }
+
+            let hashed_address = keccak256(address);
+            let destroyed = account.is_selfdestructed();
+            if account.info != account.original_info() {
+                let info = if destroyed {
+                    None
+                } else {
+                    Some(account.info.into())
+                };
+                hashed_state.accounts.insert(hashed_address, info);
+            }
+
+            let mut changed_storage = account
+                .storage
+                .into_iter()
+                .filter(|(_, value)| value.is_changed())
+                .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value))
+                .peekable();
+            if destroyed {
+                hashed_state
+                    .storages
+                    .insert(hashed_address, reth_trie::HashedStorage::new(true));
+            } else if changed_storage.peek().is_some() {
+                hashed_state.storages.insert(
+                    hashed_address,
+                    reth_trie::HashedStorage::from_iter(false, changed_storage),
+                );
+            }
+        }
+
+        hashed_state
+    }
+
     fn describe_trie_state_diff(
         normal: &HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
         blockstm: &HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
@@ -2288,6 +2330,76 @@ mod tests {
                 }
                 (None, Some(_)) => {
                     let _ = writeln!(out, "account {address}: present in blockstm only");
+                    diffs += 1;
+                }
+                (None, None) => {}
+            }
+
+            if diffs >= 12 {
+                return out;
+            }
+        }
+
+        out
+    }
+
+    fn describe_hashed_post_state_diff(hook: &HashedPostState, bundle: &HashedPostState) -> String {
+        let mut out = String::new();
+        let mut addresses = BTreeSet::new();
+        addresses.extend(hook.accounts.keys().copied());
+        addresses.extend(bundle.accounts.keys().copied());
+        addresses.extend(hook.storages.keys().copied());
+        addresses.extend(bundle.storages.keys().copied());
+
+        let mut diffs = 0usize;
+        for address in addresses {
+            let hook_account = hook.accounts.get(&address);
+            let bundle_account = bundle.accounts.get(&address);
+            if hook_account != bundle_account {
+                let _ = writeln!(
+                    out,
+                    "account {address}: hook={hook_account:?} bundle={bundle_account:?}"
+                );
+                diffs += 1;
+            }
+
+            let hook_storage = hook.storages.get(&address);
+            let bundle_storage = bundle.storages.get(&address);
+            match (hook_storage, bundle_storage) {
+                (Some(hook_storage), Some(bundle_storage)) => {
+                    if hook_storage.wiped != bundle_storage.wiped {
+                        let _ = writeln!(
+                            out,
+                            "storage {address}: hook.wiped={} bundle.wiped={}",
+                            hook_storage.wiped, bundle_storage.wiped
+                        );
+                        diffs += 1;
+                    }
+
+                    let mut slots = BTreeSet::new();
+                    slots.extend(hook_storage.storage.keys().copied());
+                    slots.extend(bundle_storage.storage.keys().copied());
+                    for slot in slots {
+                        let hook_value = hook_storage.storage.get(&slot).copied();
+                        let bundle_value = bundle_storage.storage.get(&slot).copied();
+                        if hook_value != bundle_value {
+                            let _ = writeln!(
+                                out,
+                                "storage {address} {slot}: hook={hook_value:?} bundle={bundle_value:?}"
+                            );
+                            diffs += 1;
+                        }
+                        if diffs >= 12 {
+                            return out;
+                        }
+                    }
+                }
+                (Some(_), None) => {
+                    let _ = writeln!(out, "storage {address}: present in hook only");
+                    diffs += 1;
+                }
+                (None, Some(_)) => {
+                    let _ = writeln!(out, "storage {address}: present in bundle only");
                     diffs += 1;
                 }
                 (None, None) => {}
@@ -2962,6 +3074,86 @@ mod tests {
             "STM post-state differs from payload re-execution post-state:\n{}",
             describe_trie_state_diff(&validation_poststate, &blockstm_poststate)
         );
+    }
+
+    #[test]
+    fn blockstm_state_hook_hashed_post_state_matches_bundle_state() {
+        let chainspec = test_chainspec();
+        let signer = txgen_signers(1).pop().unwrap();
+        let recipient = address!("10000000000000000000000000000000000000c2");
+        let sender_balance = U256::from(1_000_000_000_000_000_000u128);
+        let block_timestamp = 1_700_000_000u64;
+        let db = path_usd_state_with_balances_and_reward_flag(
+            [(signer.address(), sender_balance), (recipient, U256::ZERO)],
+            REWARD_FLAG_OPTED_OUT,
+        );
+
+        let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+        let captured = updates.clone();
+        let mut db = db;
+        db.set_state_hook(Some(Box::new(move |state: &EvmState| {
+            captured.lock().unwrap().push(state.clone());
+        })));
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(10_000_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T6)
+            .build(db, &chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+        executor.evm_mut().ctx_mut().block.basefee = 1;
+        executor
+            .apply_pre_execution_changes()
+            .expect("pre-execution changes");
+        executor.evm_mut().db_mut().bump_bal_index();
+
+        let (recovered, tx_env) = signed_expiring_tip20_transfer(
+            &signer,
+            recipient,
+            U256::from(1),
+            block_timestamp + 10,
+            350_000,
+            1,
+        );
+        let tx = Tip20TransferBlockstmTx {
+            tx_env,
+            recovered: &recovered,
+            fee_token: tempo_precompiles::PATH_USD_ADDRESS,
+        };
+        let beneficiary = executor.evm().block().beneficiary;
+        let plan = build_tip20_transfer_blockstm_plan(
+            &tx,
+            tempo_precompiles::PATH_USD_ADDRESS,
+            beneficiary,
+            1,
+            0,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+
+        assert!(
+            executor
+                .execute_tip20_transfer_blockstm_planned_tx(tx, plan, 0, |_| true)
+                .unwrap()
+        );
+        executor.evm_mut().db_mut().bump_bal_index();
+
+        let mut hook_hashed_state = HashedPostState::default();
+        for update in updates.lock().unwrap().clone() {
+            hook_hashed_state.extend(evm_state_to_hashed_post_state(update));
+        }
+
+        let (mut evm, _result) = executor.finish().expect("finish block");
+        evm.db_mut().merge_transitions(BundleRetention::Reverts);
+        let bundle_hashed_state =
+            HashedPostState::from_bundle_state::<KeccakKeyHasher>(&evm.db().bundle_state.state);
+
+        if hook_hashed_state != bundle_hashed_state {
+            panic!(
+                "STM state-hook hashed post-state differs from bundle state:\n{}",
+                describe_hashed_post_state_diff(&hook_hashed_state, &bundle_hashed_state)
+            );
+        }
     }
 
     #[test]
