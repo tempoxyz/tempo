@@ -16,7 +16,7 @@ use crate::{
     error::Result,
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, U256};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct StoredMultisigOwner {
@@ -48,6 +48,37 @@ pub struct NativeMultisig {
 impl NativeMultisig {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
+    }
+
+    pub fn account_marker_storage_slot(account: Address) -> U256 {
+        Self::new().accounts[account].slot()
+    }
+
+    pub fn config_id_storage_slot(account: Address) -> U256 {
+        Self::new().config_ids[account].slot()
+    }
+
+    pub fn config_threshold_storage_slot(
+        account: Address,
+        config_id: B256,
+    ) -> (U256, Option<usize>) {
+        let multisig = Self::new();
+        let threshold = &multisig.configs[account][config_id].threshold;
+        (threshold.slot(), threshold.offset())
+    }
+
+    pub fn config_owners_len_storage_slot(account: Address, config_id: B256) -> U256 {
+        Self::new().configs[account][config_id].owners.len_slot()
+    }
+
+    pub fn config_owner_weight_storage_slot(
+        account: Address,
+        config_id: B256,
+        index: usize,
+    ) -> (U256, Option<usize>) {
+        let multisig = Self::new();
+        let weight = &multisig.configs[account][config_id].owners[index].weight;
+        (weight.slot(), weight.offset())
     }
 
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
