@@ -17,7 +17,7 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, BestTransactionsPrewarmingBuffers},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -116,6 +116,7 @@ pub struct TempoPayloadBuilder<Provider> {
     enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
+    prewarming_buffers: BestTransactionsPrewarmingBuffers,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -171,6 +172,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
+            prewarming_buffers: Default::default(),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -531,6 +533,7 @@ where
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
+                self.prewarming_buffers.clone(),
                 self.provider.clone(),
                 execution_cache,
                 parent_header.hash(),
