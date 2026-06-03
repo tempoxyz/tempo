@@ -9,7 +9,7 @@ pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, TransactionTrait};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
@@ -465,15 +465,12 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         let is_t6 = receipts
             .first()
             .is_some_and(|r| self.chain_spec.is_t6_active_at_timestamp(r.meta.timestamp));
-        let receipt_context = receipts
-            .iter()
-            .map(|r| (r.tx, r.gas_used))
-            .collect::<Vec<_>>();
+        let receipt_context = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
             .zip(receipt_context)
-            .map(|(inner, (tx, gas_used))| {
+            .map(|(inner, tx)| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
                     fee_token: None,
@@ -488,7 +485,7 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         matches!(to.to(), Some(to) if to.is_tip20())
                             && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
                     })
-                    && gas_used <= SSTORE_SET_COST
+                    && tx.gas_limit() <= SSTORE_SET_COST
                 {
                     // Mirror execution settlement: subtract only the base-fee discount and keep
                     // the transaction-derived priority-fee component payable.
