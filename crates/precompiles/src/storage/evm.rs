@@ -273,7 +273,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T6+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         let outcome = if self.spec.is_t6() {
-            sstore_storage_credits(self, address, &result.data)?
+            sstore_storage_credits(self, address, &result)?
         } else {
             Default::default()
         };

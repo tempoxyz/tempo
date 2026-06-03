@@ -39,10 +39,9 @@ pub fn apply_refund<DB: Database, I>(
     // tx, so we don't borrow `transient_storage` while mutating the journal below.
     let sstores: Vec<_> = journal
         .transient_storage
-        .iter()
-        .filter(|((address, _), _)| *address == STORAGE_CREDITS_ADDRESS)
-        .map(|((_, key), credit)| (*key, *credit))
-        .collect();
+        .get(&STORAGE_CREDITS_ADDRESS)
+        .map(|slots| slots.iter().map(|(key, credit)| (*key, *credit)).collect())
+        .unwrap_or_default();
 
     let mut refunds = 0;
 
@@ -176,7 +175,7 @@ where
     fn sstore_gas_state(
         context: &mut InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
         owner: Address,
-        values: &SStoreResult,
+        values: &StateLoad<SStoreResult>,
     ) -> Result<GasStateOutcome, InstructionResult> {
         sstore_storage_credits(&mut InterpreterStorageCredits { context }, owner, values)
     }

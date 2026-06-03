@@ -73,8 +73,10 @@ pub trait StorageCreditsBackend {
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
-    values: &SStoreResult,
+    caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<GasStateOutcome, B::Error> {
+    let (values, is_cold) = (&caller_state_load.data, caller_state_load.is_cold);
+
     // TIP-1060 removes the legacy storage-clearing gas refunds.
     let mut outcome = GasStateOutcome {
         skip_gas: false,
@@ -88,6 +90,9 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
     // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
     if owner == STORAGE_CREDITS_ADDRESS {
+        if is_cold {
+            backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+        }
         if values.new_values_changes_present() && values.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         }
@@ -117,13 +122,13 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.remaining_gas() < additional_cold_cost;
-    let storage = backend.load_credits(account_slot, skip_cold)?;
-    if storage.is_cold {
+    let storage_credit_state_load = backend.load_credits(account_slot, skip_cold)?;
+    if storage_credit_state_load.is_cold {
         backend.charge_gas(additional_cold_cost)?;
     }
 
     let mut storage_credits =
-        AccountState::from_word(storage.data).map_err(|_| B::fatal_external())?;
+        AccountState::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
 
     let mut was_changed = false;
     if is_clear {
@@ -134,7 +139,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             CreditMode::Direct => {
                 // Only if there is a credit available, skip gas
                 if storage_credits.balance > 0 {
-                    // Consume the storage credit and charge 20k for the SSTORE.
+                    // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
+                    if caller_state_load.is_cold {
+                        backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+                    }
                     backend.charge_gas(20_000)?;
                     storage_credits.balance -= 1;
                     was_changed = true;
@@ -159,7 +167,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         // Only when change happens charge additional gas.
         // Creation of credit slot is compensated by creation of the contract creation.
-        // And creation and deletion of credit is compansate by EIP-1060, so no additional gas is charged.
+        // And creation and deletion of credit is compensated by EIP-1060, so no additional gas is charged.
         if result.new_values_changes_present() && result.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };
