@@ -172,10 +172,10 @@ struct VersionedValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tip20TransferBlockstmPlan {
-    nonce: Tip20BlockstmNonceAction,
-    fee_payer: Address,
-    max_fee: U256,
-    actions: Vec<Tip20BlockstmAction>,
+    nonce: Tip20ExpiringNonceAction,
+    fee_reserve: Tip20FeeReserveAction,
+    transfer: Tip20TransferAction,
+    fee_settle: Tip20FeeSettleAction,
 }
 
 impl Tip20TransferBlockstmPlan {
@@ -183,7 +183,9 @@ impl Tip20TransferBlockstmPlan {
         self.nonce
             .read_set()
             .into_iter()
-            .chain(self.actions.iter().flat_map(Tip20BlockstmAction::read_set))
+            .chain(self.fee_reserve.read_set())
+            .chain(self.transfer.read_set())
+            .chain(self.fee_settle.read_set())
             .collect()
     }
 
@@ -191,42 +193,27 @@ impl Tip20TransferBlockstmPlan {
         self.nonce
             .write_set()
             .into_iter()
-            .chain(self.actions.iter().flat_map(Tip20BlockstmAction::write_set))
+            .chain(self.fee_reserve.write_set())
+            .chain(self.transfer.write_set())
+            .chain(self.fee_settle.write_set())
             .collect()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tip20BlockstmNonceAction {
-    Protocol {
-        caller: Address,
-        nonce: u64,
-    },
-    Expiring {
-        caller: Address,
-        replay_hash: B256,
-        valid_before: u64,
-        expiring_nonce_idx: Option<usize>,
-    },
+struct Tip20ExpiringNonceAction {
+    caller: Address,
+    replay_hash: B256,
+    valid_before: u64,
+    expiring_nonce_idx: Option<usize>,
 }
 
-impl Tip20BlockstmNonceAction {
-    fn caller(self) -> Address {
-        match self {
-            Self::Protocol { caller, .. } | Self::Expiring { caller, .. } => caller,
-        }
-    }
-
+impl Tip20ExpiringNonceAction {
     fn read_set(self) -> Vec<StorageKey> {
-        match self {
-            Self::Protocol { caller, .. } => vec![protocol_nonce_key(caller)],
-            Self::Expiring { replay_hash, .. } => {
-                vec![
-                    expiring_nonce_ring_ptr_key(),
-                    expiring_nonce_seen_key(replay_hash),
-                ]
-            }
-        }
+        vec![
+            expiring_nonce_ring_ptr_key(),
+            expiring_nonce_seen_key(self.replay_hash),
+        ]
     }
 
     fn write_set(self) -> Vec<StorageKey> {
@@ -235,63 +222,58 @@ impl Tip20BlockstmNonceAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Tip20BlockstmAction {
-    FeeReserve {
-        token: Address,
-        fee_payer: Address,
-        amount: U256,
-    },
-    Transfer(Tip20TransferAction),
-    FeeSettle {
-        token: Address,
-        fee_payer: Address,
-        beneficiary: Address,
-        max_amount: U256,
-    },
+struct Tip20FeeReserveAction {
+    token: Address,
+    fee_payer: Address,
+    amount: U256,
 }
 
-impl Tip20BlockstmAction {
+impl Tip20FeeReserveAction {
     fn read_set(&self) -> Vec<StorageKey> {
-        match self {
-            Self::FeeReserve {
-                token, fee_payer, ..
-            } => token_state_read_set(*token)
-                .into_iter()
-                .chain(reward_inactive_read_set(*token, *fee_payer))
-                .chain(reward_inactive_read_set(*token, TIP_FEE_MANAGER_ADDRESS))
-                .collect(),
-            Self::Transfer(action) => token_state_read_set(action.token)
-                .into_iter()
-                .chain(reward_inactive_read_set(action.token, action.from))
-                .chain(reward_inactive_read_set(action.token, action.to))
-                .chain([receive_policy_key(action.to)])
-                .collect(),
-            Self::FeeSettle {
-                token,
-                fee_payer,
-                beneficiary,
-                ..
-            } => reward_inactive_read_set(*token, *fee_payer)
-                .into_iter()
-                .chain(reward_inactive_read_set(*token, TIP_FEE_MANAGER_ADDRESS))
-                .chain([collected_fees_key(*beneficiary, *token)])
-                .collect(),
-        }
+        token_state_read_set(self.token)
+            .into_iter()
+            .chain(reward_inactive_read_set(self.token, self.fee_payer))
+            .chain(reward_inactive_read_set(
+                self.token,
+                TIP_FEE_MANAGER_ADDRESS,
+            ))
+            .collect()
     }
 
     fn write_set(&self) -> Vec<StorageKey> {
-        match self {
-            Self::FeeReserve {
-                token, fee_payer, ..
-            }
-            | Self::FeeSettle {
-                token, fee_payer, ..
-            } => vec![
-                balance_key(*token, *fee_payer),
-                balance_key(*token, TIP_FEE_MANAGER_ADDRESS),
-            ],
-            Self::Transfer(action) => action.write_set().into(),
-        }
+        vec![
+            balance_key(self.token, self.fee_payer),
+            balance_key(self.token, TIP_FEE_MANAGER_ADDRESS),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tip20FeeSettleAction {
+    token: Address,
+    fee_payer: Address,
+    beneficiary: Address,
+    max_amount: U256,
+}
+
+impl Tip20FeeSettleAction {
+    fn read_set(&self) -> Vec<StorageKey> {
+        reward_inactive_read_set(self.token, self.fee_payer)
+            .into_iter()
+            .chain(reward_inactive_read_set(
+                self.token,
+                TIP_FEE_MANAGER_ADDRESS,
+            ))
+            .chain([collected_fees_key(self.beneficiary, self.token)])
+            .collect()
+    }
+
+    fn write_set(&self) -> Vec<StorageKey> {
+        vec![
+            balance_key(self.token, self.fee_payer),
+            balance_key(self.token, TIP_FEE_MANAGER_ADDRESS),
+            collected_fees_key(self.beneficiary, self.token),
+        ]
     }
 }
 
@@ -308,6 +290,15 @@ struct Tip20TransferAction {
 impl Tip20TransferAction {
     fn calldata_len(&self) -> usize {
         self.calldata_len
+    }
+
+    fn read_set(&self) -> Vec<StorageKey> {
+        token_state_read_set(self.token)
+            .into_iter()
+            .chain(reward_inactive_read_set(self.token, self.from))
+            .chain(reward_inactive_read_set(self.token, self.to))
+            .chain([receive_policy_key(self.to)])
+            .collect()
     }
 
     fn write_set(&self) -> [StorageKey; 2] {
@@ -413,30 +404,17 @@ where
         let mut token_accounts = HashMap::<Address, HashSet<Address>>::new();
 
         for plan in plans {
-            for action in &plan.actions {
-                match action {
-                    Tip20BlockstmAction::FeeReserve {
-                        token, fee_payer, ..
-                    }
-                    | Tip20BlockstmAction::FeeSettle {
-                        token, fee_payer, ..
-                    } => {
-                        token_accounts
-                            .entry(*token)
-                            .or_default()
-                            .extend([*fee_payer, TIP_FEE_MANAGER_ADDRESS]);
-                    }
-                    Tip20BlockstmAction::Transfer(action) => {
-                        validate_direct_recipient(action.to)?;
-                        self.validate_receive_policy(action.to)?;
+            validate_direct_recipient(plan.transfer.to)?;
+            self.validate_receive_policy(plan.transfer.to)?;
 
-                        token_accounts
-                            .entry(action.token)
-                            .or_default()
-                            .extend([action.from, action.to]);
-                    }
-                }
-            }
+            token_accounts
+                .entry(plan.fee_reserve.token)
+                .or_default()
+                .extend([plan.fee_reserve.fee_payer, TIP_FEE_MANAGER_ADDRESS]);
+            token_accounts
+                .entry(plan.transfer.token)
+                .or_default()
+                .extend([plan.transfer.from, plan.transfer.to]);
         }
 
         for (token, accounts) in token_accounts {
@@ -537,19 +515,14 @@ where
         for plan in plans {
             keys.extend(plan.read_set());
             keys.extend(plan.write_set());
-            caller_accounts.insert(plan.nonce.caller());
+            caller_accounts.insert(plan.nonce.caller);
         }
         let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
         accounts.extend(caller_accounts.iter().copied());
 
         let mut storage = HashMap::with_capacity(keys.len());
         for key in keys {
-            let value = if is_protocol_nonce_key(key) {
-                let info = self.read_account_info(key.address)?;
-                U256::from(info.nonce)
-            } else {
-                self.read_storage(key.address, key.slot)?
-            };
+            let value = self.read_storage(key.address, key.slot)?;
             storage.insert(key, value);
         }
         self.read_expiring_nonce_base_state(plans, block_timestamp, &mut storage)?;
@@ -587,15 +560,12 @@ where
         let mut current = HashMap::<StorageKey, U256>::new();
 
         for plan in plans {
-            let Tip20BlockstmNonceAction::Expiring {
+            let Tip20ExpiringNonceAction {
                 replay_hash,
                 valid_before,
                 expiring_nonce_idx,
                 ..
-            } = plan.nonce
-            else {
-                continue;
-            };
+            } = plan.nonce;
 
             let seen_key = expiring_nonce_seen_key(replay_hash);
             let seen_expiry = self.read_base_or_current_storage(storage, &current, seen_key)?;
@@ -653,12 +623,7 @@ where
             return Ok(*value);
         }
 
-        let value = if is_protocol_nonce_key(key) {
-            let info = self.read_account_info(key.address)?;
-            U256::from(info.nonce)
-        } else {
-            self.read_storage(key.address, key.slot)?
-        };
+        let value = self.read_storage(key.address, key.slot)?;
         storage.insert(key, value);
         Ok(value)
     }
@@ -753,8 +718,8 @@ pub fn build_tip20_transfer_blockstm_plan(
     blob_gasprice: u128,
     spec: TempoHardfork,
 ) -> Result<Tip20TransferBlockstmPlan, Tip20TransferBlockstmFallback> {
-    let transfers = decode_tip20_transfer_actions(tx, validator_token)?;
-    let nonce = decode_nonce_action(&tx.tx_env, spec)?;
+    let transfer = decode_tip20_transfer_action(tx, validator_token)?;
+    let nonce = decode_expiring_nonce_action(&tx.tx_env, spec)?;
     let fee_payer = tx
         .tx_env
         .fee_payer()
@@ -769,29 +734,20 @@ pub fn build_tip20_transfer_blockstm_plan(
         })
         .map_err(|_| Tip20TransferBlockstmFallback::InvalidFeeCharge)?;
 
-    let mut actions = Vec::with_capacity(transfers.len() + usize::from(!max_fee.is_zero()) * 2);
-    if !max_fee.is_zero() {
-        actions.push(Tip20BlockstmAction::FeeReserve {
+    Ok(Tip20TransferBlockstmPlan {
+        nonce,
+        fee_reserve: Tip20FeeReserveAction {
             token: tx.fee_token,
             fee_payer,
             amount: max_fee,
-        });
-    }
-    actions.extend(transfers.into_iter().map(Tip20BlockstmAction::Transfer));
-    if !max_fee.is_zero() {
-        actions.push(Tip20BlockstmAction::FeeSettle {
+        },
+        transfer,
+        fee_settle: Tip20FeeSettleAction {
             token: tx.fee_token,
             fee_payer,
             beneficiary,
             max_amount: max_fee,
-        });
-    }
-
-    Ok(Tip20TransferBlockstmPlan {
-        nonce,
-        fee_payer,
-        max_fee,
-        actions,
+        },
     })
 }
 
@@ -812,96 +768,36 @@ fn execute_tip20_transfer_plan_with_deltas(
         execution.reads.insert(key, value);
     }
 
-    apply_nonce_action(
-        plan.nonce,
+    apply_expiring_nonce_action(
+        plan.nonce.replay_hash,
+        plan.nonce.valid_before,
+        plan.nonce.expiring_nonce_idx,
         &mut execution,
         ledger,
         tx_index,
         block_timestamp,
     )?;
-
-    for action in &plan.actions {
-        match action {
-            Tip20BlockstmAction::FeeReserve {
-                token,
-                fee_payer,
-                amount,
-            } => reserve_fee_balance(
-                *token,
-                *fee_payer,
-                *amount,
-                is_t6,
-                &mut execution,
-                ledger,
-                tx_index,
-            )?,
-            Tip20BlockstmAction::Transfer(action) => transfer_balance(
-                action.token,
-                action.from,
-                action.to,
-                action.amount,
-                is_t6,
-                &mut execution,
-                ledger,
-                tx_index,
-            )?,
-            Tip20BlockstmAction::FeeSettle { .. } => {}
-        }
-    }
+    reserve_fee_balance(
+        plan.fee_reserve.token,
+        plan.fee_reserve.fee_payer,
+        plan.fee_reserve.amount,
+        is_t6,
+        &mut execution,
+        ledger,
+        tx_index,
+    )?;
+    transfer_balance(
+        plan.transfer.token,
+        plan.transfer.from,
+        plan.transfer.to,
+        plan.transfer.amount,
+        is_t6,
+        &mut execution,
+        ledger,
+        tx_index,
+    )?;
 
     Ok(execution)
-}
-
-fn apply_nonce_action(
-    action: Tip20BlockstmNonceAction,
-    execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
-    block_timestamp: u64,
-) -> Result<(), Tip20TransferBlockstmFallback> {
-    match action {
-        Tip20BlockstmNonceAction::Protocol { caller, nonce } => apply_incrementing_nonce_action(
-            protocol_nonce_key(caller),
-            nonce,
-            execution,
-            ledger,
-            tx_index,
-        ),
-        Tip20BlockstmNonceAction::Expiring {
-            replay_hash,
-            valid_before,
-            expiring_nonce_idx,
-            ..
-        } => apply_expiring_nonce_action(
-            replay_hash,
-            valid_before,
-            expiring_nonce_idx,
-            execution,
-            ledger,
-            tx_index,
-            block_timestamp,
-        ),
-    }
-}
-
-fn apply_incrementing_nonce_action(
-    key: StorageKey,
-    nonce: u64,
-    execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
-    tx_index: usize,
-) -> Result<(), Tip20TransferBlockstmFallback> {
-    let current = read_for_write(execution, ledger, key);
-    if current != U256::from(nonce) {
-        return Err(Tip20TransferBlockstmFallback::InvalidNonce);
-    }
-
-    let next = nonce
-        .checked_add(1)
-        .ok_or(Tip20TransferBlockstmFallback::InvalidNonce)?;
-    write_value(execution, ledger, tx_index, key, U256::from(next));
-
-    Ok(())
 }
 
 fn apply_expiring_nonce_action(
@@ -972,23 +868,12 @@ fn settle_actual_fee_with_deltas(
     actual_fee: U256,
     is_t6: bool,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
-    let Some((token, fee_payer, beneficiary, max_amount)) =
-        plan.actions.iter().find_map(|action| match action {
-            Tip20BlockstmAction::FeeSettle {
-                token,
-                fee_payer,
-                beneficiary,
-                max_amount,
-            } => Some((*token, *fee_payer, *beneficiary, *max_amount)),
-            _ => None,
-        })
-    else {
-        return if actual_fee.is_zero() {
-            Ok(())
-        } else {
-            Err(Tip20TransferBlockstmFallback::InvalidFeeCharge)
-        };
-    };
+    let Tip20FeeSettleAction {
+        token,
+        fee_payer,
+        beneficiary,
+        max_amount,
+    } = plan.fee_settle;
 
     if actual_fee > max_amount {
         return Err(Tip20TransferBlockstmFallback::InvalidFeeCharge);
@@ -1016,23 +901,6 @@ fn execution_state(
     let mut state = EvmState::default();
 
     for (key, value) in &execution.writes {
-        if is_protocol_nonce_key(*key) {
-            let account = state.entry(key.address).or_insert_with(|| {
-                let mut account = Account::from(
-                    base_state
-                        .accounts
-                        .get(&key.address)
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-                account.mark_touch();
-                account
-            });
-            account.info.nonce = value.to::<u64>();
-            account.mark_touch();
-            continue;
-        }
-
         let account = state.entry(key.address).or_insert_with(|| {
             let mut account = Account::from(
                 base_state
@@ -1285,20 +1153,15 @@ fn synthetic_tip20_result_gas(
         &mut present_values,
     )?;
 
-    for action in plan.actions.iter().filter_map(|action| match action {
-        Tip20BlockstmAction::Transfer(action) => Some(action),
-        _ => None,
-    }) {
-        meter_tip20_transfer_action_gas(
-            action,
-            execution,
-            base_state,
-            cfg,
-            &mut meter,
-            &mut original_values,
-            &mut present_values,
-        )?;
-    }
+    meter_tip20_transfer_action_gas(
+        &plan.transfer,
+        execution,
+        base_state,
+        cfg,
+        &mut meter,
+        &mut original_values,
+        &mut present_values,
+    )?;
 
     let regular_gas = initial
         .initial_regular_gas()
@@ -1332,29 +1195,22 @@ fn seed_fee_reserve_gas_state(
     original_values: &mut HashMap<StorageKey, U256>,
     present_values: &mut HashMap<StorageKey, U256>,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
-    for action in &plan.actions {
-        let Tip20BlockstmAction::FeeReserve {
-            token,
-            fee_payer,
-            amount,
-        } = action
-        else {
-            continue;
-        };
+    let Tip20FeeReserveAction {
+        token,
+        fee_payer,
+        amount,
+    } = plan.fee_reserve;
 
-        // Fee reserve gas is excluded from receipts, but its storage accesses still warm the
-        // transaction access set before the user TIP-20 calls execute.
-        meter.warm_storage(paused_key(*token));
-        meter.warm_storage(transfer_policy_key(*token));
-        let payer_key = balance_key(*token, *fee_payer);
-        let manager_key = balance_key(*token, TIP_FEE_MANAGER_ADDRESS);
-        meter.warm_storage(payer_key);
-        meter.warm_storage(manager_key);
+    // Fee reserve gas is excluded from receipts, but its storage accesses still warm the
+    // transaction access set before the user TIP-20 calls execute.
+    meter.warm_storage(paused_key(token));
+    meter.warm_storage(transfer_policy_key(token));
+    let payer_key = balance_key(token, fee_payer);
+    let manager_key = balance_key(token, TIP_FEE_MANAGER_ADDRESS);
+    meter.warm_storage(payer_key);
+    meter.warm_storage(manager_key);
 
-        if amount.is_zero() {
-            continue;
-        }
-
+    if !amount.is_zero() {
         let payer_raw = synthetic_present_value(
             present_values,
             original_values,
@@ -1373,11 +1229,11 @@ fn seed_fee_reserve_gas_state(
         let manager_balance = decode_balance_state(manager_raw)?;
         let new_payer = payer_balance
             .amount
-            .checked_sub(*amount)
+            .checked_sub(amount)
             .ok_or(Tip20TransferBlockstmFallback::InsufficientBalance)?;
         let new_manager = manager_balance
             .amount
-            .checked_add(*amount)
+            .checked_add(amount)
             .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
 
         present_values.insert(
@@ -1763,41 +1619,30 @@ fn synthetic_actual_fee(tx: &TempoTxEnv, gas: &ResultGas, basefee: u128, is_t6: 
 fn synthetic_tip20_logs(plan: &Tip20TransferBlockstmPlan, actual_fee: U256) -> Vec<Log> {
     let mut logs = Vec::new();
 
-    for action in &plan.actions {
-        let Tip20BlockstmAction::Transfer(action) = action else {
-            continue;
-        };
-        logs.push(tip20_transfer_log(
+    let action = &plan.transfer;
+    logs.push(tip20_transfer_log(
+        action.token,
+        action.from,
+        action.to,
+        action.amount,
+    ));
+    if let Some(memo) = action.memo {
+        logs.push(tip20_transfer_with_memo_log(
             action.token,
             action.from,
             action.to,
             action.amount,
+            memo,
         ));
-        if let Some(memo) = action.memo {
-            logs.push(tip20_transfer_with_memo_log(
-                action.token,
-                action.from,
-                action.to,
-                action.amount,
-                memo,
-            ));
-        }
     }
 
-    if let Some((token, fee_payer, max_amount)) = plan.actions.iter().find_map(|action| {
-        if let Tip20BlockstmAction::FeeSettle {
-            token,
-            fee_payer,
-            max_amount,
-            ..
-        } = action
-        {
-            Some((*token, *fee_payer, *max_amount))
-        } else {
-            None
-        }
-    }) && (!actual_fee.is_zero() || max_amount > actual_fee)
-    {
+    let Tip20FeeSettleAction {
+        token,
+        fee_payer,
+        max_amount,
+        ..
+    } = plan.fee_settle;
+    if !actual_fee.is_zero() || max_amount > actual_fee {
         logs.push(tip20_transfer_log(
             token,
             fee_payer,
@@ -1829,10 +1674,10 @@ fn tip20_transfer_with_memo_log(
     }
 }
 
-fn decode_tip20_transfer_actions(
+fn decode_tip20_transfer_action(
     tx: &Tip20TransferBlockstmTx<'_>,
     validator_token: Address,
-) -> Result<Vec<Tip20TransferAction>, Tip20TransferBlockstmFallback> {
+) -> Result<Tip20TransferAction, Tip20TransferBlockstmFallback> {
     if tx.fee_token != validator_token {
         return Err(Tip20TransferBlockstmFallback::FeeTokenMismatch);
     }
@@ -1870,41 +1715,35 @@ fn decode_tip20_transfer_actions(
         return Err(Tip20TransferBlockstmFallback::KeychainSignature);
     }
 
-    let mut actions = Vec::new();
-    for (kind, input) in tx.tx_env.calls() {
-        actions.push(decode_tip20_transfer_call(
-            tx.tx_env.caller(),
-            *kind,
-            input,
-        )?);
-    }
-
-    if actions.is_empty() {
+    let mut calls = tx.tx_env.calls();
+    let Some((kind, input)) = calls.next() else {
         return Err(Tip20TransferBlockstmFallback::EmptyCalls);
+    };
+    let action = decode_tip20_transfer_call(tx.tx_env.caller(), *kind, input)?;
+    if calls.next().is_some() {
+        return Err(Tip20TransferBlockstmFallback::UnsupportedSelector);
     }
 
-    Ok(actions)
+    Ok(action)
 }
 
-fn decode_nonce_action(
+fn decode_expiring_nonce_action(
     tx: &TempoTxEnv,
     spec: TempoHardfork,
-) -> Result<Tip20BlockstmNonceAction, Tip20TransferBlockstmFallback> {
+) -> Result<Tip20ExpiringNonceAction, Tip20TransferBlockstmFallback> {
     let caller = tx.caller();
     let nonce = tx.nonce();
 
     let Some(aa) = tx.tempo_tx_env.as_ref() else {
-        return Ok(Tip20BlockstmNonceAction::Protocol { caller, nonce });
+        return Err(Tip20TransferBlockstmFallback::InvalidNonce);
     };
 
-    if aa.nonce_key.is_zero() {
-        Ok(Tip20BlockstmNonceAction::Protocol { caller, nonce })
-    } else if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+    if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
         if nonce != 0 {
             return Err(Tip20TransferBlockstmFallback::InvalidNonce);
         }
 
-        Ok(Tip20BlockstmNonceAction::Expiring {
+        Ok(Tip20ExpiringNonceAction {
             caller,
             replay_hash: if spec.is_t1b() {
                 tx.unique_tx_identifier().unwrap_or(aa.tx_hash)
@@ -1959,21 +1798,9 @@ fn decode_tip20_transfer_call(
     }
 }
 
-const PROTOCOL_NONCE_SLOT: U256 = U256::MAX;
 const NONCE_MANAGER_EXPIRING_NONCE_SEEN_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
 const NONCE_MANAGER_EXPIRING_NONCE_RING_SLOT: U256 = U256::from_limbs([2, 0, 0, 0]);
 const NONCE_MANAGER_EXPIRING_NONCE_RING_PTR_SLOT: U256 = U256::from_limbs([3, 0, 0, 0]);
-
-fn protocol_nonce_key(caller: Address) -> StorageKey {
-    StorageKey {
-        address: caller,
-        slot: PROTOCOL_NONCE_SLOT,
-    }
-}
-
-fn is_protocol_nonce_key(key: StorageKey) -> bool {
-    key.slot == PROTOCOL_NONCE_SLOT
-}
 
 fn expiring_nonce_seen_key(hash: B256) -> StorageKey {
     StorageKey {
@@ -2541,12 +2368,12 @@ mod tests {
             recovered: &recovered,
             fee_token: TOKEN,
         };
-        let actions = decode_tip20_transfer_actions(&tx, TOKEN).unwrap();
-        assert_eq!(actions.len(), 1);
+        let action = decode_tip20_transfer_action(&tx, TOKEN).unwrap();
+        assert_eq!(action.token, TOKEN);
     }
 
     #[test]
-    fn aa_batch_with_only_direct_transfers_is_eligible() {
+    fn aa_batch_with_multiple_direct_transfers_falls_back() {
         let recipient_a = address!("10000000000000000000000000000000000000a1");
         let recipient_b = address!("10000000000000000000000000000000000000b1");
         let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
@@ -2563,11 +2390,10 @@ mod tests {
             recovered: &recovered,
             fee_token: TOKEN,
         };
-        let actions = decode_tip20_transfer_actions(&tx, TOKEN).unwrap();
-        assert_eq!(actions.len(), 2);
-        assert_eq!(actions[0].to, recipient_a);
-        assert_eq!(actions[1].to, recipient_b);
-        assert_eq!(actions[1].memo, Some(B256::repeat_byte(0x42)));
+        assert_eq!(
+            decode_tip20_transfer_action(&tx, TOKEN),
+            Err(Tip20TransferBlockstmFallback::UnsupportedSelector)
+        );
     }
 
     #[test]
@@ -2587,7 +2413,7 @@ mod tests {
             fee_token: TOKEN,
         };
         assert_eq!(
-            decode_tip20_transfer_actions(&tx, TOKEN),
+            decode_tip20_transfer_action(&tx, TOKEN),
             Err(Tip20TransferBlockstmFallback::TransferFrom)
         );
     }
@@ -2610,7 +2436,7 @@ mod tests {
             fee_token: TOKEN,
         };
         assert_eq!(
-            decode_tip20_transfer_actions(&tx, TOKEN),
+            decode_tip20_transfer_action(&tx, TOKEN),
             Err(Tip20TransferBlockstmFallback::NonTip20Target)
         );
     }
@@ -2635,7 +2461,7 @@ mod tests {
             fee_token: TOKEN,
         };
         assert_eq!(
-            decode_tip20_transfer_actions(&tx, TOKEN),
+            decode_tip20_transfer_action(&tx, TOKEN),
             Err(Tip20TransferBlockstmFallback::AccessList)
         );
     }
@@ -2659,14 +2485,11 @@ mod tests {
         let plan =
             build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
                 .unwrap();
-        let Tip20BlockstmNonceAction::Expiring {
+        let Tip20ExpiringNonceAction {
             replay_hash,
             valid_before: planned_valid_before,
             ..
-        } = plan.nonce
-        else {
-            panic!("expected expiring nonce action");
-        };
+        } = plan.nonce;
         assert_eq!(planned_valid_before, valid_before);
 
         let execution = execute_test_blockstm(
@@ -2706,7 +2529,7 @@ mod tests {
             fee_token: TOKEN,
         };
         assert_eq!(
-            decode_tip20_transfer_actions(&tx, Address::random()),
+            decode_tip20_transfer_action(&tx, Address::random()),
             Err(Tip20TransferBlockstmFallback::FeeTokenMismatch)
         );
     }
@@ -2748,14 +2571,10 @@ mod tests {
     fn transfer_plan_includes_same_token_fee_actions_and_storage_sets() {
         let recipient = address!("10000000000000000000000000000000000000cc");
         let beneficiary = address!("10000000000000000000000000000000000000dd");
-        let (recovered, tx_env) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient,
-                amount: U256::from(7),
-            }
-            .abi_encode(),
-            21_000,
-            2_000_000_000_000,
+        let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+            vec![transfer_call(recipient, U256::from(7))],
+            30,
+            42_000,
         );
 
         let tx = Tip20TransferBlockstmTx {
@@ -2767,37 +2586,17 @@ mod tests {
             build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
                 .unwrap();
 
-        assert_eq!(plan.fee_payer, SENDER);
-        assert_eq!(plan.max_fee, U256::from(42_000));
-        assert_eq!(plan.actions.len(), 3);
-        assert!(matches!(
-            &plan.actions[0],
-            Tip20BlockstmAction::FeeReserve {
-                token: TOKEN,
-                fee_payer: SENDER,
-                amount
-            } if *amount == U256::from(42_000)
-        ));
-        assert!(matches!(
-            &plan.actions[1],
-            Tip20BlockstmAction::Transfer(Tip20TransferAction {
-                token: TOKEN,
-                from: SENDER,
-                to,
-                amount,
-                memo: None,
-                ..
-            }) if *to == recipient && *amount == U256::from(7)
-        ));
-        assert!(matches!(
-            &plan.actions[2],
-            Tip20BlockstmAction::FeeSettle {
-                token: TOKEN,
-                fee_payer: SENDER,
-                beneficiary: actual_beneficiary,
-                max_amount
-            } if *actual_beneficiary == beneficiary && *max_amount == U256::from(42_000)
-        ));
+        assert_eq!(plan.fee_reserve.token, TOKEN);
+        assert_eq!(plan.fee_reserve.fee_payer, SENDER);
+        assert_eq!(plan.fee_reserve.amount, plan.fee_settle.max_amount);
+        assert_eq!(plan.transfer.token, TOKEN);
+        assert_eq!(plan.transfer.from, SENDER);
+        assert_eq!(plan.transfer.to, recipient);
+        assert_eq!(plan.transfer.amount, U256::from(7));
+        assert_eq!(plan.transfer.memo, None);
+        assert_eq!(plan.fee_settle.token, TOKEN);
+        assert_eq!(plan.fee_settle.fee_payer, SENDER);
+        assert_eq!(plan.fee_settle.beneficiary, beneficiary);
 
         let read_set = plan.read_set();
         assert!(read_set.contains(&receive_policy_key(recipient)));
@@ -2811,6 +2610,7 @@ mod tests {
         assert!(write_set.contains(&balance_key(TOKEN, SENDER)));
         assert!(write_set.contains(&balance_key(TOKEN, recipient)));
         assert!(write_set.contains(&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)));
+        assert!(write_set.contains(&collected_fees_key(beneficiary, TOKEN)));
     }
 
     #[test]
@@ -2838,14 +2638,10 @@ mod tests {
         let recipient = address!("10000000000000000000000000000000000000c1");
         let beneficiary = address!("10000000000000000000000000000000000000d1");
         let transfer_amount = U256::from(7);
-        let (recovered, tx_env) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient,
-                amount: transfer_amount,
-            }
-            .abi_encode(),
+        let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+            vec![transfer_call(recipient, transfer_amount)],
+            30,
             350_000,
-            1_000_000_000_000,
         );
         let tx = Tip20TransferBlockstmTx {
             tx_env,
@@ -2903,14 +2699,10 @@ mod tests {
     fn speculative_execution_self_transfer_has_no_net_transfer_delta() {
         let beneficiary = address!("10000000000000000000000000000000000000d2");
         let transfer_amount = U256::from(7);
-        let (recovered, tx_env) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: SENDER,
-                amount: transfer_amount,
-            }
-            .abi_encode(),
+        let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+            vec![transfer_call(SENDER, transfer_amount)],
+            30,
             350_000,
-            1_000_000_000_000,
         );
         let tx = Tip20TransferBlockstmTx {
             tx_env,
@@ -2945,14 +2737,10 @@ mod tests {
         let recipient = address!("10000000000000000000000000000000000000c2");
         let beneficiary = address!("10000000000000000000000000000000000000d3");
         let transfer_amount = U256::from(7);
-        let (recovered, tx_env) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient,
-                amount: transfer_amount,
-            }
-            .abi_encode(),
+        let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+            vec![transfer_call(recipient, transfer_amount)],
+            30,
             350_000,
-            1_000_000_000_000,
         );
         let tx = Tip20TransferBlockstmTx {
             tx_env,
@@ -3064,80 +2852,6 @@ mod tests {
         assert_eq!(
             execution.txs[1].writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
             encode_balance(total_fee, REWARD_FLAG_UNINITIALIZED, true)
-        );
-    }
-
-    #[test]
-    fn delta_execution_handles_protocol_nonce_successor() {
-        let recipient_a = address!("10000000000000000000000000000000000000a2");
-        let recipient_b = address!("10000000000000000000000000000000000000b2");
-        let beneficiary = address!("10000000000000000000000000000000000000d4");
-
-        let (recovered_a, mut tx_env_a) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient_a,
-                amount: U256::from(10),
-            }
-            .abi_encode(),
-            350_000,
-            1_000_000_000_000,
-        );
-        tx_env_a.inner.nonce = 0;
-        let tx_a = Tip20TransferBlockstmTx {
-            tx_env: tx_env_a,
-            recovered: &recovered_a,
-            fee_token: TOKEN,
-        };
-        let plan_a =
-            build_tip20_transfer_blockstm_plan(&tx_a, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
-                .unwrap();
-        let (recovered_b, mut tx_env_b) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient_b,
-                amount: U256::from(20),
-            }
-            .abi_encode(),
-            350_000,
-            1_000_000_000_000,
-        );
-        tx_env_b.inner.nonce = 1;
-        let tx_b = Tip20TransferBlockstmTx {
-            tx_env: tx_env_b,
-            recovered: &recovered_b,
-            fee_token: TOKEN,
-        };
-        let plan_b =
-            build_tip20_transfer_blockstm_plan(&tx_b, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
-                .unwrap();
-        let sender_balance = U256::from(1_000_000);
-        let base_storage = HashMap::from([
-            (
-                balance_key(TOKEN, SENDER),
-                encode_balance(sender_balance, REWARD_FLAG_OPTED_OUT, true),
-            ),
-            (
-                balance_key(TOKEN, recipient_a),
-                encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
-            ),
-            (
-                balance_key(TOKEN, recipient_b),
-                encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
-            ),
-        ]);
-
-        let execution = execute_test_blockstm(&[tx_a, tx_b], &[plan_a, plan_b], base_storage);
-        let total_fee = execution.actual_fees[0] + execution.actual_fees[1];
-        assert_eq!(
-            execution.txs[1].writes[&protocol_nonce_key(SENDER)],
-            U256::from(2)
-        );
-        assert_eq!(
-            execution.txs[1].writes[&balance_key(TOKEN, SENDER)],
-            encode_balance(
-                sender_balance - U256::from(30) - total_fee,
-                REWARD_FLAG_OPTED_OUT,
-                true
-            )
         );
     }
 
