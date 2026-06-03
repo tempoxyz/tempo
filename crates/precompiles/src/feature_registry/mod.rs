@@ -84,12 +84,16 @@ impl FeatureRegistry {
         msg_sender: Address,
         call: IFeatureRegistry::setSupportedFeaturesTipCall,
     ) -> Result<()> {
-        let previous = self.validator_supported_features_tip[msg_sender].read()?;
+        if msg_sender != SYSTEM_CALLER_ADDRESS {
+            return Err(FeatureRegistryError::unauthorized().into());
+        }
+
+        let previous = self.validator_supported_features_tip[call.validator].read()?;
         if call.featuresTip < previous {
             return Err(FeatureRegistryError::supported_features_tip_decreased().into());
         }
 
-        self.validator_supported_features_tip[msg_sender].write(call.featuresTip)
+        self.validator_supported_features_tip[call.validator].write(call.featuresTip)
     }
 
     pub fn schedule_features_tip(

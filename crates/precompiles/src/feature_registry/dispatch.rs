@@ -535,8 +535,11 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
 
             registry.set_supported_features_tip(
-                validator,
-                IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 13 },
+                SYSTEM_CALLER_ADDRESS,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    validator,
+                    featuresTip: 13,
+                },
             )?;
 
             assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
@@ -554,8 +557,11 @@ mod tests {
             registry.validator_supported_features_tip[validator].write(13)?;
 
             let result = registry.set_supported_features_tip(
-                validator,
-                IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 12 },
+                SYSTEM_CALLER_ADDRESS,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    validator,
+                    featuresTip: 12,
+                },
             );
             assert_eq!(
                 result,
@@ -622,14 +628,38 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_sets_validator_report() -> eyre::Result<()> {
+    fn set_supported_features_tip_rejects_non_system_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             let validator = Address::repeat_byte(0x01);
 
-            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 34 };
-            let result = registry.call(&call.abi_encode(), validator)?;
+            let result = registry.set_supported_features_tip(
+                Address::repeat_byte(0x02),
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    validator,
+                    featuresTip: 13,
+                },
+            );
+            assert_eq!(result, Err(FeatureRegistryError::unauthorized().into()));
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_dispatch_sets_validator_report_from_system() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall {
+                validator,
+                featuresTip: 34,
+            };
+            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
             assert!(!result.is_revert());
             assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
 
@@ -638,22 +668,22 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_uses_msg_sender_as_validator() -> eyre::Result<()> {
+    fn set_supported_features_tip_dispatch_rejects_non_system_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            let caller = Address::repeat_byte(0x01);
-            let other_validator = Address::repeat_byte(0x02);
+            let validator = Address::repeat_byte(0x01);
 
-            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 34 };
-            let result = registry.call(&call.abi_encode(), caller)?;
-            assert!(!result.is_revert());
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall {
+                validator,
+                featuresTip: 34,
+            };
+            let result = registry.call(&call.abi_encode(), Address::repeat_byte(0x02))?;
+            assert!(result.is_revert());
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, FeatureRegistryError::unauthorized());
 
-            assert_eq!(registry.validator_supported_features_tip(caller)?, 34);
-            assert_eq!(
-                registry.validator_supported_features_tip(other_validator)?,
-                0
-            );
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 0);
 
             Ok(())
         })
@@ -667,8 +697,11 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
             registry.validator_supported_features_tip[validator].write(34)?;
 
-            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 33 };
-            let result = registry.call(&call.abi_encode(), validator)?;
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall {
+                validator,
+                featuresTip: 33,
+            };
+            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
             assert!(result.is_revert());
             let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
             assert_eq!(
