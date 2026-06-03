@@ -153,9 +153,25 @@ struct StorageKey {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Tip20BlockstmBaseState {
+pub struct Tip20BlockstmBaseState {
     storage: HashMap<StorageKey, U256>,
     accounts: HashMap<Address, AccountInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Tip20BlockstmOverlay {
+    storage: HashMap<StorageKey, U256>,
+}
+
+impl Tip20BlockstmOverlay {
+    fn read(&self, key: StorageKey) -> Option<U256> {
+        self.storage.get(&key).copied()
+    }
+
+    fn commit(&mut self, execution: &Tip20BlockstmTxExecution) {
+        self.storage
+            .extend(execution.writes.iter().map(|(key, value)| (*key, *value)));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,16 +279,28 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
     db: &mut DB,
     plan: &Tip20TransferBlockstmPlan,
     block_timestamp: u64,
-) -> Result<(), DB::Error> {
+) -> Result<Tip20BlockstmBaseState, DB::Error> {
+    prewarm_tip20_transfer_blockstm_plan_with_expiring_nonce_offset(db, plan, block_timestamp, None)
+}
+
+pub fn prewarm_tip20_transfer_blockstm_plan_with_expiring_nonce_offset<DB: Database>(
+    db: &mut DB,
+    plan: &Tip20TransferBlockstmPlan,
+    block_timestamp: u64,
+    expiring_nonce_offset: Option<usize>,
+) -> Result<Tip20BlockstmBaseState, DB::Error> {
     let accesses = plan.base_accesses();
 
+    let mut storage = HashMap::with_capacity(accesses.storage.len());
     for key in accesses.storage.iter().copied() {
-        let _ = db.storage(key.address, key.slot)?;
+        let value = db.storage(key.address, key.slot)?;
+        storage.insert(key, value);
     }
     read_expiring_nonce_base_storage(
         plan,
         block_timestamp,
-        |key| db.storage(key.address, key.slot),
+        expiring_nonce_offset,
+        |key| read_base_storage_from_db(db, &mut storage, key),
         |ptr_word, expiring_nonce_idx| -> Result<u32, DB::Error> {
             let ptr = ptr_word.to::<u32>();
             let offset =
@@ -281,16 +309,33 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
         },
     )?;
 
+    let mut accounts = HashMap::with_capacity(accesses.accounts.len());
     for account in accesses.accounts.iter().copied() {
-        let _ = db.basic(account)?;
+        let info = db.basic(account)?.unwrap_or_default();
+        accounts.insert(account, info);
     }
 
-    Ok(())
+    Ok(Tip20BlockstmBaseState { storage, accounts })
+}
+
+fn read_base_storage_from_db<DB: Database>(
+    db: &mut DB,
+    storage: &mut HashMap<StorageKey, U256>,
+    key: StorageKey,
+) -> Result<U256, DB::Error> {
+    if let Some(value) = storage.get(&key) {
+        return Ok(*value);
+    }
+
+    let value = db.storage(key.address, key.slot)?;
+    storage.insert(key, value);
+    Ok(value)
 }
 
 fn read_expiring_nonce_base_storage<E>(
     plan: &Tip20TransferBlockstmPlan,
     block_timestamp: u64,
+    expiring_nonce_idx_override: Option<usize>,
     mut read_storage: impl FnMut(StorageKey) -> Result<U256, E>,
     mut ring_index: impl FnMut(U256, Option<usize>) -> Result<u32, E>,
 ) -> Result<(), E> {
@@ -300,6 +345,7 @@ fn read_expiring_nonce_base_storage<E>(
         expiring_nonce_idx,
         ..
     } = plan.nonce;
+    let expiring_nonce_idx = expiring_nonce_idx_override.or(expiring_nonce_idx);
 
     let seen_key = expiring_nonce_seen_key(replay_hash);
     let seen_expiry = read_storage(seen_key)?;
@@ -445,14 +491,43 @@ where
     ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
         let block = self.inner.evm.block();
         let block_timestamp = block.timestamp().saturating_to::<u64>();
+        let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
+        let mut overlay = Tip20BlockstmOverlay::default();
+
+        self.execute_tip20_transfer_blockstm_prewarmed_tx(
+            tx,
+            plan,
+            base_state,
+            &mut overlay,
+            transaction_index,
+            should_commit,
+        )
+    }
+
+    /// Executes one pre-built BlockSTM TIP-20 transfer plan using worker-read base state.
+    ///
+    /// `overlay` carries writes from earlier committed BlockSTM transfers in the same payload.
+    /// It is only updated after `should_commit` accepts the synthetic result and the executor
+    /// commits the transaction.
+    pub fn execute_tip20_transfer_blockstm_prewarmed_tx<'tx>(
+        &mut self,
+        tx: Tip20TransferBlockstmTx<'tx>,
+        plan: Tip20TransferBlockstmPlan,
+        mut base_state: Tip20BlockstmBaseState,
+        overlay: &mut Tip20BlockstmOverlay,
+        transaction_index: usize,
+        should_commit: impl FnOnce(&TempoTxResult) -> bool,
+    ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
+        let block = self.inner.evm.block();
+        let block_timestamp = block.timestamp().saturating_to::<u64>();
         let basefee = block.basefee as u128;
 
-        self.validate_tip20_transfer_state(&plan)?;
+        self.prepare_tip20_transfer_base_state(&plan, &mut base_state, overlay, block_timestamp)?;
+        validate_tip20_transfer_state(&plan, &base_state, overlay)?;
 
-        let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
-        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage, overlay);
         let mut tx_execution =
             execute_tip20_transfer_plan_with_deltas(&plan, &mut ledger, is_t6, block_timestamp)
                 .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
@@ -487,93 +562,62 @@ where
             return Ok(false);
         }
         self.commit_transaction(result);
+        overlay.commit(&tx_execution);
 
         Ok(true)
     }
 
-    fn validate_tip20_transfer_state(
+    fn prepare_tip20_transfer_base_state(
         &mut self,
         plan: &Tip20TransferBlockstmPlan,
+        base_state: &mut Tip20BlockstmBaseState,
+        overlay: &Tip20BlockstmOverlay,
+        block_timestamp: u64,
     ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-        validate_direct_recipient(plan.transfer.to)?;
-        self.validate_receive_policy(plan.transfer.to)?;
-
-        self.validate_token_global_state(plan.fee_reserve.token)?;
-        self.validate_reward_inactive(plan.fee_reserve.token, plan.fee_reserve.fee_payer)?;
-        self.validate_reward_inactive(plan.fee_reserve.token, TIP_FEE_MANAGER_ADDRESS)?;
-
-        if plan.transfer.token != plan.fee_reserve.token {
-            self.validate_token_global_state(plan.transfer.token)?;
-        }
-        self.validate_reward_inactive(plan.transfer.token, plan.transfer.from)?;
-        self.validate_reward_inactive(plan.transfer.token, plan.transfer.to)?;
-
-        Ok(())
-    }
-
-    fn validate_token_global_state(
-        &mut self,
-        token: Address,
-    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-        if self.read_storage(token, tip20_slots::PAUSED)? != U256::ZERO {
-            return Err(Tip20TransferBlockstmExecutionError::Fallback(
-                Tip20TransferBlockstmFallback::TokenPaused,
-            ));
-        }
-
-        let transfer_policy = self.read_storage(token, tip20_slots::TRANSFER_POLICY_ID)?;
-        if transfer_policy_id(transfer_policy) != U256::from(ALLOW_ALL_POLICY_ID) {
-            return Err(Tip20TransferBlockstmExecutionError::Fallback(
-                Tip20TransferBlockstmFallback::TransferPolicy,
-            ));
-        }
-
-        if self.read_storage(token, tip20_slots::GLOBAL_REWARD_PER_TOKEN)? != U256::ZERO
-            || self.read_storage(token, tip20_slots::OPTED_IN_SUPPLY)? != U256::ZERO
-        {
-            return Err(Tip20TransferBlockstmExecutionError::Fallback(
-                Tip20TransferBlockstmFallback::RewardActive,
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn validate_receive_policy(
-        &mut self,
-        account: Address,
-    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-        let receive_policy_config = self.read_storage(
-            TIP403_REGISTRY_ADDRESS,
-            account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES),
+        read_expiring_nonce_base_storage(
+            plan,
+            block_timestamp,
+            None,
+            |key| self.read_current_base_storage(base_state, overlay, key),
+            |ptr_word, expiring_nonce_idx| {
+                let ptr = expiring_nonce_ring_ptr_from_word(ptr_word)
+                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+                expiring_nonce_ring_index(ptr, expiring_nonce_idx)
+                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)
+            },
         )?;
-        if receive_policy_config != U256::ZERO {
+
+        let Some(info) = base_state.accounts.get(&plan.nonce.caller) else {
             return Err(Tip20TransferBlockstmExecutionError::Fallback(
-                Tip20TransferBlockstmFallback::ReceivePolicy,
+                Tip20TransferBlockstmFallback::StmValidation,
+            ));
+        };
+        if !info.is_empty_code_hash() {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::AccountHasCode,
             ));
         }
 
         Ok(())
     }
 
-    fn validate_reward_inactive(
+    fn read_current_base_storage(
         &mut self,
-        token: Address,
-        account: Address,
-    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-        let balance = self.read_storage(token, balance_slot(account))?;
-        decode_balance_state(balance).map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
-
-        let reward_info_base = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
-        for offset in 0..USER_REWARD_INFO_SLOTS {
-            if self.read_storage(token, reward_info_base + U256::from(offset))? != U256::ZERO {
-                return Err(Tip20TransferBlockstmExecutionError::Fallback(
-                    Tip20TransferBlockstmFallback::RewardActive,
-                ));
-            }
+        base_state: &mut Tip20BlockstmBaseState,
+        overlay: &Tip20BlockstmOverlay,
+        key: StorageKey,
+    ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
+        if let Some(value) = overlay.read(key) {
+            return Ok(value);
         }
 
-        Ok(())
+        if let Some(value) = base_state.storage.get(&key) {
+            return Ok(*value);
+        }
+
+        let value = self.read_storage(key.address, key.slot)?;
+        base_state.storage.insert(key, value);
+        Ok(value)
     }
 
     fn read_storage(
@@ -604,6 +648,7 @@ where
         read_expiring_nonce_base_storage(
             plan,
             block_timestamp,
+            None,
             |key| self.read_base_storage(&mut storage, key),
             |ptr_word, expiring_nonce_idx| {
                 let ptr = expiring_nonce_ring_ptr_from_word(ptr_word)
@@ -661,6 +706,130 @@ where
             .map_err(Tip20TransferBlockstmExecutionError::Database)
             .map(|account| account.unwrap_or_default())
     }
+}
+
+fn validate_tip20_transfer_state(
+    plan: &Tip20TransferBlockstmPlan,
+    base_state: &Tip20BlockstmBaseState,
+    overlay: &Tip20BlockstmOverlay,
+) -> Result<(), Tip20TransferBlockstmExecutionError> {
+    validate_direct_recipient(plan.transfer.to)?;
+    validate_receive_policy(plan.transfer.to, base_state, overlay)?;
+
+    validate_token_global_state(plan.fee_reserve.token, base_state, overlay)?;
+    validate_reward_inactive(
+        plan.fee_reserve.token,
+        plan.fee_reserve.fee_payer,
+        base_state,
+        overlay,
+    )?;
+    validate_reward_inactive(
+        plan.fee_reserve.token,
+        TIP_FEE_MANAGER_ADDRESS,
+        base_state,
+        overlay,
+    )?;
+
+    if plan.transfer.token != plan.fee_reserve.token {
+        validate_token_global_state(plan.transfer.token, base_state, overlay)?;
+    }
+    validate_reward_inactive(plan.transfer.token, plan.transfer.from, base_state, overlay)?;
+    validate_reward_inactive(plan.transfer.token, plan.transfer.to, base_state, overlay)?;
+
+    Ok(())
+}
+
+fn validate_token_global_state(
+    token: Address,
+    base_state: &Tip20BlockstmBaseState,
+    overlay: &Tip20BlockstmOverlay,
+) -> Result<(), Tip20TransferBlockstmExecutionError> {
+    if current_storage_value(base_state, overlay, paused_key(token)) != U256::ZERO {
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
+            Tip20TransferBlockstmFallback::TokenPaused,
+        ));
+    }
+
+    let transfer_policy = current_storage_value(base_state, overlay, transfer_policy_key(token));
+    if transfer_policy_id(transfer_policy) != U256::from(ALLOW_ALL_POLICY_ID) {
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
+            Tip20TransferBlockstmFallback::TransferPolicy,
+        ));
+    }
+
+    if current_storage_value(
+        base_state,
+        overlay,
+        StorageKey {
+            address: token,
+            slot: tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+        },
+    ) != U256::ZERO
+        || current_storage_value(
+            base_state,
+            overlay,
+            StorageKey {
+                address: token,
+                slot: tip20_slots::OPTED_IN_SUPPLY,
+            },
+        ) != U256::ZERO
+    {
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
+            Tip20TransferBlockstmFallback::RewardActive,
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_receive_policy(
+    account: Address,
+    base_state: &Tip20BlockstmBaseState,
+    overlay: &Tip20BlockstmOverlay,
+) -> Result<(), Tip20TransferBlockstmExecutionError> {
+    if current_storage_value(base_state, overlay, receive_policy_key(account)) != U256::ZERO {
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
+            Tip20TransferBlockstmFallback::ReceivePolicy,
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_reward_inactive(
+    token: Address,
+    account: Address,
+    base_state: &Tip20BlockstmBaseState,
+    overlay: &Tip20BlockstmOverlay,
+) -> Result<(), Tip20TransferBlockstmExecutionError> {
+    let balance = current_storage_value(base_state, overlay, balance_key(token, account));
+    decode_balance_state(balance).map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+
+    let reward_info_base = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
+    for offset in 0..USER_REWARD_INFO_SLOTS {
+        let key = StorageKey {
+            address: token,
+            slot: reward_info_base + U256::from(offset),
+        };
+        if current_storage_value(base_state, overlay, key) != U256::ZERO {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::RewardActive,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn current_storage_value(
+    base_state: &Tip20BlockstmBaseState,
+    overlay: &Tip20BlockstmOverlay,
+    key: StorageKey,
+) -> U256 {
+    overlay
+        .read(key)
+        .or_else(|| base_state.storage.get(&key).copied())
+        .unwrap_or_default()
 }
 
 const USER_REWARD_INFO_SLOTS: u64 = 3;
@@ -933,13 +1102,15 @@ fn execution_state(
 #[derive(Debug)]
 struct Tip20DeltaLedger<'a> {
     base_storage: &'a HashMap<StorageKey, U256>,
+    overlay: &'a Tip20BlockstmOverlay,
     current: HashMap<StorageKey, U256>,
 }
 
 impl<'a> Tip20DeltaLedger<'a> {
-    fn new(base_storage: &'a HashMap<StorageKey, U256>) -> Self {
+    fn new(base_storage: &'a HashMap<StorageKey, U256>, overlay: &'a Tip20BlockstmOverlay) -> Self {
         Self {
             base_storage,
+            overlay,
             current: HashMap::new(),
         }
     }
@@ -948,6 +1119,7 @@ impl<'a> Tip20DeltaLedger<'a> {
         self.current
             .get(&key)
             .copied()
+            .or_else(|| self.overlay.read(key))
             .unwrap_or_else(|| *self.base_storage.get(&key).unwrap_or(&U256::ZERO))
     }
 
@@ -2189,6 +2361,18 @@ mod tests {
         }
     }
 
+    fn test_account_base_state(
+        address: Address,
+        storage: impl IntoIterator<Item = (U256, U256)>,
+    ) -> Tip20BlockstmBaseState {
+        test_base_state(
+            storage
+                .into_iter()
+                .map(|(slot, value)| (StorageKey { address, slot }, value))
+                .collect(),
+        )
+    }
+
     fn db_to_trie_state(
         db: &State<EmptyDB>,
     ) -> HashMap<Address, (RethAccount, HashMap<B256, U256>)> {
@@ -2442,7 +2626,8 @@ mod tests {
     ) -> TestTip20BlockstmExecution {
         let base_state = test_base_state(base_storage);
         let cfg = t6_test_cfg();
-        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+        let overlay = Tip20BlockstmOverlay::default();
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage, &overlay);
         let mut executions = Vec::with_capacity(plans.len());
         let mut actual_fees = Vec::with_capacity(plans.len());
 
@@ -3320,8 +3505,6 @@ mod tests {
 
     #[test]
     fn token_state_fallbacks_are_conservative() {
-        let chainspec = test_chainspec();
-
         let cases = [
             (
                 PlainStorage::from_iter([
@@ -3350,69 +3533,57 @@ mod tests {
         ];
 
         for (storage, expected) in cases {
-            let mut db = State::builder().with_bundle_update().build();
-            db.insert_account_with_storage(TOKEN, AccountInfo::default(), storage);
-            let mut executor = TestExecutorBuilder::default().build(db, &chainspec);
+            let base_state = test_account_base_state(TOKEN, storage);
+            let overlay = Tip20BlockstmOverlay::default();
 
-            let err = executor.validate_token_global_state(TOKEN).unwrap_err();
+            let err = validate_token_global_state(TOKEN, &base_state, &overlay).unwrap_err();
             assert_fallback(err, expected);
         }
     }
 
     #[test]
     fn allow_all_reward_inactive_token_state_is_supported() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        db.insert_account_with_storage(
+        let base_state = test_account_base_state(
             TOKEN,
-            AccountInfo::default(),
             PlainStorage::from_iter([(
                 tip20_slots::TRANSFER_POLICY_ID,
                 policy_word(ALLOW_ALL_POLICY_ID),
             )]),
         );
-        let mut executor = TestExecutorBuilder::default().build(db, &chainspec);
+        let overlay = Tip20BlockstmOverlay::default();
 
-        executor.validate_token_global_state(TOKEN).unwrap();
+        validate_token_global_state(TOKEN, &base_state, &overlay).unwrap();
     }
 
     #[test]
     fn reward_metadata_falls_back() {
-        let chainspec = test_chainspec();
         let account = address!("10000000000000000000000000000000000000aa");
-        let mut db = State::builder().with_bundle_update().build();
-        db.insert_account_with_storage(
+        let base_state = test_account_base_state(
             TOKEN,
-            AccountInfo::default(),
             PlainStorage::from_iter([(
                 account.mapping_slot(tip20_slots::USER_REWARD_INFO),
                 U256::ONE,
             )]),
         );
-        let mut executor = TestExecutorBuilder::default().build(db, &chainspec);
+        let overlay = Tip20BlockstmOverlay::default();
 
-        let err = executor
-            .validate_reward_inactive(TOKEN, account)
-            .unwrap_err();
+        let err = validate_reward_inactive(TOKEN, account, &base_state, &overlay).unwrap_err();
         assert_fallback(err, Tip20TransferBlockstmFallback::RewardActive);
     }
 
     #[test]
     fn receive_policy_falls_back() {
-        let chainspec = test_chainspec();
         let account = address!("10000000000000000000000000000000000000bb");
-        let mut db = State::builder().with_bundle_update().build();
-        db.insert_account_with_storage(
+        let base_state = test_account_base_state(
             TIP403_REGISTRY_ADDRESS,
-            AccountInfo::default(),
             PlainStorage::from_iter([(
                 account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES),
                 U256::ONE,
             )]),
         );
-        let mut executor = TestExecutorBuilder::default().build(db, &chainspec);
+        let overlay = Tip20BlockstmOverlay::default();
 
-        let err = executor.validate_receive_policy(account).unwrap_err();
+        let err = validate_receive_policy(account, &base_state, &overlay).unwrap_err();
         assert_fallback(err, Tip20TransferBlockstmFallback::ReceivePolicy);
     }
 }

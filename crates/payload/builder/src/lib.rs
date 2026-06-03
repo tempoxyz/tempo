@@ -67,7 +67,8 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes, TempoStateAccess,
-    Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
+    Tip20BlockstmOverlay, Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback,
+    evm::TempoEvm,
 };
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -581,6 +582,10 @@ where
                 return Err(PayloadBuilderError::other(
                     blockstm::PayloadBuildError::Unsupported("subblocks"),
                 ));
+            } else if !self.enable_prewarming {
+                return Err(PayloadBuilderError::other(
+                    blockstm::PayloadBuildError::Unsupported("prewarming_disabled"),
+                ));
             } else {
                 self.metrics.inc_blockstm_tip20_attempted();
 
@@ -618,6 +623,7 @@ where
                 };
                 let mut candidate_count = 0usize;
                 let receipt_start = executor.receipts().len();
+                let mut blockstm_overlay = Tip20BlockstmOverlay::default();
                 let blockstm_stop_reason = loop {
                     check_cancel!();
 
@@ -674,9 +680,11 @@ where
                     };
                     let mut stop_reason = None;
 
-                    let execution_result = executor.execute_tip20_transfer_blockstm_planned_tx(
+                    let execution_result = executor.execute_tip20_transfer_blockstm_prewarmed_tx(
                         blockstm::candidate(&pool_tx),
                         planned_tx.plan,
+                        planned_tx.base_state,
+                        &mut blockstm_overlay,
                         candidate_count,
                         |result| {
                             if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit

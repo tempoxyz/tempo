@@ -13,9 +13,10 @@ pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod blockstm;
 #[cfg(feature = "engine")]
 pub use blockstm::{
-    Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan,
-    Tip20TransferBlockstmTx, build_tip20_transfer_blockstm_plan,
-    prewarm_tip20_transfer_blockstm_plan,
+    Tip20BlockstmBaseState, Tip20BlockstmOverlay, Tip20TransferBlockstmExecutionError,
+    Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
+    build_tip20_transfer_blockstm_plan, prewarm_tip20_transfer_blockstm_plan,
+    prewarm_tip20_transfer_blockstm_plan_with_expiring_nonce_offset,
 };
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
