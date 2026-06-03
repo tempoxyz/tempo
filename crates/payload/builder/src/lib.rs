@@ -809,6 +809,24 @@ where
 
                             blockstm_completed_stop_reason = Some(blockstm_collection_stop_reason);
                         }
+                        Err(Tip20TransferBlockstmBatchError::Conflict(conflict)) => {
+                            let blockstm_elapsed = collect_start.elapsed();
+                            info!(
+                                target: "payload_builder",
+                                transaction_index = conflict.transaction_index,
+                                previous_transaction_index = conflict.previous_transaction_index,
+                                address = ?conflict.address,
+                                slot = ?conflict.slot,
+                                transaction_count = candidate_count,
+                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
+                                ?collect_elapsed,
+                                ?blockstm_elapsed,
+                                "BlockSTM TIP-20 planned execution conflict"
+                            );
+                            return Err(PayloadBuilderError::other(
+                                blockstm::PayloadBuildError::Conflict(conflict),
+                            ));
+                        }
                         Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                             let blockstm_elapsed = collect_start.elapsed();
