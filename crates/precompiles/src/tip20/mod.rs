@@ -1296,12 +1296,16 @@ impl TIP20Token {
             self.decrease_opted_in_supply(amount)?;
         }
 
-        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
-        self.set_balance(from, new_from_balance)?;
+        self.balances
+            .at_mut(&from)
+            .decrement_balance(amount, from_flag)?;
 
-        let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = UserState::new(to_balance.checked_add(amount)?, to_balance.flag)?;
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
+        let fee_manager_flag = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?.flag;
+        self.balances
+            .at_mut(&TIP_FEE_MANAGER_ADDRESS)
+            .increment_balance(amount, fee_manager_flag)?;
+
+        Ok(())
     }
 
     /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
@@ -1338,19 +1342,31 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
-            TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
-        })?;
-        self.set_balance(
-            TIP_FEE_MANAGER_ADDRESS,
-            UserState::new(new_from_balance, from_balance.flag)?,
-        )?;
+        match self
+            .balances
+            .at_mut(&TIP_FEE_MANAGER_ADDRESS)
+            .decrement_balance(refund, from_balance.flag)
+        {
+            Ok(_) => {}
+            Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow)) => {
+                return Err(TIP20Error::insufficient_balance(
+                    from_balance.amount(),
+                    refund,
+                    self.address,
+                )
+                .into());
+            }
+            Err(err) => return Err(err),
+        }
 
-        let new_to_balance = self
-            .get_balance(to)?
+        self.get_balance(to)?
             .checked_add(refund)
             .map_err(|_| TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
+        self.balances
+            .at_mut(&to)
+            .increment_balance(refund, to_flag)?;
+
+        Ok(())
     }
 }
 

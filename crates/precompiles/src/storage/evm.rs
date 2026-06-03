@@ -539,6 +539,13 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        TIP_FEE_MANAGER_ADDRESS,
+        storage::{ContractStorage, StorageCtx, StorageKey},
+        test_util::TIP20Setup,
+        tip_fee_manager::{TipFeeManager, slots as tip_fee_manager_slots},
+        tip20::tip20_slots,
+    };
     use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
@@ -739,6 +746,127 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_tip20_fee_transfers_record_balance_actions() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let admin = Address::random();
+        let user = Address::random();
+        let initial_balance = U256::from(100);
+        let pre_fee = U256::from(40);
+        let refund = U256::from(10);
+        let gas_used = U256::from(30);
+        let user_balance_slot = user.mapping_slot(tip20_slots::BALANCES);
+        let fee_manager_balance_slot = TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
+
+        StorageCtx::enter(&mut provider, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(user, initial_balance)
+                .apply()?;
+            let token_address = token.address();
+
+            actions.replace(Some(Vec::new()));
+            token.transfer_fee_pre_tx(user, pre_fee)?;
+            assert_eq!(
+                recorded_tip20_balance_actions(&actions),
+                vec![
+                    EvmAction::Tip20BalanceSdec(token_address, user_balance_slot, pre_fee),
+                    EvmAction::Tip20BalanceSinc(token_address, fee_manager_balance_slot, pre_fee),
+                ]
+            );
+
+            actions.replace(Some(Vec::new()));
+            token.transfer_fee_post_tx(user, refund, gas_used)?;
+            assert_eq!(
+                recorded_tip20_balance_actions(&actions),
+                vec![
+                    EvmAction::Tip20BalanceSdec(token_address, fee_manager_balance_slot, refund),
+                    EvmAction::Tip20BalanceSinc(token_address, user_balance_slot, refund),
+                ]
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx_records_collected_fees_sinc() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T6);
+        let actions = EvmActions::default();
+        actions.replace(Some(Vec::new()));
+        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
+
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+        let initial_fee = U256::from(40);
+        let actual_spending = U256::from(30);
+        let refund = U256::from(10);
+
+        StorageCtx::enter(&mut provider, || {
+            let token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
+                .apply()?;
+            let token_address = token.address();
+            let collected_fees_slot = token_address
+                .mapping_slot(validator.mapping_slot(tip_fee_manager_slots::COLLECTED_FEES));
+
+            actions.replace(Some(Vec::new()));
+            let credited = TipFeeManager::new().collect_fee_post_tx(
+                user,
+                actual_spending,
+                refund,
+                token_address,
+                validator,
+            )?;
+            assert_eq!(credited, actual_spending);
+
+            let recorded_actions = actions.borrow();
+            let recorded_actions = recorded_actions
+                .as_ref()
+                .expect("actions recording should be enabled");
+            assert!(recorded_actions.contains(&EvmAction::Sinc(
+                TIP_FEE_MANAGER_ADDRESS,
+                collected_fees_slot,
+                actual_spending
+            )));
+            assert!(!recorded_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    EvmAction::Sload(address, key)
+                    if *address == TIP_FEE_MANAGER_ADDRESS && *key == collected_fees_slot
+                ) || matches!(
+                    action,
+                    EvmAction::Sstore(address, key, _)
+                    if *address == TIP_FEE_MANAGER_ADDRESS && *key == collected_fees_slot
+                )
+            }));
+
+            Ok(())
+        })
+    }
+
+    fn recorded_tip20_balance_actions(actions: &EvmActions) -> Vec<EvmAction> {
+        actions
+            .borrow()
+            .as_ref()
+            .expect("actions recording should be enabled")
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    EvmAction::Tip20BalanceSinc(..) | EvmAction::Tip20BalanceSdec(..)
+                )
+            })
+            .cloned()
+            .collect()
     }
 
     #[test]

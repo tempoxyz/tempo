@@ -17,7 +17,10 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     Precompile,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    storage::{
+        PrecompileStorageProvider,
+        evm::{EvmActions, EvmPrecompileStorageProvider},
+    },
     tip20::{RewardFlag, UserState},
 };
 
@@ -375,6 +378,26 @@ impl<'evm> StorageCtx {
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+
+        // The core logic of setting up thread-local storage is here.
+        Self::enter(&mut provider, f)
+    }
+
+    /// Like [`enter_evm`](Self::enter_evm), but records EVM actions into `actions`.
+    pub fn enter_evm_with_actions<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        actions: EvmActions,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
