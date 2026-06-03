@@ -17,7 +17,7 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
         getAllowedCallsCall, getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall,
-        getTransactionKeyCall, pruneExpiredKeyCall, removeAllowedCallsCall, revokeKeyCall,
+        getTransactionKeyCall, pruneExpiryCall, removeAllowedCallsCall, revokeKeyCall,
         setAllowedCallsCall, updateSpendingLimitCall,
     },
     authorizeKeyCall, getAllowedCallsReturn, getRemainingLimitReturn,
@@ -406,11 +406,7 @@ impl AccountKeychain {
     /// Returns `false` without changing state when the key is missing, revoked, permanent,
     /// or not yet expired. Permanent finite-expiry keys are intentionally not pruned because they
     /// did not prepay temporary cleanup and must keep the existing replay behavior.
-    pub fn prune_expired_key(
-        &mut self,
-        _msg_sender: Address,
-        call: pruneExpiredKeyCall,
-    ) -> Result<bool> {
+    pub fn prune_expiry(&mut self, _msg_sender: Address, call: pruneExpiryCall) -> Result<bool> {
         if call.keyId.is_zero() {
             return Ok(false);
         }
@@ -653,7 +649,7 @@ impl AccountKeychain {
     /// - If key_id is Address::ZERO (main key), this should store Address::ZERO
     /// - If key_id is a specific key address, this should store that key
     ///
-    /// This creates a secure channel between validation and the precompile to ensure
+    /// This creates a secure link between validation and the precompile to ensure
     /// only the main key can authorize/revoke other keys.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
@@ -1406,6 +1402,12 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
 
+    const COLD_SLOAD_GAS: u64 = 2_100;
+    const WARM_STORAGE_READ_GAS: u64 = 100;
+    const COLD_SSTORE_CLEAR_GAS: u64 = 7_100;
+    const WARM_SSTORE_CLEAR_GAS: u64 = 5_000;
+    const ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS: u64 = 15_000;
+
     // Helper function to assert unauthorized error
     fn assert_unauthorized_error(error: TempoPrecompileError) {
         match error {
@@ -1441,6 +1443,32 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    fn assert_prune_expiry_cleanup_refund_covers_storage(
+        label: &str,
+        storage: &HashMapStorageProvider,
+    ) -> u64 {
+        let estimated_storage_gas = storage.counter_cold_sload() * COLD_SLOAD_GAS
+            + storage.counter_warm_sload() * WARM_STORAGE_READ_GAS
+            + storage.counter_cold_sstore() * COLD_SSTORE_CLEAR_GAS
+            + storage.counter_warm_sstore() * WARM_SSTORE_CLEAR_GAS;
+        let cleanup_refund = storage.counter_sstore() * ACCESS_KEY_SLOT_CLEANUP_REFUND_GAS;
+
+        eprintln!(
+            "{label}: {} cold SLOAD, {} warm SLOAD, {} cold SSTORE, {} warm SSTORE; estimated storage gas = {estimated_storage_gas}; cleanup refund = {cleanup_refund}",
+            storage.counter_cold_sload(),
+            storage.counter_warm_sload(),
+            storage.counter_cold_sstore(),
+            storage.counter_warm_sstore(),
+        );
+
+        assert!(
+            cleanup_refund > estimated_storage_gas,
+            "{label}: cleanup refund {cleanup_refund} must exceed estimated storage gas {estimated_storage_gas}"
+        );
+
+        cleanup_refund
     }
 
     #[test]
@@ -3622,7 +3650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_prune_expired_key_clears_bare_temporary_key_and_allows_reuse() -> eyre::Result<()> {
+    fn test_t3_prune_expiry_clears_bare_temporary_key_and_allows_reuse() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         storage.set_timestamp(U256::from(1_000u64));
 
@@ -3654,9 +3682,9 @@ mod tests {
             let stored = keychain.keys[account][key_id].read()?;
             assert!(stored.is_temporary);
 
-            let pruned = keychain.prune_expired_key(
+            let pruned = keychain.prune_expiry(
                 Address::random(),
-                pruneExpiredKeyCall {
+                pruneExpiryCall {
                     account,
                     keyId: key_id,
                 },
@@ -3670,9 +3698,9 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
 
-            let pruned = keychain.prune_expired_key(
+            let pruned = keychain.prune_expiry(
                 Address::random(),
-                pruneExpiredKeyCall {
+                pruneExpiryCall {
                     account,
                     keyId: key_id,
                 },
@@ -3709,7 +3737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_prune_expired_key_clears_spending_limits_and_token_index() -> eyre::Result<()> {
+    fn test_t3_prune_expiry_clears_spending_limits_and_token_index() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         storage.set_timestamp(U256::from(1_000u64));
 
@@ -3774,9 +3802,9 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             let account_key = AccountKeychain::spending_limit_key(account, key_id);
 
-            assert!(keychain.prune_expired_key(
+            assert!(keychain.prune_expiry(
                 Address::random(),
-                pruneExpiredKeyCall {
+                pruneExpiryCall {
                     account,
                     keyId: key_id,
                 },
@@ -3809,7 +3837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_prune_expired_key_clears_call_scopes() -> eyre::Result<()> {
+    fn test_t3_prune_expiry_clears_call_scopes() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         storage.set_timestamp(U256::from(1_000u64));
 
@@ -3862,9 +3890,9 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             let account_key = AccountKeychain::spending_limit_key(account, key_id);
 
-            assert!(keychain.prune_expired_key(
+            assert!(keychain.prune_expiry(
                 Address::random(),
-                pruneExpiredKeyCall {
+                pruneExpiryCall {
                     account,
                     keyId: key_id,
                 },
@@ -3888,6 +3916,167 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_t3_prune_expiry_storage_accounting_benchmark() -> eyre::Result<()> {
+        let account = Address::random();
+        let key_id = Address::random();
+        let expiry = 1_060u64;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )
+        })?;
+
+        storage.set_timestamp(U256::from(expiry));
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            AccountKeychain::new().prune_expiry(
+                Address::random(),
+                pruneExpiryCall {
+                    account,
+                    keyId: key_id,
+                },
+            )
+        })?;
+        assert_eq!(storage.counter_sload(), 4);
+        assert_eq!(storage.counter_sstore(), 1);
+        assert_eq!(
+            assert_prune_expiry_cleanup_refund_covers_storage("bare temporary key", &storage),
+            15_000
+        );
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+        let key_id = Address::random();
+        let tokens = [
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            Address::repeat_byte(0x33),
+        ];
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: true,
+                        limits: tokens
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, token)| TokenLimit {
+                                token,
+                                amount: U256::from(100 + index),
+                                period: index as u64 * 30,
+                            })
+                            .collect(),
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )
+        })?;
+
+        storage.set_timestamp(U256::from(expiry));
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            AccountKeychain::new().prune_expiry(
+                Address::random(),
+                pruneExpiryCall {
+                    account,
+                    keyId: key_id,
+                },
+            )
+        })?;
+        assert_eq!(storage.counter_sload(), 12);
+        assert_eq!(storage.counter_sstore(), 14);
+        assert_eq!(
+            assert_prune_expiry_cleanup_refund_covers_storage(
+                "temporary key with three spending limits",
+                &storage,
+            ),
+            210_000
+        );
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        storage.set_timestamp(U256::from(1_000u64));
+        let key_id = Address::random();
+        let recipient = Address::repeat_byte(0x44);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+            TIP20Setup::path_usd(account).apply()?;
+            keychain.authorize_key(
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![CallScope {
+                            target: DEFAULT_FEE_TOKEN,
+                            selectorRules: vec![SelectorRule {
+                                selector: TIP20_TRANSFER_SELECTOR.into(),
+                                recipients: vec![recipient],
+                            }],
+                        }],
+                    },
+                },
+            )
+        })?;
+
+        storage.set_timestamp(U256::from(expiry));
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            AccountKeychain::new().prune_expiry(
+                Address::random(),
+                pruneExpiryCall {
+                    account,
+                    keyId: key_id,
+                },
+            )
+        })?;
+        assert_eq!(storage.counter_sload(), 17);
+        assert_eq!(storage.counter_sstore(), 11);
+        assert_eq!(
+            assert_prune_expiry_cleanup_refund_covers_storage(
+                "temporary key with one target/selector/recipient scope",
+                &storage,
+            ),
+            165_000
+        );
+
+        Ok(())
     }
 
     #[test]

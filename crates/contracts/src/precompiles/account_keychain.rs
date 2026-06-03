@@ -4,7 +4,7 @@ pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
     getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
-    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn, pruneExpiredKeyCall,
+    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn, pruneExpiryCall,
 };
 
 crate::sol! {
@@ -139,7 +139,7 @@ crate::sol! {
         function removeAllowedCalls(address keyId, address target) external;
 
         /// Permissionlessly prune an expired temporary key and its temporary restriction rows.
-        function pruneExpiredKey(address account, address keyId) external returns (bool pruned);
+        function pruneExpiry(address account, address keyId) external returns (bool pruned);
 
         /// Get key information
         /// @param account The account address

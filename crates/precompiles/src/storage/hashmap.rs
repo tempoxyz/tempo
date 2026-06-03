@@ -3,7 +3,7 @@ use revm::{
     context::journaled_state::JournalCheckpoint,
     state::{AccountInfo, Bytecode},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -22,7 +22,13 @@ pub struct HashMapStorageProvider {
     block_number: u64,
     spec: TempoHardfork,
     is_static: bool,
+    accessed_storage: HashSet<(Address, U256)>,
     counter_sload: u64,
+    counter_cold_sload: u64,
+    counter_warm_sload: u64,
+    counter_sstore: u64,
+    counter_cold_sstore: u64,
+    counter_warm_sstore: u64,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -64,7 +70,13 @@ impl HashMapStorageProvider {
             block_number: 0,
             spec,
             is_static: false,
+            accessed_storage: HashSet::new(),
             counter_sload: 0,
+            counter_cold_sload: 0,
+            counter_warm_sload: 0,
+            counter_sstore: 0,
+            counter_cold_sstore: 0,
+            counter_warm_sstore: 0,
         }
     }
 
@@ -115,6 +127,13 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        if self.accessed_storage.insert((address, key)) {
+            self.counter_cold_sstore += 1;
+        } else {
+            self.counter_warm_sstore += 1;
+        }
+
+        self.counter_sstore += 1;
         self.internals.insert((address, key), value);
         Ok(())
     }
@@ -140,6 +159,12 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
 
         self.counter_sload += 1;
+        if self.accessed_storage.insert((address, key)) {
+            self.counter_cold_sload += 1;
+        } else {
+            self.counter_warm_sload += 1;
+        }
+
         Ok(self
             .internals
             .get(&(address, key))
@@ -277,6 +302,36 @@ impl HashMapStorageProvider {
 
     pub fn counter_sload(&self) -> u64 {
         self.counter_sload
+    }
+
+    pub fn counter_cold_sload(&self) -> u64 {
+        self.counter_cold_sload
+    }
+
+    pub fn counter_warm_sload(&self) -> u64 {
+        self.counter_warm_sload
+    }
+
+    pub fn counter_sstore(&self) -> u64 {
+        self.counter_sstore
+    }
+
+    pub fn counter_cold_sstore(&self) -> u64 {
+        self.counter_cold_sstore
+    }
+
+    pub fn counter_warm_sstore(&self) -> u64 {
+        self.counter_warm_sstore
+    }
+
+    pub fn reset_counters(&mut self) {
+        self.accessed_storage.clear();
+        self.counter_sload = 0;
+        self.counter_cold_sload = 0;
+        self.counter_warm_sload = 0;
+        self.counter_sstore = 0;
+        self.counter_cold_sstore = 0;
+        self.counter_warm_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.

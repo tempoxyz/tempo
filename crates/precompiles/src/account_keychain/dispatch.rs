@@ -19,7 +19,7 @@ const T3_ADDED: &[[u8; 4]] = &[
     authorizeKeyCall::SELECTOR,
     IAccountKeychain::setAllowedCallsCall::SELECTOR,
     IAccountKeychain::removeAllowedCallsCall::SELECTOR,
-    IAccountKeychain::pruneExpiredKeyCall::SELECTOR,
+    IAccountKeychain::pruneExpiryCall::SELECTOR,
     IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
     IAccountKeychain::getAllowedCallsCall::SELECTOR,
 ];
@@ -90,10 +90,8 @@ impl Precompile for AccountKeychain {
                         self.remove_allowed_calls(sender, c)
                     })
                 }
-                IAccountKeychainCalls::pruneExpiredKey(call) => {
-                    mutate(call, msg_sender, |sender, c| {
-                        self.prune_expired_key(sender, c)
-                    })
+                IAccountKeychainCalls::pruneExpiry(call) => {
+                    mutate(call, msg_sender, |sender, c| self.prune_expiry(sender, c))
                 }
                 IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
                 IAccountKeychainCalls::getRemainingLimit(call) => {
