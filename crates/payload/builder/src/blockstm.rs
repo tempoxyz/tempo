@@ -9,8 +9,8 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    Tip20TransferBlockstmConflict, Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan,
-    Tip20TransferBlockstmTx, build_tip20_transfer_blockstm_plan,
+    Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
+    build_tip20_transfer_blockstm_plan,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
@@ -22,7 +22,6 @@ pub(crate) enum PayloadBuildError {
     Unsupported(&'static str),
     Planning(Tip20TransferBlockstmFallback),
     Execution(Tip20TransferBlockstmFallback),
-    Conflict(Tip20TransferBlockstmConflict),
 }
 
 impl fmt::Display for PayloadBuildError {
@@ -39,7 +38,6 @@ impl fmt::Display for PayloadBuildError {
             Self::Execution(reason) => {
                 write!(f, "BlockSTM TIP-20 execution failed: {}", reason.as_str())
             }
-            Self::Conflict(conflict) => write!(f, "BlockSTM TIP-20 conflict: {conflict}"),
         }
     }
 }

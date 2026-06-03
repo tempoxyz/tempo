@@ -134,8 +134,6 @@ impl Tip20TransferBlockstmFallback {
 pub enum Tip20TransferBlockstmBatchError {
     /// The batch is not eligible for BlockSTM execution; no transaction was executed.
     Fallback(Tip20TransferBlockstmFallback),
-    /// The planned batch has overlapping writes and must not be executed through this path.
-    Conflict(Tip20TransferBlockstmConflict),
     /// Synthetic validation/execution rejected a transaction. Previous transactions in the batch
     /// were already committed through the normal block executor commit path.
     Execution {
@@ -146,39 +144,6 @@ pub enum Tip20TransferBlockstmBatchError {
     },
     /// The batch preflight failed while reading state; no transaction was executed.
     Database(BlockExecutionError),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Tip20TransferBlockstmConflict {
-    pub transaction_index: usize,
-    pub previous_transaction_index: usize,
-    pub address: Address,
-    pub slot: U256,
-}
-
-impl Tip20TransferBlockstmConflict {
-    fn write_conflict(
-        transaction_index: usize,
-        previous_transaction_index: usize,
-        key: StorageKey,
-    ) -> Self {
-        Self {
-            transaction_index,
-            previous_transaction_index,
-            address: key.address,
-            slot: key.slot,
-        }
-    }
-}
-
-impl std::fmt::Display for Tip20TransferBlockstmConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "transaction {} writes storage {}[{:#x}] already written by transaction {}",
-            self.transaction_index, self.address, self.slot, self.previous_transaction_index,
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -383,7 +348,6 @@ where
         let block_timestamp = block.timestamp().saturating_to::<u64>();
         let basefee = block.basefee as u128;
 
-        detect_tip20_transfer_write_conflict(&plans)?;
         self.validate_tip20_transfer_state(&plans)?;
 
         let base_state = self.read_plan_base_state(&plans, block_timestamp)?;
@@ -829,27 +793,6 @@ pub fn build_tip20_transfer_blockstm_plan(
         max_fee,
         actions,
     })
-}
-
-fn detect_tip20_transfer_write_conflict(
-    plans: &[Tip20TransferBlockstmPlan],
-) -> Result<(), Tip20TransferBlockstmBatchError> {
-    let mut writers = HashMap::<StorageKey, usize>::new();
-    for (transaction_index, plan) in plans.iter().enumerate() {
-        for key in plan.write_set() {
-            if let Some(previous_transaction_index) = writers.insert(key, transaction_index) {
-                return Err(Tip20TransferBlockstmBatchError::Conflict(
-                    Tip20TransferBlockstmConflict::write_conflict(
-                        transaction_index,
-                        previous_transaction_index,
-                        key,
-                    ),
-                ));
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn execute_tip20_transfer_plan_with_deltas(
@@ -2871,46 +2814,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_write_keys_report_conflict() {
-        let recipient = address!("10000000000000000000000000000000000000ce");
-        let beneficiary = address!("10000000000000000000000000000000000000df");
-        let (recovered, tx_env) = blockstm_tx_with_fee(
-            ITIP20::transferCall {
-                to: recipient,
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-            21_000,
-            1_000_000_000_000,
-        );
-        let tx = Tip20TransferBlockstmTx {
-            tx_env,
-            recovered: &recovered,
-            fee_token: TOKEN,
-        };
-        let plan =
-            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
-                .unwrap();
-        let write_set = plan.write_set();
-
-        let err = detect_tip20_transfer_write_conflict(&[plan.clone(), plan]).unwrap_err();
-        let Tip20TransferBlockstmBatchError::Conflict(conflict) = err else {
-            panic!("expected conflict, got {err:?}");
-        };
-        assert_eq!(conflict.previous_transaction_index, 0);
-        assert_eq!(conflict.transaction_index, 1);
-        assert!(write_set.contains(&StorageKey {
-            address: conflict.address,
-            slot: conflict.slot,
-        }));
-        assert!(
-            conflict
-                .to_string()
-                .contains("already written by transaction 0")
-        );
-    }
-
-    #[test]
     fn synthetic_actual_fee_uses_post_refund_gas_before_floor() {
         let (_, tx_env) = blockstm_tx_with_fee(Vec::new(), 1_000, 1_000_000_000_000);
         let gas = ResultGas::new_with_state_gas(90, 0, 100, 20);
@@ -3243,7 +3146,7 @@ mod tests {
         let chainspec = test_chainspec();
         let token = tempo_precompiles::PATH_USD_ADDRESS;
         let account_count = 10usize;
-        let batch_len = 1usize;
+        let batch_len = 50usize;
         let block_timestamp = 1_700_000_000u64;
         let valid_before = block_timestamp + 10;
         let participant_balance = U256::from(1_000_000_000_000_000_000u128);
