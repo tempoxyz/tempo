@@ -2359,49 +2359,54 @@ mod tests {
         out
     }
 
-    fn describe_hashed_post_state_diff(hook: &HashedPostState, bundle: &HashedPostState) -> String {
+    fn describe_hashed_post_state_diff(
+        left_label: &str,
+        left: &HashedPostState,
+        right_label: &str,
+        right: &HashedPostState,
+    ) -> String {
         let mut out = String::new();
         let mut addresses = BTreeSet::new();
-        addresses.extend(hook.accounts.keys().copied());
-        addresses.extend(bundle.accounts.keys().copied());
-        addresses.extend(hook.storages.keys().copied());
-        addresses.extend(bundle.storages.keys().copied());
+        addresses.extend(left.accounts.keys().copied());
+        addresses.extend(right.accounts.keys().copied());
+        addresses.extend(left.storages.keys().copied());
+        addresses.extend(right.storages.keys().copied());
 
         let mut diffs = 0usize;
         for address in addresses {
-            let hook_account = hook.accounts.get(&address);
-            let bundle_account = bundle.accounts.get(&address);
-            if hook_account != bundle_account {
+            let left_account = left.accounts.get(&address);
+            let right_account = right.accounts.get(&address);
+            if left_account != right_account {
                 let _ = writeln!(
                     out,
-                    "account {address}: hook={hook_account:?} bundle={bundle_account:?}"
+                    "account {address}: {left_label}={left_account:?} {right_label}={right_account:?}"
                 );
                 diffs += 1;
             }
 
-            let hook_storage = hook.storages.get(&address);
-            let bundle_storage = bundle.storages.get(&address);
-            match (hook_storage, bundle_storage) {
-                (Some(hook_storage), Some(bundle_storage)) => {
-                    if hook_storage.wiped != bundle_storage.wiped {
+            let left_storage = left.storages.get(&address);
+            let right_storage = right.storages.get(&address);
+            match (left_storage, right_storage) {
+                (Some(left_storage), Some(right_storage)) => {
+                    if left_storage.wiped != right_storage.wiped {
                         let _ = writeln!(
                             out,
-                            "storage {address}: hook.wiped={} bundle.wiped={}",
-                            hook_storage.wiped, bundle_storage.wiped
+                            "storage {address}: {left_label}.wiped={} {right_label}.wiped={}",
+                            left_storage.wiped, right_storage.wiped
                         );
                         diffs += 1;
                     }
 
                     let mut slots = BTreeSet::new();
-                    slots.extend(hook_storage.storage.keys().copied());
-                    slots.extend(bundle_storage.storage.keys().copied());
+                    slots.extend(left_storage.storage.keys().copied());
+                    slots.extend(right_storage.storage.keys().copied());
                     for slot in slots {
-                        let hook_value = hook_storage.storage.get(&slot).copied();
-                        let bundle_value = bundle_storage.storage.get(&slot).copied();
-                        if hook_value != bundle_value {
+                        let left_value = left_storage.storage.get(&slot).copied();
+                        let right_value = right_storage.storage.get(&slot).copied();
+                        if left_value != right_value {
                             let _ = writeln!(
                                 out,
-                                "storage {address} {slot}: hook={hook_value:?} bundle={bundle_value:?}"
+                                "storage {address} {slot}: {left_label}={left_value:?} {right_label}={right_value:?}"
                             );
                             diffs += 1;
                         }
@@ -2411,11 +2416,11 @@ mod tests {
                     }
                 }
                 (Some(_), None) => {
-                    let _ = writeln!(out, "storage {address}: present in hook only");
+                    let _ = writeln!(out, "storage {address}: present in {left_label} only");
                     diffs += 1;
                 }
                 (None, Some(_)) => {
-                    let _ = writeln!(out, "storage {address}: present in bundle only");
+                    let _ = writeln!(out, "storage {address}: present in {right_label} only");
                     diffs += 1;
                 }
                 (None, None) => {}
@@ -3093,84 +3098,159 @@ mod tests {
     }
 
     #[test]
-    fn blockstm_state_hook_hashed_post_state_matches_bundle_state() {
+    fn blockstm_state_changes_match_payload_reexecution() {
         let chainspec = test_chainspec();
-        let signer = txgen_signers(1).pop().unwrap();
-        let recipient = address!("10000000000000000000000000000000000000c2");
-        let sender_balance = U256::from(1_000_000_000_000_000_000u128);
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let account_count = 10usize;
+        let tx_count = 4_433usize;
         let block_timestamp = 1_700_000_000u64;
-        let parent_db = path_usd_parent_db_with_balances_and_reward_flag(
-            [(signer.address(), sender_balance), (recipient, U256::ZERO)],
-            REWARD_FLAG_OPTED_OUT,
-        );
+        let valid_before = block_timestamp + 10;
+        let participant_balance = U256::from(1_000_000_000_000_000_000u128);
+        let signers = txgen_signers(account_count);
+        let participants = signers
+            .iter()
+            .map(PrivateKeySigner::address)
+            .collect::<Vec<_>>();
 
-        let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
-        let captured = updates.clone();
-        let mut db = State::builder()
-            .with_database(parent_db)
-            .with_bundle_update()
-            .build();
-        db.set_state_hook(Some(Box::new(move |state: &EvmState| {
-            captured.lock().unwrap().push(state.clone());
-        })));
-
-        let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(10_000_000_000)
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_spec(TempoHardfork::T6)
-            .build(db, &chainspec);
-        executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
-        executor.evm_mut().ctx_mut().block.basefee = 1;
-        executor
-            .apply_pre_execution_changes()
-            .expect("pre-execution changes");
-        executor.evm_mut().db_mut().bump_bal_index();
-
-        let (recovered, tx_env) = signed_expiring_tip20_transfer(
-            &signer,
-            recipient,
-            U256::from(1),
-            block_timestamp + 10,
-            350_000,
-            1,
-        );
-        let tx = Tip20TransferBlockstmTx {
-            tx_env,
-            recovered: &recovered,
-            fee_token: tempo_precompiles::PATH_USD_ADDRESS,
-        };
-        let beneficiary = executor.evm().block().beneficiary;
-        let plan = build_tip20_transfer_blockstm_plan(
-            &tx,
-            tempo_precompiles::PATH_USD_ADDRESS,
-            beneficiary,
-            1,
-            0,
-            TempoHardfork::T6,
-        )
-        .unwrap();
-
-        assert!(
-            executor
-                .execute_tip20_transfer_blockstm_planned_tx(tx, plan, 0, |_| true)
-                .unwrap()
-        );
-        executor.evm_mut().db_mut().bump_bal_index();
-
-        let mut hook_hashed_state = HashedPostState::default();
-        for update in updates.lock().unwrap().clone() {
-            hook_hashed_state.extend(evm_state_to_hashed_post_state(update));
+        let mut txs = Vec::with_capacity(tx_count);
+        for idx in 0..tx_count {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            txs.push(signed_expiring_tip20_transfer(
+                signer,
+                recipient,
+                U256::from(idx as u64 + 1),
+                valid_before,
+                300_000,
+                100_000_000_000,
+            ));
         }
 
-        let (mut evm, _result) = executor.finish().expect("finish block");
-        evm.db_mut().merge_transitions(BundleRetention::Reverts);
-        let bundle_hashed_state =
-            HashedPostState::from_bundle_state::<KeccakKeyHasher>(&evm.db().bundle_state.state);
+        let build_db = || {
+            let parent_db = path_usd_parent_db_with_balances_and_reward_flag(
+                participants
+                    .iter()
+                    .copied()
+                    .map(|participant| (participant, participant_balance)),
+                REWARD_FLAG_OPTED_OUT,
+            );
+            State::builder()
+                .with_database(parent_db)
+                .with_bundle_update()
+                .build()
+        };
+        let build_hooked_executor = |mut db: State<CacheDB<EmptyDB>>| {
+            let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+            let captured = updates.clone();
+            db.set_state_hook(Some(Box::new(move |state: &EvmState| {
+                captured.lock().unwrap().push(state.clone());
+            })));
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(10_000_000_000)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.gas_limit = 10_000_000_000;
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            executor.evm_mut().ctx_mut().block.basefee = 1;
+            executor
+                .apply_pre_execution_changes()
+                .expect("pre-execution changes");
+            executor.evm_mut().db_mut().bump_bal_index();
+            (executor, updates)
+        };
 
-        if hook_hashed_state != bundle_hashed_state {
+        let (mut blockstm_executor, blockstm_updates) = build_hooked_executor(build_db());
+        let beneficiary = blockstm_executor.evm().block().beneficiary;
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let tx = Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            };
+            let plan = build_tip20_transfer_blockstm_plan(
+                &tx,
+                token,
+                beneficiary,
+                1,
+                0,
+                TempoHardfork::T6,
+            )
+            .unwrap();
+            assert!(
+                blockstm_executor
+                    .execute_tip20_transfer_blockstm_planned_tx(tx, plan, idx, |_| true)
+                    .unwrap()
+            );
+            blockstm_executor.evm_mut().db_mut().bump_bal_index();
+        }
+        assert_eq!(blockstm_executor.receipts().len(), tx_count);
+
+        let mut blockstm_hashed_state = HashedPostState::default();
+        for update in blockstm_updates.lock().unwrap().clone() {
+            blockstm_hashed_state.extend(evm_state_to_hashed_post_state(update));
+        }
+
+        let (mut validation_executor, validation_updates) = build_hooked_executor(build_db());
+        for (expiring_nonce_idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let mut indexed_tx_env = tx_env.clone();
+            indexed_tx_env
+                .tempo_tx_env
+                .as_mut()
+                .expect("tempo tx env")
+                .expiring_nonce_idx = Some(expiring_nonce_idx);
+
+            validation_executor
+                .execute_transaction((indexed_tx_env, recovered))
+                .expect("payload re-execution transaction");
+            validation_executor.evm_mut().db_mut().bump_bal_index();
+        }
+        assert_eq!(validation_executor.receipts().len(), tx_count);
+
+        let mut validation_hashed_state = HashedPostState::default();
+        for update in validation_updates.lock().unwrap().clone() {
+            validation_hashed_state.extend(evm_state_to_hashed_post_state(update));
+        }
+
+        if blockstm_hashed_state != validation_hashed_state {
             panic!(
-                "STM state-hook hashed post-state differs from bundle state:\n{}",
-                describe_hashed_post_state_diff(&hook_hashed_state, &bundle_hashed_state)
+                "STM state-hook hashed post-state differs from payload re-execution state-hook hashed post-state:\n{}",
+                describe_hashed_post_state_diff(
+                    "blockstm",
+                    &blockstm_hashed_state,
+                    "validation",
+                    &validation_hashed_state,
+                )
+            );
+        }
+
+        let (mut blockstm_evm, _result) = blockstm_executor.finish().expect("finish STM block");
+        blockstm_evm
+            .db_mut()
+            .merge_transitions(BundleRetention::Reverts);
+        let blockstm_bundle_hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(
+            &blockstm_evm.db().bundle_state.state,
+        );
+
+        let (mut validation_evm, _result) = validation_executor
+            .finish()
+            .expect("finish payload re-execution block");
+        validation_evm
+            .db_mut()
+            .merge_transitions(BundleRetention::Reverts);
+        let validation_bundle_hashed_state = HashedPostState::from_bundle_state::<KeccakKeyHasher>(
+            &validation_evm.db().bundle_state.state,
+        );
+
+        if blockstm_bundle_hashed_state != validation_bundle_hashed_state {
+            panic!(
+                "STM bundle hashed post-state differs from payload re-execution bundle hashed post-state:\n{}",
+                describe_hashed_post_state_diff(
+                    "blockstm",
+                    &blockstm_bundle_hashed_state,
+                    "validation",
+                    &validation_bundle_hashed_state,
+                )
             );
         }
     }
