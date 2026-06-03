@@ -56,15 +56,19 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client> {
+impl<Client> TempoTransactionPool<Client>
+where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
             TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
-        aa_2d_pool: AA2dPool,
+        mut aa_2d_pool: AA2dPool,
     ) -> Self {
+        aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
@@ -841,16 +845,25 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self.protocol_pool.inner().best_transactions();
+        let protocol_pool = self.protocol_pool.inner();
+        let base_fee = protocol_pool.block_info().pending_basefee;
+        let left = protocol_pool.best_transactions();
         let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(left, right))
+        Box::new(MergeBestTransactions::new(Box::new(left), right, base_fee))
     }
 
     fn best_transactions_with_attributes(
         &self,
-        _attributes: BestTransactionsAttributes,
+        attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        self.best_transactions()
+        let left = self
+            .protocol_pool
+            .best_transactions_with_attributes(attributes);
+        let right = self
+            .aa_2d_pool
+            .read()
+            .best_transactions_with_base_fee(attributes.basefee);
+        Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
@@ -1194,7 +1207,8 @@ where
     type Block = Block;
 
     fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info)
+        self.protocol_pool.set_block_info(info);
+        self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {

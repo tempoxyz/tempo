@@ -1,4 +1,4 @@
-use crate::TempoInvalidTransaction;
+use crate::{TempoInvalidTransaction, gas_params::SSTORE_SET_COST};
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -254,6 +254,10 @@ impl TempoTxEnv {
             .access_list()
             .is_some_and(|mut list| list.next().is_some())
         {
+            return false;
+        }
+
+        if self.gas_limit > SSTORE_SET_COST {
             return false;
         }
 
@@ -1138,29 +1142,33 @@ mod tests {
             .abi_encode(),
         );
 
-        let tx = |to, input: Bytes| {
+        let tx = |to, input: Bytes, gas_limit: u64| {
             super::TempoTxEnv::from(TxEnv {
                 kind: to,
                 data: input,
+                gas_limit,
                 ..Default::default()
             })
         };
 
-        assert!(tx(TxKind::Call(PAYMENT_TKN), transfer.clone()).is_discounted_payment());
-        assert!(tx(TxKind::Call(PAYMENT_TKN), burn).is_discounted_payment());
-        assert!(!tx(TxKind::Call(PAYMENT_TKN), approve.clone()).is_discounted_payment());
-        assert!(!tx(TxKind::Call(PAYMENT_TKN), mint).is_discounted_payment());
-        assert!(!tx(TxKind::Call(Address::random()), transfer.clone()).is_discounted_payment());
-        assert!(!tx(TxKind::Create, transfer.clone()).is_discounted_payment());
+        assert!(tx(TxKind::Call(PAYMENT_TKN), transfer.clone(), 250_000).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), transfer.clone(), 250_001).is_discounted_payment());
+        assert!(tx(TxKind::Call(PAYMENT_TKN), burn, 250_000).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), approve.clone(), 250_000).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), mint, 250_000).is_discounted_payment());
+        assert!(
+            !tx(TxKind::Call(Address::random()), transfer.clone(), 250_000).is_discounted_payment()
+        );
+        assert!(!tx(TxKind::Create, transfer.clone(), 250_000).is_discounted_payment());
 
-        let mut access_list_tx = tx(TxKind::Call(PAYMENT_TKN), transfer.clone());
+        let mut access_list_tx = tx(TxKind::Call(PAYMENT_TKN), transfer.clone(), 250_000);
         access_list_tx.inner.access_list = AccessList(vec![AccessListItem {
             address: Address::random(),
             storage_keys: vec![],
         }]);
         assert!(!access_list_tx.is_discounted_payment());
 
-        let aa_tx = tx_with_aa(super::TempoBatchCallEnv {
+        let mut aa_tx = tx_with_aa(super::TempoBatchCallEnv {
             aa_calls: vec![Call {
                 to: TxKind::Call(PAYMENT_TKN),
                 value: U256::ZERO,
@@ -1168,6 +1176,7 @@ mod tests {
             }],
             ..Default::default()
         });
+        aa_tx.inner.gas_limit = 250_000;
         assert!(aa_tx.is_discounted_payment());
 
         let mixed_aa_tx = tx_with_aa(super::TempoBatchCallEnv {
