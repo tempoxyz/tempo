@@ -20,6 +20,7 @@ pub struct HashMapStorageProvider {
     timestamp: U256,
     beneficiary: Address,
     block_number: u64,
+    consensus_epoch: Option<u64>,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -64,6 +65,7 @@ impl HashMapStorageProvider {
             ),
             beneficiary: Address::ZERO,
             block_number: 0,
+            consensus_epoch: None,
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
@@ -83,6 +85,11 @@ impl HashMapStorageProvider {
         self.amsterdam_eip8037_enabled = enabled;
         self
     }
+
+    pub fn with_consensus_epoch(mut self, epoch: u64) -> Self {
+        self.consensus_epoch = Some(epoch);
+        self
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
@@ -100,6 +107,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn block_number(&self) -> u64 {
         self.block_number
+    }
+
+    fn consensus_epoch(&self) -> Option<u64> {
+        self.consensus_epoch
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {

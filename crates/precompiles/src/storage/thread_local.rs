@@ -21,6 +21,7 @@ use crate::{
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+scoped_thread_local!(static CONSENSUS_EPOCH: Option<u64>);
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -58,6 +59,18 @@ impl StorageCtx {
             unsafe { std::mem::transmute(storage) };
         let cell = RefCell::new(storage_static);
         STORAGE.set(&cell, f)
+    }
+
+    pub fn enter_consensus_epoch<R>(consensus_epoch: Option<u64>, f: impl FnOnce() -> R) -> R {
+        CONSENSUS_EPOCH.set(&consensus_epoch, f)
+    }
+
+    pub(crate) fn current_consensus_epoch() -> Option<u64> {
+        if !CONSENSUS_EPOCH.is_set() {
+            return None;
+        }
+
+        CONSENSUS_EPOCH.with(|epoch| *epoch)
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
@@ -135,6 +148,11 @@ impl StorageCtx {
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
+    }
+
+    /// Returns the current consensus epoch when available.
+    pub fn consensus_epoch(&self) -> Option<u64> {
+        Self::with_storage(|s| s.consensus_epoch())
     }
 
     /// Sets the bytecode at the given address.
@@ -502,6 +520,23 @@ mod tests {
 
     fn t1c_storage() -> HashMapStorageProvider {
         HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C)
+    }
+
+    #[test]
+    fn test_consensus_epoch_scope_restores() {
+        assert_eq!(StorageCtx::current_consensus_epoch(), None);
+
+        StorageCtx::enter_consensus_epoch(Some(21), || {
+            assert_eq!(StorageCtx::current_consensus_epoch(), Some(21));
+
+            StorageCtx::enter_consensus_epoch(None, || {
+                assert_eq!(StorageCtx::current_consensus_epoch(), None);
+            });
+
+            assert_eq!(StorageCtx::current_consensus_epoch(), Some(21));
+        });
+
+        assert_eq!(StorageCtx::current_consensus_epoch(), None);
     }
 
     #[test]

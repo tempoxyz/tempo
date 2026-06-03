@@ -176,15 +176,17 @@ macro_rules! tempo_precompile {
                     $input.reservoir,
                 ));
             }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
-                $input.internals,
-                $input.gas,
-                $input.reservoir,
-                spec,
-                amsterdam_eip8037_enabled,
-                $input.is_static,
-                gas_params.clone(),
-            );
+            let mut storage =
+                crate::storage::evm::EvmPrecompileStorageProvider::new_with_consensus_epoch(
+                    $input.internals,
+                    $input.gas,
+                    $input.reservoir,
+                    spec,
+                    amsterdam_eip8037_enabled,
+                    $input.is_static,
+                    gas_params.clone(),
+                    crate::storage::StorageCtx::current_consensus_epoch(),
+                );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })

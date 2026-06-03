@@ -36,7 +36,7 @@ use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, enter_consensus_epoch, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -564,9 +564,11 @@ where
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
-        let result = self
-            .inner
-            .execute_transaction_without_commit((tx_env, &recovered));
+        let consensus_epoch = self.consensus_context.map(|ctx| ctx.epoch);
+        let result = enter_consensus_epoch(consensus_epoch, || {
+            self.inner
+                .execute_transaction_without_commit((tx_env, &recovered))
+        });
 
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 

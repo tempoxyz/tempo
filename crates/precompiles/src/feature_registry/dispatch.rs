@@ -28,7 +28,7 @@ impl Precompile for FeatureRegistry {
             IFeatureRegistryCalls::abi_decode,
             |call| match call {
                 IFeatureRegistryCalls::featuresTip(call) => view(call, |_| self.features_tip()),
-                IFeatureRegistryCalls::owner(_) => unsupported::<IFeatureRegistry::ownerCall>(),
+                IFeatureRegistryCalls::owner(call) => view(call, |_| self.owner()),
                 IFeatureRegistryCalls::activationQuorum(call) => {
                     view(call, |_| self.activation_quorum())
                 }
@@ -38,16 +38,20 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::setSupportedFeaturesTip(_) => {
                     unsupported::<IFeatureRegistry::setSupportedFeaturesTipCall>()
                 }
-                IFeatureRegistryCalls::scheduleFeaturesTip(_) => {
-                    unsupported::<IFeatureRegistry::scheduleFeaturesTipCall>()
+                IFeatureRegistryCalls::scheduleFeaturesTip(call) => {
+                    mutate_void(call, msg_sender, |sender, call| {
+                        self.schedule_features_tip(sender, call)
+                    })
                 }
                 IFeatureRegistryCalls::activateScheduledFeaturesTip(call) => {
                     mutate_void(call, msg_sender, |sender, call| {
                         self.activate_scheduled_features_tip_from_system(sender, call.currentEpoch)
                     })
                 }
-                IFeatureRegistryCalls::cancelScheduledFeaturesTip(_) => {
-                    unsupported::<IFeatureRegistry::cancelScheduledFeaturesTipCall>()
+                IFeatureRegistryCalls::cancelScheduledFeaturesTip(call) => {
+                    mutate_void(call, msg_sender, |sender, _| {
+                        self.cancel_scheduled_features_tip(sender)
+                    })
                 }
                 IFeatureRegistryCalls::validatorSupportedFeaturesTip(call) => view(call, |call| {
                     self.validator_supported_features_tip(call.validator)
@@ -67,8 +71,9 @@ impl Precompile for FeatureRegistry {
 mod tests {
     use super::*;
     use crate::{
-        SYSTEM_CALLER_ADDRESS,
+        FEATURE_REGISTRY_ADDRESS, SYSTEM_CALLER_ADDRESS,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        validator_config_v2::ValidatorConfigV2,
     };
     use alloy::{
         primitives::U256,
@@ -77,10 +82,15 @@ mod tests {
     use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
     use tempo_contracts::precompiles::{FeatureRegistryError, UnknownFunctionSelector};
 
+    fn initialize_validator_config_owner(owner: Address) -> eyre::Result<()> {
+        ValidatorConfigV2::new().initialize(owner)?;
+        Ok(())
+    }
+
     #[test]
     fn features_tip_defaults_to_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let registry = FeatureRegistry::new();
             assert_eq!(registry.features_tip()?, 0);
             Ok(())
@@ -90,7 +100,7 @@ mod tests {
     #[test]
     fn features_tip_reads_cursor_slot() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = FeatureRegistry::new();
             assert_eq!(
                 registry.features_tip.slot(),
@@ -100,6 +110,27 @@ mod tests {
             registry.features_tip.write(7)?;
             assert_eq!(registry.features_tip()?, 7);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn owner_defaults_to_zero() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let registry = FeatureRegistry::new();
+            assert_eq!(registry.owner()?, Address::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn owner_reads_validator_config_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            assert_eq!(FeatureRegistry::new().owner()?, owner);
             Ok(())
         })
     }
@@ -157,6 +188,229 @@ mod tests {
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 13);
             assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn schedule_features_tip_dispatch_sets_schedule_from_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+
+            let call = IFeatureRegistry::scheduleFeaturesTipCall {
+                featuresTip: 13,
+                activationEpoch: 21,
+            };
+            let result = registry.call(&call.abi_encode(), owner)?;
+            assert!(!result.is_revert());
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })?;
+
+        assert_eq!(
+            storage
+                .events
+                .get(&FEATURE_REGISTRY_ADDRESS)
+                .map_or(0, Vec::len),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schedule_features_tip_dispatch_requires_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        let stranger = Address::repeat_byte(0x02);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+
+            let call = IFeatureRegistry::scheduleFeaturesTipCall {
+                featuresTip: 13,
+                activationEpoch: 21,
+            };
+            let result = registry.call(&call.abi_encode(), stranger)?;
+            assert!(result.is_revert());
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, FeatureRegistryError::unauthorized());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn schedule_features_tip_rejects_invalid_schedule() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+
+            let result = registry.schedule_features_tip(
+                owner,
+                IFeatureRegistry::scheduleFeaturesTipCall {
+                    featuresTip: 0,
+                    activationEpoch: 21,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::invalid_features_tip().into())
+            );
+
+            let result = registry.schedule_features_tip(
+                owner,
+                IFeatureRegistry::scheduleFeaturesTipCall {
+                    featuresTip: 7,
+                    activationEpoch: 21,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::features_tip_not_increasing().into())
+            );
+
+            let result = registry.schedule_features_tip(
+                owner,
+                IFeatureRegistry::scheduleFeaturesTipCall {
+                    featuresTip: 13,
+                    activationEpoch: 0,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::activation_epoch_not_future().into())
+            );
+
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+            let result = registry.schedule_features_tip(
+                owner,
+                IFeatureRegistry::scheduleFeaturesTipCall {
+                    featuresTip: 14,
+                    activationEpoch: 22,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::features_tip_already_scheduled().into())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn schedule_features_tip_rejects_non_future_activation_epoch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_consensus_epoch(21);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+
+            for activation_epoch in [20, 21] {
+                let result = registry.schedule_features_tip(
+                    owner,
+                    IFeatureRegistry::scheduleFeaturesTipCall {
+                        featuresTip: 13,
+                        activationEpoch: activation_epoch,
+                    },
+                );
+                assert_eq!(
+                    result,
+                    Err(FeatureRegistryError::activation_epoch_not_future().into())
+                );
+            }
+
+            registry.schedule_features_tip(
+                owner,
+                IFeatureRegistry::scheduleFeaturesTipCall {
+                    featuresTip: 13,
+                    activationEpoch: 22,
+                },
+            )?;
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 22);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn cancel_scheduled_features_tip_dispatch_clears_schedule_from_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            let call = IFeatureRegistry::cancelScheduledFeaturesTipCall {};
+            let result = registry.call(&call.abi_encode(), owner)?;
+            assert!(!result.is_revert());
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 0);
+            assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })?;
+
+        assert_eq!(
+            storage
+                .events
+                .get(&FEATURE_REGISTRY_ADDRESS)
+                .map_or(0, Vec::len),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_scheduled_features_tip_dispatch_rejects_missing_schedule() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+
+            let call = IFeatureRegistry::cancelScheduledFeaturesTipCall {};
+            let result = registry.call(&call.abi_encode(), owner)?;
+            assert!(result.is_revert());
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, FeatureRegistryError::features_tip_not_scheduled());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn owner_dispatch_returns_encoded_owner() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let mut registry = FeatureRegistry::new();
+
+            let call = IFeatureRegistry::ownerCall {};
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(Address::abi_decode(&result.bytes)?, owner);
 
             Ok(())
         })
