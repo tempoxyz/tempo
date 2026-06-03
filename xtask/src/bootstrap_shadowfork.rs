@@ -54,14 +54,13 @@ use tempo_primitives::TempoPrimitives;
 
 use crate::shadowfork::{
     SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
-    parse_snapshot_manifest_url, source_chain_cli_arg,
-    write_shadow_chainspec as write_shadow_chainspec_file,
+    resolve_source_execution_data_dir, write_shadow_chainspec as write_shadow_chainspec_file,
 };
 
 const DKG_STATES_METADATA_PARTITION: &str = "engine_dkg_manager_states_metadata";
 const MAXIMUM_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
-/// Reanchors generated shadow-fork artifacts onto a downloaded source snapshot.
+/// Reanchors generated shadow-fork artifacts onto a local source execution datadir.
 #[derive(Debug, clap::Parser)]
 pub(crate) struct BootstrapShadowfork {
     /// Path to the manifest written by `generate-shadowfork`.
@@ -72,9 +71,15 @@ pub(crate) struct BootstrapShadowfork {
     #[arg(long, value_name = "INDEX")]
     node_index: Option<usize>,
 
-    /// Override the local node artifact/datadir directory for --node-index.
+    /// Source execution datadir, chain datadir, or db directory to patch.
+    ///
+    /// If omitted, uses the source execution datadir recorded by `generate-shadowfork`.
+    #[arg(long, value_name = "DIR")]
+    execution_datadir: Option<PathBuf>,
+
+    /// Override the generated node artifact directory for --node-index.
     #[arg(long, value_name = "DIR", requires = "node_index")]
-    node_dir: Option<PathBuf>,
+    node_artifact_dir: Option<PathBuf>,
 
     /// Overwrite an existing shadow chainspec or DKG state metadata.
     #[arg(long)]
@@ -90,7 +95,8 @@ impl BootstrapShadowfork {
         let Self {
             manifest,
             node_index,
-            node_dir,
+            execution_datadir,
+            node_artifact_dir: node_artifact_dir_override,
             force,
             seed,
         } = self;
@@ -102,10 +108,9 @@ impl BootstrapShadowfork {
             .unwrap_or_else(|| Path::new("."));
         let manifest = read_manifest(&manifest_path)?;
         let target_nodes = target_nodes(&manifest, node_index)?;
-
         ensure!(
-            manifest.snapshot_manifest_url.is_some(),
-            "bootstrap-shadowfork expects snapshot-backed artifacts generated with --snapshot-url"
+            target_nodes.len() == 1,
+            "bootstrap-shadowfork patches one local execution datadir at a time; pass --node-index when the manifest contains multiple validators",
         );
         let shadow_epoch = manifest.shadow_epoch.unwrap_or(SHADOW_EPOCH);
         ensure!(
@@ -113,28 +118,19 @@ impl BootstrapShadowfork {
             "unsupported shadow epoch `{}`; expected `{SHADOW_EPOCH}`",
             shadow_epoch
         );
-        let snapshot = manifest
-            .snapshot_manifest_url
-            .as_deref()
-            .and_then(parse_snapshot_manifest_url);
-        if let Some(snapshot) = snapshot {
-            if snapshot.chain_id != manifest.source_chain_id {
-                eprintln!(
-                    "warning: snapshot manifest is for chain `{}`, but manifest source_chain_id is `{}`",
-                    snapshot.chain_id, manifest.source_chain_id,
-                );
-            }
-            if snapshot.block_number != manifest.fork_block_number {
-                eprintln!(
-                    "warning: manifest fork_block_number is `{}`, but snapshot manifest is for block `{}`; reanchoring to the snapshot block",
-                    manifest.fork_block_number, snapshot.block_number,
-                );
-            }
-        }
 
-        let reanchor_block_number = snapshot
-            .map(|snapshot| snapshot.block_number)
-            .unwrap_or(manifest.fork_block_number);
+        let execution_datadir = execution_datadir
+            .or_else(|| manifest.source_execution_datadir.clone())
+            .ok_or_eyre(
+                "missing source execution datadir; pass --execution-datadir or regenerate the manifest",
+            )?;
+        let execution_datadir = resolve_source_execution_data_dir(
+            &execution_datadir,
+            &manifest.source_chain,
+            manifest.source_chain_id,
+        )?;
+
+        let reanchor_block_number = manifest.fork_block_number;
         let fallback_shadow_epoch_length = reanchor_block_number
             .checked_add(1)
             .ok_or_eyre("fork block number overflowed shadow epoch length")?;
@@ -164,21 +160,29 @@ impl BootstrapShadowfork {
         let shadow_validators = shadow_validator_registrations(&manifest)?;
         let shadow_validator_config_v2_storage =
             shadow_validator_config_v2_storage(&manifest, manifest_dir)?;
-        let patched_execution_datadirs = patch_execution_validator_registries(
-            &target_nodes,
-            ExecutionRegistryPatch {
-                manifest: &manifest,
-                manifest_dir,
-                node_dir: node_dir.as_deref(),
-                reanchor_block_number,
-                validator_config_storage: &shadow_validator_config_v2_storage,
-                validators: &shadow_validators,
-                outcome: &outcome,
-            },
-        )?;
+        let target_node = target_nodes[0];
+        patch_execution_validator_registry(
+            &execution_datadir.db_path,
+            manifest.source_chain_id,
+            reanchor_block_number,
+            &shadow_validator_config_v2_storage,
+            &shadow_validators,
+            &outcome,
+        )
+        .wrap_err_with(|| {
+            format!(
+                "failed patching ValidatorConfigV2 in node-{} execution database `{}`",
+                target_node.index,
+                execution_datadir.db_path.display(),
+            )
+        })?;
 
         for validator in &target_nodes {
-            let node_dir = node_artifact_dir(manifest_dir, validator, node_dir.as_deref());
+            let node_dir = node_artifact_dir(
+                manifest_dir,
+                validator,
+                node_artifact_dir_override.as_deref(),
+            );
             let consensus_dir = node_dir.join("consensus");
             let signing_key = SigningKey::read_from_file_encrypted(
                 node_dir.join("signing.key"),
@@ -237,7 +241,10 @@ impl BootstrapShadowfork {
             "seeded DKG state for {} validators at epoch {SHADOW_EPOCH}",
             target_nodes.len()
         );
-        println!("patched ValidatorConfigV2 in {patched_execution_datadirs} execution datadirs");
+        println!(
+            "patched ValidatorConfigV2 in `{}`",
+            execution_datadir.db_path.display()
+        );
         Ok(())
     }
 }
@@ -265,12 +272,16 @@ fn target_nodes(
     }
 }
 
-fn node_artifact_dir(manifest_dir: &Path, node: &NodeManifest, node_dir: Option<&Path>) -> PathBuf {
-    if let Some(node_dir) = node_dir {
-        if node_dir.is_absolute() {
-            node_dir.to_path_buf()
+fn node_artifact_dir(
+    manifest_dir: &Path,
+    node: &NodeManifest,
+    node_artifact_dir: Option<&Path>,
+) -> PathBuf {
+    if let Some(node_artifact_dir) = node_artifact_dir {
+        if node_artifact_dir.is_absolute() {
+            node_artifact_dir.to_path_buf()
         } else {
-            manifest_dir.join(node_dir)
+            manifest_dir.join(node_artifact_dir)
         }
     } else {
         manifest_dir.join(format!("node-{}", node.index))
@@ -296,47 +307,6 @@ fn write_shadow_chainspec(
         shadow_epoch_length,
     )?;
     Ok(chainspec_path)
-}
-
-fn execution_db_path(
-    manifest: &ShadowForkManifest,
-    manifest_dir: &Path,
-    node: &NodeManifest,
-    node_dir: Option<&Path>,
-) -> eyre::Result<PathBuf> {
-    let chain_dir = manifest
-        .source_execution_chain
-        .as_deref()
-        .or_else(|| source_chain_cli_arg(&manifest.source_chain, manifest.source_chain_id))
-        .ok_or_else(|| {
-            eyre!(
-                "cannot infer source execution chain directory for source_chain `{}` and chain id `{}`",
-                manifest.source_chain,
-                manifest.source_chain_id,
-            )
-        })?;
-    let node_dir = node_artifact_dir(manifest_dir, node, node_dir);
-    let candidates = [
-        node_dir.join(chain_dir).join("db"),
-        node_dir
-            .join(manifest.source_chain_id.to_string())
-            .join("db"),
-        node_dir.join("db"),
-    ];
-
-    candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| {
-            eyre!(
-                "could not find execution database for node-{}; looked for `{}`, `{}`, and `{}`",
-                node.index,
-                candidates[0].display(),
-                candidates[1].display(),
-                candidates[2].display(),
-            )
-        })
 }
 
 fn storage_key(slot: U256) -> B256 {
@@ -763,43 +733,6 @@ fn read_generated_validator_config_v2_storage(
         .collect()
 }
 
-struct ExecutionRegistryPatch<'a> {
-    manifest: &'a ShadowForkManifest,
-    manifest_dir: &'a Path,
-    node_dir: Option<&'a Path>,
-    reanchor_block_number: u64,
-    validator_config_storage: &'a [(U256, U256)],
-    validators: &'a [ShadowValidatorRegistration],
-    outcome: &'a OnchainDkgOutcome,
-}
-
-fn patch_execution_validator_registries(
-    nodes: &[&NodeManifest],
-    patch: ExecutionRegistryPatch<'_>,
-) -> eyre::Result<usize> {
-    let mut patched = 0;
-    for node in nodes {
-        let db_path = execution_db_path(patch.manifest, patch.manifest_dir, node, patch.node_dir)?;
-        patch_execution_validator_registry(
-            &db_path,
-            patch.manifest.source_chain_id,
-            patch.reanchor_block_number,
-            patch.validator_config_storage,
-            patch.validators,
-            patch.outcome,
-        )
-        .wrap_err_with(|| {
-            format!(
-                "failed patching ValidatorConfigV2 in node-{} execution database `{}`",
-                node.index,
-                db_path.display(),
-            )
-        })?;
-        patched += 1;
-    }
-    Ok(patched)
-}
-
 fn patch_execution_validator_registry(
     db_path: &Path,
     chain_id: u64,
@@ -810,7 +743,7 @@ fn patch_execution_validator_registry(
 ) -> eyre::Result<()> {
     ensure!(
         db_path.exists(),
-        "execution database `{}` does not exist; download the snapshot into this node datadir before running bootstrap-shadowfork",
+        "execution database `{}` does not exist; pass --execution-datadir pointing at a stopped Tempo datadir, chain datadir, or db directory",
         db_path.display(),
     );
 
@@ -945,7 +878,7 @@ where
     let static_files_path = execution_static_files_path(db_path)?;
     ensure!(
         static_files_path.exists(),
-        "execution static files directory `{}` does not exist; download the snapshot into this node datadir before running bootstrap-shadowfork",
+        "execution static files directory `{}` does not exist; pass --execution-datadir pointing at a stopped Tempo datadir, chain datadir, or db directory",
         static_files_path.display(),
     );
 
@@ -962,7 +895,7 @@ where
         .ok_or_else(|| eyre!("execution static files contain no headers"))?;
     ensure!(
         highest_header == block_number,
-        "shadow fork bootstrap can only patch a clean downloaded snapshot whose tip is the fork block. static files tip is `{highest_header}`, expected `{block_number}`. Stop the node, restore this node datadir from the snapshot again, then rerun bootstrap before starting the shadow fork.",
+        "shadow fork bootstrap can only patch a local execution datadir whose tip is the fork block. static files tip is `{highest_header}`, expected `{block_number}`. Stop the source node at the fork block or rerun generate-shadowfork against this datadir before bootstrapping.",
     );
 
     let mut header = static_file_provider
@@ -1200,9 +1133,8 @@ fn seed_consensus_state(
 struct ShadowForkManifest {
     source_chain: String,
     source_chain_id: u64,
-    source_execution_chain: Option<String>,
+    source_execution_datadir: Option<PathBuf>,
     fork_block_number: u64,
-    snapshot_manifest_url: Option<String>,
     shadow_epoch: Option<u64>,
     shadow_epoch_length: Option<u64>,
     shadow_dkg_outcome: Option<String>,

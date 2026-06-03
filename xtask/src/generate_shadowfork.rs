@@ -6,36 +6,39 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use alloy::{
-    primitives::{Address, B256},
-    providers::{Provider, ProviderBuilder},
-};
+use alloy::primitives::{Address, B256};
+use alloy_consensus::Sealable as _;
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::Signer as _;
 use eyre::{Context as _, OptionExt as _, ensure, eyre};
 use rand_08::SeedableRng as _;
+use reth_db::{mdbx::DatabaseArguments, open_db};
+use reth_db_api::{database::Database as _, tables, transaction::DbTx};
 use reth_network_peers::pk2id;
+use reth_provider::{
+    BlockHashReader as _, HeaderProvider as _, StaticFileProviderBuilder, StaticFileSegment,
+};
 use secp256k1::SECP256K1;
 use serde::Serialize;
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_precompiles::validator_config_v2::VALIDATOR_NS_ADD;
+use tempo_primitives::TempoPrimitives;
 use tempo_validator_config::ValidatorConfig;
 
 use crate::{
     genesis_args::GenesisArgs,
     shadowfork::{
-        SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
-        parse_snapshot_manifest_url, source_chain_cli_arg,
+        SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET, SourceExecutionDataDir,
+        resolve_source_execution_data_dir, source_chain_cli_arg, source_chain_id,
         write_shadow_chainspec as write_shadow_chainspec_file,
     },
 };
 
-/// Generates artifacts for a private shadow fork from a live Tempo block.
+/// Generates artifacts for a private shadow fork from a local Tempo execution datadir.
 ///
-/// The command intentionally performs only one upstream read at preparation time. The resulting
-/// network is expected to run private consensus from the generated artifacts and not follow the
-/// source chain after startup.
+/// The source node must be stopped before using its datadir. The resulting network is expected to
+/// run private consensus from the generated artifacts and not follow the source chain after startup.
 #[derive(Debug, clap::Parser)]
 pub(crate) struct GenerateShadowfork {
     /// The target directory that will be populated.
@@ -50,22 +53,18 @@ pub(crate) struct GenerateShadowfork {
     force: bool,
 
     /// Human-readable source chain name recorded in the manifest.
-    #[arg(long, default_value = "custom")]
+    #[arg(long)]
     source_chain: String,
 
-    /// RPC endpoint for the source chain.
-    #[arg(long)]
-    rpc_url: String,
+    /// Source execution datadir, chain datadir, or db directory to fork from.
+    #[arg(long, value_name = "DIR")]
+    execution_datadir: PathBuf,
 
     /// Source block to fork from: `latest`, a decimal block number, or a block hash.
+    ///
+    /// The selected block must be the local datadir tip.
     #[arg(long, default_value = "latest")]
     block: BlockTarget,
-
-    /// Snapshot v2 manifest URL for the source block state.
-    ///
-    /// RPC can provide block metadata, but it cannot reconstruct a complete state snapshot.
-    #[arg(long = "snapshot-url", alias = "snapshot-manifest-url")]
-    snapshot_manifest_url: Option<String>,
 
     /// Keep the source chain ID in the generated genesis.
     #[arg(long, conflicts_with = "chain_id")]
@@ -81,50 +80,39 @@ impl GenerateShadowfork {
             output,
             force,
             source_chain,
-            rpc_url,
+            execution_datadir,
             block,
-            snapshot_manifest_url,
             preserve_chain_id,
             mut genesis_args,
         } = self;
 
         prepare_output_dir(&output, force)?;
 
-        let provider = ProviderBuilder::new()
-            .connect(&rpc_url)
-            .await
-            .wrap_err("failed to connect to source RPC")?;
-
-        let source_chain_id = provider
-            .get_chain_id()
-            .await
-            .wrap_err("failed to fetch source chain id")?;
+        let source_chain_id = source_chain_id(&source_chain).ok_or_else(|| {
+            eyre!(
+                "cannot infer source chain id for source_chain `{source_chain}`; \
+                 expected one of mainnet, presto, moderato, testnet, or dev"
+            )
+        })?;
+        let source_execution_chain = source_chain_cli_arg(&source_chain, source_chain_id)
+            .ok_or_else(|| {
+                eyre!(
+                    "cannot infer source execution chain directory for source_chain `{source_chain}` and chain id `{source_chain_id}`"
+                )
+            })?
+            .to_string();
+        let source_execution_datadir =
+            resolve_source_execution_data_dir(&execution_datadir, &source_chain, source_chain_id)?;
+        let manifest_execution_datadir =
+            std::fs::canonicalize(&execution_datadir).unwrap_or_else(|_| execution_datadir.clone());
 
         if preserve_chain_id {
             genesis_args.set_chain_id(source_chain_id);
         }
 
         let source_block = block
-            .fetch(&provider)
-            .await
-            .wrap_err("failed to fetch source block")?;
-        if let Some(snapshot) = snapshot_manifest_url
-            .as_deref()
-            .and_then(parse_snapshot_manifest_url)
-        {
-            ensure!(
-                snapshot.chain_id == source_chain_id,
-                "snapshot manifest is for chain `{}`, but source RPC reported chain `{source_chain_id}`",
-                snapshot.chain_id,
-            );
-            ensure!(
-                snapshot.block_number == source_block.number,
-                "snapshot manifest is for block `{}`, but --block resolved to `{}`; rerun with --block {} or use a matching snapshot",
-                snapshot.block_number,
-                source_block.number,
-                snapshot.block_number,
-            );
-        }
+            .read_from_datadir(&source_execution_datadir)
+            .wrap_err("failed to read source block from local execution datadir")?;
 
         let seed = genesis_args.seed;
         let shadow_chain_id = genesis_args.chain_id();
@@ -197,32 +185,12 @@ impl GenerateShadowfork {
         std::fs::write(&genesis_dst, &genesis_ser)
             .wrap_err_with(|| format!("failed writing genesis to `{}`", genesis_dst.display()))?;
 
-        let source_execution_chain = if snapshot_manifest_url.is_some() {
-            let source_execution_chain =
-                source_chain_cli_arg(&source_chain, source_chain_id).ok_or_else(|| {
-                    eyre!(
-                        "snapshot-backed shadow forks must use a built-in source chain; \
-                         expected one of mainnet, presto, moderato, testnet, or dev, got `{source_chain}`"
-                    )
-                })?;
-            Some(source_execution_chain.to_string())
-        } else {
-            None
-        };
         let shadow_epoch_length = source_block
             .number
             .checked_add(1)
             .ok_or_eyre("fork block number overflowed shadow epoch length")?;
-        let shadow_chainspec_path = if snapshot_manifest_url.is_some() {
-            Some(write_shadow_chainspec(
-                &output,
-                &source_chain,
-                source_chain_id,
-                shadow_epoch_length,
-            )?)
-        } else {
-            None
-        };
+        let shadow_chainspec_path =
+            write_shadow_chainspec(&output, &source_chain, source_chain_id, shadow_epoch_length)?;
         let mut shadow_dkg_outcome = consensus_config.to_genesis_dkg_outcome();
         shadow_dkg_outcome.epoch = Epoch::new(SHADOW_EPOCH);
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
@@ -282,7 +250,7 @@ impl GenerateShadowfork {
             source_chain,
             source_chain_id,
             shadow_chain_id,
-            source_rpc_url: rpc_url,
+            source_execution_datadir: manifest_execution_datadir,
             source_execution_chain,
             fork_block_number: source_block.number,
             fork_block_hash: source_block.hash,
@@ -293,10 +261,7 @@ impl GenerateShadowfork {
             shadow_epoch_length,
             shadow_dkg_outcome,
             shadow_validator_config_v2_storage,
-            shadow_chainspec: shadow_chainspec_path
-                .as_ref()
-                .map(|_| SHADOW_CHAINSPEC_FILE.to_string()),
-            snapshot_manifest_url,
+            shadow_chainspec: SHADOW_CHAINSPEC_FILE.to_string(),
             created_at_unix_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .wrap_err("system clock is before UNIX epoch")?
@@ -306,9 +271,9 @@ impl GenerateShadowfork {
             notes: vec![
                 "This is a one-shot shadow fork preparation; generated nodes must not use --follow."
                     .to_string(),
-                "Snapshot-backed runs use the source chainspec for execution because the downloaded database keeps the source genesis hash."
+                "Local-datadir shadow forks use the source chainspec for execution because the database keeps the source genesis hash."
                     .to_string(),
-                "For snapshot-backed runs, download the snapshot into each node datadir before running bootstrap-shadowfork for that node; bootstrap writes a shadow chainspec whose epochLength makes the fork block the epoch-0 boundary, patches ValidatorConfigV2 in the local execution DB, and seeds private DKG state for epoch 1."
+                "Run bootstrap-shadowfork against a stopped local execution datadir for each shadow node; bootstrap writes a shadow chainspec whose epochLength makes the fork block the epoch-0 boundary, patches ValidatorConfigV2 in the local execution DB, and seeds private DKG state for epoch 1."
                     .to_string(),
             ],
         };
@@ -324,15 +289,11 @@ impl GenerateShadowfork {
         })?;
 
         println!("wrote shadow genesis to `{}`", genesis_dst.display());
-        if let Some(path) = &shadow_chainspec_path {
-            println!("wrote shadow chainspec to `{}`", path.display());
-        }
+        println!(
+            "wrote shadow chainspec to `{}`",
+            shadow_chainspec_path.display()
+        );
         println!("wrote shadow fork manifest to `{}`", manifest_dst.display());
-        if manifest.snapshot_manifest_url.is_none() {
-            println!(
-                "warning: no --snapshot-url provided; RPC metadata alone is not enough to materialize full fork state"
-            );
-        }
 
         Ok(())
     }
@@ -449,40 +410,72 @@ impl FromStr for BlockTarget {
 }
 
 impl BlockTarget {
-    async fn fetch<P>(&self, provider: &P) -> eyre::Result<SourceBlock>
-    where
-        P: Provider,
-    {
-        let block = match self {
-            Self::Latest => {
-                let latest = provider
-                    .get_block_number()
-                    .await
-                    .wrap_err("failed to fetch latest block number")?;
-                provider
-                    .get_block_by_number(latest.into())
-                    .await
-                    .wrap_err_with(|| format!("failed to fetch latest block `{latest}`"))?
-                    .ok_or_else(|| eyre!("latest block `{latest}` not found"))?
+    fn read_from_datadir(
+        &self,
+        source_datadir: &SourceExecutionDataDir,
+    ) -> eyre::Result<SourceBlock> {
+        ensure!(
+            source_datadir.static_files_path.exists(),
+            "execution static files directory `{}` does not exist",
+            source_datadir.static_files_path.display(),
+        );
+        let static_file_provider =
+            StaticFileProviderBuilder::read_only(&source_datadir.static_files_path)
+                .build::<TempoPrimitives>()
+                .wrap_err_with(|| {
+                    format!(
+                        "failed opening execution static files at `{}`",
+                        source_datadir.static_files_path.display(),
+                    )
+                })?;
+        let highest_header = static_file_provider
+            .get_highest_static_file_block(StaticFileSegment::Headers)
+            .ok_or_else(|| eyre!("execution static files contain no headers"))?;
+
+        let block_number = match self {
+            Self::Latest => highest_header,
+            Self::Number(number) => *number,
+            Self::Hash(hash) => {
+                let db = open_db(&source_datadir.db_path, DatabaseArguments::default())
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed opening execution database at `{}`",
+                            source_datadir.db_path.display(),
+                        )
+                    })?;
+                let tx = db.tx()?;
+                tx.get::<tables::HeaderNumbers>(*hash)?
+                    .ok_or_else(|| eyre!("block hash `{hash}` not found in local datadir"))?
             }
-            Self::Number(number) => provider
-                .get_block_by_number((*number).into())
-                .await
-                .wrap_err_with(|| format!("failed to fetch block number `{number}`"))?
-                .ok_or_else(|| eyre!("block number `{number}` not found"))?,
-            Self::Hash(hash) => provider
-                .get_block_by_hash(*hash)
-                .await
-                .wrap_err_with(|| format!("failed to fetch block hash `{hash}`"))?
-                .ok_or_else(|| eyre!("block hash `{hash}` not found"))?,
         };
+        ensure!(
+            block_number == highest_header,
+            "shadow fork generation can only use the local execution datadir tip. datadir tip is `{highest_header}`, but --block resolved to `{block_number}`",
+        );
+
+        let header = static_file_provider
+            .header_by_number(block_number)
+            .wrap_err_with(|| format!("failed reading boundary header at block `{block_number}`"))?
+            .ok_or_else(|| eyre!("boundary header at block `{block_number}` was not found"))?;
+        let hash = static_file_provider
+            .block_hash(block_number)
+            .wrap_err_with(|| {
+                format!("failed reading canonical hash for boundary block `{block_number}`")
+            })?
+            .unwrap_or_else(|| header.hash_slow());
+        if let Self::Hash(expected_hash) = self {
+            ensure!(
+                hash == *expected_hash,
+                "block hash `{expected_hash}` resolved to block `{block_number}`, but the local datadir canonical hash is `{hash}`",
+            );
+        }
 
         Ok(SourceBlock {
-            number: block.header.number,
-            hash: block.header.hash,
-            parent_hash: block.header.inner.parent_hash,
-            state_root: block.header.inner.state_root,
-            timestamp: block.header.inner.timestamp,
+            number: block_number,
+            hash,
+            parent_hash: header.inner.parent_hash,
+            state_root: header.inner.state_root,
+            timestamp: header.inner.timestamp,
         })
     }
 }
@@ -501,8 +494,8 @@ struct ShadowForkManifest {
     source_chain: String,
     source_chain_id: u64,
     shadow_chain_id: u64,
-    source_rpc_url: String,
-    source_execution_chain: Option<String>,
+    source_execution_datadir: PathBuf,
+    source_execution_chain: String,
     fork_block_number: u64,
     fork_block_hash: B256,
     fork_parent_hash: B256,
@@ -512,8 +505,7 @@ struct ShadowForkManifest {
     shadow_epoch_length: u64,
     shadow_dkg_outcome: String,
     shadow_validator_config_v2_storage: BTreeMap<String, String>,
-    shadow_chainspec: Option<String>,
-    snapshot_manifest_url: Option<String>,
+    shadow_chainspec: String,
     created_at_unix_secs: u64,
     validator_count: usize,
     validators: Vec<NodeOutput>,
