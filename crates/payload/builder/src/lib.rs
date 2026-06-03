@@ -66,8 +66,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, Tip20TransferBlockstmBatchError,
-    Tip20TransferBlockstmFallback, evm::TempoEvm,
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
 };
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -727,7 +727,7 @@ where
                         Ok(false) => {
                             break stop_reason.unwrap_or(BlockBuildStopReason::GasLimit);
                         }
-                        Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
+                        Err(Tip20TransferBlockstmExecutionError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                             let blockstm_elapsed = blockstm_start.elapsed();
                             info!(
@@ -742,7 +742,7 @@ where
                                 blockstm::PayloadBuildError::Execution(reason),
                             ));
                         }
-                        Err(Tip20TransferBlockstmBatchError::Execution {
+                        Err(Tip20TransferBlockstmExecutionError::Execution {
                             transaction_index,
                             error,
                         }) => {
@@ -759,7 +759,7 @@ where
                             );
                             return Err(PayloadBuilderError::evm(error));
                         }
-                        Err(Tip20TransferBlockstmBatchError::Database(error)) => {
+                        Err(Tip20TransferBlockstmExecutionError::Database(error)) => {
                             return Err(PayloadBuilderError::evm(error));
                         }
                     }

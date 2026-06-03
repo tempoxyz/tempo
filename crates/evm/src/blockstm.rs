@@ -53,7 +53,6 @@ pub struct Tip20TransferBlockstmTx<'tx> {
 /// Reason the BlockSTM TIP-20 transfer path cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tip20TransferBlockstmFallback {
-    EmptyBatch,
     FeeTokenMismatch,
     SubblockTransaction,
     ValueTransfer,
@@ -92,7 +91,6 @@ impl Tip20TransferBlockstmFallback {
     /// Returns the stable metric label for this fallback reason.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::EmptyBatch => "empty_batch",
             Self::FeeTokenMismatch => "fee_token_mismatch",
             Self::SubblockTransaction => "subblock_transaction",
             Self::ValueTransfer => "value_transfer",
@@ -129,20 +127,19 @@ impl Tip20TransferBlockstmFallback {
     }
 }
 
-/// Error returned by the BlockSTM TIP-20 transfer batch API.
+/// Error returned by the BlockSTM TIP-20 transfer execution API.
 #[derive(Debug)]
-pub enum Tip20TransferBlockstmBatchError {
-    /// The batch is not eligible for BlockSTM execution; no transaction was executed.
+pub enum Tip20TransferBlockstmExecutionError {
+    /// The transaction is not eligible for BlockSTM execution; no state was committed.
     Fallback(Tip20TransferBlockstmFallback),
-    /// Synthetic validation/execution rejected a transaction. Previous transactions in the batch
-    /// were already committed through the normal block executor commit path.
+    /// Synthetic validation/execution rejected a transaction.
     Execution {
-        /// Index of the failed transaction in the attempted batch.
+        /// Index of the failed transaction in the streaming sequence.
         transaction_index: usize,
         /// Execution error returned by synthetic result construction or block validation.
         error: BlockExecutionError,
     },
-    /// The batch preflight failed while reading state; no transaction was executed.
+    /// Preflight failed while reading state; no state was committed.
     Database(BlockExecutionError),
 }
 
@@ -314,60 +311,6 @@ where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
 {
-    /// Executes a strict direct TIP-20 transfer batch through pre-built BlockSTM plans.
-    ///
-    /// The commit step intentionally goes through the canonical block executor, preserving Tempo's
-    /// existing fee accounting, receipt construction, logs, BAL indexing, and section accounting.
-    pub fn execute_tip20_transfer_blockstm_planned_batch<'tx>(
-        &mut self,
-        txs: Vec<Tip20TransferBlockstmTx<'tx>>,
-        plans: Vec<Tip20TransferBlockstmPlan>,
-        mut on_result: impl FnMut(usize, &TempoTxResult),
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
-        if txs.is_empty() {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
-                Tip20TransferBlockstmFallback::EmptyBatch,
-            ));
-        }
-        if txs.len() != plans.len() {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
-                Tip20TransferBlockstmFallback::StmValidation,
-            ));
-        }
-
-        let block = self.inner.evm.block();
-        let block_timestamp = block.timestamp().saturating_to::<u64>();
-        let basefee = block.basefee as u128;
-
-        self.validate_tip20_transfer_state(&plans)?;
-
-        let base_state = self.read_plan_base_state(&plans, block_timestamp)?;
-        let cfg = self.inner.evm.cfg.clone();
-        let is_t6 = cfg.spec.is_t6();
-        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
-
-        for (index, (tx, plan)) in txs.into_iter().zip(plans.into_iter()).enumerate() {
-            let committed = self.execute_tip20_transfer_blockstm_planned_with_state(
-                tx,
-                &plan,
-                index,
-                block_timestamp,
-                is_t6,
-                basefee,
-                &base_state,
-                &mut ledger,
-                &cfg,
-                |result| {
-                    on_result(index, result);
-                    true
-                },
-            )?;
-            debug_assert!(committed);
-        }
-
-        Ok(())
-    }
-
     /// Executes one pre-built BlockSTM TIP-20 transfer plan.
     ///
     /// `should_commit` observes the synthetic result before state mutation. Returning `false`
@@ -379,66 +322,37 @@ where
         plan: Tip20TransferBlockstmPlan,
         transaction_index: usize,
         should_commit: impl FnOnce(&TempoTxResult) -> bool,
-    ) -> Result<bool, Tip20TransferBlockstmBatchError> {
+    ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
         let block = self.inner.evm.block();
         let block_timestamp = block.timestamp().saturating_to::<u64>();
         let basefee = block.basefee as u128;
 
-        self.validate_tip20_transfer_state(std::slice::from_ref(&plan))?;
+        self.validate_tip20_transfer_state(&plan)?;
 
-        let base_state = self.read_plan_base_state(std::slice::from_ref(&plan), block_timestamp)?;
+        let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
         let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
-
-        self.execute_tip20_transfer_blockstm_planned_with_state(
-            tx,
-            &plan,
-            transaction_index,
-            block_timestamp,
-            is_t6,
-            basefee,
-            &base_state,
-            &mut ledger,
-            &cfg,
-            should_commit,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn execute_tip20_transfer_blockstm_planned_with_state<'tx>(
-        &mut self,
-        tx: Tip20TransferBlockstmTx<'tx>,
-        plan: &Tip20TransferBlockstmPlan,
-        transaction_index: usize,
-        block_timestamp: u64,
-        is_t6: bool,
-        basefee: u128,
-        base_state: &Tip20BlockstmBaseState,
-        ledger: &mut Tip20DeltaLedger<'_>,
-        cfg: &CfgEnv<TempoHardfork>,
-        should_commit: impl FnOnce(&TempoTxResult) -> bool,
-    ) -> Result<bool, Tip20TransferBlockstmBatchError> {
         let mut tx_execution = execute_tip20_transfer_plan_with_deltas(
             transaction_index,
-            plan,
-            ledger,
+            &plan,
+            &mut ledger,
             is_t6,
             block_timestamp,
         )
-        .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-        let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &tx_execution, base_state, cfg)
-            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &base_state, &cfg)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
         settle_actual_fee_with_deltas(
             transaction_index,
-            plan,
+            &plan,
             &mut tx_execution,
-            ledger,
+            &mut ledger,
             actual_fee,
             is_t6,
         )
-        .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let tx_gas_used = gas.tx_gas_used();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
             gas.block_regular_gas_used()
@@ -447,14 +361,14 @@ where
         };
         let next_section = self
             .validate_tx(tx.recovered.tx(), block_gas_used)
-            .map_err(|error| Tip20TransferBlockstmBatchError::Execution {
+            .map_err(|error| Tip20TransferBlockstmExecutionError::Execution {
                 transaction_index,
                 error: error.into(),
             })?;
         let result = TempoTxResult::new_blockstm_tip20_success(
             tx.recovered.tx(),
-            execution_state(&tx_execution, base_state),
-            synthetic_tip20_logs(plan, actual_fee),
+            execution_state(&tx_execution, &base_state),
+            synthetic_tip20_logs(&plan, actual_fee),
             gas,
             next_section,
             self.is_payment(tx.recovered.tx()),
@@ -471,30 +385,20 @@ where
 
     fn validate_tip20_transfer_state(
         &mut self,
-        plans: &[Tip20TransferBlockstmPlan],
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
-        let mut token_accounts = HashMap::<Address, HashSet<Address>>::new();
+        plan: &Tip20TransferBlockstmPlan,
+    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
+        validate_direct_recipient(plan.transfer.to)?;
+        self.validate_receive_policy(plan.transfer.to)?;
 
-        for plan in plans {
-            validate_direct_recipient(plan.transfer.to)?;
-            self.validate_receive_policy(plan.transfer.to)?;
+        self.validate_token_global_state(plan.fee_reserve.token)?;
+        self.validate_reward_inactive(plan.fee_reserve.token, plan.fee_reserve.fee_payer)?;
+        self.validate_reward_inactive(plan.fee_reserve.token, TIP_FEE_MANAGER_ADDRESS)?;
 
-            token_accounts
-                .entry(plan.fee_reserve.token)
-                .or_default()
-                .extend([plan.fee_reserve.fee_payer, TIP_FEE_MANAGER_ADDRESS]);
-            token_accounts
-                .entry(plan.transfer.token)
-                .or_default()
-                .extend([plan.transfer.from, plan.transfer.to]);
+        if plan.transfer.token != plan.fee_reserve.token {
+            self.validate_token_global_state(plan.transfer.token)?;
         }
-
-        for (token, accounts) in token_accounts {
-            self.validate_token_global_state(token)?;
-            for account in accounts {
-                self.validate_reward_inactive(token, account)?;
-            }
-        }
+        self.validate_reward_inactive(plan.transfer.token, plan.transfer.from)?;
+        self.validate_reward_inactive(plan.transfer.token, plan.transfer.to)?;
 
         Ok(())
     }
@@ -502,16 +406,16 @@ where
     fn validate_token_global_state(
         &mut self,
         token: Address,
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
+    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
         if self.read_storage(token, tip20_slots::PAUSED)? != U256::ZERO {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::TokenPaused,
             ));
         }
 
         let transfer_policy = self.read_storage(token, tip20_slots::TRANSFER_POLICY_ID)?;
         if transfer_policy_id(transfer_policy) != U256::from(ALLOW_ALL_POLICY_ID) {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::TransferPolicy,
             ));
         }
@@ -519,7 +423,7 @@ where
         if self.read_storage(token, tip20_slots::GLOBAL_REWARD_PER_TOKEN)? != U256::ZERO
             || self.read_storage(token, tip20_slots::OPTED_IN_SUPPLY)? != U256::ZERO
         {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::RewardActive,
             ));
         }
@@ -530,13 +434,13 @@ where
     fn validate_receive_policy(
         &mut self,
         account: Address,
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
+    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
         let receive_policy_config = self.read_storage(
             TIP403_REGISTRY_ADDRESS,
             account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES),
         )?;
         if receive_policy_config != U256::ZERO {
-            return Err(Tip20TransferBlockstmBatchError::Fallback(
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::ReceivePolicy,
             ));
         }
@@ -548,14 +452,14 @@ where
         &mut self,
         token: Address,
         account: Address,
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
+    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
         let balance = self.read_storage(token, balance_slot(account))?;
-        decode_balance_state(balance).map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+        decode_balance_state(balance).map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
 
         let reward_info_base = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
         for offset in 0..USER_REWARD_INFO_SLOTS {
             if self.read_storage(token, reward_info_base + U256::from(offset))? != U256::ZERO {
-                return Err(Tip20TransferBlockstmBatchError::Fallback(
+                return Err(Tip20TransferBlockstmExecutionError::Fallback(
                     Tip20TransferBlockstmFallback::RewardActive,
                 ));
             }
@@ -568,53 +472,46 @@ where
         &mut self,
         address: Address,
         slot: U256,
-    ) -> Result<U256, Tip20TransferBlockstmBatchError> {
+    ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
         self.inner
             .evm
             .db_mut()
             .storage(address, slot)
             .map_err(BlockExecutionError::other)
-            .map_err(Tip20TransferBlockstmBatchError::Database)
+            .map_err(Tip20TransferBlockstmExecutionError::Database)
     }
 
     fn read_plan_base_state(
         &mut self,
-        plans: &[Tip20TransferBlockstmPlan],
+        plan: &Tip20TransferBlockstmPlan,
         block_timestamp: u64,
-    ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmBatchError> {
-        let mut keys = HashSet::new();
-        let mut caller_accounts = HashSet::new();
-        for plan in plans {
-            keys.extend(plan.read_set());
-            keys.extend(plan.write_set());
-            caller_accounts.insert(plan.nonce.caller);
-        }
+    ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmExecutionError> {
+        let mut keys = plan.read_set();
+        keys.extend(plan.write_set());
         let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
-        accounts.extend(caller_accounts.iter().copied());
+        accounts.insert(plan.nonce.caller);
 
         let mut storage = HashMap::with_capacity(keys.len());
         for key in keys {
             let value = self.read_storage(key.address, key.slot)?;
             storage.insert(key, value);
         }
-        self.read_expiring_nonce_base_state(plans, block_timestamp, &mut storage)?;
+        self.read_expiring_nonce_base_state(plan, block_timestamp, &mut storage)?;
 
         let mut account_infos = HashMap::with_capacity(accounts.len());
         for account in accounts {
             let info = self.read_account_info(account)?;
             account_infos.insert(account, info);
         }
-        for caller in caller_accounts {
-            let Some(info) = account_infos.get(&caller) else {
-                return Err(Tip20TransferBlockstmBatchError::Fallback(
-                    Tip20TransferBlockstmFallback::StmValidation,
-                ));
-            };
-            if !info.is_empty_code_hash() {
-                return Err(Tip20TransferBlockstmBatchError::Fallback(
-                    Tip20TransferBlockstmFallback::AccountHasCode,
-                ));
-            }
+        let Some(info) = account_infos.get(&plan.nonce.caller) else {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::StmValidation,
+            ));
+        };
+        if !info.is_empty_code_hash() {
+            return Err(Tip20TransferBlockstmExecutionError::Fallback(
+                Tip20TransferBlockstmFallback::AccountHasCode,
+            ));
         }
 
         Ok(Tip20BlockstmBaseState {
@@ -625,72 +522,45 @@ where
 
     fn read_expiring_nonce_base_state(
         &mut self,
-        plans: &[Tip20TransferBlockstmPlan],
+        plan: &Tip20TransferBlockstmPlan,
         block_timestamp: u64,
         storage: &mut HashMap<StorageKey, U256>,
-    ) -> Result<(), Tip20TransferBlockstmBatchError> {
-        let mut current = HashMap::<StorageKey, U256>::new();
+    ) -> Result<(), Tip20TransferBlockstmExecutionError> {
+        let Tip20ExpiringNonceAction {
+            replay_hash,
+            valid_before: _,
+            expiring_nonce_idx,
+            ..
+        } = plan.nonce;
 
-        for plan in plans {
-            let Tip20ExpiringNonceAction {
-                replay_hash,
-                valid_before,
-                expiring_nonce_idx,
-                ..
-            } = plan.nonce;
+        let seen_key = expiring_nonce_seen_key(replay_hash);
+        let seen_expiry = self.read_base_storage(storage, seen_key)?;
+        if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
+            return Ok(());
+        }
 
-            let seen_key = expiring_nonce_seen_key(replay_hash);
-            let seen_expiry = self.read_base_or_current_storage(storage, &current, seen_key)?;
-            if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
-                continue;
-            }
+        let ptr_key = expiring_nonce_ring_ptr_key();
+        let ptr = expiring_nonce_ring_ptr_from_word(self.read_base_storage(storage, ptr_key)?)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let ring_key = expiring_nonce_ring_key(idx);
+        let old_hash_word = self.read_base_storage(storage, ring_key)?;
 
-            let ptr_key = expiring_nonce_ring_ptr_key();
-            let ptr = expiring_nonce_ring_ptr_from_word(
-                self.read_base_or_current_storage(storage, &current, ptr_key)?,
-            )
-            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)
-                .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let ring_key = expiring_nonce_ring_key(idx);
-            let old_hash_word = self.read_base_or_current_storage(storage, &current, ring_key)?;
-
-            if old_hash_word != U256::ZERO {
-                let old_seen_key =
-                    expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-                let old_expiry =
-                    self.read_base_or_current_storage(storage, &current, old_seen_key)?;
-                if old_expiry == U256::ZERO || old_expiry <= U256::from(block_timestamp) {
-                    current.insert(old_seen_key, U256::ZERO);
-                }
-            }
-
-            current.insert(ring_key, expiring_nonce_hash_to_word(replay_hash));
-            current.insert(seen_key, U256::from(valid_before));
-
-            let next_ptr = expiring_nonce_next_ring_ptr(idx);
-            current.insert(
-                ptr_key,
-                U256::from(if expiring_nonce_idx.is_some() {
-                    ptr
-                } else {
-                    next_ptr
-                }),
-            );
+        if old_hash_word != U256::ZERO {
+            let old_seen_key =
+                expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
+            let _ = self.read_base_storage(storage, old_seen_key)?;
         }
 
         Ok(())
     }
 
-    fn read_base_or_current_storage(
+    fn read_base_storage(
         &mut self,
         storage: &mut HashMap<StorageKey, U256>,
-        current: &HashMap<StorageKey, U256>,
         key: StorageKey,
-    ) -> Result<U256, Tip20TransferBlockstmBatchError> {
-        if let Some(value) = current.get(&key) {
-            return Ok(*value);
-        }
+    ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
         if let Some(value) = storage.get(&key) {
             return Ok(*value);
         }
@@ -703,13 +573,13 @@ where
     fn read_account_info(
         &mut self,
         address: Address,
-    ) -> Result<AccountInfo, Tip20TransferBlockstmBatchError> {
+    ) -> Result<AccountInfo, Tip20TransferBlockstmExecutionError> {
         self.inner
             .evm
             .db_mut()
             .basic(address)
             .map_err(BlockExecutionError::other)
-            .map_err(Tip20TransferBlockstmBatchError::Database)
+            .map_err(Tip20TransferBlockstmExecutionError::Database)
             .map(|account| account.unwrap_or_default())
     }
 }
@@ -737,14 +607,14 @@ impl Tip20BalanceState {
     }
 }
 
-fn validate_direct_recipient(to: Address) -> Result<(), Tip20TransferBlockstmBatchError> {
+fn validate_direct_recipient(to: Address) -> Result<(), Tip20TransferBlockstmExecutionError> {
     if to.is_zero() || to.is_tip20() {
-        return Err(Tip20TransferBlockstmBatchError::Fallback(
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
             Tip20TransferBlockstmFallback::InvalidRecipient,
         ));
     }
     if to.is_virtual() {
-        return Err(Tip20TransferBlockstmBatchError::Fallback(
+        return Err(Tip20TransferBlockstmExecutionError::Fallback(
             Tip20TransferBlockstmFallback::VirtualRecipient,
         ));
     }
@@ -2233,11 +2103,11 @@ mod tests {
     }
 
     fn assert_fallback(
-        err: Tip20TransferBlockstmBatchError,
+        err: Tip20TransferBlockstmExecutionError,
         expected: Tip20TransferBlockstmFallback,
     ) {
         match err {
-            Tip20TransferBlockstmBatchError::Fallback(actual) => assert_eq!(actual, expected),
+            Tip20TransferBlockstmExecutionError::Fallback(actual) => assert_eq!(actual, expected),
             other => panic!("expected fallback {expected:?}, got {other:?}"),
         }
     }
@@ -2610,13 +2480,13 @@ mod tests {
     fn unsupported_direct_recipient_falls_back() {
         assert!(matches!(
             validate_direct_recipient(Address::ZERO),
-            Err(Tip20TransferBlockstmBatchError::Fallback(
+            Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::InvalidRecipient
             ))
         ));
         assert!(matches!(
             validate_direct_recipient(TOKEN),
-            Err(Tip20TransferBlockstmBatchError::Fallback(
+            Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::InvalidRecipient
             ))
         ));
@@ -2627,7 +2497,7 @@ mod tests {
         );
         assert!(matches!(
             validate_direct_recipient(virtual_recipient),
-            Err(Tip20TransferBlockstmBatchError::Fallback(
+            Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::VirtualRecipient
             ))
         ));
@@ -2932,7 +2802,7 @@ mod tests {
         let chainspec = test_chainspec();
         let token = tempo_precompiles::PATH_USD_ADDRESS;
         let account_count = 10usize;
-        let batch_len = 50usize;
+        let tx_count = 50usize;
         let block_timestamp = 1_700_000_000u64;
         let valid_before = block_timestamp + 10;
         let participant_balance = U256::from(1_000_000_000_000_000_000u128);
@@ -2942,8 +2812,8 @@ mod tests {
             .map(PrivateKeySigner::address)
             .collect::<Vec<_>>();
 
-        let mut txs = Vec::with_capacity(batch_len);
-        for idx in 0..batch_len {
+        let mut txs = Vec::with_capacity(tx_count);
+        for idx in 0..tx_count {
             let signer = &signers[idx % signers.len()];
             let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
             txs.push(signed_expiring_tip20_transfer(
@@ -2989,26 +2859,30 @@ mod tests {
         let prestate = db_to_trie_state(&prestate_db);
 
         let (mut blockstm_executor, blockstm_updates) = build_hooked_executor(build_db());
-        let batch = txs
-            .iter()
-            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+        let beneficiary = blockstm_executor.evm().block().beneficiary;
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let tx = Tip20TransferBlockstmTx {
                 tx_env: tx_env.clone(),
                 recovered,
                 fee_token: token,
-            })
-            .collect::<Vec<_>>();
-        let beneficiary = blockstm_executor.evm().block().beneficiary;
-        let plans = batch
-            .iter()
-            .map(|tx| {
-                build_tip20_transfer_blockstm_plan(tx, token, beneficiary, 1, 0, TempoHardfork::T6)
-            })
-            .collect::<Result<Vec<_>, _>>()
+            };
+            let plan = build_tip20_transfer_blockstm_plan(
+                &tx,
+                token,
+                beneficiary,
+                1,
+                0,
+                TempoHardfork::T6,
+            )
             .unwrap();
-        blockstm_executor
-            .execute_tip20_transfer_blockstm_planned_batch(batch, plans, |_, _| {})
-            .unwrap();
-        assert_eq!(blockstm_executor.receipts().len(), batch_len);
+            assert!(
+                blockstm_executor
+                    .execute_tip20_transfer_blockstm_planned_tx(tx, plan, idx, |_| true)
+                    .unwrap()
+            );
+            blockstm_executor.evm_mut().db_mut().bump_bal_index();
+        }
+        assert_eq!(blockstm_executor.receipts().len(), tx_count);
 
         let blockstm_updates = blockstm_updates.lock().unwrap().clone();
         let mut blockstm_poststate = prestate.clone();
