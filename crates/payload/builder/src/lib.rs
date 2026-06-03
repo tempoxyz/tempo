@@ -716,7 +716,6 @@ where
                 }
 
                 if planned.is_empty() {
-                    self.metrics.inc_blockstm_tip20_fallback("empty_batch");
                     let blockstm_elapsed = collect_start.elapsed();
                     info!(
                         target: "payload_builder",
@@ -724,11 +723,7 @@ where
                         ?blockstm_elapsed,
                         "BlockSTM TIP-20 fast path planned no transactions"
                     );
-                    return Err(PayloadBuilderError::other(
-                        blockstm::PayloadBuildError::Planning(
-                            Tip20TransferBlockstmFallback::EmptyBatch,
-                        ),
-                    ));
+                    blockstm_completed_stop_reason = Some(blockstm_collection_stop_reason);
                 } else {
                     let candidate_count = planned.len();
                     let collect_elapsed = collect_start.elapsed();
