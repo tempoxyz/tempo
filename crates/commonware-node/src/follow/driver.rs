@@ -357,8 +357,8 @@ where
             }
         }
 
-        let can_use_network_identity_fallback = finalization_epoch > self.current_epoch
-            && finalization_epoch.get() >= self.config.network_identity.from_epoch;
+        let can_use_network_identity_fallback =
+            finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
         let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
             Some(scheme) => scheme,
