@@ -143,13 +143,6 @@ struct SpeculativeBuild {
 }
 
 #[cfg(feature = "bal")]
-#[derive(Clone, Copy, Debug)]
-enum SpeculativeBuildSparseTrie {
-    Prepare,
-    Skip,
-}
-
-#[cfg(feature = "bal")]
 impl Drop for SpeculativeBuild {
     fn drop(&mut self) {
         self.build_control.cancel();
@@ -1159,11 +1152,6 @@ impl Inner<Init> {
                     build_control,
                     extra_data,
                     Some(consensus_context),
-                    if nullified_view_recovery {
-                        SpeculativeBuildSparseTrie::Skip
-                    } else {
-                        SpeculativeBuildSparseTrie::Prepare
-                    },
                     "missing_slot_handle_propose",
                 )
                 .await
@@ -1327,7 +1315,6 @@ impl Inner<Init> {
         build_control: PayloadBuildControl,
         extra_data: Bytes,
         consensus_context: Option<TempoConsensusContext>,
-        sparse_trie: SpeculativeBuildSparseTrie,
         reason: &'static str,
     ) -> eyre::Result<SpeculativeBuild> {
         self.state
@@ -1350,35 +1337,20 @@ impl Inner<Init> {
             .map(|tx| *tx.tx_hash())
             .collect::<Vec<_>>();
 
-        let (trie_handle, cache) = match sparse_trie {
-            SpeculativeBuildSparseTrie::Prepare => {
-                let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
-                    &self.execution_node,
-                    block.block(),
-                    &block_access_list,
-                )
-                .await?;
-                debug!(
-                    parent.digest = %block.digest(),
-                    parent.height = %block.height(),
-                    parent.hash = %block.block_hash(),
-                    parent.state_root = %block.state_root(),
-                    reason,
-                    "prepared private BAL sparse-trie input for speculative payload build"
-                );
-                (Some(trie_handle), cache)
-            }
-            SpeculativeBuildSparseTrie::Skip => {
-                debug!(
-                    parent.digest = %block.digest(),
-                    parent.height = %block.height(),
-                    parent.hash = %block.block_hash(),
-                    reason,
-                    "starting speculative BAL payload build without sparse-trie prepare"
-                );
-                (None, None)
-            }
-        };
+        let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
+            &self.execution_node,
+            block.block(),
+            &block_access_list,
+        )
+        .await?;
+        debug!(
+            parent.digest = %block.digest(),
+            parent.height = %block.height(),
+            parent.hash = %block.block_hash(),
+            parent.state_root = %block.state_root(),
+            reason,
+            "prepared private BAL sparse-trie input for speculative payload build"
+        );
 
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -1403,7 +1375,7 @@ impl Inner<Init> {
                     attributes: attrs,
                     parent_hash,
                     cache,
-                    trie_handle,
+                    trie_handle: Some(trie_handle),
                 });
 
         Ok(SpeculativeBuild {
@@ -1528,16 +1500,20 @@ impl Inner<Init> {
         context: &TContext,
         block: &Block,
     ) -> eyre::Result<()> {
+        if let Some(consensus_context) = block.header().consensus_context {
+            if consensus_context.view > consensus_context.parent_view.saturating_add(1) {
+                debug!(
+                    parent.digest = %block.digest(),
+                    parent.height = %block.height(),
+                    block.view = consensus_context.view,
+                    parent.view = consensus_context.parent_view,
+                    "skipping verify-time speculative BAL payload build after view gap"
+                );
+                return Ok(());
+            }
+        }
+
         let build_control = PayloadBuildControl::new(self.proposal_return_budget);
-        let sparse_trie = if block
-            .header()
-            .consensus_context
-            .is_some_and(|ctx| ctx.view > ctx.parent_view.saturating_add(1))
-        {
-            SpeculativeBuildSparseTrie::Skip
-        } else {
-            SpeculativeBuildSparseTrie::Prepare
-        };
         let build = self
             .dispatch_speculative_payload_build(
                 context,
@@ -1545,7 +1521,6 @@ impl Inner<Init> {
                 build_control,
                 Bytes::default(),
                 None,
-                sparse_trie,
                 "handle_verify",
             )
             .await?;
@@ -1642,9 +1617,14 @@ impl Inner<Init> {
         #[cfg(feature = "bal")]
         // Dispatch B+1 before validating B. Reth only snapshots B-1 synchronously; the BAL parent
         // prep and B+1 execution run while B validation is in flight.
-        self.start_speculative_build(&context, &block)
-            .await
-            .wrap_err("failed starting speculative BAL payload build")?;
+        if let Err(error) = self.start_speculative_build(&context, &block).await {
+            warn!(
+                %error,
+                block.digest = %block.digest(),
+                block.height = %block.height(),
+                "failed starting speculative BAL payload build; continuing validation"
+            );
+        }
 
         debug!("validating proposal block against execution layer");
         if let Err(error) = self
