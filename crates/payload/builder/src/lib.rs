@@ -1098,7 +1098,7 @@ where
         );
 
         if block.number() >= 400 {
-            info!("gas_used", gas_used_values);
+            info!("{:?}", gas_used_values);
         }
 
         let block = Arc::new(block);
