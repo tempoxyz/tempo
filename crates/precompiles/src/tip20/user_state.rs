@@ -63,10 +63,6 @@ pub struct UserState {
     pub(super) flag: RewardFlag,
 }
 
-const REWARD_FLAG_OFFSET_BYTES: usize = 16;
-const USER_STATE_AMOUNT_BYTES: usize = 16;
-const REWARD_FLAG_BYTES: usize = 1;
-
 // NOTE: derived storage layout is byte-granular, matching the `RewardFlag` byte above.
 // This keeps generated T6+ packing correct, but cannot represent future sub-byte fields.
 #[derive(Debug, Clone, Storable, Copy, PartialEq)]
@@ -129,7 +125,7 @@ impl UserState {
         Self::new(self.checked_sub(amount)?, flag)
     }
 
-    pub(crate) fn from_storage_word(value: U256, spec: TempoHardfork) -> Result<Self> {
+    pub(crate) fn decode_storage_word(value: U256, spec: TempoHardfork) -> Result<Self> {
         if !spec.is_t6() {
             let amount =
                 u128::try_from(value).map_err(|_| TempoPrecompileError::under_overflow())?;
@@ -151,18 +147,22 @@ impl UserState {
         }
     }
 
-    pub(crate) fn storage_word_for_spec(&self, spec: TempoHardfork) -> Result<U256> {
+    pub(crate) fn encode_storage_word(&self, spec: TempoHardfork) -> Result<U256> {
         if !spec.is_t6() {
             return Ok(U256::from(self.amount));
         }
 
-        let value =
-            packing::insert_into_word(U256::ZERO, &self.amount, 0, USER_STATE_AMOUNT_BYTES)?;
+        let value = packing::insert_into_word(
+            U256::ZERO,
+            &self.amount,
+            __packing_packed_user_state::AMOUNT_LOC.offset_bytes,
+            __packing_packed_user_state::AMOUNT_LOC.size,
+        )?;
         packing::insert_into_word(
             value,
             &(self.flag as u8),
-            REWARD_FLAG_OFFSET_BYTES,
-            REWARD_FLAG_BYTES,
+            __packing_packed_user_state::FLAG_LOC.offset_bytes,
+            __packing_packed_user_state::FLAG_LOC.size,
         )
     }
 }
@@ -199,13 +199,13 @@ impl Storable for UserState {
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "`UserState` is only loadable as a full slot");
 
-        Self::from_storage_word(storage.load(slot)?, StorageCtx.spec())
+        Self::decode_storage_word(storage.load(slot)?, StorageCtx.spec())
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "`UserState` is only storable as a full slot");
 
-        storage.store(slot, self.storage_word_for_spec(StorageCtx.spec())?)
+        storage.store(slot, self.encode_storage_word(StorageCtx.spec())?)
     }
 }
 
@@ -302,7 +302,7 @@ mod tests {
             let raw = StorageCtx.sload(address, slot).unwrap();
             assert_eq!(decode_tip20_balance(raw), U256::from(15));
             assert_eq!(
-                UserState::from_storage_word(raw, TempoHardfork::T6)
+                UserState::decode_storage_word(raw, TempoHardfork::T6)
                     .unwrap()
                     .flag,
                 RewardFlag::OptedIn
@@ -316,7 +316,7 @@ mod tests {
             let raw = StorageCtx.sload(address, slot).unwrap();
             assert_eq!(decode_tip20_balance(raw), U256::from(11));
             assert_eq!(
-                UserState::from_storage_word(raw, TempoHardfork::T6)
+                UserState::decode_storage_word(raw, TempoHardfork::T6)
                     .unwrap()
                     .flag,
                 RewardFlag::OptedOut

@@ -102,8 +102,8 @@ pub trait PrecompileStorageProvider {
         flag: RewardFlag,
     ) -> Result<UserState> {
         let value = self.sload(address, key)?;
-        let state = UserState::from_storage_word(value, self.spec())?.incremented(delta, flag)?;
-        self.sstore(address, key, state.storage_word_for_spec(self.spec())?)?;
+        let state = UserState::decode_storage_word(value, self.spec())?.incremented(delta, flag)?;
+        self.sstore(address, key, state.encode_storage_word(self.spec())?)?;
         Ok(state)
     }
 
@@ -116,8 +116,8 @@ pub trait PrecompileStorageProvider {
         flag: RewardFlag,
     ) -> Result<UserState> {
         let value = self.sload(address, key)?;
-        let state = UserState::from_storage_word(value, self.spec())?.decremented(delta, flag)?;
-        self.sstore(address, key, state.storage_word_for_spec(self.spec())?)?;
+        let state = UserState::decode_storage_word(value, self.spec())?.decremented(delta, flag)?;
+        self.sstore(address, key, state.encode_storage_word(self.spec())?)?;
         Ok(state)
     }
 
