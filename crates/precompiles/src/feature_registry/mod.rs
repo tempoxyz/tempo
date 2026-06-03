@@ -79,6 +79,19 @@ impl FeatureRegistry {
         self.validator_supported_features_tip[validator].read()
     }
 
+    pub fn set_supported_features_tip(
+        &mut self,
+        msg_sender: Address,
+        call: IFeatureRegistry::setSupportedFeaturesTipCall,
+    ) -> Result<()> {
+        let previous = self.validator_supported_features_tip[msg_sender].read()?;
+        if call.featuresTip < previous {
+            return Err(FeatureRegistryError::supported_features_tip_decreased().into());
+        }
+
+        self.validator_supported_features_tip[msg_sender].write(call.featuresTip)
+    }
+
     pub fn schedule_features_tip(
         &mut self,
         msg_sender: Address,

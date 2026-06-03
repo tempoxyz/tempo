@@ -35,8 +35,10 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::scheduledFeaturesTip(call) => {
                     view(call, |_| self.scheduled_features_tip())
                 }
-                IFeatureRegistryCalls::setSupportedFeaturesTip(_) => {
-                    unsupported::<IFeatureRegistry::setSupportedFeaturesTipCall>()
+                IFeatureRegistryCalls::setSupportedFeaturesTip(call) => {
+                    mutate_void(call, msg_sender, |sender, call| {
+                        self.set_supported_features_tip(sender, call)
+                    })
                 }
                 IFeatureRegistryCalls::scheduleFeaturesTip(call) => {
                     mutate_void(call, msg_sender, |sender, call| {
@@ -526,6 +528,46 @@ mod tests {
     }
 
     #[test]
+    fn set_supported_features_tip_sets_validator_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+
+            registry.set_supported_features_tip(
+                validator,
+                IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 13 },
+            )?;
+
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_rejects_decreased_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+            registry.validator_supported_features_tip[validator].write(13)?;
+
+            let result = registry.set_supported_features_tip(
+                validator,
+                IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 12 },
+            );
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::supported_features_tip_decreased().into())
+            );
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn features_tip_dispatch_returns_encoded_cursor() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -574,6 +616,66 @@ mod tests {
                 IFeatureRegistry::scheduledFeaturesTipCall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decoded.featuresTip, 34);
             assert_eq!(decoded.activationEpoch, 55);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_dispatch_sets_validator_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 34 };
+            let result = registry.call(&call.abi_encode(), validator)?;
+            assert!(!result.is_revert());
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_dispatch_uses_msg_sender_as_validator() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let caller = Address::repeat_byte(0x01);
+            let other_validator = Address::repeat_byte(0x02);
+
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 34 };
+            let result = registry.call(&call.abi_encode(), caller)?;
+            assert!(!result.is_revert());
+
+            assert_eq!(registry.validator_supported_features_tip(caller)?, 34);
+            assert_eq!(
+                registry.validator_supported_features_tip(other_validator)?,
+                0
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_dispatch_rejects_decreased_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+            registry.validator_supported_features_tip[validator].write(34)?;
+
+            let call = IFeatureRegistry::setSupportedFeaturesTipCall { featuresTip: 33 };
+            let result = registry.call(&call.abi_encode(), validator)?;
+            assert!(result.is_revert());
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(
+                decoded,
+                FeatureRegistryError::supported_features_tip_decreased()
+            );
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
 
             Ok(())
         })
