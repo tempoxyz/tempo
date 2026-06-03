@@ -5,7 +5,6 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, IntoLogData, Log, TxKind, U256};
 use alloy_sol_types::SolInterface;
-use rayon::prelude::*;
 use reth_evm::block::StateDB;
 use reth_primitives_traits::Recovered;
 use reth_revm::{
@@ -153,13 +152,6 @@ struct StorageKey {
     slot: U256,
 }
 
-#[derive(Debug, Clone)]
-struct Tip20BlockstmExecution {
-    txs: Vec<Tip20BlockstmTxExecution>,
-    gas: Vec<ResultGas>,
-    actual_fees: Vec<U256>,
-}
-
 #[derive(Debug, Clone, Default)]
 struct Tip20BlockstmBaseState {
     storage: HashMap<StorageKey, U256>,
@@ -179,7 +171,7 @@ struct VersionedValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Tip20TransferBlockstmPlan {
+pub struct Tip20TransferBlockstmPlan {
     nonce: Tip20BlockstmNonceAction,
     fee_payer: Address,
     max_fee: U256,
@@ -331,15 +323,14 @@ where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
 {
-    /// Executes a strict direct TIP-20 transfer batch through the BlockSTM entry point.
+    /// Executes a strict direct TIP-20 transfer batch through pre-built BlockSTM plans.
     ///
-    /// This first decodes direct transfer actions in parallel and derives per-action storage keys.
     /// The commit step intentionally goes through the canonical block executor, preserving Tempo's
     /// existing fee accounting, receipt construction, logs, BAL indexing, and section accounting.
-    pub fn execute_tip20_transfer_blockstm_batch<'tx>(
+    pub fn execute_tip20_transfer_blockstm_planned_batch<'tx>(
         &mut self,
         txs: Vec<Tip20TransferBlockstmTx<'tx>>,
-        validator_token: Address,
+        plans: Vec<Tip20TransferBlockstmPlan>,
         mut on_result: impl FnMut(usize, &TempoTxResult),
     ) -> Result<(), Tip20TransferBlockstmBatchError> {
         if txs.is_empty() {
@@ -347,48 +338,45 @@ where
                 Tip20TransferBlockstmFallback::EmptyBatch,
             ));
         }
+        if txs.len() != plans.len() {
+            return Err(Tip20TransferBlockstmBatchError::Fallback(
+                Tip20TransferBlockstmFallback::StmValidation,
+            ));
+        }
 
         let block = self.inner.evm.block();
-        let beneficiary = block.beneficiary;
         let block_timestamp = block.timestamp().saturating_to::<u64>();
         let basefee = block.basefee as u128;
-        let blob_gasprice = block.blob_gasprice().unwrap_or_default();
-        let spec = self.inner.evm.cfg.spec;
 
-        let decoded = txs
-            .par_iter()
-            .map(|tx| {
-                build_tip20_transfer_plan(
-                    tx,
-                    validator_token,
-                    beneficiary,
-                    basefee,
-                    blob_gasprice,
-                    spec,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
+        self.validate_tip20_transfer_state(&plans)?;
+
+        let base_state = self.read_plan_base_state(&plans, block_timestamp)?;
+        let cfg = self.inner.evm.cfg.clone();
+        let is_t6 = cfg.spec.is_t6();
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+
+        for (index, (tx, plan)) in txs.into_iter().zip(&plans).enumerate() {
+            let mut tx_execution = execute_tip20_transfer_plan_with_deltas(
+                index,
+                plan,
+                &mut ledger,
+                is_t6,
+                block_timestamp,
+            )
             .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-        self.validate_tip20_transfer_state(&decoded)?;
-
-        let base_state = self.read_plan_base_state(&decoded, block_timestamp)?;
-        let execution = execute_tip20_transfer_plans_blockstm(
-            &txs,
-            &decoded,
-            &base_state,
-            &self.inner.evm.cfg,
-            basefee,
-            block_timestamp,
-        )
-        .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-
-        for (index, (((tx, tx_execution), plan), (gas, actual_fee))) in txs
-            .into_iter()
-            .zip(&execution.txs)
-            .zip(&decoded)
-            .zip(execution.gas.iter().zip(&execution.actual_fees))
-            .enumerate()
-        {
+            let gas =
+                synthetic_tip20_result_gas(&tx.tx_env, plan, &tx_execution, &base_state, &cfg)
+                    .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+            let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
+            settle_actual_fee_with_deltas(
+                index,
+                plan,
+                &mut tx_execution,
+                &mut ledger,
+                actual_fee,
+                is_t6,
+            )
+            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
             let tx_gas_used = gas.tx_gas_used();
             let block_gas_used = if self.inner.evm.cfg.enable_amsterdam_eip8037 {
                 gas.block_regular_gas_used()
@@ -404,12 +392,12 @@ where
             let result = TempoTxResult::new_blockstm_tip20_success(
                 tx.recovered.tx(),
                 execution_state(&tx_execution, &base_state),
-                synthetic_tip20_logs(plan, *actual_fee),
-                gas.clone(),
+                synthetic_tip20_logs(plan, actual_fee),
+                gas,
                 next_section,
                 self.is_payment(tx.recovered.tx()),
                 block_gas_used,
-                *actual_fee,
+                actual_fee,
             );
             on_result(index, &result);
             self.commit_transaction(result);
@@ -757,7 +745,7 @@ fn encode_balance(amount: U256, reward_flag: u8, is_t6: bool) -> U256 {
     }
 }
 
-fn build_tip20_transfer_plan(
+pub fn build_tip20_transfer_blockstm_plan(
     tx: &Tip20TransferBlockstmTx<'_>,
     validator_token: Address,
     beneficiary: Address,
@@ -804,55 +792,6 @@ fn build_tip20_transfer_plan(
         fee_payer,
         max_fee,
         actions,
-    })
-}
-
-fn execute_tip20_transfer_plans_blockstm(
-    txs: &[Tip20TransferBlockstmTx<'_>],
-    plans: &[Tip20TransferBlockstmPlan],
-    base_state: &Tip20BlockstmBaseState,
-    cfg: &CfgEnv<TempoHardfork>,
-    basefee: u128,
-    block_timestamp: u64,
-) -> Result<Tip20BlockstmExecution, Tip20TransferBlockstmFallback> {
-    if txs.len() != plans.len() {
-        return Err(Tip20TransferBlockstmFallback::StmValidation);
-    }
-
-    let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
-    let mut executions = Vec::with_capacity(plans.len());
-    let mut gas_results = Vec::with_capacity(plans.len());
-    let mut actual_fees = Vec::with_capacity(plans.len());
-    let is_t6 = cfg.spec.is_t6();
-
-    for (tx_index, (tx, plan)) in txs.iter().zip(plans).enumerate() {
-        let mut execution = execute_tip20_transfer_plan_with_deltas(
-            tx_index,
-            plan,
-            &mut ledger,
-            is_t6,
-            block_timestamp,
-        )?;
-        let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, base_state, cfg)?;
-        let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
-        settle_actual_fee_with_deltas(
-            tx_index,
-            plan,
-            &mut execution,
-            &mut ledger,
-            actual_fee,
-            is_t6,
-        )?;
-
-        executions.push(execution);
-        gas_results.push(gas);
-        actual_fees.push(actual_fee);
-    }
-
-    Ok(Tip20BlockstmExecution {
-        txs: executions,
-        gas: gas_results,
-        actual_fees,
     })
 }
 
@@ -2543,14 +2482,48 @@ mod tests {
         out
     }
 
+    #[derive(Debug)]
+    struct TestTip20BlockstmExecution {
+        txs: Vec<Tip20BlockstmTxExecution>,
+        actual_fees: Vec<U256>,
+    }
+
     fn execute_test_blockstm(
         txs: &[Tip20TransferBlockstmTx<'_>],
         plans: &[Tip20TransferBlockstmPlan],
         base_storage: HashMap<StorageKey, U256>,
-    ) -> Tip20BlockstmExecution {
+    ) -> TestTip20BlockstmExecution {
         let base_state = test_base_state(base_storage);
-        execute_tip20_transfer_plans_blockstm(txs, plans, &base_state, &t6_test_cfg(), 1, 1)
-            .unwrap()
+        let cfg = t6_test_cfg();
+        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
+        let mut executions = Vec::with_capacity(plans.len());
+        let mut actual_fees = Vec::with_capacity(plans.len());
+
+        for (tx_index, (tx, plan)) in txs.iter().zip(plans).enumerate() {
+            let mut execution =
+                execute_tip20_transfer_plan_with_deltas(tx_index, plan, &mut ledger, true, 1)
+                    .unwrap();
+            let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, &base_state, &cfg)
+                .unwrap();
+            let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, 1, true);
+            settle_actual_fee_with_deltas(
+                tx_index,
+                plan,
+                &mut execution,
+                &mut ledger,
+                actual_fee,
+                true,
+            )
+            .unwrap();
+
+            executions.push(execution);
+            actual_fees.push(actual_fee);
+        }
+
+        TestTip20BlockstmExecution {
+            txs: executions,
+            actual_fees,
+        }
     }
 
     #[test]
@@ -2684,7 +2657,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan =
-            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let Tip20BlockstmNonceAction::Expiring {
             replay_hash,
             valid_before: planned_valid_before,
@@ -2790,7 +2764,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan =
-            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
 
         assert_eq!(plan.fee_payer, SENDER);
         assert_eq!(plan.max_fee, U256::from(42_000));
@@ -2878,7 +2853,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan =
-            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let sender_balance = U256::from(1_000_000);
         let recipient_balance = U256::from(5);
         let collected_fees = U256::from(3);
@@ -2942,7 +2918,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan =
-            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let sender_balance = U256::from(1_000_000);
         let base_storage = HashMap::from([(
             balance_key(TOKEN, SENDER),
@@ -2983,7 +2960,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan =
-            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let sender_balance = U256::from(1_000_000);
         let recipient_balance = U256::from(5);
         let collected_fees = U256::from(3);
@@ -3038,7 +3016,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan_a =
-            build_tip20_transfer_plan(&tx_a, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx_a, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let (recovered_b, tx_env_b) = expiring_blockstm_tx_with_gas(
             vec![transfer_call(recipient_b, U256::from(20))],
             30,
@@ -3050,7 +3029,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan_b =
-            build_tip20_transfer_plan(&tx_b, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx_b, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let sender_balance = U256::from(1_000_000);
         let base_storage = HashMap::from([
             (
@@ -3109,7 +3089,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan_a =
-            build_tip20_transfer_plan(&tx_a, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx_a, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let (recovered_b, mut tx_env_b) = blockstm_tx_with_fee(
             ITIP20::transferCall {
                 to: recipient_b,
@@ -3126,7 +3107,8 @@ mod tests {
             fee_token: TOKEN,
         };
         let plan_b =
-            build_tip20_transfer_plan(&tx_b, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+            build_tip20_transfer_blockstm_plan(&tx_b, TOKEN, beneficiary, 1, 0, TempoHardfork::T6)
+                .unwrap();
         let sender_balance = U256::from(1_000_000);
         let base_storage = HashMap::from([
             (
@@ -3228,9 +3210,17 @@ mod tests {
                 recovered,
                 fee_token: token,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let beneficiary = blockstm_executor.evm().block().beneficiary;
+        let plans = batch
+            .iter()
+            .map(|tx| {
+                build_tip20_transfer_blockstm_plan(tx, token, beneficiary, 1, 0, TempoHardfork::T6)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         blockstm_executor
-            .execute_tip20_transfer_blockstm_batch(batch, token, |_, _| {})
+            .execute_tip20_transfer_blockstm_planned_batch(batch, plans, |_, _| {})
             .unwrap();
         assert_eq!(blockstm_executor.receipts().len(), batch_len);
 
