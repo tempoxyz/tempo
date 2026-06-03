@@ -659,37 +659,18 @@ where
         let mut proposal_context_wait_elapsed = Duration::ZERO;
 
         if let Some(ref handle) = trie_handle {
-            if attributes.consensus_context().is_none()
-                && let Some(control) = attributes.payload_build_control().cloned()
-            {
-                debug!(
-                    target: "payload_builder",
-                    id = %payload_id,
-                    parent_hash = %parent_header.hash(),
-                    parent_number = parent_header.number(),
-                    "flattening payload-builder sparse-trie updates until proposal context is attached"
-                );
-                executor.evm_mut().db_mut().set_state_hook(Some(Box::new(
-                    handle.state_hook_flatten_until(move || control.proposal_timing_attached()),
-                )));
-            } else if handle.is_deferred_parent_pending() {
-                debug!(
-                    target: "payload_builder",
-                    id = %payload_id,
-                    parent_hash = %parent_header.hash(),
-                    parent_number = parent_header.number(),
-                    "flattening payload-builder sparse-trie updates while parent validation is pending"
-                );
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook_flatten_while_deferred())));
-            } else {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
-            }
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                parent_hash = %parent_header.hash(),
+                parent_number = parent_header.number(),
+                deferred_parent_pending = handle.is_deferred_parent_pending(),
+                "streaming payload-builder sparse-trie updates; final state root remains gated"
+            );
+            executor
+                .evm_mut()
+                .db_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {

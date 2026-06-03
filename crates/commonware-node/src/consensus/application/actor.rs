@@ -143,6 +143,13 @@ struct SpeculativeBuild {
 }
 
 #[cfg(feature = "bal")]
+#[derive(Clone, Copy, Debug)]
+enum SpeculativeBuildSparseTrie {
+    Prepare,
+    Skip,
+}
+
+#[cfg(feature = "bal")]
 impl Drop for SpeculativeBuild {
     fn drop(&mut self) {
         self.build_control.cancel();
@@ -163,6 +170,52 @@ impl SpeculativeBuildRegistry {
         self.cancel_current_control(reason).await;
         if let Some(build) = self.active.lock().await.take() {
             Self::spawn_cancel(execution_node, build, reason);
+        }
+    }
+
+    fn request_stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        let mut needs_async_cleanup = false;
+
+        match self.current_control.try_lock() {
+            Ok(mut current_control) => {
+                if let Some(control) = current_control.take() {
+                    control.cancel();
+                    debug!(
+                        reason,
+                        "cancelled current speculative payload build control"
+                    );
+                }
+            }
+            Err(_) => {
+                needs_async_cleanup = true;
+                debug!(
+                    reason,
+                    "scheduling speculative payload build control cancellation"
+                );
+            }
+        }
+
+        match self.active.try_lock() {
+            Ok(mut active) => {
+                if let Some(build) = active.take() {
+                    Self::spawn_cancel(execution_node.clone(), build, reason);
+                }
+            }
+            Err(_) => {
+                needs_async_cleanup = true;
+                debug!(
+                    reason,
+                    "scheduling speculative payload build registry cleanup"
+                );
+            }
+        }
+
+        if needs_async_cleanup {
+            let registry = self.clone();
+            let task_executor = execution_node.task_executor.clone();
+            task_executor.spawn_task(async move {
+                registry.stop_active(execution_node, reason).await;
+            });
         }
     }
 
@@ -773,8 +826,7 @@ impl Inner<Init> {
         #[cfg(feature = "bal")]
         self.state
             .speculative_builds
-            .stop_active(self.execution_node.clone(), "new_handle_verify")
-            .await;
+            .request_stop_active(self.execution_node.clone(), "new_handle_verify");
 
         let result = select!(
             () = response.closed() => {
@@ -1107,6 +1159,11 @@ impl Inner<Init> {
                     build_control,
                     extra_data,
                     Some(consensus_context),
+                    if nullified_view_recovery {
+                        SpeculativeBuildSparseTrie::Skip
+                    } else {
+                        SpeculativeBuildSparseTrie::Prepare
+                    },
                     "missing_slot_handle_propose",
                 )
                 .await
@@ -1270,6 +1327,7 @@ impl Inner<Init> {
         build_control: PayloadBuildControl,
         extra_data: Bytes,
         consensus_context: Option<TempoConsensusContext>,
+        sparse_trie: SpeculativeBuildSparseTrie,
         reason: &'static str,
     ) -> eyre::Result<SpeculativeBuild> {
         self.state
@@ -1292,20 +1350,35 @@ impl Inner<Init> {
             .map(|tx| *tx.tx_hash())
             .collect::<Vec<_>>();
 
-        let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
-            &self.execution_node,
-            block.block(),
-            &block_access_list,
-        )
-        .await?;
-        debug!(
-            parent.digest = %block.digest(),
-            parent.height = %block.height(),
-            parent.hash = %block.block_hash(),
-            parent.state_root = %block.state_root(),
-            reason,
-            "prepared private BAL sparse-trie input for speculative payload build"
-        );
+        let (trie_handle, cache) = match sparse_trie {
+            SpeculativeBuildSparseTrie::Prepare => {
+                let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
+                    &self.execution_node,
+                    block.block(),
+                    &block_access_list,
+                )
+                .await?;
+                debug!(
+                    parent.digest = %block.digest(),
+                    parent.height = %block.height(),
+                    parent.hash = %block.block_hash(),
+                    parent.state_root = %block.state_root(),
+                    reason,
+                    "prepared private BAL sparse-trie input for speculative payload build"
+                );
+                (Some(trie_handle), cache)
+            }
+            SpeculativeBuildSparseTrie::Skip => {
+                debug!(
+                    parent.digest = %block.digest(),
+                    parent.height = %block.height(),
+                    parent.hash = %block.block_hash(),
+                    reason,
+                    "starting speculative BAL payload build without sparse-trie prepare"
+                );
+                (None, None)
+            }
+        };
 
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -1330,7 +1403,7 @@ impl Inner<Init> {
                     attributes: attrs,
                     parent_hash,
                     cache,
-                    trie_handle: Some(trie_handle),
+                    trie_handle,
                 });
 
         Ok(SpeculativeBuild {
@@ -1456,6 +1529,15 @@ impl Inner<Init> {
         block: &Block,
     ) -> eyre::Result<()> {
         let build_control = PayloadBuildControl::new(self.proposal_return_budget);
+        let sparse_trie = if block
+            .header()
+            .consensus_context
+            .is_some_and(|ctx| ctx.view > ctx.parent_view.saturating_add(1))
+        {
+            SpeculativeBuildSparseTrie::Skip
+        } else {
+            SpeculativeBuildSparseTrie::Prepare
+        };
         let build = self
             .dispatch_speculative_payload_build(
                 context,
@@ -1463,6 +1545,7 @@ impl Inner<Init> {
                 build_control,
                 Bytes::default(),
                 None,
+                sparse_trie,
                 "handle_verify",
             )
             .await?;
@@ -1492,6 +1575,8 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<bool> {
+        let block_fetch_start = Instant::now();
+        debug!("subscribing to proposal block for verification");
         let block_request = self
             .marshal
             .subscribe_by_digest(Some(round), payload)
@@ -1512,6 +1597,12 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed getting required blocks")?;
+        debug!(
+            elapsed = ?block_fetch_start.elapsed(),
+            block.height = %block.height(),
+            parent.height = %parent.height(),
+            "fetched proposal block and parent for verification"
+        );
 
         // Can only repropose at the end of an epoch.
         //
@@ -1549,10 +1640,13 @@ impl Inner<Init> {
         }
 
         #[cfg(feature = "bal")]
+        // Dispatch B+1 before validating B. Reth only snapshots B-1 synchronously; the BAL parent
+        // prep and B+1 execution run while B validation is in flight.
         self.start_speculative_build(&context, &block)
             .await
             .wrap_err("failed starting speculative BAL payload build")?;
 
+        debug!("validating proposal block against execution layer");
         if let Err(error) = self
             .state
             .executor

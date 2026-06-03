@@ -14,9 +14,9 @@ use crate::TempoFullNode;
 /// Requests Reth-owned inputs for a BAL speculative child build.
 ///
 /// Reth owns the live sparse-trie and state-trie-overlay state. For an unvalidated parent, Reth
-/// returns a deferred handle immediately and attaches a private sparse-trie snapshot after parent
-/// validation produces trie updates. Reth also returns a non-exclusive shared execution-cache view
-/// for the parent payload's base parent.
+/// returns a deferred handle immediately and attaches a private sparse-trie snapshot after preparing
+/// the parent's post-state from BAL or from an already validated parent. Reth also returns a
+/// non-exclusive shared execution-cache view for the parent payload's base parent.
 pub async fn speculative_bal_payload_builder_inputs(
     node: &TempoFullNode,
     speculative_parent_block: &SealedBlock<TempoBlock>,
