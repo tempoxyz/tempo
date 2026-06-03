@@ -336,9 +336,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
-        let state = UserState::from_storage_word(self.sload_inner(address, key, None)?, self.spec)?
-            .incremented(delta, flag)?;
-        let value = state.storage_word_for_spec(self.spec)?;
+        let state =
+            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+                .incremented(delta, flag)?;
+        let value = state.encode_storage_word(self.spec)?;
         self.sstore_inner(
             address,
             key,
@@ -356,9 +357,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
-        let state = UserState::from_storage_word(self.sload_inner(address, key, None)?, self.spec)?
-            .decremented(delta, flag)?;
-        let value = state.storage_word_for_spec(self.spec)?;
+        let state =
+            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+                .decremented(delta, flag)?;
+        let value = state.encode_storage_word(self.spec)?;
         self.sstore_inner(
             address,
             key,
