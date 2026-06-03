@@ -66,7 +66,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes, TempoStateAccess,
     Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
 };
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
@@ -742,6 +742,25 @@ where
                         }
                         Ok(false) => {
                             break stop_reason.unwrap_or(BlockBuildStopReason::GasLimit);
+                        }
+                        Err(Tip20TransferBlockstmExecutionError::Fallback(
+                            Tip20TransferBlockstmFallback::ExpiringNonceReplay,
+                        )) => {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                                    TempoInvalidTransaction::NonceManagerError(
+                                        "replayed expiring nonce".to_string(),
+                                    ),
+                                )),
+                            );
+                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?pool_tx.hash(),
+                                "Skipping BlockSTM TIP-20 transaction with replayed expiring nonce"
+                            );
+                            continue;
                         }
                         Err(Tip20TransferBlockstmExecutionError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
