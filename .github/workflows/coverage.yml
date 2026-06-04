@@ -90,12 +90,14 @@ jobs:
         uses: dawidd6/action-download-artifact@8305c0f1062bb0d184d09ef4493ecb9288447732 # v20
         with:
           workflow: test.yml
-          name: cargo-test-coverage
+          # test.yml uploads partitioned artifacts: cargo-test-coverage-1, cargo-test-coverage-2.
+          # Match both with a regex so both partitions' profdata + test binaries are merged.
+          name: cargo-test-coverage-.*
+          name_is_regexp: true
           path: cargo-coverage
-          if_no_artifact_found: warn
+          if_no_artifact_found: fail
           search_artifacts: true
           commit: ${{ inputs.commit_sha }}
-        continue-on-error: true
 
       - name: Download forge test coverage
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -112,21 +114,23 @@ jobs:
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage-report
 
-          # Collect profdata files
+          # Collect profdata files.
+          # Cargo profdata lives at cargo-coverage/<artifact-name>/cargo-test.profdata
+          # (one per nextest partition); merge all of them.
+          shopt -s nullglob globstar
           PROFDATA_FILES=""
-          if [[ -f cargo-coverage/cargo-test.profdata ]]; then
-            PROFDATA_FILES="$PROFDATA_FILES cargo-coverage/cargo-test.profdata"
-            echo "Found cargo test coverage"
-          fi
+          for f in cargo-coverage/**/cargo-test.profdata; do
+            PROFDATA_FILES="$PROFDATA_FILES $f"
+            echo "Found cargo test coverage: $f"
+          done
           if [[ -f forge-coverage/coverage/forge-test.profdata ]]; then
             PROFDATA_FILES="$PROFDATA_FILES forge-coverage/coverage/forge-test.profdata"
             echo "Found forge test coverage"
           fi
 
           if [[ -z "$PROFDATA_FILES" ]]; then
-            echo "No coverage data found"
-            echo "No coverage data available" > coverage-report/summary.txt
-            exit 0
+            echo "::error::No cargo or forge coverage artifacts found"
+            exit 1
           fi
 
           # Merge profdata
@@ -138,14 +142,13 @@ jobs:
             chmod +x forge-coverage/foundry/target/release/forge
             OBJECT_FLAGS="$OBJECT_FLAGS --object=forge-coverage/foundry/target/release/forge"
           fi
-          if [[ -d cargo-coverage/precompiles-bin ]]; then
-            for bin in cargo-coverage/precompiles-bin/*; do
-              if [[ -f "$bin" ]]; then
-                chmod +x "$bin"
-                OBJECT_FLAGS="$OBJECT_FLAGS --object=$bin"
-              fi
-            done
-          fi
+          # Per-partition test binaries have different hash suffixes; include
+          # all of them so llvm-cov can resolve coverage from either binary.
+          for bin in cargo-coverage/**/precompiles-bin/*; do
+            [[ -f "$bin" ]] || continue
+            chmod +x "$bin"
+            OBJECT_FLAGS="$OBJECT_FLAGS --object=$bin"
+          done
 
           if [[ -z "$OBJECT_FLAGS" ]]; then
             echo "No binaries found"

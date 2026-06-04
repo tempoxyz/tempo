@@ -1,4 +1,5 @@
 //! Tempo precompile implementations.
+// No-op edit to trigger precompiles coverage workflow on this PR.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
