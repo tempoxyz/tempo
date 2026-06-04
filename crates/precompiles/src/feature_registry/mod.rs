@@ -84,7 +84,7 @@ impl FeatureRegistry {
         msg_sender: Address,
         call: IFeatureRegistry::setSupportedFeaturesTipCall,
     ) -> Result<()> {
-        if msg_sender != SYSTEM_CALLER_ADDRESS {
+        if !msg_sender.is_zero() {
             return Err(FeatureRegistryError::unauthorized().into());
         }
 

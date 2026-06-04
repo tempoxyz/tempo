@@ -535,7 +535,7 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
 
             registry.set_supported_features_tip(
-                SYSTEM_CALLER_ADDRESS,
+                Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
                     validator,
                     featuresTip: 13,
@@ -557,7 +557,7 @@ mod tests {
             registry.validator_supported_features_tip[validator].write(13)?;
 
             let result = registry.set_supported_features_tip(
-                SYSTEM_CALLER_ADDRESS,
+                Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
                     validator,
                     featuresTip: 12,
@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_rejects_non_system_caller() -> eyre::Result<()> {
+    fn set_supported_features_tip_rejects_non_system_tx_sender() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
@@ -649,7 +649,8 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_sets_validator_report_from_system() -> eyre::Result<()> {
+    fn set_supported_features_tip_dispatch_sets_validator_report_from_system_tx_sender()
+    -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
@@ -659,7 +660,7 @@ mod tests {
                 validator,
                 featuresTip: 34,
             };
-            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
 
@@ -668,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_rejects_non_system_caller() -> eyre::Result<()> {
+    fn set_supported_features_tip_dispatch_rejects_non_system_tx_sender() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
@@ -701,7 +702,7 @@ mod tests {
                 validator,
                 featuresTip: 33,
             };
-            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(result.is_revert());
             let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
             assert_eq!(

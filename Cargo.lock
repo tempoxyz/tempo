@@ -13309,6 +13309,7 @@ dependencies = [
  "reth-transaction-pool",
  "reth-trie-common",
  "tempo-chainspec",
+ "tempo-contracts",
  "tempo-evm",
  "tempo-payload-types",
  "tempo-precompiles",
