@@ -562,11 +562,7 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut blockstm_completed_stop_reason = None;
         if self.enable_blockstm_tip20_transfers {
-            if self.enable_bal {
-                return Err(PayloadBuilderError::other(
-                    blockstm::PayloadBuildError::Unsupported("bal_enabled"),
-                ));
-            } else if !subblocks.is_empty() {
+            if !subblocks.is_empty() {
                 return Err(PayloadBuilderError::other(
                     blockstm::PayloadBuildError::Unsupported("subblocks"),
                 ));
