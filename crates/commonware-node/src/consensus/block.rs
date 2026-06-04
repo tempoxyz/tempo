@@ -20,6 +20,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
+use std::sync::OnceLock;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -59,10 +60,12 @@ impl BlockAccessListError {
 // XXX: This is a refinement type around a reth [`SealedBlock`]
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Block {
     /// The execution-layer block.
     execution_block: SealedBlock<tempo_primitives::Block>,
+    /// Cached execution-layer RLP size when it is already known by the caller.
+    execution_block_encoded_size: OnceLock<usize>,
     /// Optional block access list. Only provided if the network supports BALs.
     #[cfg(feature = "bal")]
     block_access_list: Option<Bytes>,
@@ -85,6 +88,19 @@ impl Block {
         ))
     }
 
+    /// Creates a block and seeds the cached execution-layer RLP size.
+    pub(crate) fn from_execution_block_with_encoded_size(
+        execution_block: SealedBlock<tempo_primitives::Block>,
+        block_access_list: Option<Bytes>,
+        execution_block_encoded_size: usize,
+    ) -> Result<Self, BlockAccessListError> {
+        let block = Self::from_execution_block(execution_block, block_access_list)?;
+        let _ = block
+            .execution_block_encoded_size
+            .set(execution_block_encoded_size);
+        Ok(block)
+    }
+
     /// Creates a block without checking that BAL bytes match the header.
     ///
     /// This is for reconstructing blocks from persisted EL data that does not include
@@ -99,6 +115,7 @@ impl Block {
 
         Self {
             execution_block,
+            execution_block_encoded_size: OnceLock::new(),
             #[cfg(feature = "bal")]
             block_access_list,
         }
@@ -162,6 +179,23 @@ impl Block {
     }
 }
 
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_block == other.execution_block && {
+            #[cfg(feature = "bal")]
+            {
+                self.block_access_list == other.block_access_list
+            }
+            #[cfg(not(feature = "bal"))]
+            {
+                true
+            }
+        }
+    }
+}
+
+impl Eq for Block {}
+
 impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
 
@@ -207,7 +241,8 @@ impl Read for Block {
             // have the fidelity for it (outside abusing Error::Wrapped).
             return Err(commonware_codec::Error::EndOfBuffer);
         }
-        let bytes = buf.copy_to_bytes(header.length_with_payload());
+        let execution_block_encoded_size = header.length_with_payload();
+        let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
         // TODO: decode straight to a reth SealedBlock once released:
         // https://github.com/paradigmxyz/reth/pull/18003
@@ -233,28 +268,36 @@ impl Read for Block {
         #[cfg(not(feature = "bal"))]
         let block_access_list = None;
 
-        Self::from_execution_block(inner, block_access_list).map_err(|err| err.codec_error())
+        Self::from_execution_block_with_encoded_size(
+            inner,
+            block_access_list,
+            execution_block_encoded_size,
+        )
+        .map_err(|err| err.codec_error())
     }
 }
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
+        let execution_block_size = *self
+            .execution_block_encoded_size
+            .get_or_init(|| self.execution_block.length());
+
         #[cfg(feature = "bal")]
         {
-            let mut size = self.execution_block.length();
-            size += if self.execution_block.block_access_list_hash().is_some() {
-                self.block_access_list
-                    .as_ref()
-                    .expect("BAL bytes must be present when header contains a BAL hash")
-                    .encode_size()
-            } else {
-                0
-            };
-            size
+            execution_block_size
+                + if self.execution_block.block_access_list_hash().is_some() {
+                    self.block_access_list
+                        .as_ref()
+                        .expect("BAL bytes must be present when header contains a BAL hash")
+                        .encode_size()
+                } else {
+                    0
+                }
         }
         #[cfg(not(feature = "bal"))]
         {
-            self.execution_block.length()
+            execution_block_size
         }
     }
 }

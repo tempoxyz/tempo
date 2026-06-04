@@ -357,12 +357,21 @@ jobs:
               RETH_LOG=$(gh api "repos/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}" \
                 --jq '[.commits[] | "- " + (.commit.message | split("\n")[0])] | join("\n")' 2>/dev/null || true)
               if [ -n "$RETH_LOG" ]; then
+                set +e
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
                   grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
                   When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
-                  Do NOT include any preamble or explanation, just the grouped bullet list.")
-                echo "$RETH_SUMMARY"
+                  Do NOT include any preamble or explanation, just the grouped bullet list." 2>&1)
+                RETH_SUMMARY_EXIT=$?
+                set -e
+                if [ "$RETH_SUMMARY_EXIT" -eq 0 ]; then
+                  echo "$RETH_SUMMARY"
+                else
+                  echo "::warning::Failed to summarize upstream reth commits with Amp (exit $RETH_SUMMARY_EXIT)"
+                  echo "$RETH_SUMMARY"
+                  echo "$RETH_LOG"
+                fi
                 echo ""
               fi
             fi
@@ -372,10 +381,19 @@ jobs:
             if [ -n "$SOURCE_DIFF" ]; then
               echo "## Migrations"
               echo ""
+              set +e
               SUMMARY=$(echo "$SOURCE_DIFF" | amp-run -x "Summarize the following code changes as a concise markdown bullet list. \
                 Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
-                Do NOT include any preamble or explanation, just the bullet list.")
-              echo "$SUMMARY"
+                Do NOT include any preamble or explanation, just the bullet list." 2>&1)
+              SUMMARY_EXIT=$?
+              set -e
+              if [ "$SUMMARY_EXIT" -eq 0 ]; then
+                echo "$SUMMARY"
+              else
+                echo "::warning::Failed to summarize source migrations with Amp (exit $SUMMARY_EXIT)"
+                echo "$SUMMARY"
+                git diff --stat origin/main -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true
+              fi
               echo ""
             fi
 
@@ -392,17 +410,40 @@ jobs:
           # Check for existing PR
           EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
 
+          echo "PR title: $TITLE"
+          echo "Commits ahead: $COMMITS_AHEAD"
+          echo "Existing PR: ${EXISTING_PR:-none}"
+          echo "::group::Existing PRs for reth-auto-bump"
+          gh pr list --head reth-auto-bump --base main --state all || true
+          echo "::endgroup::"
+
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
-            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt
+            set +e
+            PR_OUTPUT=$(gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt 2>&1)
+            PR_EXIT=$?
+            set -e
+            echo "$PR_OUTPUT"
+            if [ "$PR_EXIT" -ne 0 ]; then
+              echo "::error::gh pr edit failed with exit code $PR_EXIT"
+              exit "$PR_EXIT"
+            fi
           else
             echo "Creating new PR"
-            gh pr create \
+            set +e
+            PR_OUTPUT=$(gh pr create \
               --base main \
               --head reth-auto-bump \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
-              --label A-dependencies
+              --label A-dependencies 2>&1)
+            PR_EXIT=$?
+            set -e
+            echo "$PR_OUTPUT"
+            if [ "$PR_EXIT" -ne 0 ]; then
+              echo "::error::gh pr create failed with exit code $PR_EXIT"
+              exit "$PR_EXIT"
+            fi
           fi
 
       # ── wait for CI and fix failures ─────────────────────────

@@ -28,6 +28,13 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
+    "--rpc.max-connections" "10000"
+    "--txpool.pending-max-count" "200000"
+    "--txpool.basefee-max-count" "200000"
+    "--txpool.queued-max-count" "200000"
+    "--txpool.max-pending-txns" "200000"
+    "--txpool.max-new-txns" "200000"
+    "--txpool.max-batch-size" "200000"
 ]
 
 def merge-e2e-features [...features: string] {
@@ -531,6 +538,13 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
+    let signing_key_contents = (open --raw $signing_key | into binary)
+    let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
+    let signing_secret_args = if $signing_key_is_encrypted {
+        ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
+    } else {
+        []
+    }
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
@@ -539,6 +553,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     [
         "--consensus.signing-key" $signing_key
+        ...$signing_secret_args
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
@@ -1075,6 +1090,7 @@ def e2e-write-summary-config [
     duration: int
     benchmark_id: string
     reference_epoch: int
+    summary_warmup_blocks: int
     baseline_hardfork: string
     feature_hardfork: string
     baseline_removed_args: string
@@ -1089,6 +1105,7 @@ def e2e-write-summary-config [
         duration: $duration
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        summary_warmup_blocks: $summary_warmup_blocks
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
         baseline_removed_args: $baseline_removed_args
@@ -1106,7 +1123,8 @@ def e2e-generate-summary [results_dir: string] {
     let config = (open $config_path)
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
-    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+    let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
@@ -1140,10 +1158,11 @@ def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
-    --tps: int = 20000                                  # Target TPS
+    --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
+    --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
@@ -1190,6 +1209,10 @@ def "main e2e" [
     }
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $summary_warmup_blocks < 0 {
+        print "Error: --summary-warmup-blocks must be non-negative"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1516,7 +1539,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

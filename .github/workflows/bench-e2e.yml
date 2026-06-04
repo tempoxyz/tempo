@@ -58,6 +58,7 @@ on:
         default: tip20
         options:
           - tip20
+          - tip20_2d_nonces
           - tip20_random_recipients
           - tip20_existing_recipients
           - mpp
@@ -80,7 +81,7 @@ on:
         description: Target transactions per second.
         type: string
         required: true
-        default: "20000"
+        default: "50000"
       accounts:
         description: Number of benchmark accounts.
         type: string
@@ -188,7 +189,7 @@ on:
       tps:
         type: string
         required: false
-        default: "20000"
+        default: "50000"
       accounts:
         type: string
         required: false
@@ -370,7 +371,7 @@ jobs:
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '500' }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}

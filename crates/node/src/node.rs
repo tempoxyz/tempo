@@ -17,7 +17,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
@@ -34,7 +34,9 @@ use reth_rpc_eth_api::{
 };
 use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use reth_transaction_pool::{
+    Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
@@ -46,6 +48,7 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    ordering::TempoTipOrdering,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -501,9 +504,12 @@ where
                 amm_liquidity_cache.clone(),
             )
         });
-        let protocol_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build(blob_store, pool_config.clone());
+        let protocol_pool = Pool::new(
+            validator,
+            TempoTipOrdering::default(),
+            blob_store,
+            pool_config.clone(),
+        );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
         let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);

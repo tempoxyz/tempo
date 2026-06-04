@@ -227,7 +227,7 @@ async fn test_tip1059_discounted_payment_receipts_and_fees() -> eyre::Result<()>
     let tx_hash = token
         .transfer(recipient, U256::from(1))
         .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
+        .gas(250_000)
         .send()
         .await?
         .watch()
@@ -260,7 +260,7 @@ async fn test_tip1059_discounted_payment_receipts_and_fees() -> eyre::Result<()>
         .transfer(recipient, U256::from(1))
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128 + PRIORITY_FEE)
         .max_priority_fee_per_gas(PRIORITY_FEE)
-        .gas(1_000_000)
+        .gas(250_000)
         .send()
         .await?
         .watch()
