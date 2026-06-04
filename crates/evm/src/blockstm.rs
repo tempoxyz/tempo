@@ -17,10 +17,7 @@ use reth_revm::{
     interpreter::InitialAndFloorGas,
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-};
+use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{
     constants::gas::tempo_t6_discounted_payment_effective_gas_price, hardfork::TempoHardfork,
 };
@@ -170,7 +167,6 @@ pub struct Tip20TransferBlockstmPlan {
     fee_reserve: Tip20FeeReserveAction,
     transfer: Tip20TransferAction,
     fee_settle: Tip20FeeSettleAction,
-    accesses: Tip20TransferBlockstmPlanAccesses,
 }
 
 impl Tip20TransferBlockstmPlan {
@@ -180,100 +176,55 @@ impl Tip20TransferBlockstmPlan {
         transfer: Tip20TransferAction,
         fee_settle: Tip20FeeSettleAction,
     ) -> Self {
-        let accesses =
-            Tip20TransferBlockstmPlanAccesses::new(&nonce, &fee_reserve, &transfer, &fee_settle);
         Self {
             nonce,
             fee_reserve,
             transfer,
             fee_settle,
-            accesses,
         }
     }
 
-    fn base_accesses(&self) -> &Tip20BlockstmBaseAccesses {
-        &self.accesses.base
+    fn read_set(&self) -> impl Iterator<Item = StorageKey> + '_ {
+        self.nonce
+            .read_set()
+            .chain(self.fee_reserve.read_set())
+            .chain(self.transfer.read_set())
+            .chain(self.fee_settle.read_set())
     }
 
-    fn read_set(&self) -> &[StorageKey] {
-        &self.accesses.read_set
+    fn write_set(&self) -> impl Iterator<Item = StorageKey> + '_ {
+        self.nonce
+            .write_set()
+            .chain(self.fee_reserve.write_set())
+            .chain(self.transfer.write_set())
+            .chain(self.fee_settle.write_set())
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Tip20TransferBlockstmPlanAccesses {
-    read_set: Box<[StorageKey]>,
-    write_set: Box<[StorageKey]>,
-    base: Tip20BlockstmBaseAccesses,
-}
-
-impl Tip20TransferBlockstmPlanAccesses {
-    fn new(
-        nonce: &Tip20ExpiringNonceAction,
-        fee_reserve: &Tip20FeeReserveAction,
-        transfer: &Tip20TransferAction,
-        fee_settle: &Tip20FeeSettleAction,
-    ) -> Self {
-        let read_set = unique_values(
-            nonce
-                .read_set()
-                .chain(fee_reserve.read_set())
-                .chain(transfer.read_set())
-                .chain(fee_settle.read_set()),
-        );
-        let write_set = unique_values(
-            nonce
-                .write_set()
-                .chain(fee_reserve.write_set())
-                .chain(transfer.write_set())
-                .chain(fee_settle.write_set()),
-        );
-        let storage = unique_values(read_set.iter().copied().chain(write_set.iter().copied()));
-        let accounts = unique_values(storage.iter().map(|key| key.address).chain([nonce.caller]));
-
-        Self {
-            read_set,
-            write_set,
-            base: Tip20BlockstmBaseAccesses { storage, accounts },
-        }
+    fn base_storage_keys(&self) -> impl Iterator<Item = StorageKey> + '_ {
+        self.read_set().chain(self.write_set())
     }
-}
 
-fn unique_values<T>(values: impl IntoIterator<Item = T>) -> Box<[T]>
-where
-    T: Copy + Eq + Hash,
-{
-    let mut unique = Vec::new();
-    let mut seen = HashSet::new();
-    for value in values {
-        if seen.insert(value) {
-            unique.push(value);
-        }
+    fn base_accounts(&self) -> impl Iterator<Item = Address> + '_ {
+        self.base_storage_keys()
+            .map(|key| key.address)
+            .chain([self.nonce.caller])
     }
-    unique.into_boxed_slice()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Tip20BlockstmBaseAccesses {
-    storage: Box<[StorageKey]>,
-    accounts: Box<[Address]>,
 }
 
 pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
     db: &mut DB,
     plan: &Tip20TransferBlockstmPlan,
 ) -> Result<(), DB::Error> {
-    let accesses = plan.base_accesses();
     let nonce_ring_ptr_key = expiring_nonce_ring_ptr_key();
 
-    for key in accesses.storage.iter().copied() {
+    for key in plan.base_storage_keys() {
         if key == nonce_ring_ptr_key {
             continue;
         }
         let _ = db.storage(key.address, key.slot)?;
     }
 
-    for account in accesses.accounts.iter().copied() {
+    for account in plan.base_accounts() {
         let _ = db.basic(account)?;
     }
 
@@ -586,12 +537,9 @@ where
         plan: &Tip20TransferBlockstmPlan,
         block_timestamp: u64,
     ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmExecutionError> {
-        let accesses = plan.base_accesses();
-
-        let mut storage = HashMap::with_capacity(accesses.storage.len());
-        for key in accesses.storage.iter().copied() {
-            let value = self.read_storage(key.address, key.slot)?;
-            storage.insert(key, value);
+        let mut storage = HashMap::new();
+        for key in plan.base_storage_keys() {
+            let _ = self.read_base_storage(&mut storage, key)?;
         }
         read_expiring_nonce_base_storage(
             plan,
@@ -605,8 +553,11 @@ where
             },
         )?;
 
-        let mut account_infos = HashMap::with_capacity(accesses.accounts.len());
-        for account in accesses.accounts.iter().copied() {
+        let mut account_infos = HashMap::new();
+        for account in plan.base_accounts() {
+            if account_infos.contains_key(&account) {
+                continue;
+            }
             let info = self.read_account_info(account)?;
             account_infos.insert(account, info);
         }
@@ -771,11 +722,14 @@ fn execute_tip20_transfer_plan_with_deltas(
     block_timestamp: u64,
 ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmFallback> {
     let mut execution = Tip20BlockstmTxExecution {
-        reads: HashMap::with_capacity(plan.read_set().len()),
-        writes: HashMap::with_capacity(plan.accesses.write_set.len()),
+        reads: HashMap::new(),
+        writes: HashMap::new(),
     };
 
-    for key in plan.read_set().iter().copied() {
+    for key in plan.read_set() {
+        if execution.reads.contains_key(&key) {
+            continue;
+        }
         let value = ledger.read(key);
         execution.reads.insert(key, value);
     }
@@ -2702,19 +2656,36 @@ mod tests {
         assert_eq!(plan.fee_settle.fee_payer, SENDER);
         assert_eq!(plan.fee_settle.beneficiary, beneficiary);
 
-        let read_set = plan.read_set();
-        assert!(read_set.contains(&receive_policy_key(recipient)));
-        assert!(read_set.contains(&collected_fees_key(beneficiary, TOKEN)));
-        assert!(read_set.contains(&StorageKey {
-            address: TOKEN,
-            slot: tip20_slots::TRANSFER_POLICY_ID,
-        }));
+        assert!(
+            plan.read_set()
+                .any(|key| key == receive_policy_key(recipient))
+        );
+        assert!(
+            plan.read_set()
+                .any(|key| key == collected_fees_key(beneficiary, TOKEN))
+        );
+        assert!(plan.read_set().any(|key| key
+            == StorageKey {
+                address: TOKEN,
+                slot: tip20_slots::TRANSFER_POLICY_ID,
+            }));
 
-        let write_set = &plan.accesses.write_set;
-        assert!(write_set.contains(&balance_key(TOKEN, SENDER)));
-        assert!(write_set.contains(&balance_key(TOKEN, recipient)));
-        assert!(write_set.contains(&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)));
-        assert!(write_set.contains(&collected_fees_key(beneficiary, TOKEN)));
+        assert!(
+            plan.write_set()
+                .any(|key| key == balance_key(TOKEN, SENDER))
+        );
+        assert!(
+            plan.write_set()
+                .any(|key| key == balance_key(TOKEN, recipient))
+        );
+        assert!(
+            plan.write_set()
+                .any(|key| key == balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS))
+        );
+        assert!(
+            plan.write_set()
+                .any(|key| key == collected_fees_key(beneficiary, TOKEN))
+        );
     }
 
     #[test]
