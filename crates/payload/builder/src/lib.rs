@@ -751,6 +751,26 @@ where
                             );
                             continue;
                         }
+                        Err(Tip20TransferBlockstmExecutionError::Fallback(
+                            Tip20TransferBlockstmFallback::InsufficientBalance,
+                        )) => {
+                            planner.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::InsufficientFunds(
+                                        (U256::ZERO, pool_tx.transaction.fee_token_cost()).into(),
+                                    ),
+                                ),
+                            );
+                            invalid_pool_transaction_execution_attempts += 1;
+                            self.metrics.inc_pool_tx_skipped("insufficient_balance");
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?pool_tx.hash(),
+                                "Skipping BlockSTM TIP-20 transaction with insufficient balance"
+                            );
+                            continue;
+                        }
                         Err(Tip20TransferBlockstmExecutionError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                             let blockstm_elapsed = blockstm_start.elapsed();
