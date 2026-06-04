@@ -7,6 +7,7 @@ use std::sync::{
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_errors::ProviderResult;
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
@@ -15,6 +16,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_payload_types::SpeculativePayloadParent;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
@@ -44,7 +46,9 @@ impl BestTransactionsPrewarming {
         executor: TaskExecutor,
         provider: Provider,
         cache: Option<SavedCache>,
+        local_cache: Option<SavedCache>,
         cache_fill_on_miss: bool,
+        speculative_parent: Option<SpeculativePayloadParent>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
@@ -60,7 +64,9 @@ impl BestTransactionsPrewarming {
             provider,
             parent_hash,
             cache,
+            local_cache,
             cache_fill_on_miss,
+            speculative_parent,
             evm_env,
             stop: stop.clone(),
         };
@@ -310,7 +316,9 @@ struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     cache: Option<SavedCache>,
+    local_cache: Option<SavedCache>,
     cache_fill_on_miss: bool,
+    speculative_parent: Option<SpeculativePayloadParent>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
 }
@@ -320,7 +328,7 @@ where
     Provider: StateProviderFactory + Clone + 'static,
 {
     fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.state_provider_for_ctx() {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -333,6 +341,46 @@ where
             }
         };
 
+        let state_provider = StateProviderDatabase::new(state_provider);
+        let mut evm_env = self.evm_env.clone();
+        evm_env.cfg_env.disable_nonce_check = true;
+        evm_env.cfg_env.disable_balance_check = true;
+
+        Some(TempoEvm::new(state_provider, evm_env))
+    }
+
+    fn state_provider_for_ctx(&self) -> ProviderResult<StateProviderBox> {
+        #[cfg(feature = "bal")]
+        if let Some(speculative_parent) = &self.speculative_parent {
+            let mut state_provider = self
+                .provider
+                .state_by_block_hash(speculative_parent.base_parent_hash())?;
+
+            if let Some(cache) = &self.cache {
+                state_provider = Box::new(CachedStateProvider::new(
+                    state_provider,
+                    cache.cache().clone(),
+                    None,
+                ));
+            }
+
+            state_provider = Box::new(crate::bal_overlay::BalOverlayStateProvider::new(
+                state_provider,
+                speculative_parent.parent_header(),
+                speculative_parent.block_access_list().clone(),
+            )?);
+
+            if let Some(cache) = &self.local_cache {
+                state_provider = Box::new(CachedStateProvider::new_prewarm(
+                    state_provider,
+                    cache.cache().clone(),
+                ));
+            }
+
+            return Ok(state_provider);
+        }
+
+        let mut state_provider = self.provider.state_by_block_hash(self.parent_hash)?;
         if let Some(cache) = &self.cache {
             state_provider = if self.cache_fill_on_miss {
                 Box::new(CachedStateProvider::new_prewarm(
@@ -348,12 +396,7 @@ where
             };
         }
 
-        let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
-        evm_env.cfg_env.disable_nonce_check = true;
-        evm_env.cfg_env.disable_balance_check = true;
-
-        Some(TempoEvm::new(state_provider, evm_env))
+        Ok(state_provider)
     }
 
     fn is_stopped(&self) -> bool {
@@ -867,7 +910,9 @@ mod tests {
             executor.clone(),
             provider,
             None,
+            None,
             true,
+            None,
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),

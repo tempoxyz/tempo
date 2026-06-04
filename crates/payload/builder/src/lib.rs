@@ -34,6 +34,8 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+#[cfg(feature = "bal")]
+use reth_engine_tree::tree::CacheFillMode;
 use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
@@ -483,6 +485,23 @@ where
             cfg!(feature = "bal") && attributes.speculative_parent().is_some();
         // Speculative BAL prewarm may share validation's cache, so it can read but must not fill.
         let prewarm_cache_fill_on_miss = !cache_wrapped_under_bal;
+        let builder_local_cache = if cache_wrapped_under_bal {
+            execution_cache.as_ref().map(|cache| {
+                let cache_create_start = Instant::now();
+                let local_cache = cache.empty_like(parent_header.hash());
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    elapsed = ?cache_create_start.elapsed(),
+                    "created builder-local execution cache overlay for speculative BAL payload"
+                );
+                local_cache
+            })
+        } else {
+            None
+        };
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
@@ -501,16 +520,27 @@ where
                 Box::new(CachedStateProvider::new(
                     base_provider,
                     execution_cache.cache().clone(),
-                    Some(self.cache_metrics.clone()),
+                    None,
                 )) as reth_storage_api::StateProviderBox
             } else {
                 base_provider
             };
-            Box::new(bal_overlay::BalOverlayStateProvider::new(
+            let state_provider = Box::new(bal_overlay::BalOverlayStateProvider::new(
                 base_provider,
                 speculative_parent.parent_header(),
                 speculative_parent.block_access_list().clone(),
-            )?) as reth_storage_api::StateProviderBox
+            )?) as reth_storage_api::StateProviderBox;
+            if let Some(cache) = &builder_local_cache {
+                Box::new(CachedStateProvider::new_with_mode(
+                    state_provider,
+                    cache.cache().clone(),
+                    CacheFillMode::FillOnMiss,
+                    Some(self.cache_metrics.clone()),
+                    None,
+                )) as reth_storage_api::StateProviderBox
+            } else {
+                state_provider
+            }
         } else {
             self.provider.state_by_block_hash(parent_header.hash())?
         };
@@ -713,7 +743,9 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
+                builder_local_cache.clone(),
                 prewarm_cache_fill_on_miss,
+                attributes.speculative_parent().cloned(),
                 prewarm_parent_hash,
                 executor.evm().evm_env(),
                 best_txs,
