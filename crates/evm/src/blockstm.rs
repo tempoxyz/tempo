@@ -3,7 +3,7 @@ use alloy_evm::{
     Evm, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor},
 };
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U256, map::HashMap};
 use alloy_sol_types::SolInterface;
 use reth_evm::block::StateDB;
 use reth_primitives_traits::Recovered;
@@ -12,7 +12,6 @@ use reth_revm::{
     context::{Transaction as _, result::ExecutionResult},
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
