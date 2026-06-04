@@ -13350,7 +13350,6 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
- "ed25519-consensus",
  "eyre",
  "p256",
  "proptest",
