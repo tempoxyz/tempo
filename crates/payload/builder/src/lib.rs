@@ -588,7 +588,7 @@ where
                     },
                     PrewarmingExecutionContext::new(
                         self.provider.clone(),
-                        execution_cache.clone(),
+                        execution_cache,
                         parent_header.hash(),
                         executor.evm().evm_env(),
                         Arc::new(AtomicBool::new(false)),

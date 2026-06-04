@@ -1263,13 +1263,8 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm_with_actions(
-                journal,
-                &block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
+            let result =
+                StorageCtx::enter_evm_with_actions(journal, &block, cfg, tx, actions, || {
                     TipFeeManager::new().collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
@@ -1277,8 +1272,7 @@ where
                         block.beneficiary(),
                         skip_liquidity_check,
                     )
-                },
-            );
+                });
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.

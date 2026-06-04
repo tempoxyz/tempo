@@ -130,6 +130,7 @@ struct StorageKey {
 #[derive(Debug, Default)]
 pub struct Tip20ActionReplayState {
     writes: HashMap<StorageKey, WriteKind>,
+    changes: HashMap<StorageKey, SlotChange>,
 }
 
 impl Tip20ActionReplayState {
@@ -156,6 +157,7 @@ enum WriteKind {
     Delta,
 }
 
+#[derive(Debug)]
 struct SlotChange {
     original: U256,
     current: U256,
@@ -330,7 +332,7 @@ fn validate_direct_recipient(to: Address) -> Result<(), Tip20TransferBlockstmFal
 fn action_replay_state<DB: StateDB>(
     db: &mut DB,
     actions: &[EvmAction],
-    replay_state: &Tip20ActionReplayState,
+    replay_state: &mut Tip20ActionReplayState,
     spec: TempoHardfork,
 ) -> Result<AppliedActionReplay, Tip20TransferBlockstmExecutionError> {
     if actions.is_empty() {
@@ -339,8 +341,6 @@ fn action_replay_state<DB: StateDB>(
         ));
     }
 
-    let mut changes = HashMap::<StorageKey, SlotChange>::default();
-
     for action in actions {
         match *action {
             EvmAction::Sload(address, slot) => {
@@ -348,24 +348,24 @@ fn action_replay_state<DB: StateDB>(
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
                 }
-                let _ = action_current_value(db, &mut changes, key)?;
+                let _ = action_current_value(db, &mut replay_state.changes, key)?;
             }
             EvmAction::Sstore(address, slot, value) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_write(key) {
                     return Err(action_conflict());
                 }
-                action_write_value(db, &mut changes, key, value, WriteKind::Store)?;
+                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Store)?;
             }
             EvmAction::Sinc(address, slot, delta) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
                 }
-                let value = action_current_value(db, &mut changes, key)?
+                let value = action_current_value(db, &mut replay_state.changes, key)?
                     .checked_add(delta)
                     .ok_or_else(balance_overflow)?;
-                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
+                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
             }
             EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -373,13 +373,13 @@ fn action_replay_state<DB: StateDB>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut changes, key)?,
+                    action_current_value(db, &mut replay_state.changes, key)?,
                     spec,
                     delta,
                     flag,
                     true,
                 )?;
-                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
+                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
             }
             EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -387,20 +387,20 @@ fn action_replay_state<DB: StateDB>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut changes, key)?,
+                    action_current_value(db, &mut replay_state.changes, key)?,
                     spec,
                     delta,
                     flag,
                     false,
                 )?;
-                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
+                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
             }
         }
     }
 
     let mut state = EvmState::default();
     let mut writes = Vec::new();
-    for (key, change) in changes {
+    for (key, change) in replay_state.changes.drain() {
         let Some(write_kind) = change.write_kind else {
             continue;
         };
