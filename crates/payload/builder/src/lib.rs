@@ -792,6 +792,7 @@ where
         };
         let marshal_persist = marshal_persist_estimate();
         let mut proposal_timing_attached_elapsed = None;
+        let mut attempted_best_txs_next = false;
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -814,9 +815,17 @@ where
                     marshal_persist,
                     block_size_used,
                 ) {
+                    let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
+                        && is_budgeted_build
+                        && build_once_with_shared_trie;
+                    let proposal_elapsed = proposal_timing_attached_elapsed
+                        .map(|attached_elapsed| elapsed.saturating_sub(attached_elapsed));
                     debug!(
                         target: "payload_builder",
+                        stop_reason = BlockBuildStopReason::BuildBudget.as_str(),
                         ?elapsed,
+                        builder_elapsed = ?snapshot.builder_elapsed(),
+                        ?proposal_elapsed,
                         ?estimate.work_elapsed,
                         ?estimate.predicted_work,
                         ?estimate.proposer_work,
@@ -826,6 +835,10 @@ where
                         ?estimate.marshal_persist,
                         ?estimate.total_budgeted_work,
                         proposal_timing_attached = proposal_timing_attached_elapsed.is_some(),
+                        pool_transactions_yielded,
+                        can_wait_for_pool,
+                        build_once_with_shared_trie,
+                        stopped_before_first_best_txs_next = !attempted_best_txs_next,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -835,6 +848,7 @@ where
                 }
             }
 
+            attempted_best_txs_next = true;
             let Some(pool_tx) = best_txs.next() else {
                 let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
                     && is_budgeted_build
@@ -878,6 +892,40 @@ where
                 } else {
                     BlockBuildStopReason::TxPoolEmpty
                 };
+                let (builder_elapsed, elapsed, build_budget, proposal_timing_attached) =
+                    if let Some(control) = payload_build_control.as_ref() {
+                        let snapshot = control.snapshot();
+                        let builder_elapsed = snapshot.builder_elapsed();
+                        (
+                            Some(builder_elapsed),
+                            Some(builder_elapsed.saturating_sub(proposal_context_wait_elapsed)),
+                            Some(snapshot.proposal_return_budget()),
+                            control.proposal_timing_attached(),
+                        )
+                    } else {
+                        (None, None, None, false)
+                    };
+                let proposal_elapsed = elapsed.and_then(|elapsed| {
+                    proposal_timing_attached_elapsed
+                        .map(|attached_elapsed| elapsed.saturating_sub(attached_elapsed))
+                });
+                debug!(
+                    target: "payload_builder",
+                    stop_reason = stop_reason.as_str(),
+                    ?elapsed,
+                    ?builder_elapsed,
+                    ?proposal_elapsed,
+                    ?build_budget,
+                    proposal_timing_attached,
+                    pool_transactions_yielded,
+                    can_wait_for_pool,
+                    build_once_with_shared_trie,
+                    stopped_before_first_best_txs_next = !attempted_best_txs_next,
+                    cumulative_gas_used,
+                    non_shared_gas_limit,
+                    skipped_oversized_block,
+                    "stopping pool transaction execution"
+                );
                 break stop_reason;
             };
             pool_transactions_yielded += 1;
