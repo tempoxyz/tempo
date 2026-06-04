@@ -96,7 +96,7 @@ mod tests {
         Ok(())
     }
 
-    fn add_validator(owner: Address, validator: Address, seed: u64) -> eyre::Result<B256> {
+    fn add_test_validator(owner: Address, validator: Address, seed: u64) -> eyre::Result<B256> {
         let private_key = PrivateKey::from_seed(seed);
         let public_key = B256::from_slice(&private_key.public_key().encode());
         let ingress = format!("127.0.0.1:{}", 9000 + seed);
@@ -577,7 +577,7 @@ mod tests {
             let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
-            let public_key = add_validator(owner, validator, 1)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
 
             registry.set_supported_features_tip(
                 Address::ZERO,
@@ -601,7 +601,7 @@ mod tests {
             let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
-            let public_key = add_validator(owner, validator, 1)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
             registry.validator_supported_features_tip[validator].write(13)?;
 
             let result = registry.set_supported_features_tip(
@@ -705,7 +705,7 @@ mod tests {
             let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
-            let public_key = add_validator(owner, validator, 1)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
                 publicKey: public_key,
@@ -749,7 +749,7 @@ mod tests {
             let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
-            let public_key = add_validator(owner, validator, 1)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
             registry.validator_supported_features_tip[validator].write(34)?;
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
