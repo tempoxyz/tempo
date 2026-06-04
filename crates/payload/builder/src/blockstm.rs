@@ -14,7 +14,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender},
+        mpsc::{self, Receiver, Sender},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -34,8 +34,6 @@ use tempo_transaction_pool::{
 use tracing::trace;
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
-
-const PLANNER_RESULTS_BUFFER_CAPACITY: usize = 100;
 
 #[derive(Debug)]
 pub(crate) enum PayloadBuildError {
@@ -122,7 +120,7 @@ where
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
-        let (results_tx, results_rx) = mpsc::sync_channel(PLANNER_RESULTS_BUFFER_CAPACITY);
+        let (results_tx, results_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let action_buffer_capacity = (executor.prewarming_pool().current_num_threads() * 2).max(1);
         let (action_buffers_tx, action_buffers_rx) =
@@ -317,7 +315,7 @@ impl<Provider> Drop for Planner<Provider> {
 
         // Move buffered result cleanup to the planner coordinator so Planner::drop
         // does not block the payload builder thread.
-        let (_drain_tx, replacement_rx) = mpsc::sync_channel(0);
+        let (_drain_tx, replacement_rx) = mpsc::channel();
         let drain_rx = core::mem::replace(&mut self.results_rx, replacement_rx);
         let _ = self.commands_tx.send(PlannerCommand::Stop { drain_rx });
     }
@@ -325,7 +323,7 @@ impl<Provider> Drop for Planner<Provider> {
 
 struct PlannerContext<Txs, Provider> {
     best_txs: Txs,
-    results_tx: SyncSender<PlannerMessage>,
+    results_tx: Sender<PlannerMessage>,
     commands_rx: Receiver<PlannerCommand>,
     commands_tx: Sender<PlannerCommand>,
     stop: Arc<AtomicBool>,
