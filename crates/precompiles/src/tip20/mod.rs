@@ -1192,7 +1192,7 @@ impl TIP20Token {
         mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
-        if !self.storage.spec().is_t6() {
+        if !self.storage.spec().is_t7() {
             return Ok(false);
         }
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
