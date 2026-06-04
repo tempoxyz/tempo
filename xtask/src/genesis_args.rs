@@ -60,6 +60,7 @@ use tempo_precompiles::{
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config_v2::ValidatorConfigV2,
+    zk_tls::ZkTlsVerifier,
 };
 
 /// Generate genesis allocation file for testing
@@ -421,6 +422,9 @@ impl GenesisArgs {
         if self.t6_time == 0 {
             println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
             initialize_receive_policy_guard(&mut evm)?;
+
+            println!("Initializing zkTLS verifier (T6 active at genesis)");
+            initialize_zktls_verifier(&mut evm, validator_admin)?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -943,6 +947,22 @@ fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre
         &ctx.cfg,
         &ctx.tx,
         || ReceivePolicyGuard::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_zktls_verifier(
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    owner: Address,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || ZkTlsVerifier::new().initialize(owner),
     )?;
 
     Ok(())

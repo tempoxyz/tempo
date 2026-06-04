@@ -12,6 +12,7 @@ pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
+pub mod zk_tls;
 
 pub use account_keychain::*;
 pub use address_registry::*;
@@ -28,6 +29,7 @@ pub use tip20_factory::*;
 pub use tip403_registry::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
+pub use zk_tls::*;
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
@@ -49,3 +51,4 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
+pub const ZK_TLS_VERIFIER_ADDRESS: Address = address!("0x5A4B544C53000000000000000000000000000000");
