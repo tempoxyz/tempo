@@ -356,9 +356,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             let nonce = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                 0 // expiring nonce must be 0
             } else {
-                // 2D nonce: fetch from storage
-                let slot =
-                    NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
+                // 2D nonce: fetch from storage. Mirror `next_available_nonce_for` and reject when
+                // `from` is missing rather than reading the zero-address nonce slot, which yields a
+                // wrong nonce (and therefore wrong gas estimates / simulation results).
+                let from = if let Some(from) = request.from {
+                    from
+                } else {
+                    return Err(SignError::NoAccount.into_eth_err());
+                };
+                let slot = NonceManager::new().nonces[from][nonce_key].slot();
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
                     .saturating_to()

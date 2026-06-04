@@ -758,3 +758,50 @@ async fn test_tip20_name_state_override_no_oom() -> eyre::Result<()> {
     provider.get_block_number().await?;
     Ok(())
 }
+
+/// Regression test for 2D-nonce gas estimation: an `eth_estimateGas` request that sets a
+/// non-zero `nonceKey` but omits `from` must be rejected with `SignError::NoAccount`
+/// ("unknown account"). Previously `create_txn_env` defaulted the missing sender to the
+/// zero address and read its nonce slot, silently returning a bogus estimate.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_estimate_gas_2d_nonce_without_from_is_rejected() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    let recipient = Address::random();
+
+    // 2D nonce key (non-zero, not the expiring-nonce sentinel) without a `from` address.
+    let params_without_from = serde_json::json!({
+        "to": recipient,
+        "nonceKey": "0x1",
+    });
+    let err = provider
+        .raw_request::<_, String>("eth_estimateGas".into(), [params_without_from])
+        .await
+        .expect_err("estimateGas with nonceKey but no from must be rejected");
+    assert!(
+        err.to_string().to_lowercase().contains("unknown account"),
+        "expected NoAccount (\"unknown account\") error, got: {err}"
+    );
+
+    // Control: the same request with `from` set must not be rejected as NoAccount.
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let params_with_from = serde_json::json!({
+        "from": wallet.address(),
+        "to": recipient,
+        "nonceKey": "0x1",
+    });
+    if let Err(err) = provider
+        .raw_request::<_, String>("eth_estimateGas".into(), [params_with_from])
+        .await
+    {
+        assert!(
+            !err.to_string().to_lowercase().contains("unknown account"),
+            "request with from must not be rejected as NoAccount, got: {err}"
+        );
+    }
+
+    Ok(())
+}
