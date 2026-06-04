@@ -207,6 +207,7 @@ where
                 error: error.into(),
             })?;
         let applied = action_replay_state(
+            &tx.tx_env,
             self.inner.evm.db_mut(),
             &replay.actions,
             replay_state,
@@ -330,6 +331,7 @@ fn validate_direct_recipient(to: Address) -> Result<(), Tip20TransferBlockstmFal
 }
 
 fn action_replay_state<DB: Database>(
+    tx: &TempoTxEnv,
     db: &mut State<DB>,
     actions: &[EvmAction],
     replay_state: &mut Tip20ActionReplayState,
@@ -399,6 +401,13 @@ fn action_replay_state<DB: Database>(
     }
 
     let mut state = EvmState::default();
+    if db.bal_state.bal_builder.is_some() {
+        let sender = tx.caller();
+        let account = action_account_info(db, sender)?;
+        let mut account = Account::from(account);
+        account.mark_touch();
+        state.insert(sender, account);
+    }
     for (key, change) in replay_state.changes.drain() {
         if change.write_kind.is_none() && db.bal_state.bal_builder.is_none() {
             continue;
