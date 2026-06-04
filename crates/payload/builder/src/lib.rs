@@ -74,7 +74,6 @@ use tempo_primitives::{
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
-    best::AsBestTransaction,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -540,7 +539,13 @@ where
                     best_txs,
                 ))
             } else {
-                Box::new(UnwarmedBestTransactions::new(best_txs))
+                Box::new(UnwarmedBestTransactions::new(
+                    self.provider.clone(),
+                    execution_cache,
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    best_txs,
+                ))
             };
         let mut best_txs = StateAwareBestTransactions::new(best_txs);
         self.metrics
@@ -587,7 +592,7 @@ where
                 }
             }
 
-            let Some(candidate) = best_txs.next() else {
+            let Some(mut candidate) = best_txs.next() else {
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
@@ -605,7 +610,7 @@ where
                 };
                 break stop_reason;
             };
-            let pool_tx = candidate.as_best_transaction();
+            let pool_tx = candidate.tx.clone();
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
@@ -676,8 +681,32 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
+            let Some(actions) = candidate.actions.take() else {
+                best_txs.mark_invalid(
+                    &candidate,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::TxTypeNotSupported,
+                    ),
+                );
+                self.metrics.inc_pool_tx_skipped("no_actions");
+                continue;
+            };
+
+            let Some(prewarmed_result) = candidate.result.take() else {
+                best_txs.mark_invalid(
+                    &candidate,
+                    InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::TxTypeNotSupported,
+                    ),
+                );
+                self.metrics.inc_pool_tx_skipped("no_prewarmed_result");
+                continue;
+            };
+
+            let execution_result = executor.commit_prewarmed_transaction(
+                pool_tx.transaction.inner(),
+                prewarmed_result,
+                &actions,
                 |result| {
                     cumulative_gas_used += result.block_gas_used();
                     cumulative_state_gas_used += result.state_gas_used();

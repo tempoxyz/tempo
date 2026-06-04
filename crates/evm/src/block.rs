@@ -19,16 +19,21 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_evm::block::StateDB;
+use reth_primitives_traits::Recovered;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
-    state::{Account, Bytecode, EvmState},
+    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
+use tempo_precompiles::{
+    storage::evm::EvmAction,
+    tip20::{U128_MAX, decode_tip20_balance},
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -103,6 +108,24 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+}
+
+/// Raw transaction output produced by payload prewarming before it is committed by the real block
+/// executor.
+#[derive(Debug)]
+pub struct PrewarmedTransactionResult {
+    result: ResultAndState<TempoHaltReason>,
+    validator_fee: U256,
+}
+
+impl PrewarmedTransactionResult {
+    /// Creates a new prewarmed transaction result.
+    pub fn new(result: ResultAndState<TempoHaltReason>, validator_fee: U256) -> Self {
+        Self {
+            result,
+            validator_fee,
+        }
+    }
 }
 
 impl TempoTxResult {
@@ -454,6 +477,182 @@ where
             }
         }
     }
+
+    /// Commits a transaction result that was already executed by payload prewarming.
+    ///
+    /// This keeps the normal Tempo block validation, gas accounting, receipt construction, and
+    /// section transitions in one place while avoiding a second full EVM execution in the payload
+    /// builder.
+    pub fn commit_prewarmed_transaction(
+        &mut self,
+        tx: &Recovered<TempoTxEnvelope>,
+        prewarmed: PrewarmedTransactionResult,
+        actions: &[EvmAction],
+        f: impl FnOnce(&TempoTxResult),
+    ) -> Result<GasOutput, BlockExecutionError> {
+        let PrewarmedTransactionResult {
+            mut result,
+            validator_fee,
+        } = prewarmed;
+
+        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
+        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
+            result.result.gas().block_regular_gas_used()
+        } else {
+            result.result.tx_gas_used()
+        };
+
+        let next_section = if let Some(next_section) = self.validate_tx_pre_execution(tx.tx())? {
+            next_section
+        } else {
+            self.validate_tx(tx.tx(), block_gas_used)?
+        };
+
+        apply_prewarmed_actions(self.evm_mut().db_mut(), &mut result.state, actions)?;
+
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result,
+                blob_gas_used: tx.tx().blob_gas_used().unwrap_or_default(),
+                tx_type: tx.tx().tx_type(),
+            },
+            next_section,
+            is_payment: self.is_payment(tx.tx()),
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.tx().clone()),
+            block_gas_used,
+            validator_fee,
+        };
+
+        f(&output);
+        Ok(self.commit_transaction(output))
+    }
+}
+
+fn apply_prewarmed_actions<DB>(
+    db: &mut DB,
+    state: &mut EvmState,
+    actions: &[EvmAction],
+) -> Result<(), BlockExecutionError>
+where
+    DB: Database,
+{
+    let mut patched_slots = HashSet::new();
+
+    for action in actions {
+        match *action {
+            EvmAction::Sload(_, _) => {}
+            EvmAction::Sstore(address, key, value) => {
+                set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
+            }
+            EvmAction::Sinc(address, key, delta) => {
+                let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
+                let value = current
+                    .checked_add(delta)
+                    .ok_or_else(|| BlockExecutionError::msg("prewarmed SINC overflow"))?;
+                set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
+            }
+            EvmAction::Sdec(address, key, delta) => {
+                let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
+                let value = current
+                    .checked_sub(delta)
+                    .ok_or_else(|| BlockExecutionError::msg("prewarmed SDEC underflow"))?;
+                set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
+            }
+            EvmAction::Tip20BalanceSinc(address, key, delta) => {
+                let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
+                let value = apply_tip20_balance_delta(current, delta, true)?;
+                set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
+            }
+            EvmAction::Tip20BalanceSdec(address, key, delta) => {
+                let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
+                let value = apply_tip20_balance_delta(current, delta, false)?;
+                set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn action_storage_value<DB>(
+    db: &mut DB,
+    state: &EvmState,
+    patched_slots: &HashSet<(Address, U256)>,
+    address: Address,
+    key: U256,
+) -> Result<(U256, U256), BlockExecutionError>
+where
+    DB: Database,
+{
+    if patched_slots.contains(&(address, key)) {
+        let slot = state
+            .get(&address)
+            .and_then(|account| account.storage.get(&key))
+            .expect("patched action slot must exist in prewarmed state");
+        return Ok((slot.original_value, slot.present_value));
+    }
+
+    let value = db
+        .storage(address, key)
+        .map_err(BlockExecutionError::other)?;
+    Ok((value, value))
+}
+
+fn set_action_storage_value<DB>(
+    db: &mut DB,
+    state: &mut EvmState,
+    patched_slots: &mut HashSet<(Address, U256)>,
+    address: Address,
+    key: U256,
+    value: U256,
+) -> Result<(), BlockExecutionError>
+where
+    DB: Database,
+{
+    let (original_value, _) = action_storage_value(db, state, patched_slots, address, key)?;
+    if !state.contains_key(&address) {
+        let info = db
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        state.insert(address, Account::from(info));
+    }
+    let account = state
+        .get_mut(&address)
+        .expect("prewarmed action account must exist in state");
+    account.mark_touch();
+    account.storage.insert(
+        key,
+        EvmStorageSlot::new_changed(original_value, value, TransactionId::ZERO),
+    );
+    patched_slots.insert((address, key));
+    Ok(())
+}
+
+fn apply_tip20_balance_delta(
+    current: U256,
+    delta: U256,
+    increment: bool,
+) -> Result<U256, BlockExecutionError> {
+    let current_balance = decode_tip20_balance(current);
+    let next_balance = if increment {
+        current_balance
+            .checked_add(delta)
+            .ok_or_else(|| BlockExecutionError::msg("prewarmed TIP20 balance overflow"))?
+    } else {
+        current_balance
+            .checked_sub(delta)
+            .ok_or_else(|| BlockExecutionError::msg("prewarmed TIP20 balance underflow"))?
+    };
+
+    if next_balance > U128_MAX {
+        return Err(BlockExecutionError::msg(
+            "prewarmed TIP20 balance exceeds u128",
+        ));
+    }
+
+    Ok((current & !U128_MAX) | next_balance)
 }
 
 impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
