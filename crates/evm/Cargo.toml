@@ -51,6 +51,7 @@ revm.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]

@@ -24,7 +24,12 @@ pub struct ProtocolFeature {
 }
 
 /// Protocol features supported by this binary, in activation-cursor order.
-pub const PROTOCOL_FEATURE_REGISTRY: &[ProtocolFeature] = &[];
+pub const PROTOCOL_FEATURE_REGISTRY: &[ProtocolFeature] = &[ProtocolFeature {
+    id: 1,
+    name: "tip-1063.feature-registry",
+    // TODO: update before merge if this feature does not ship in 1.8.1.
+    minimum_supported_version_key: version_key(1, 8, 1),
+}];
 
 /// Encodes a semver version as `(major << 32) | (minor << 16) | patch`.
 #[allow(clippy::cast_lossless)]
