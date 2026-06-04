@@ -9,7 +9,7 @@ mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
-use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use reth_trie_common::{ordered_root::OrderedTrieRootEncodedBuilder, updates::TrieUpdates};
 
 use crate::{
     budget::{
@@ -56,6 +56,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie_parallel::state_root_task::{LatticeRootMessage, LatticeStateHookSender};
 use std::{
     sync::{
         Arc,
@@ -276,6 +277,7 @@ where
                 Default::default(),
                 None,
                 None,
+                None,
                 config,
                 Default::default(),
                 Default::default(),
@@ -316,7 +318,8 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            trie_handle: _trie_handle,
+            lattice_handle,
             config,
             cancel,
             best_payload,
@@ -328,8 +331,9 @@ where
             payload_id,
         } = config;
         let build_once_with_shared_trie =
-            // When trie handle is provided, we build the payload once so the shared trie can be reused.
-            trie_handle.is_some()
+            // When a lattice handle is provided, we build the payload once so the streamed
+            // accumulator task stays paired with this execution.
+            lattice_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
 
@@ -486,11 +490,18 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        if let Some(ref handle) = trie_handle {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+        let lattice_sender = lattice_handle
+            .as_ref()
+            .map(|handle| LatticeStateHookSender::new(handle.updates_tx().clone()));
+
+        if lattice_sender.is_some() {
+            executor.evm_mut().db_mut().set_state_hook(Some(Box::new(
+                move |state: &reth_revm::state::EvmState| {
+                    if let Some(sender) = &lattice_sender {
+                        let _ = sender.send(LatticeRootMessage::StateUpdate(state.clone()));
+                    }
+                },
+            )));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -875,65 +886,53 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
+        // Drop the state hook to signal that execution is complete and the root tasks can
+        // finalize.
         db.set_state_hook(None);
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
-            .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
-        } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
-        };
+        let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
+        let sparse_trie_state_root_wait_elapsed: Option<Duration> = None;
 
-        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
+        let streamed_lattice_root = if let Some(mut handle) = lattice_handle {
+            let _span = debug_span!(target: "payload_builder", "await_lattice_root").entered();
+            match handle.lattice_root() {
+                Ok(outcome) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from lattice task"
+                    );
+                    Some(outcome)
                 }
-            } else {
-                None
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "lattice root task failed, falling back to bundle lattice root"
+                    );
+                    None
+                }
             }
-            .unzip();
+        } else {
+            None
+        };
 
         let block_access_list = db.take_built_alloy_bal();
         let block_access_list_hash = block_access_list
             .as_ref()
             .map(|bal| compute_block_access_list_hash(bal.as_slice()));
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
+        let trie_updates = Arc::new(TrieUpdates::default());
+        let (state_root, lattice_accumulator_updates) = if let Some(outcome) = streamed_lattice_root
+        {
+            (outcome.state_root, outcome.accumulator_updates)
         } else {
-            let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
-                .map_err(BlockExecutionError::other)?;
-
-            (state_root, Arc::new(trie_updates))
+            finish_provider
+                .lattice_state_root(&db.bundle_state)
+                .map(|(root, lattice_updates)| (root, Arc::new(lattice_updates)))
+                .map_err(BlockExecutionError::other)?
         };
 
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
@@ -1108,6 +1107,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
+            lattice_accumulator_updates,
         };
 
         let payload = TempoBuiltPayload::new(

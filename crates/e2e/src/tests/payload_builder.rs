@@ -36,7 +36,7 @@ const NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX: &str = "_nullifications_per_leade
 static PAYLOAD_BUILDER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test_traced]
-fn shared_sparse_trie_single_validator_bypasses_sync_state_root() {
+fn shared_lattice_root_single_validator_bypasses_mpt_state_root() {
     let _guard = payload_builder_test_lock();
     let deltas = run_payload_builder_test(&[true], 10);
 
@@ -48,19 +48,19 @@ fn shared_sparse_trie_single_validator_bypasses_sync_state_root() {
         deltas.builder_finish_count > 0,
         "expected payload builder finish metrics to increase"
     );
-    assert!(
-        deltas.sparse_trie_state_root_wait_count > 0,
-        "expected sparse trie state-root wait metrics to increase"
+    assert_eq!(
+        deltas.sparse_trie_state_root_wait_count, 0,
+        "expected shared lattice root to avoid sparse trie state-root waits"
     );
     assert_pool_inclusion_metrics(&deltas);
     assert_eq!(
         deltas.state_root_count, 0,
-        "expected shared sparse trie to bypass sync state-root work"
+        "expected shared lattice root to bypass sync state-root work"
     );
 }
 
 #[test_traced]
-fn mixed_validators_build_blocks_with_and_without_shared_sparse_trie_payload_builder() {
+fn mixed_validators_build_blocks_with_and_without_shared_lattice_root() {
     let _guard = payload_builder_test_lock();
     let deltas = run_payload_builder_test(&[true, false], 10);
 

@@ -9,7 +9,9 @@ use reth_storage_api::{
 };
 use reth_trie_common::{
     AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    lattice::{LatticeAccumulatorUpdates, LatticeHashState},
+    updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -107,7 +109,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
-    /// Time to compute the state root and trie updates via `state_root_with_updates`.
+    /// Time to compute fallback state-root data.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
 }
 
@@ -163,7 +165,8 @@ impl TempoPayloadBuilderMetrics {
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
-/// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
+/// Instruments state-root provider calls with tracing spans and histogram metrics during
+/// `builder.finish()`.
 pub(crate) struct InstrumentedFinishProvider<'a> {
     pub(crate) inner: &'a dyn StateProvider,
     pub(crate) metrics: TempoPayloadBuilderMetrics,
@@ -243,6 +246,31 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
             .state_root_with_updates_duration_seconds
             .record(start.elapsed());
         result
+    }
+
+    fn lattice_state_root(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+    ) -> ProviderResult<(B256, LatticeAccumulatorUpdates)> {
+        let start = Instant::now();
+        let _span = debug_span!(target: "payload_builder", "lattice_state_root").entered();
+        let result = self.inner.lattice_state_root(bundle_state);
+        drop(_span);
+        self.metrics
+            .state_root_with_updates_duration_seconds
+            .record(start.elapsed());
+        result
+    }
+
+    fn lattice_accumulator_seed(&self) -> ProviderResult<LatticeAccumulatorUpdates> {
+        self.inner.lattice_accumulator_seed()
+    }
+
+    fn lattice_storage_accumulator(
+        &self,
+        hashed_address: B256,
+    ) -> ProviderResult<Option<LatticeHashState>> {
+        self.inner.lattice_storage_accumulator(hashed_address)
     }
 
     fn state_root_from_nodes_with_updates(

@@ -207,11 +207,15 @@ def ensure-bloat-space [bloat: int] {
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
+    if $bloat == 0 {
+        return 0
+    }
+
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
     }
 
-    print "Error: --bloat must be one of: 1, 10, 100"
+    print "Error: --bloat must be one of: 0, 1, 10, 100"
     exit 1
 }
 
@@ -289,6 +293,119 @@ def e2e-snapshot-ready [datadir: string] {
 
 def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
+def e2e-snapshot-label-suffix [label: string, bloat_mib: int] {
+    if $label == "shared" {
+        $"($bloat_mib)mb"
+    } else {
+        $"($label)_($bloat_mib)mb"
+    }
+}
+
+def e2e-snapshot-record [
+    label: string,
+    bloat_mib: int,
+    a_ip: string,
+    a_consensus_port: int,
+    b_ip: string,
+    b_consensus_port: int,
+] {
+    let suffix = (e2e-snapshot-label-suffix $label $bloat_mib)
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($suffix)"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($suffix)"
+
+    {
+        label: $label
+        genesis: $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
+        trusted_peers_path: $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+        a: {
+            state_path: $E2E_A_STATE_PATH
+            mount: $E2E_A_MOUNT
+            datadir: $a_db
+            node_dir: $a_db
+            ip: $a_ip
+            consensus_port: $a_consensus_port
+            cpus: $E2E_A_CPUS
+            memory: $E2E_A_MEMORY
+        }
+        b: {
+            state_path: $E2E_B_STATE_PATH
+            mount: $E2E_B_MOUNT
+            datadir: $b_db
+            node_dir: $b_db
+            ip: $b_ip
+            consensus_port: $b_consensus_port
+            cpus: $E2E_B_CPUS
+            memory: $E2E_B_MEMORY
+        }
+    }
+}
+
+def e2e-snapshot-ready-record [snapshot: record] {
+    e2e-snapshots-ready $snapshot.a.datadir $snapshot.b.datadir
+}
+
+def e2e-snapshots-all-ready [snapshots: list] {
+    for snapshot in $snapshots {
+        if not (e2e-snapshot-ready-record $snapshot) {
+            return false
+        }
+    }
+    true
+}
+
+def e2e-log-missing-snapshot-files [snapshot: record] {
+    let missing_a = (e2e-snapshot-missing-files $snapshot.a.datadir)
+    let missing_b = (e2e-snapshot-missing-files $snapshot.b.datadir)
+    if ($missing_a | length) > 0 {
+        print $"  Missing from ($snapshot.label) a: ($missing_a | str join ', ')"
+    }
+    if ($missing_b | length) > 0 {
+        print $"  Missing from ($snapshot.label) b: ($missing_b | str join ', ')"
+    }
+}
+
+def restore-e2e-snapshot [snapshot: record] {
+    bench-restore-at $snapshot.a.state_path $snapshot.a.mount $snapshot.a.datadir
+    bench-restore-at $snapshot.b.state_path $snapshot.b.mount $snapshot.b.datadir
+}
+
+def restore-e2e-snapshots [snapshots: list] {
+    if (has-schelk) {
+        restore-e2e-snapshot ($snapshots | first)
+    } else {
+        for snapshot in $snapshots {
+            restore-e2e-snapshot $snapshot
+        }
+    }
+}
+
+def promote-e2e-snapshots [snapshots: list] {
+    if (has-schelk) {
+        let snapshot = ($snapshots | first)
+        bench-promote-at $snapshot.a.state_path $snapshot.a.datadir
+        bench-promote-at $snapshot.b.state_path $snapshot.b.datadir
+    } else {
+        for snapshot in $snapshots {
+            bench-promote-at $snapshot.a.state_path $snapshot.a.datadir
+            bench-promote-at $snapshot.b.state_path $snapshot.b.datadir
+        }
+    }
+}
+
+def e2e-snapshot-trusted-peers [snapshot: record] {
+    if ($snapshot.trusted_peers_path | path exists) {
+        return (open $snapshot.trusted_peers_path | str trim)
+    }
+
+    let b_trusted_peers_path = $"($snapshot.b.datadir)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+    if ($b_trusted_peers_path | path exists) {
+        return (open $b_trusted_peers_path | str trim)
+    }
+
+    print $"Error: trusted peers file not found in ($snapshot.trusted_peers_path) or ($b_trusted_peers_path)"
+    exit 1
 }
 
 def e2e-snapshot-state-hardfork [datadir: string] {
@@ -783,6 +900,23 @@ def init-local-e2e-side [
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
 }
 
+def init-local-e2e-snapshot [
+    snapshot: record,
+    generated_genesis: string,
+    init_dir: string,
+    trusted_peers: string,
+    bloat: int,
+    bloat_file: string,
+    tempo_bin: string,
+    marker: record,
+    a_validator: string,
+    b_validator: string,
+] {
+    print $"Initializing local e2e snapshot ($snapshot.label) with ($tempo_bin)"
+    init-local-e2e-side a $snapshot.a.state_path $snapshot.a.mount $snapshot.a.datadir $snapshot.a.node_dir $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat $bloat_file $tempo_bin ($marker | insert bench_datadir $snapshot.a.datadir | insert node_dir $snapshot.a.node_dir | insert validator_addr $a_validator)
+    init-local-e2e-side b $snapshot.b.state_path $snapshot.b.mount $snapshot.b.datadir $snapshot.b.node_dir $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat $bloat_file $tempo_bin ($marker | insert bench_datadir $snapshot.b.datadir | insert node_dir $snapshot.b.node_dir | insert validator_addr $b_validator)
+}
+
 # Update the PR comment with current benchmark phase status.
 # Requires BENCH_GH_TOKEN, BENCH_COMMENT_ID, BENCH_ACTOR, BENCH_JOB_URL,
 # BENCH_CONFIG, and GITHUB_REPOSITORY environment variables.
@@ -859,6 +993,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let snapshot = $run.snapshot
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
@@ -867,22 +1002,21 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
-    bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
-    bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    restore-e2e-snapshot $snapshot
 
-    for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
+    for path in [$genesis $snapshot.a.node_dir $snapshot.b.node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
             exit 1
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $snapshot.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $snapshot.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
-        { role: "a", node_dir: $ctx.a.node_dir }
-        { role: "b", node_dir: $ctx.b.node_dir }
+        { role: "a", node_dir: $snapshot.a.node_dir }
+        { role: "b", node_dir: $snapshot.b.node_dir }
     ] {
         for required_file in ["signing.key" "signing.share" "enode.key"] {
             let path = $"($role_info.node_dir)/($required_file)"
@@ -915,15 +1049,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+    let a_base_args = (build-base-args $genesis $snapshot.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+        | append (build-e2e-consensus-args $snapshot.a.node_dir $ctx.trusted_peers $snapshot.a.consensus_port $snapshot.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+    let b_base_args = (build-base-args $genesis $snapshot.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+        | append (build-e2e-consensus-args $snapshot.b.node_dir $ctx.trusted_peers $snapshot.b.consensus_port $snapshot.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -941,11 +1075,11 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
-    mark-schelk-dirty-at $ctx.a.state_path
-    mark-schelk-dirty-at $ctx.b.state_path
+    mark-schelk-dirty-at $snapshot.a.state_path
+    mark-schelk-dirty-at $snapshot.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $snapshot.a.cpus $snapshot.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $snapshot.b.cpus $snapshot.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1163,7 +1297,7 @@ def "main e2e" [
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1254,12 +1388,25 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let a_identity = $a_db
-    let b_identity = $b_db
-    let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
-    let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+    # Zero-bloat snapshots are cheap enough to split by side, which lets
+    # baseline and feature use incompatible genesis state-root hashing.
+    let split_snapshots = $bloat_mib == 0
+    let shared_snapshot = (e2e-snapshot-record "shared" $bloat_mib $a_ip $a_consensus_port $b_ip $b_consensus_port)
+    let baseline_snapshot = if $split_snapshots {
+        e2e-snapshot-record "baseline" $bloat_mib $a_ip $a_consensus_port $b_ip $b_consensus_port
+    } else {
+        $shared_snapshot
+    }
+    let feature_snapshot = if $split_snapshots {
+        e2e-snapshot-record "feature" $bloat_mib $a_ip $a_consensus_port $b_ip $b_consensus_port
+    } else {
+        $shared_snapshot
+    }
+    let snapshots = if $split_snapshots {
+        [$baseline_snapshot $feature_snapshot]
+    } else {
+        [$shared_snapshot]
+    }
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = ($env | get --optional BENCHMARK_ID)
@@ -1278,103 +1425,6 @@ def "main e2e" [
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
-    }
-
-    validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
-    cleanup-local-e2e-processes
-
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
-
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
-    if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
-        let missing_a = (e2e-snapshot-missing-files $a_db)
-        let missing_b = (e2e-snapshot-missing-files $b_db)
-        if ($missing_a | length) > 0 {
-            print $"  Missing from a: ($missing_a | str join ', ')"
-        }
-        if ($missing_b | length) > 0 {
-            print $"  Missing from b: ($missing_b | str join ', ')"
-        }
-    }
-
-    if $should_init_snapshots {
-        let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
-        let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
-        mark-schelk-dirty-at $E2E_A_STATE_PATH
-        mark-schelk-dirty-at $E2E_B_STATE_PATH
-        if ($init_dir | path exists) { rm -rf $init_dir }
-        mkdir $init_dir
-        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
-        mkdir $E2E_BLOAT_TMP_DIR
-
-        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
-        let genesis_accounts = ([$accounts 3] | math max) + 1
-        print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
-
-        let trusted_peers = (trusted-peers-from-localnet $init_dir)
-        if $trusted_peers == "" {
-            print "Error: generated localnet did not produce trusted peers"
-            exit 1
-        }
-        if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
-        }
-
-        let marker = {
-            bloat_mib: $bloat_mib
-            bloat: $bloat
-            accounts: $genesis_accounts
-            validators: $E2E_VALIDATORS
-            seed: $E2E_SEED
-            gas_limit: $gas_limit
-            dkg_in_genesis: true
-            topology: "single-runner"
-            state_hardfork: $snapshot_state_hardfork
-        }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
-            rm -rf $E2E_BLOAT_TMP_DIR
-        }
-        bench-promote-at $E2E_A_STATE_PATH $a_db
-        bench-promote-at $E2E_B_STATE_PATH $b_db
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
-    }
-
-    if $init_only {
-        cleanup-local-e2e-processes
-        return
-    }
-    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
-    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $genesis_path }
-    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $genesis_path }
-    if $hardfork_mode {
-        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
-        mkdir $hardfork_genesis_dir
-        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
-        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit
-    }
-    let trusted_peers = if ($a_trusted_peers_path | path exists) {
-        open $a_trusted_peers_path | str trim
-    } else {
-        let b_trusted_peers_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-        if ($b_trusted_peers_path | path exists) {
-            open $b_trusted_peers_path | str trim
-        } else {
-            print $"Error: trusted peers file not found in ($a_trusted_peers_path) or ($b_trusted_peers_path)"
-            exit 1
-        }
     }
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
@@ -1442,31 +1492,102 @@ def "main e2e" [
             $"BENCH_CONFIG=($updated_config)\n" | save --append $github_env
         }
     }
+
+    validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
+    cleanup-local-e2e-processes
+
+    restore-e2e-snapshots $snapshots
+
+    let snapshots_ready = (e2e-snapshots-all-ready $snapshots)
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    if (not $snapshots_ready) and (not $force_bloat) {
+        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+        for snapshot in $snapshots {
+            e2e-log-missing-snapshot-files $snapshot
+        }
+    }
+
+    if $should_init_snapshots {
+        let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
+        let generated_genesis = $"($init_dir)/genesis.json"
+        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        mark-schelk-dirty-at $E2E_A_STATE_PATH
+        mark-schelk-dirty-at $E2E_B_STATE_PATH
+        if ($init_dir | path exists) { rm -rf $init_dir }
+        mkdir $init_dir
+        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
+        mkdir $E2E_BLOAT_TMP_DIR
+
+        let genesis_accounts = ([$accounts 3] | math max) + 1
+        print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
+
+        let trusted_peers = (trusted-peers-from-localnet $init_dir)
+        if $trusted_peers == "" {
+            print "Error: generated localnet did not produce trusted peers"
+            exit 1
+        }
+        if $bloat_mib > 0 {
+            ensure-bloat-space $bloat_mib
+            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
+            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+        }
+
+        let marker_base = {
+            bloat_mib: $bloat_mib
+            bloat: $bloat
+            accounts: $genesis_accounts
+            validators: $E2E_VALIDATORS
+            seed: $E2E_SEED
+            gas_limit: $gas_limit
+            dkg_in_genesis: true
+            topology: "single-runner"
+            state_hardfork: $snapshot_state_hardfork
+        }
+        let snapshot_runs = if $split_snapshots {
+            [
+                { label: "baseline", snapshot: $baseline_snapshot, tempo: $baseline_tempo, ref: $baseline }
+                { label: "feature", snapshot: $feature_snapshot, tempo: $feature_tempo, ref: $feature }
+            ]
+        } else {
+            [
+                { label: "shared", snapshot: $shared_snapshot, tempo: $feature_tempo, ref: $feature }
+            ]
+        }
+        for snapshot_run in $snapshot_runs {
+            let marker = ($marker_base | insert snapshot_label $snapshot_run.label | insert snapshot_ref $snapshot_run.ref)
+            init-local-e2e-snapshot $snapshot_run.snapshot $generated_genesis $init_dir $trusted_peers $bloat_mib $bloat_file $snapshot_run.tempo $marker $a_validator $b_validator
+        }
+        if ($E2E_BLOAT_TMP_DIR | path exists) {
+            rm -rf $E2E_BLOAT_TMP_DIR
+        }
+        promote-e2e-snapshots $snapshots
+        restore-e2e-snapshots $snapshots
+    }
+
+    if $init_only {
+        cleanup-local-e2e-processes
+        try { git worktree remove --force $baseline_wt } catch { }
+        try { git worktree remove --force $feature_wt } catch { }
+        try { git worktree remove --force $regenesis_wt } catch { }
+        return
+    }
+    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
+    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $baseline_snapshot.genesis }
+    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $feature_snapshot.genesis }
+    if $hardfork_mode {
+        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
+        mkdir $hardfork_genesis_dir
+        e2e-synthesize-genesis $baseline_snapshot.genesis $baseline_genesis_path $baseline_hardfork_name $gas_limit
+        e2e-synthesize-genesis $feature_snapshot.genesis $feature_genesis_path $feature_hardfork_name $gas_limit
+    }
+    let trusted_peers = (e2e-snapshot-trusted-peers $baseline_snapshot)
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
-        genesis: $genesis_path
+        genesis: $feature_snapshot.genesis
         trusted_peers: $trusted_peers
-        a: {
-            state_path: $E2E_A_STATE_PATH
-            mount: $E2E_A_MOUNT
-            datadir: $a_db
-            node_dir: $a_identity
-            ip: $a_ip
-            consensus_port: $a_consensus_port
-            cpus: $E2E_A_CPUS
-            memory: $E2E_A_MEMORY
-        }
-        b: {
-            state_path: $E2E_B_STATE_PATH
-            mount: $E2E_B_MOUNT
-            datadir: $b_db
-            node_dir: $b_identity
-            ip: $b_ip
-            consensus_port: $b_consensus_port
-            cpus: $E2E_B_CPUS
-            memory: $E2E_B_MEMORY
-        }
         preset: $preset
         preset_path: $preset_path
         tps: $tps
@@ -1520,6 +1641,7 @@ def "main e2e" [
                 tempo: $baseline_tempo
                 genesis: $baseline_genesis_path
                 hardfork: $baseline_hardfork_name
+                snapshot: $baseline_snapshot
             })
         } else {
             $feature_run_index = $feature_run_index + 1
@@ -1530,6 +1652,7 @@ def "main e2e" [
                 tempo: $feature_tempo
                 genesis: $feature_genesis_path
                 hardfork: $feature_hardfork_name
+                snapshot: $feature_snapshot
             })
         }
     }
@@ -1589,8 +1712,7 @@ def "main e2e" [
     try { git worktree remove --force $feature_wt } catch { }
     try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    restore-e2e-snapshots $snapshots
     if $e2e_exit != 0 {
         exit $e2e_exit
     }

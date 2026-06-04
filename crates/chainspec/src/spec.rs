@@ -378,10 +378,12 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::hardfork::{TempoHardfork, TempoHardforks};
-    use alloy_primitives::hex;
+    use alloy_primitives::{Address, B256, U256, hex, keccak256};
     use commonware_codec::Encode as _;
-    use reth_chainspec::{ForkCondition, Hardforks};
+    use reth_chainspec::{EthChainSpec as _, ForkCondition, Hardforks};
     use reth_cli::chainspec::ChainSpecParser as _;
+    use reth_primitives_traits::{Account, AlloyBlockHeader as _};
+    use reth_trie_common::lattice::{LatticeStateRoot, LatticeStorageRoot};
 
     #[test]
     fn can_load_testnet() {
@@ -473,6 +475,42 @@ mod tests {
 
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
         assert!(chainspec.network_identity.is_none());
+    }
+
+    #[test]
+    fn genesis_header_uses_lattice_state_root() {
+        let address = Address::repeat_byte(0x11);
+        let slot = B256::from(U256::from(1));
+        let value = U256::from(2);
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": { "chainId": 1234 },
+            "alloc": {
+                address.to_string(): {
+                    "balance": "0x5",
+                    "nonce": "0x7",
+                    "storage": {
+                        slot.to_string(): B256::from(value).to_string()
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let mut storage_root = LatticeStorageRoot::default();
+        storage_root.add_slot(keccak256(slot), value);
+
+        let mut expected_root = LatticeStateRoot::default();
+        expected_root.add_account(
+            keccak256(address),
+            Account::from(genesis.alloc.get(&address).unwrap()),
+            storage_root.root(),
+        );
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(
+            chainspec.genesis_header().state_root(),
+            expected_root.root()
+        );
     }
 
     #[test]
