@@ -11,7 +11,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, Sender, SyncSender},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -103,7 +103,7 @@ where
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
-        let (results_tx, results_rx) = mpsc::channel();
+        let (results_tx, results_rx) = mpsc::sync_channel(1);
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let scheduled_count = Arc::new(AtomicUsize::new(0));
@@ -282,7 +282,7 @@ impl<Provider> Drop for Planner<Provider> {
 
 struct PlannerContext<Txs, Provider> {
     best_txs: Txs,
-    results_tx: Sender<PlannerMessage>,
+    results_tx: SyncSender<PlannerMessage>,
     commands_rx: Receiver<PlannerCommand>,
     commands_tx: Sender<PlannerCommand>,
     stop: Arc<AtomicBool>,
