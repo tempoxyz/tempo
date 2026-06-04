@@ -21,8 +21,8 @@ use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
-    models::CompactU256,
+    cursor::{DbCursorRO, DbDupCursorRW},
+    models::{CompactU256, StorageBeforeTx},
     table::Decompress,
     tables,
     transaction::{DbTx, DbTxMut},
@@ -31,7 +31,9 @@ use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{
-    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, TrieWriter,
+    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, ProviderError,
+    RocksDBProviderFactory, StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader,
+    StorageSettingsCache, TrieWriter,
 };
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
@@ -105,6 +107,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
+        let mut storage_changeset_collector: Collector<Vec<u8>, CompactU256> =
+            Collector::new(ETL_FILE_SIZE, None);
+        let mut storage_history_collector: Collector<Vec<u8>, CompactU256> =
+            Collector::new(ETL_FILE_SIZE, None);
 
         // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
         // batches over a bounded channel, and returns the collector when the sender drops.
@@ -189,9 +195,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let account = match account_cursor.seek_exact(address)? {
                     Some((_, account)) => account,
                     None => {
-                        let account = Account::default();
-                        account_cursor.upsert(address, &account)?;
-                        account
+                        return Err(eyre::eyre!(
+                            "state bloat references account {address} that is missing from genesis"
+                        ));
                     }
                 };
                 e.insert(account);
@@ -216,6 +222,17 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
 
                 let compact_value = CompactU256::from(value);
+
+                let raw_key = raw_storage_key(address, slot);
+                storage_changeset_collector
+                    .insert(raw_key, CompactU256::from(U256::ZERO))
+                    .wrap_err("storage changeset ETL insert failed")?;
+                storage_history_collector
+                    .insert(
+                        raw_storage_key(address, slot),
+                        CompactU256::from(U256::ZERO),
+                    )
+                    .wrap_err("storage history ETL insert failed")?;
 
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
@@ -275,6 +292,64 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Genesis hashed storage entries merged into collector"
             );
         }
+
+        let storage_settings = provider_rw.cached_storage_settings();
+        ensure!(
+            storage_settings.storage_v2,
+            "init-from-binary-dump only supports storage v2 databases"
+        );
+
+        info!(
+            target: "tempo::cli",
+            "Writing storage changesets..."
+        );
+
+        for (index, entry) in provider_rw.storage_changeset(0)? {
+            storage_changeset_collector
+                .insert(
+                    raw_storage_key(index.address(), entry.key),
+                    CompactU256::from(entry.value),
+                )
+                .wrap_err("storage changeset ETL insert of genesis storage failed")?;
+        }
+
+        provider_rw
+            .static_file_provider()
+            .delete_segment(StaticFileSegment::StorageChangeSets)?;
+
+        let mut storage_changeset_writer =
+            provider_rw.get_static_file_writer(0, StaticFileSegment::StorageChangeSets)?;
+        storage_changeset_writer.begin_storage_changeset(0)?;
+        let storage_changeset_total = storage_changeset_collector.len();
+        load_storage_etl(
+            &mut storage_changeset_collector,
+            storage_changeset_total,
+            "storage changeset",
+            |address, key, value| {
+                storage_changeset_writer.append_storage_changeset_entry(StorageBeforeTx {
+                    address,
+                    key,
+                    value,
+                })?;
+                Ok(())
+            },
+        )?;
+        drop(storage_changeset_writer);
+
+        let storage_history_total = storage_history_collector.len();
+        provider_rw.with_rocksdb_batch_auto_commit(|mut batch| {
+            load_storage_etl(
+                &mut storage_history_collector,
+                storage_history_total,
+                "storage history",
+                |address, key, _| {
+                    batch.append_storage_history_shard(address, key, [0])?;
+                    Ok(())
+                },
+            )
+            .map_err(|err| ProviderError::other(std::io::Error::other(err.to_string())))?;
+            Ok(((), Some(batch.into_inner())))
+        })?;
 
         // Load sorted entries from each ETL collector into its database table.
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
@@ -386,6 +461,67 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         Ok(())
     }
+}
+
+/// Composite ETL key for unhashed storage, sorted by address then slot.
+fn raw_storage_key(address: alloy_primitives::Address, slot: B256) -> Vec<u8> {
+    let mut key = Vec::with_capacity(52);
+    key.extend_from_slice(address.as_slice());
+    key.extend_from_slice(slot.as_slice());
+    key
+}
+
+fn decode_raw_storage_key(key: &[u8]) -> (alloy_primitives::Address, B256) {
+    (
+        alloy_primitives::Address::from_slice(&key[..20]),
+        B256::from_slice(&key[20..]),
+    )
+}
+
+/// Iterate a raw storage ETL collector, deduplicate consecutive entries with the
+/// same `(address, slot)` key, and call `write` for each unique entry.
+fn load_storage_etl(
+    collector: &mut Collector<Vec<u8>, CompactU256>,
+    total: usize,
+    label: &str,
+    mut write: impl FnMut(alloy_primitives::Address, B256, U256) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let total = total.max(1);
+    let interval = (total / 10).max(1);
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
+    for (index, item) in collector.iter()?.enumerate() {
+        if index > 0 && index % interval == 0 {
+            info!(
+                target: "tempo::cli",
+                progress = format_args!("{:.2}%", (index as f64 / total as f64) * 100.0),
+                "Inserting {label}"
+            );
+        }
+
+        let (key, value) = item.wrap_err("ETL iteration failed")?;
+        if let Some((ref prev_key, ref prev_val)) = pending
+            && *prev_key != key
+        {
+            let (address, storage_key) = decode_raw_storage_key(prev_key);
+            write(
+                address,
+                storage_key,
+                CompactU256::decompress_owned(prev_val.clone())?.into(),
+            )?;
+        }
+        pending = Some((key, value));
+    }
+
+    if let Some((key, val)) = pending {
+        let (address, storage_key) = decode_raw_storage_key(&key);
+        write(
+            address,
+            storage_key,
+            CompactU256::decompress_owned(val)?.into(),
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
