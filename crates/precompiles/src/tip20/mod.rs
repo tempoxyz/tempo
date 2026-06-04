@@ -17,7 +17,9 @@ pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
 pub use tempo_primitives::is_tip20_prefix;
-pub use user_state::{RewardFlag, UserState, decode_tip20_balance};
+pub use user_state::{
+    RewardFlag, UserState, apply_tip20_balance_storage_delta, decode_tip20_balance,
+};
 
 // Re-export the generated slots module for external access to storage slot constants
 pub use slots as tip20_slots;

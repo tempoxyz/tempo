@@ -26,15 +26,15 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_precompiles::{
-    storage::evm::EvmAction,
-    tip20::{U128_MAX, decode_tip20_balance},
-};
+use tempo_precompiles::{storage::evm::EvmAction, tip20::apply_tip20_balance_storage_delta};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -509,7 +509,8 @@ where
             self.validate_tx(tx.tx(), block_gas_used)?
         };
 
-        apply_prewarmed_actions(self.evm_mut().db_mut(), &mut result.state, actions)?;
+        let spec = self.evm().cfg.spec;
+        apply_prewarmed_actions(self.evm_mut().db_mut(), spec, &mut result.state, actions)?;
 
         let output = TempoTxResult {
             inner: EthTxResult {
@@ -531,6 +532,7 @@ where
 
 fn apply_prewarmed_actions<DB>(
     db: &mut DB,
+    spec: TempoHardfork,
     state: &mut EvmState,
     actions: &[EvmAction],
 ) -> Result<(), BlockExecutionError>
@@ -559,14 +561,14 @@ where
                     .ok_or_else(|| BlockExecutionError::msg("prewarmed SDEC underflow"))?;
                 set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
             }
-            EvmAction::Tip20BalanceSinc(address, key, delta) => {
+            EvmAction::Tip20BalanceSinc(address, key, delta, flag) => {
                 let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
-                let value = apply_tip20_balance_delta(current, delta, true)?;
+                let value = apply_tip20_balance_delta(current, delta, flag, true, spec)?;
                 set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
             }
-            EvmAction::Tip20BalanceSdec(address, key, delta) => {
+            EvmAction::Tip20BalanceSdec(address, key, delta, flag) => {
                 let (_, current) = action_storage_value(db, state, &patched_slots, address, key)?;
-                let value = apply_tip20_balance_delta(current, delta, false)?;
+                let value = apply_tip20_balance_delta(current, delta, flag, false, spec)?;
                 set_action_storage_value(db, state, &mut patched_slots, address, key, value)?;
             }
         }
@@ -633,26 +635,15 @@ where
 fn apply_tip20_balance_delta(
     current: U256,
     delta: U256,
+    flag: tempo_precompiles::tip20::RewardFlag,
     increment: bool,
+    spec: TempoHardfork,
 ) -> Result<U256, BlockExecutionError> {
-    let current_balance = decode_tip20_balance(current);
-    let next_balance = if increment {
-        current_balance
-            .checked_add(delta)
-            .ok_or_else(|| BlockExecutionError::msg("prewarmed TIP20 balance overflow"))?
-    } else {
-        current_balance
-            .checked_sub(delta)
-            .ok_or_else(|| BlockExecutionError::msg("prewarmed TIP20 balance underflow"))?
-    };
-
-    if next_balance > U128_MAX {
-        return Err(BlockExecutionError::msg(
-            "prewarmed TIP20 balance exceeds u128",
-        ));
-    }
-
-    Ok((current & !U128_MAX) | next_balance)
+    apply_tip20_balance_storage_delta(current, delta, flag, increment, spec).map_err(|err| {
+        BlockExecutionError::msg(format!(
+            "failed to replay prewarmed TIP20 balance action: {err}"
+        ))
+    })
 }
 
 impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>

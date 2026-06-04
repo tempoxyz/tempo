@@ -219,6 +219,25 @@ pub fn decode_tip20_balance(slot_value: U256) -> U256 {
     slot_value & U128_MAX
 }
 
+/// Applies a TIP-20 balance delta to a raw `balances[account]` storage word and returns the
+/// correctly encoded replacement word for the given hardfork.
+#[inline]
+pub fn apply_tip20_balance_storage_delta(
+    slot_value: U256,
+    delta: U256,
+    flag: RewardFlag,
+    increment: bool,
+    spec: TempoHardfork,
+) -> Result<U256> {
+    let state = UserState::decode_storage_word(slot_value, spec)?;
+    let state = if increment {
+        state.incremented(delta, flag)?
+    } else {
+        state.decremented(delta, flag)?
+    };
+    state.encode_storage_word(spec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +264,24 @@ mod tests {
 
         let packed = U256::MAX;
         assert_eq!(decode_tip20_balance(packed), U128_MAX);
+    }
+
+    #[test]
+    fn apply_balance_delta_encodes_reward_flag() {
+        let raw = U256::from(4);
+        let encoded = apply_tip20_balance_storage_delta(
+            raw,
+            U256::ONE,
+            RewardFlag::OptedOut,
+            true,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+        let state = UserState::decode_storage_word(encoded, TempoHardfork::T6).unwrap();
+
+        assert_eq!(state.amount(), U256::from(5));
+        assert_eq!(state.flag, RewardFlag::OptedOut);
+        assert_ne!(encoded, U256::from(5));
     }
 
     #[test]

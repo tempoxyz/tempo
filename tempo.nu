@@ -728,6 +728,8 @@ def run-bench-single [
             --git-ref $git_ref
             --build-profile $build_profile
             --benchmark-mode $benchmark_mode
+            --bloat-mib $bloat
+            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
@@ -2911,6 +2913,8 @@ def "main bench" [
             --git-ref $current_sha
             --build-profile $profile
             --benchmark-mode $mode
+            --bloat-mib $bloat
+            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         $result
     } catch { |e|
