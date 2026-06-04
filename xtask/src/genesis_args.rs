@@ -54,7 +54,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{ContractStorage, StorageCtx},
+    storage::{ContractStorage, StorageCtx, evm::EvmActions},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -660,6 +660,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || TIP20Factory::new().initialize(),
     )?;
     Ok(())
@@ -679,6 +680,7 @@ fn create_path_usd_token(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || {
             TIP20Factory::new().create_token_reserved_address(
                 PATH_USD_ADDRESS,
@@ -736,6 +738,7 @@ fn create_and_mint_token(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || {
             let mut factory = TIP20Factory::new();
             assert!(
@@ -824,6 +827,7 @@ fn initialize_fee_manager(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || {
             let mut fee_manager = TipFeeManager::new();
             fee_manager
@@ -870,6 +874,7 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || TIP403Registry::new().initialize(),
     )?;
 
@@ -883,6 +888,7 @@ fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resu
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || StablecoinDEX::new().initialize(),
     )?;
 
@@ -896,6 +902,7 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || NonceManager::new().initialize(),
     )?;
 
@@ -910,6 +917,7 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || AccountKeychain::new().initialize(),
     )?;
 
@@ -923,6 +931,7 @@ fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || AddressRegistry::new().initialize(),
     )?;
 
@@ -936,6 +945,7 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || SignatureVerifier::new().initialize(),
     )?;
 
@@ -949,6 +959,7 @@ fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || ReceivePolicyGuard::new().initialize(),
     )?;
 
@@ -973,6 +984,7 @@ fn initialize_validator_config_v2(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || {
             let mut v2 = ValidatorConfigV2::new();
             v2.initialize(admin)
@@ -1110,6 +1122,7 @@ fn mint_pairwise_liquidity(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        EvmActions::default(),
         || {
             let mut fee_manager = TipFeeManager::new();
 
