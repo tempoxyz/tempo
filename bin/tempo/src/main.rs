@@ -347,10 +347,8 @@ fn main() -> eyre::Result<()> {
         }
     };
 
-    if let Commands::Node(node_cmd) = &mut cli.command
-        && node_cmd.pruning.minimal
-    {
-        defaults::apply_minimal_static_file_defaults(&mut node_cmd.static_files);
+    if let Commands::Node(node_cmd) = &mut cli.command {
+        defaults::apply_static_file_defaults(&mut node_cmd.static_files);
     }
 
     if let Commands::Node(node_cmd) = &cli.command

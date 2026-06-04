@@ -14,7 +14,7 @@ use url::Url;
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 const MINIMAL_PRUNING_DISTANCE: u64 = 86_401;
-const MINIMAL_BLOCKS_PER_STATIC_FILE: u64 = 50_000;
+const DEFAULT_BLOCKS_PER_STATIC_FILE: u64 = 50_000;
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -220,25 +220,25 @@ fn init_pruning_defaults() {
         .expect("failed to initialize pruning defaults");
 }
 
-pub(crate) fn apply_minimal_static_file_defaults(static_files: &mut StaticFilesArgs) {
+pub(crate) fn apply_static_file_defaults(static_files: &mut StaticFilesArgs) {
     static_files
         .blocks_per_file_headers
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
     static_files
         .blocks_per_file_transactions
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
     static_files
         .blocks_per_file_receipts
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
     static_files
         .blocks_per_file_transaction_senders
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
     static_files
         .blocks_per_file_account_change_sets
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
     static_files
         .blocks_per_file_storage_change_sets
-        .get_or_insert(MINIMAL_BLOCKS_PER_STATIC_FILE);
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
 }
 
 fn init_engine_defaults() {
