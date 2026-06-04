@@ -8,7 +8,6 @@ use alloy_consensus::{
     transaction::Either,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
-use alloy_rlp::Encodable;
 use core::fmt;
 use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
@@ -189,7 +188,7 @@ impl TempoTxEnvelope {
             Self::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
-            Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            Self::AA(tx) => tx.is_payment_v1(),
         }
     }
 
@@ -225,20 +224,7 @@ impl TempoTxEnvelope {
                     && tx.authorization_list.is_empty()
                     && is_tip1045_call(Some(&tx.to), &tx.input)
             }
-            Self::AA(tx) => {
-                let tx = tx.tx();
-                !tx.calls.is_empty()
-                    && tx.access_list.is_empty()
-                    && tx.tempo_authorization_list.is_empty()
-                    && tx
-                        .key_authorization
-                        .as_ref()
-                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                    && tx
-                        .calls
-                        .iter()
-                        .all(|call| is_tip1045_call(call.to.to(), &call.input))
-            }
+            Self::AA(tx) => tx.is_payment_v2(),
         }
     }
 
@@ -491,13 +477,13 @@ impl From<TempoTransaction> for TempoTypedTransaction {
 
 /// Returns `true` if `to` has the TIP-20 payment prefix.
 #[inline]
-fn is_tip20_call(to: Option<&Address>) -> bool {
+pub(crate) fn is_tip20_call(to: Option<&Address>) -> bool {
     to.is_some_and(|to| to.is_tip20())
 }
 
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
 #[inline]
-fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
+pub(crate) fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
@@ -554,6 +540,7 @@ mod tests {
         eip7702::SignedAuthorization,
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
+    use alloy_rlp::Encodable;
     use alloy_sol_types::SolCall;
     use tempo_contracts::precompiles::ITIP20ChannelReserve;
 
