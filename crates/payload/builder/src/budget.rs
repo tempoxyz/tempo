@@ -26,7 +26,7 @@ pub(crate) const SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER: u64 =
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
-const VALIDATOR_REPLAY_WORK_SCALE: u64 = 350_000;
+const VALIDATOR_REPLAY_WORK_SCALE: u64 = 650_000;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
@@ -196,7 +196,7 @@ mod tests {
                 Duration::ZERO,
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(182),
+                Duration::from_millis(222),
                 MarshalPersistEstimator::default(),
                 0
             )
@@ -208,7 +208,7 @@ mod tests {
                 Duration::ZERO,
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(183),
+                Duration::from_millis(223),
                 MarshalPersistEstimator::default(),
                 0
             )
@@ -220,7 +220,7 @@ mod tests {
                 Duration::from_millis(250),
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(432),
+                Duration::from_millis(472),
                 MarshalPersistEstimator::default(),
                 0
             )
@@ -232,7 +232,7 @@ mod tests {
                 Duration::from_millis(250),
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(433),
+                Duration::from_millis(473),
                 MarshalPersistEstimator::default(),
                 0
             )
@@ -250,7 +250,7 @@ mod tests {
                 Duration::ZERO,
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(212),
+                Duration::from_micros(252_600),
                 marshal_persist,
                 15_000
             )
@@ -262,7 +262,7 @@ mod tests {
                 Duration::ZERO,
                 Some(Duration::ZERO),
                 1_350_000,
-                Duration::from_millis(212),
+                Duration::from_micros(252_600),
                 marshal_persist,
                 14_874
             )
@@ -277,7 +277,7 @@ mod tests {
             Duration::ZERO,
             None,
             1_350_000,
-            Duration::from_millis(82),
+            Duration::from_millis(122),
             MarshalPersistEstimator::default(),
             0,
         )
@@ -288,9 +288,9 @@ mod tests {
         assert_eq!(estimate.proposer_work, Duration::from_millis(35));
         assert_eq!(
             estimate.validator_replay_work,
-            Duration::from_micros(47_250)
+            Duration::from_micros(87_750)
         );
-        assert_eq!(estimate.total_budgeted_work, Duration::from_micros(82_250));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_micros(122_750));
 
         assert!(
             payload_budget_exhausted(
@@ -298,7 +298,7 @@ mod tests {
                 Duration::ZERO,
                 None,
                 1_350_000,
-                Duration::from_millis(83),
+                Duration::from_millis(123),
                 MarshalPersistEstimator::default(),
                 0,
             )
@@ -313,7 +313,7 @@ mod tests {
             Duration::ZERO,
             Some(Duration::from_millis(100)),
             1_000_000,
-            Duration::from_millis(62),
+            Duration::from_millis(98),
             MarshalPersistEstimator::default(),
             0,
         )
@@ -321,8 +321,8 @@ mod tests {
 
         assert_eq!(estimate.predicted_work, Duration::from_millis(120));
         assert_eq!(estimate.proposer_work, Duration::from_millis(20));
-        assert_eq!(estimate.validator_replay_work, Duration::from_millis(42));
-        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(62));
+        assert_eq!(estimate.validator_replay_work, Duration::from_millis(78));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(98));
 
         assert!(
             payload_budget_exhausted(
@@ -330,7 +330,7 @@ mod tests {
                 Duration::ZERO,
                 Some(Duration::from_millis(100)),
                 1_000_000,
-                Duration::from_millis(63),
+                Duration::from_millis(99),
                 MarshalPersistEstimator::default(),
                 0,
             )
