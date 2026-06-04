@@ -71,12 +71,18 @@ async fn test_is_hardfork_active() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url);
 
-    // Devnet activates all forks at t=0, so every known hardfork should be active.
+    // Devnet activates stable forks at t=0, but scaffolded future forks stay inactive until
+    // explicitly scheduled.
     for fork in TempoHardfork::VARIANTS {
-        assert!(
-            provider.is_hardfork_active(*fork).await?,
-            "{fork:?} should be active on devnet",
-        );
+        let active = provider.is_hardfork_active(*fork).await?;
+        if *fork == TempoHardfork::T7 {
+            assert!(
+                !active,
+                "{fork:?} should not be active on devnet by default"
+            );
+        } else {
+            assert!(active, "{fork:?} should be active on devnet");
+        }
     }
 
     Ok(())

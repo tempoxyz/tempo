@@ -47,12 +47,12 @@ impl ForkSchedule {
 
     /// Returns whether the given Tempo hardfork is active for this schedule.
     ///
-    /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
+    /// For [`Devnet`](Self::Devnet) stable forks from the dev genesis are active.
     /// For other schedules, a fork is active only if its timestamp in the
     /// reference genesis is in the past.
     pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
         let Some(reference_json) = self.reference_genesis() else {
-            return true; // devnet: all forks active
+            return fork != TempoHardfork::T7; // devnet: T7 is scaffolded but not active by default
         };
         let reference: serde_json::Value =
             serde_json::from_str(reference_json).expect("reference genesis must parse");
