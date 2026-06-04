@@ -347,6 +347,12 @@ fn main() -> eyre::Result<()> {
         }
     };
 
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.pruning.minimal
+    {
+        defaults::apply_minimal_static_file_defaults(&mut node_cmd.static_files);
+    }
+
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
         && node_cmd.builder.max_payload_tasks != 1
