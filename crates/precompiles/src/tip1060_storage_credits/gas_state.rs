@@ -83,7 +83,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         skip_refund: true,
     };
 
-    if values.is_new_eq_present() {
+    // if new and present value are equal or if both present value are not zero, skip storage credits accounting.
+    if values.is_new_eq_present() || (!values.is_present_zero() && !values.is_new_zero()) {
         return Ok(outcome);
     }
 
