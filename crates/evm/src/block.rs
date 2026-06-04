@@ -32,12 +32,11 @@ use tempo_contracts::precompiles::{
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_precompiles::feature_registry::FeatureRegistry;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, TempoStateAccess, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -362,24 +361,6 @@ where
         };
 
         if call.publicKey != B256::from(&consensus_context.proposer) {
-            return Err(BlockValidationError::msg(
-                "invalid feature registry system transaction",
-            ));
-        }
-
-        let spec = self.evm().cfg.spec;
-        let reported_features_tip = self
-            .evm_mut()
-            .db_mut()
-            .with_read_only_storage_ctx(spec, || {
-                FeatureRegistry::new()
-                    .validator_supported_features_tip_by_public_key(call.publicKey)
-            })
-            .map_err(|_| {
-                BlockValidationError::msg("invalid feature registry system transaction")
-            })?;
-
-        if reported_features_tip >= call.featuresTip {
             return Err(BlockValidationError::msg(
                 "invalid feature registry system transaction",
             ));
@@ -813,26 +794,19 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Keccak256, Log, Signature, TxKind, bytes::BytesMut, keccak256};
+    use alloy_primitives::{Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
-        context::{
-            JournalTr,
-            result::{ExecutionResult, ResultGas},
-        },
+        context::result::{ExecutionResult, ResultGas},
         database::{EmptyDB, states::plain_account::PlainStorage},
     };
     use std::sync::{Arc, Mutex};
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
-    use tempo_precompiles::{
-        storage::StorageCtx,
-        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
-    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -894,22 +868,6 @@ mod tests {
         storage
     }
 
-    fn validator_supported_features_tip_slot(validator: Address) -> U256 {
-        let mut buf = [0u8; 64];
-        buf[12..32].copy_from_slice(validator.as_ref());
-        buf[32..].copy_from_slice(&U256::ONE.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
-    }
-
-    fn feature_registry_report_storage(validator: Address, features_tip: u64) -> PlainStorage {
-        let mut storage = PlainStorage::default();
-        storage.insert(
-            validator_supported_features_tip_slot(validator),
-            U256::from(features_tip),
-        );
-        storage
-    }
-
     fn public_key_from_private_key(
         private_key: &PrivateKey,
     ) -> tempo_primitives::ed25519::PublicKey {
@@ -923,29 +881,6 @@ mod tests {
         B256::from_slice(&private_key.public_key().encode())
     }
 
-    fn add_validator_signature(
-        chain_id: u64,
-        private_key: &PrivateKey,
-        validator: Address,
-        ingress: &str,
-        egress: &str,
-        fee_recipient: Address,
-    ) -> Vec<u8> {
-        let mut hasher = Keccak256::new();
-        hasher.update(chain_id.to_be_bytes());
-        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
-        hasher.update(validator.as_slice());
-        hasher.update([u8::try_from(ingress.len()).unwrap()]);
-        hasher.update(ingress.as_bytes());
-        hasher.update([u8::try_from(egress.len()).unwrap()]);
-        hasher.update(egress.as_bytes());
-        hasher.update(fee_recipient.as_slice());
-        private_key
-            .sign(VALIDATOR_NS_ADD, hasher.finalize().as_slice())
-            .encode()
-            .to_vec()
-    }
-
     fn consensus_context_from_proposer(proposer_key: &PrivateKey) -> TempoConsensusContext {
         TempoConsensusContext {
             epoch: 21,
@@ -953,59 +888,6 @@ mod tests {
             parent_view: 0,
             proposer: public_key_from_private_key(proposer_key),
         }
-    }
-
-    fn initialize_validator_config_v2<DB, I>(
-        executor: &mut TempoBlockExecutor<'_, DB, I>,
-        owner: Address,
-        validator: Address,
-        validator_key: &PrivateKey,
-    ) where
-        DB: StateDB,
-        I: Inspector<TempoContext<DB>>,
-    {
-        let chain_id = executor.evm().cfg.chain_id;
-        let public_key = B256::from_slice(&validator_key.public_key().encode());
-        let ingress = "127.0.0.1:9000";
-        let egress = "127.0.0.1";
-        let fee_recipient = Address::repeat_byte(0x44);
-        let signature = add_validator_signature(
-            chain_id,
-            validator_key,
-            validator,
-            ingress,
-            egress,
-            fee_recipient,
-        );
-
-        StorageCtx::enter_ctx(
-            executor.evm_mut().ctx_mut(),
-            || -> tempo_precompiles::error::Result<()> {
-                let mut config = ValidatorConfigV2::new();
-                config.initialize(owner)?;
-                config.add_validator(
-                    owner,
-                    IValidatorConfigV2::addValidatorCall {
-                        validatorAddress: validator,
-                        publicKey: public_key,
-                        ingress: ingress.to_string(),
-                        egress: egress.to_string(),
-                        feeRecipient: fee_recipient,
-                        signature: signature.into(),
-                    },
-                )?;
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        let evm_state = executor
-            .evm_mut()
-            .ctx_mut()
-            .journaled_state
-            .evm_state()
-            .clone();
-        executor.evm_mut().db_mut().commit(evm_state);
     }
 
     #[test]
@@ -1143,12 +1025,9 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let proposer_key = PrivateKey::from_seed(0);
-        let validator = Address::repeat_byte(0x11);
-        let owner = Address::repeat_byte(0xaa);
         let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
         builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
         let mut executor = builder.build(&mut db, &chainspec);
-        initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             publicKey: b256_public_key_from_private_key(&proposer_key),
@@ -1180,49 +1059,12 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let proposer_key = PrivateKey::from_seed(0);
         let other_key = PrivateKey::from_seed(1);
-        let validator = Address::repeat_byte(0x11);
-        let owner = Address::repeat_byte(0xaa);
         let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
         builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
         let mut executor = builder.build(&mut db, &chainspec);
-        initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             publicKey: b256_public_key_from_private_key(&other_key),
-            featuresTip: 13,
-        }
-        .abi_encode()
-        .into();
-        let system_tx =
-            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
-
-        let result = executor.validate_system_tx(&system_tx);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "invalid feature registry system transaction"
-        );
-    }
-
-    #[test]
-    fn test_validate_system_tx_feature_registry_report_rejects_noop_report() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let proposer_key = PrivateKey::from_seed(0);
-        let validator = Address::repeat_byte(0x11);
-        let owner = Address::repeat_byte(0xaa);
-        db.insert_account_with_storage(
-            FEATURE_REGISTRY_ADDRESS,
-            AccountInfo::default(),
-            feature_registry_report_storage(validator, 13),
-        );
-        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
-        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
-        let mut executor = builder.build(&mut db, &chainspec);
-        initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
-
-        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            publicKey: b256_public_key_from_private_key(&proposer_key),
             featuresTip: 13,
         }
         .abi_encode()

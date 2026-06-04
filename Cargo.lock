@@ -13164,7 +13164,6 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-payload-types",
- "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
