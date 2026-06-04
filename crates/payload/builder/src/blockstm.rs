@@ -35,6 +35,8 @@ use tracing::trace;
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 
+const PLANNER_RESULTS_BUFFER_CAPACITY: usize = 100;
+
 #[derive(Debug)]
 pub(crate) enum PayloadBuildError {
     Unsupported(&'static str),
@@ -120,7 +122,7 @@ where
     where
         Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
-        let (results_tx, results_rx) = mpsc::sync_channel(1);
+        let (results_tx, results_rx) = mpsc::sync_channel(PLANNER_RESULTS_BUFFER_CAPACITY);
         let (commands_tx, commands_rx) = mpsc::channel();
         let action_buffer_capacity = (executor.prewarming_pool().current_num_threads() * 2).max(1);
         let (action_buffers_tx, action_buffers_rx) =
@@ -242,9 +244,10 @@ where
                     PlannerCommand::StateUpdate(update) => {
                         planner.best_txs.apply_update(update);
                     }
-                    PlannerCommand::Stop => {
+                    PlannerCommand::Stop { drain_rx } => {
                         planner.stop.store(true, Ordering::Relaxed);
                         planner.prewarm.stop();
+                        drop(drain_rx);
                         return;
                     }
                 }
@@ -311,7 +314,12 @@ impl<Provider> Drop for Planner<Provider> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.prewarm.stop();
-        let _ = self.commands_tx.send(PlannerCommand::Stop);
+
+        // Move buffered result cleanup to the planner coordinator so Planner::drop
+        // does not block the payload builder thread.
+        let (_drain_tx, replacement_rx) = mpsc::sync_channel(0);
+        let drain_rx = core::mem::replace(&mut self.results_rx, replacement_rx);
+        let _ = self.commands_tx.send(PlannerCommand::Stop { drain_rx });
     }
 }
 
@@ -343,7 +351,11 @@ enum PlannerCommand {
         kind: InvalidPoolTransactionError,
     },
     StateUpdate(StateAwareBestTransactionsUpdate),
-    Stop,
+    Stop {
+        /// Receiver moved out so queued planner results are dropped by the coordinator
+        /// instead of blocking the payload builder thread in [`Planner::drop`].
+        drain_rx: Receiver<PlannerMessage>,
+    },
 }
 
 fn prewarm_tip20_transfer_actions<Provider>(
