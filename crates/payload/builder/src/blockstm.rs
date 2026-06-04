@@ -330,6 +330,12 @@ where
             return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         };
 
+        if evm.cfg.spec.is_t5() {
+            candidate.recovered.is_payment_v2();
+        } else {
+            candidate.recovered.is_payment_v1();
+        }
+
         let _ = evm.take_actions();
         let result = match evm.transact_raw(candidate.tx_env) {
             Ok(result) => result,
