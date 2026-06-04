@@ -30,15 +30,18 @@ use tempo_chainspec::{
     TempoChainSpec, features::highest_supported_protocol_feature_id, hardfork::TempoHardforks,
 };
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, IFeatureRegistry, IValidatorConfigV2,
+    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, IFeatureRegistry,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
+use tempo_precompiles::{
+    feature_registry::FeatureRegistry, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, TempoStateAccess, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -220,8 +223,7 @@ where
         contract: Address,
         data: Bytes,
         context: &str,
-        commit: bool,
-    ) -> Result<Bytes, BlockExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         let result_and_state = self
             .evm_mut()
             .transact_system_call(SYSTEM_CALLER_ADDRESS, contract, data)
@@ -230,11 +232,9 @@ where
             })?;
 
         match result_and_state.result {
-            ExecutionResult::Success { output, .. } => {
-                if commit {
-                    self.evm_mut().db_mut().commit(result_and_state.state);
-                }
-                Ok(output.into_data())
+            ExecutionResult::Success { .. } => {
+                self.evm_mut().db_mut().commit(result_and_state.state);
+                Ok(())
             }
             ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
                 "{context} system call reverted: {output}"
@@ -249,15 +249,12 @@ where
         &mut self,
         validator: Address,
     ) -> Result<u64, BlockExecutionError> {
-        let call = IFeatureRegistry::validatorSupportedFeaturesTipCall { validator };
-        let output = self.transact_precompile_system_call(
-            FEATURE_REGISTRY_ADDRESS,
-            call.abi_encode().into(),
-            "feature registry support read",
-            false,
-        )?;
-
-        IFeatureRegistry::validatorSupportedFeaturesTipCall::abi_decode_returns(&output)
+        let spec = self.evm().cfg.spec;
+        self.evm_mut()
+            .db_mut()
+            .with_read_only_storage_ctx(spec, || {
+                FeatureRegistry::new().validator_supported_features_tip(validator)
+            })
             .map_err(BlockExecutionError::other)
     }
 
@@ -279,7 +276,6 @@ where
             FEATURE_REGISTRY_ADDRESS,
             call.abi_encode().into(),
             "feature registry support report",
-            true,
         )?;
 
         Ok(())
@@ -290,16 +286,14 @@ where
             return Ok(None);
         };
 
-        let call = IValidatorConfigV2::validatorByPublicKeyCall {
-            publicKey: B256::from(&consensus_context.proposer),
-        };
-        let output = self.transact_precompile_system_call(
-            VALIDATOR_CONFIG_V2_ADDRESS,
-            call.abi_encode().into(),
-            "validator config proposer lookup",
-            false,
-        )?;
-        let validator = IValidatorConfigV2::validatorByPublicKeyCall::abi_decode_returns(&output)
+        let public_key = B256::from(&consensus_context.proposer);
+        let spec = self.evm().cfg.spec;
+        let validator = self
+            .evm_mut()
+            .db_mut()
+            .with_read_only_storage_ctx(spec, || {
+                ValidatorConfigV2::new().validator_by_public_key(public_key)
+            })
             .map_err(BlockExecutionError::other)?;
 
         if validator.deactivatedAtHeight != 0 {
@@ -335,7 +329,6 @@ where
             FEATURE_REGISTRY_ADDRESS,
             call.abi_encode().into(),
             "feature registry activation",
-            true,
         )?;
 
         Ok(())
