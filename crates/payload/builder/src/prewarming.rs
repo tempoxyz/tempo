@@ -18,13 +18,13 @@ use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
-    storage::StorageKey as _,
+    storage::{StorageKey as _, evm::EvmAction},
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
 };
 use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::best::BestTransaction;
-use tracing::{info, trace};
+use tempo_transaction_pool::best::{AsBestTransaction, BestTransaction};
+use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -33,7 +33,7 @@ type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: Receiver<Option<BestTransaction>>,
+    transactions_rx: Receiver<Option<PrewarmedBestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
 }
@@ -110,19 +110,20 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                let _expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
                     Some(offset)
                 } else {
                     None
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
+                let transactions_tx = ctx.transactions_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
+                    let prewarmed_tx = Self::prewarm_transaction(prewarm, tx);
+                    let _ = transactions_tx.send(prewarmed_tx);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -149,7 +150,7 @@ impl BestTransactionsPrewarming {
 
                         for tx in old_rx {
                             if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
@@ -175,69 +176,37 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
-        expiring_nonce_offset: Option<usize>,
-    ) where
+    ) -> Option<PrewarmedBestTransaction>
+    where
         Provider: StateProviderFactory + Clone + 'static,
     {
         if prewarm.is_stopped() {
-            return;
+            return None;
         }
 
         WorkerPool::with_worker_mut(|worker| {
             let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
+                return None;
             };
 
             let tx_hash = *tx.hash();
 
-            // let touched = if is_tip20_transfer_transaction(&tx) {
-            //     let touches = storage_touches_for_transaction(
-            //         &tx,
-            //         prewarm.evm_env.block_env.beneficiary,
-            //         expiring_nonce_offset,
-            //     );
-
-            //     for touch in &touches {
-            //         if prewarm.is_stopped() {
-            //             return;
-            //         }
-            //         if let Err(err) = touch.warm(evm.db_mut()) {
-            //             trace!(
-            //                 target: "payload_builder",
-            //                 %err,
-            //                 ?tx_hash,
-            //                 "Failed to prewarm transaction storage"
-            //             );
-            //             return;
-            //         }
-            //     }
-
-            //     Some(touches.len())
-            // } else {
             if prewarm.is_stopped() {
-                return;
+                return None;
             }
 
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
-
-            if let Err(err) = evm.transact_raw(tx_env) {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    ?tx_hash,
-                    "Failed to prewarm transaction by execution"
-                );
-                return;
-            }
-
-            let actions = evm.take_actions();
-            info!("actions: {:?}", actions);
-
-            //     None
-            // };
+            match evm.transact_raw(tx.transaction.clone_tx_env()) {
+                Ok(_) => {}
+                Err(err) => {
+                    trace!(
+                        target: "payload_builder",
+                        %err,
+                        ?tx_hash,
+                        "Failed to prewarm transaction by execution"
+                    );
+                    return None;
+                }
+            };
 
             trace!(
                 target: "payload_builder",
@@ -245,7 +214,12 @@ impl BestTransactionsPrewarming {
                 ?tx_hash,
                 "Prewarmed transaction"
             );
-        });
+
+            Some(PrewarmedBestTransaction {
+                tx,
+                actions: evm.take_actions(),
+            })
+        })
     }
 }
 
@@ -257,7 +231,7 @@ impl Drop for BestTransactionsPrewarming {
 }
 
 impl Iterator for BestTransactionsPrewarming {
-    type Item = BestTransaction;
+    type Item = PrewarmedBestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
@@ -276,7 +250,7 @@ impl BestTransactions for BestTransactionsPrewarming {
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
-                tx: transaction.clone(),
+                tx: transaction.tx.clone(),
                 kind,
             },
             old_rx,
@@ -298,11 +272,69 @@ impl BestTransactions for BestTransactionsPrewarming {
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
-    transactions_tx: Sender<Option<BestTransaction>>,
+    transactions_tx: Sender<Option<PrewarmedBestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+}
+
+pub(crate) struct PrewarmedBestTransaction {
+    tx: BestTransaction,
+    actions: Option<Vec<EvmAction>>,
+}
+
+impl PrewarmedBestTransaction {
+    pub(crate) fn new_unwarmed(tx: BestTransaction) -> Self {
+        Self { tx, actions: None }
+    }
+}
+
+impl AsBestTransaction for PrewarmedBestTransaction {
+    fn as_best_transaction(&self) -> BestTransaction {
+        self.tx.clone()
+    }
+}
+
+/// Adapter that normalizes non-prewarmed best transactions to the prewarming item type.
+pub(crate) struct UnwarmedBestTransactions<Txs> {
+    inner: Txs,
+}
+
+impl<Txs> UnwarmedBestTransactions<Txs> {
+    pub(crate) const fn new(inner: Txs) -> Self {
+        Self { inner }
+    }
+}
+
+impl<Txs> Iterator for UnwarmedBestTransactions<Txs>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    type Item = PrewarmedBestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(PrewarmedBestTransaction::new_unwarmed)
+    }
+}
+
+impl<Txs> BestTransactions for UnwarmedBestTransactions<Txs>
+where
+    Txs: BestTransactions<Item = BestTransaction> + Send,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(&transaction.tx, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
+    }
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -633,8 +665,8 @@ enum BestTransactionsCommand {
     Advance,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<BestTransaction>>,
-        new_tx: Sender<Option<BestTransaction>>,
+        old_rx: Receiver<Option<PrewarmedBestTransaction>>,
+        new_tx: Sender<Option<PrewarmedBestTransaction>>,
     },
     NoUpdates,
     SkipBlobs(bool),

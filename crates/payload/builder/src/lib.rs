@@ -17,7 +17,7 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmedBestTransaction, UnwarmedBestTransactions},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -74,6 +74,7 @@ use tempo_primitives::{
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
+    best::AsBestTransaction,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -528,18 +529,20 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
-                self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
-        } else {
-            Box::new(best_txs)
-        });
+        let best_txs: Box<dyn BestTransactions<Item = PrewarmedBestTransaction>> =
+            if self.enable_prewarming {
+                Box::new(BestTransactionsPrewarming::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache,
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    best_txs,
+                ))
+            } else {
+                Box::new(UnwarmedBestTransactions::new(best_txs))
+            };
+        let mut best_txs = StateAwareBestTransactions::new(best_txs);
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -584,7 +587,7 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
+            let Some(candidate) = best_txs.next() else {
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
@@ -602,6 +605,7 @@ where
                 };
                 break stop_reason;
             };
+            let pool_tx = candidate.as_best_transaction();
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
@@ -616,7 +620,7 @@ where
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &candidate,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
@@ -637,7 +641,7 @@ where
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &candidate,
                     InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
@@ -657,7 +661,7 @@ where
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &candidate,
                     InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
@@ -706,7 +710,7 @@ where
                         // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
-                            &pool_tx,
+                            &candidate,
                             InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
