@@ -521,7 +521,7 @@ impl EvmActions {
         ))
     }
 
-    fn record(&self, action: EvmAction) {
+    pub fn record(&self, action: EvmAction) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
