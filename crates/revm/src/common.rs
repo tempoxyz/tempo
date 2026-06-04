@@ -579,7 +579,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -602,7 +602,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let result_token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -618,8 +619,12 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let result_token =
-            db.get_fee_token(TempoTxEnv::default(), caller, TempoHardfork::Genesis)?;
+        let result_token = db.get_fee_token(
+            TempoTxEnv::default(),
+            caller,
+            TempoHardfork::Genesis,
+            &EvmActions::default(),
+        )?;
         assert_eq!(result_token, user_token);
         Ok(())
     }
@@ -641,7 +646,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let result_token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
@@ -659,7 +665,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let result_token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -692,7 +699,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -715,7 +722,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -803,7 +810,8 @@ mod tests {
             let mut db = revm::database::CacheDB::new(EmptyDB::default());
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
-            let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
+            let is_usd =
+                db.is_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::default())?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
 

@@ -2711,9 +2711,12 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                &Default::default(),
+            )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
@@ -2728,17 +2731,20 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                &Default::default(),
+            )?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+        let fee_token =
+            ctx.journaled_state
+                .get_fee_token(&ctx.tx, user, ctx.cfg.spec, &Default::default())?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

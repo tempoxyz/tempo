@@ -7,10 +7,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, TxKind, U256, map::HashMap};
 use alloy_sol_types::SolInterface;
-use reth_evm::block::StateDB;
+use reth_evm::{Database, block::StateDB};
 use reth_primitives_traits::Recovered;
 use reth_revm::{
-    Inspector,
+    Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
@@ -169,10 +169,10 @@ struct AppliedActionReplay {
     state: EvmState,
 }
 
-impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
-    DB: StateDB,
-    I: Inspector<TempoContext<DB>>,
+    DB: Database,
+    I: Inspector<TempoContext<&'a mut State<DB>>>,
 {
     /// Commits one precomputed TIP-20 transfer by replaying recorded precompile storage actions.
     ///
@@ -329,8 +329,8 @@ fn validate_direct_recipient(to: Address) -> Result<(), Tip20TransferBlockstmFal
     Ok(())
 }
 
-fn action_replay_state<DB: StateDB>(
-    db: &mut DB,
+fn action_replay_state<DB: Database>(
+    db: &mut State<DB>,
     actions: &[EvmAction],
     replay_state: &mut Tip20ActionReplayState,
     spec: TempoHardfork,
@@ -400,9 +400,9 @@ fn action_replay_state<DB: StateDB>(
 
     let mut state = EvmState::default();
     for (key, change) in replay_state.changes.drain() {
-        let Some(write_kind) = change.write_kind else {
+        if change.write_kind.is_none() && db.bal_state.bal_builder.is_none() {
             continue;
-        };
+        }
 
         if let Entry::Vacant(e) = state.entry(key.address) {
             let mut account = Account::from(action_account_info(db, key.address)?);
@@ -416,7 +416,9 @@ fn action_replay_state<DB: StateDB>(
             key.slot,
             EvmStorageSlot::new_changed(change.original, change.current, TransactionId::ZERO),
         );
-        replay_state.tx_writes.push((key, write_kind));
+        if let Some(write_kind) = change.write_kind {
+            replay_state.tx_writes.push((key, write_kind));
+        }
     }
 
     Ok(AppliedActionReplay { state })
