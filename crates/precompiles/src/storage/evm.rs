@@ -1,6 +1,7 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use alloy::primitives::{Address, Log, LogData, U256};
@@ -498,17 +499,14 @@ pub enum EvmAction {
 
 #[derive(Debug, Clone, Default)]
 pub struct EvmActions {
-    enabled: Arc<AtomicBool>,
-    actions: Arc<Mutex<Vec<EvmAction>>>,
+    enabled: Rc<AtomicBool>,
+    actions: Rc<RefCell<Vec<EvmAction>>>,
 }
 
 impl EvmActions {
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::Relaxed);
-        self.actions
-            .lock()
-            .expect("EVM actions mutex poisoned")
-            .clear();
+        self.actions.borrow_mut().clear();
     }
 
     pub fn take(&self) -> Option<Vec<EvmAction>> {
@@ -516,9 +514,7 @@ impl EvmActions {
             return None;
         }
 
-        Some(std::mem::take(
-            &mut *self.actions.lock().expect("EVM actions mutex poisoned"),
-        ))
+        Some(std::mem::take(&mut *self.actions.borrow_mut()))
     }
 
     pub fn record(&self, action: EvmAction) {
@@ -526,10 +522,7 @@ impl EvmActions {
             return;
         }
 
-        self.actions
-            .lock()
-            .expect("EVM actions mutex poisoned")
-            .push(action);
+        self.actions.borrow_mut().push(action);
     }
 }
 
