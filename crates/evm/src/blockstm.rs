@@ -15,7 +15,10 @@ use reth_revm::{
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
-use tempo_precompiles::storage::evm::EvmAction;
+use tempo_precompiles::{
+    storage::evm::EvmAction,
+    tip20::{RewardFlag, UserState},
+};
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::TEMPO_EXPIRING_NONCE_KEY};
 use tempo_revm::{TempoHaltReason, TempoTxEnv, evm::TempoContext};
 
@@ -210,7 +213,12 @@ where
                 transaction_index,
                 error: error.into(),
             })?;
-        let applied = action_replay_state(self.inner.evm.db_mut(), &replay.actions, replay_state)?;
+        let applied = action_replay_state(
+            self.inner.evm.db_mut(),
+            &replay.actions,
+            replay_state,
+            cfg.spec,
+        )?;
         let result = TempoTxResult::new_precomputed(
             tx.recovered.tx(),
             replay.result,
@@ -332,6 +340,7 @@ fn action_replay_state<DB: StateDB>(
     db: &mut DB,
     actions: &[EvmAction],
     replay_state: &Tip20ActionReplayState,
+    spec: TempoHardfork,
 ) -> Result<AppliedActionReplay, Tip20TransferBlockstmExecutionError> {
     if actions.is_empty() {
         return Err(Tip20TransferBlockstmExecutionError::Fallback(
@@ -367,8 +376,7 @@ fn action_replay_state<DB: StateDB>(
                     WriteKind::Store,
                 )?;
             }
-            EvmAction::Sinc(address, slot, delta)
-            | EvmAction::Tip20BalanceSinc(address, slot, delta, _) => {
+            EvmAction::Sinc(address, slot, delta) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
@@ -386,8 +394,7 @@ fn action_replay_state<DB: StateDB>(
                     WriteKind::Delta,
                 )?;
             }
-            EvmAction::Sdec(address, slot, delta)
-            | EvmAction::Tip20BalanceSdec(address, slot, delta, _) => {
+            EvmAction::Sdec(address, slot, delta) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
@@ -395,6 +402,50 @@ fn action_replay_state<DB: StateDB>(
                 let value = action_current_value(db, &writes, &mut originals, key)?
                     .checked_sub(delta)
                     .ok_or_else(insufficient_balance)?;
+                action_write_value(
+                    db,
+                    &mut writes,
+                    &mut originals,
+                    &mut write_kinds,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
+            }
+            EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
+                let key = StorageKey { address, slot };
+                if replay_state.has_store(key) {
+                    return Err(action_conflict());
+                }
+                let value = action_tip20_balance_value(
+                    action_current_value(db, &writes, &mut originals, key)?,
+                    spec,
+                    delta,
+                    flag,
+                    true,
+                )?;
+                action_write_value(
+                    db,
+                    &mut writes,
+                    &mut originals,
+                    &mut write_kinds,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
+            }
+            EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
+                let key = StorageKey { address, slot };
+                if replay_state.has_store(key) {
+                    return Err(action_conflict());
+                }
+                let value = action_tip20_balance_value(
+                    action_current_value(db, &writes, &mut originals, key)?,
+                    spec,
+                    delta,
+                    flag,
+                    false,
+                )?;
                 action_write_value(
                     db,
                     &mut writes,
@@ -467,6 +518,30 @@ fn action_write_value<DB: StateDB>(
     writes.insert(key, value);
     merge_write_kind(write_kinds, key, kind);
     Ok(())
+}
+
+fn action_tip20_balance_value(
+    current: U256,
+    spec: TempoHardfork,
+    delta: U256,
+    flag: RewardFlag,
+    increment: bool,
+) -> Result<U256, Tip20TransferBlockstmExecutionError> {
+    let state = UserState::decode_storage_word(current, spec).map_err(|_| {
+        Tip20TransferBlockstmExecutionError::Fallback(Tip20TransferBlockstmFallback::RewardActive)
+    })?;
+    let state = if increment {
+        state
+            .incremented(delta, flag)
+            .map_err(|_| balance_overflow())?
+    } else {
+        state
+            .decremented(delta, flag)
+            .map_err(|_| insufficient_balance())?
+    };
+    state.encode_storage_word(spec).map_err(|_| {
+        Tip20TransferBlockstmExecutionError::Fallback(Tip20TransferBlockstmFallback::RewardActive)
+    })
 }
 
 fn merge_write_kind(writes: &mut HashMap<StorageKey, WriteKind>, key: StorageKey, kind: WriteKind) {

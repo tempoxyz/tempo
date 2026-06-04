@@ -331,27 +331,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
-        if self.actions.is_enabled() {
-            // FIXME(rewards): the STM TIP-20 path currently targets reward-inactive bench traffic.
-            // Raw arithmetic preserves packed reward bits as long as rewards do not change.
-            let value = self
-                .sload_inner(address, key, None)?
-                .checked_add(delta)
-                .ok_or_else(TempoPrecompileError::under_overflow)?;
-            self.sstore_inner(
-                address,
-                key,
-                value,
-                Some(EvmAction::Tip20BalanceSinc(address, key, delta, flag)),
-            )?;
-            return UserState::decode_storage_word(value, self.spec);
-        }
-
         let state =
             UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
                 .incremented(delta, flag)?;
         let value = state.encode_storage_word(self.spec)?;
-        self.sstore_inner(address, key, value, None)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSinc(address, key, delta, flag)),
+        )?;
         Ok(state)
     }
 
@@ -363,27 +352,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
-        if self.actions.is_enabled() {
-            // FIXME(rewards): the STM TIP-20 path currently targets reward-inactive bench traffic.
-            // Raw arithmetic preserves packed reward bits as long as rewards do not change.
-            let value = self
-                .sload_inner(address, key, None)?
-                .checked_sub(delta)
-                .ok_or_else(TempoPrecompileError::under_overflow)?;
-            self.sstore_inner(
-                address,
-                key,
-                value,
-                Some(EvmAction::Tip20BalanceSdec(address, key, delta, flag)),
-            )?;
-            return UserState::decode_storage_word(value, self.spec);
-        }
-
         let state =
             UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
                 .decremented(delta, flag)?;
         let value = state.encode_storage_word(self.spec)?;
-        self.sstore_inner(address, key, value, None)?;
+        self.sstore_inner(
+            address,
+            key,
+            value,
+            Some(EvmAction::Tip20BalanceSdec(address, key, delta, flag)),
+        )?;
         Ok(state)
     }
 
@@ -573,10 +551,6 @@ impl EvmActions {
             .lock()
             .expect("EVM actions mutex poisoned")
             .push(action);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
     }
 }
 
