@@ -42,7 +42,7 @@ jobs:
       has-benchmarks: ${{ steps.refs.outputs.has-benchmarks }}
       has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
         with:
           persist-credentials: false
           fetch-depth: 0
