@@ -24,7 +24,7 @@ use tempo_chainspec::{
 use tempo_contracts::precompiles::{ITIP20, TIP20Event};
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, input_cost,
-    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY},
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, NonceManager},
     storage::StorageKey as _,
     tip_fee_manager::TipFeeManager,
     tip20::{U128_MAX, decode_tip20_balance, tip20_slots},
@@ -66,7 +66,7 @@ pub enum Tip20TransferBlockstmFallback {
     InvalidNonce,
     MissingExpiringNonceValidBefore,
     ExpiringNonceReplay,
-    ExpiringNonceSetFull,
+    ExpiringNonceProbeExhausted,
     AccountHasCode,
     GasLimit,
     GasOverflow,
@@ -104,7 +104,7 @@ impl Tip20TransferBlockstmFallback {
             Self::InvalidNonce => "invalid_nonce",
             Self::MissingExpiringNonceValidBefore => "missing_expiring_nonce_valid_before",
             Self::ExpiringNonceReplay => "expiring_nonce_replay",
-            Self::ExpiringNonceSetFull => "expiring_nonce_set_full",
+            Self::ExpiringNonceProbeExhausted => "expiring_nonce_probe_exhausted",
             Self::AccountHasCode => "account_has_code",
             Self::GasLimit => "gas_limit",
             Self::GasOverflow => "gas_overflow",
@@ -228,12 +228,7 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
     db: &mut DB,
     plan: &Tip20TransferBlockstmPlan,
 ) -> Result<(), DB::Error> {
-    let nonce_ring_ptr_key = expiring_nonce_ring_ptr_key();
-
     for key in plan.base_storage_keys() {
-        if key == nonce_ring_ptr_key {
-            continue;
-        }
         let _ = db.storage(key.address, key.slot)?;
     }
 
@@ -246,31 +241,21 @@ pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
 
 fn read_expiring_nonce_base_storage<E>(
     plan: &Tip20TransferBlockstmPlan,
-    block_timestamp: u64,
     mut read_storage: impl FnMut(StorageKey) -> Result<U256, E>,
-    mut ring_index: impl FnMut(U256, Option<usize>) -> Result<u32, E>,
 ) -> Result<(), E> {
     let Tip20ExpiringNonceAction {
         replay_hash,
-        valid_before: _,
-        expiring_nonce_idx,
+        valid_before,
         ..
     } = plan.nonce;
 
-    let seen_key = expiring_nonce_seen_key(replay_hash);
-    let seen_expiry = read_storage(seen_key)?;
-    if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
-        return Ok(());
-    }
-
-    let ptr_key = expiring_nonce_ring_ptr_key();
-    let idx = ring_index(read_storage(ptr_key)?, expiring_nonce_idx)?;
-    let ring_key = expiring_nonce_ring_key(idx);
-    let old_hash_word = read_storage(ring_key)?;
-
-    if old_hash_word != U256::ZERO {
-        let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-        let _ = read_storage(old_seen_key)?;
+    for key in expiring_nonce_cell_keys(replay_hash, valid_before) {
+        let word = read_storage(key)?;
+        if expiring_nonce_cell_valid_before(word) != valid_before
+            || NonceManager::expiring_nonce_cell_matches(word, replay_hash, valid_before)
+        {
+            break;
+        }
     }
 
     Ok(())
@@ -281,15 +266,14 @@ struct Tip20ExpiringNonceAction {
     caller: Address,
     replay_hash: B256,
     valid_before: u64,
-    expiring_nonce_idx: Option<usize>,
 }
 
 impl Tip20ExpiringNonceAction {
     fn read_set(&self) -> impl Iterator<Item = StorageKey> {
-        [
-            expiring_nonce_ring_ptr_key(),
-            expiring_nonce_seen_key(self.replay_hash),
-        ]
+        [expiring_nonce_first_cell_key(
+            self.replay_hash,
+            self.valid_before,
+        )]
         .into_iter()
     }
 
@@ -405,7 +389,7 @@ where
 
         self.validate_tip20_transfer_state(&plan)?;
 
-        let mut tx_execution = self.read_plan_execution_state(&plan, block_timestamp)?;
+        let mut tx_execution = self.read_plan_execution_state(&plan)?;
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
         execute_tip20_transfer_plan_with_deltas(&plan, &mut tx_execution, is_t6, block_timestamp)
@@ -546,7 +530,6 @@ where
     fn read_plan_execution_state(
         &mut self,
         plan: &Tip20TransferBlockstmPlan,
-        block_timestamp: u64,
     ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmExecutionError> {
         let mut execution = Tip20BlockstmTxExecution {
             storage: HashMap::new(),
@@ -555,17 +538,9 @@ where
         for key in plan.base_storage_keys() {
             let _ = self.read_execution_storage(&mut execution, key)?;
         }
-        read_expiring_nonce_base_storage(
-            plan,
-            block_timestamp,
-            |key| self.read_execution_storage(&mut execution, key),
-            |ptr_word, expiring_nonce_idx| {
-                let ptr = expiring_nonce_ring_ptr_from_word(ptr_word)
-                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
-                expiring_nonce_ring_index(ptr, expiring_nonce_idx)
-                    .map_err(Tip20TransferBlockstmExecutionError::Fallback)
-            },
-        )?;
+        read_expiring_nonce_base_storage(plan, |key| {
+            self.read_execution_storage(&mut execution, key)
+        })?;
 
         for account in plan.base_accounts() {
             if execution.accounts.contains_key(&account) {
@@ -740,7 +715,6 @@ fn execute_tip20_transfer_plan_with_deltas(
     apply_expiring_nonce_action(
         plan.nonce.replay_hash,
         plan.nonce.valid_before,
-        plan.nonce.expiring_nonce_idx,
         execution,
         block_timestamp,
     )?;
@@ -766,7 +740,6 @@ fn execute_tip20_transfer_plan_with_deltas(
 fn apply_expiring_nonce_action(
     replay_hash: B256,
     valid_before: u64,
-    expiring_nonce_idx: Option<usize>,
     execution: &mut Tip20BlockstmTxExecution,
     block_timestamp: u64,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
@@ -776,41 +749,23 @@ fn apply_expiring_nonce_action(
         return Err(Tip20TransferBlockstmFallback::InvalidNonce);
     }
 
-    let seen_key = expiring_nonce_seen_key(replay_hash);
-    let seen_expiry = read_for_write(execution, seen_key);
-    if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
-        return Err(Tip20TransferBlockstmFallback::ExpiringNonceReplay);
-    }
-
-    let ptr_key = expiring_nonce_ring_ptr_key();
-    let ptr = expiring_nonce_ring_ptr_from_word(read_for_write(execution, ptr_key))?;
-    let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)?;
-    let ring_key = expiring_nonce_ring_key(idx);
-    let old_hash_word = read_for_write(execution, ring_key);
-
-    if old_hash_word != U256::ZERO {
-        let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-        let old_expiry = read_for_write(execution, old_seen_key);
-        if old_expiry != U256::ZERO && old_expiry > U256::from(block_timestamp) {
-            return Err(Tip20TransferBlockstmFallback::ExpiringNonceSetFull);
+    for key in expiring_nonce_cell_keys(replay_hash, valid_before) {
+        let word = read_for_write(execution, key);
+        if expiring_nonce_cell_valid_before(word) != valid_before {
+            write_value(
+                execution,
+                key,
+                NonceManager::expiring_nonce_cell_word(replay_hash, valid_before),
+            );
+            return Ok(());
         }
-        write_value(execution, old_seen_key, U256::ZERO);
+
+        if NonceManager::expiring_nonce_cell_matches(word, replay_hash, valid_before) {
+            return Err(Tip20TransferBlockstmFallback::ExpiringNonceReplay);
+        }
     }
 
-    write_value(
-        execution,
-        ring_key,
-        expiring_nonce_hash_to_word(replay_hash),
-    );
-    write_value(execution, seen_key, U256::from(valid_before));
-
-    let next_ptr = expiring_nonce_next_ring_ptr(idx);
-    write_value(execution, ptr_key, U256::from(next_ptr));
-    if expiring_nonce_idx.is_some() {
-        write_value(execution, ptr_key, U256::from(ptr));
-    }
-
-    Ok(())
+    Err(Tip20TransferBlockstmFallback::ExpiringNonceProbeExhausted)
 }
 
 fn settle_actual_fee_with_deltas(
@@ -1608,7 +1563,6 @@ fn decode_expiring_nonce_action(
             valid_before: aa
                 .valid_before
                 .ok_or(Tip20TransferBlockstmFallback::MissingExpiringNonceValidBefore)?,
-            expiring_nonce_idx: aa.expiring_nonce_idx,
         })
     } else {
         Err(Tip20TransferBlockstmFallback::InvalidNonce)
@@ -1653,64 +1607,27 @@ fn decode_tip20_transfer_call(
     }
 }
 
-const NONCE_MANAGER_EXPIRING_NONCE_SEEN_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
-const NONCE_MANAGER_EXPIRING_NONCE_RING_SLOT: U256 = U256::from_limbs([2, 0, 0, 0]);
-const NONCE_MANAGER_EXPIRING_NONCE_RING_PTR_SLOT: U256 = U256::from_limbs([3, 0, 0, 0]);
-
-fn expiring_nonce_seen_key(hash: B256) -> StorageKey {
+fn expiring_nonce_first_cell_key(replay_hash: B256, valid_before: u64) -> StorageKey {
     StorageKey {
         address: NONCE_PRECOMPILE_ADDRESS,
-        slot: hash.mapping_slot(NONCE_MANAGER_EXPIRING_NONCE_SEEN_SLOT),
+        slot: NonceManager::expiring_nonce_first_cell_slot(replay_hash, valid_before),
     }
 }
 
-fn expiring_nonce_ring_key(index: u32) -> StorageKey {
-    StorageKey {
-        address: NONCE_PRECOMPILE_ADDRESS,
-        slot: index.mapping_slot(NONCE_MANAGER_EXPIRING_NONCE_RING_SLOT),
-    }
+fn expiring_nonce_cell_keys(
+    replay_hash: B256,
+    valid_before: u64,
+) -> impl Iterator<Item = StorageKey> {
+    NonceManager::expiring_nonce_cell_slots(replay_hash, valid_before)
+        .into_iter()
+        .map(|slot| StorageKey {
+            address: NONCE_PRECOMPILE_ADDRESS,
+            slot,
+        })
 }
 
-fn expiring_nonce_ring_ptr_key() -> StorageKey {
-    StorageKey {
-        address: NONCE_PRECOMPILE_ADDRESS,
-        slot: NONCE_MANAGER_EXPIRING_NONCE_RING_PTR_SLOT,
-    }
-}
-
-fn expiring_nonce_ring_ptr_from_word(word: U256) -> Result<u32, Tip20TransferBlockstmFallback> {
-    if word > U256::from(u32::MAX) {
-        return Err(Tip20TransferBlockstmFallback::StmValidation);
-    }
-    Ok(word.to::<u32>())
-}
-
-fn expiring_nonce_ring_index(
-    ptr: u32,
-    expiring_nonce_idx: Option<usize>,
-) -> Result<u32, Tip20TransferBlockstmFallback> {
-    let Some(offset) = expiring_nonce_idx else {
-        return Ok(ptr);
-    };
-
-    let offset = u32::try_from(offset).map_err(|_| Tip20TransferBlockstmFallback::InvalidNonce)?;
-    Ok(((u64::from(ptr) + u64::from(offset)) % u64::from(EXPIRING_NONCE_SET_CAPACITY)) as u32)
-}
-
-fn expiring_nonce_next_ring_ptr(index: u32) -> u32 {
-    if index >= EXPIRING_NONCE_SET_CAPACITY - 1 {
-        0
-    } else {
-        index + 1
-    }
-}
-
-fn expiring_nonce_hash_to_word(hash: B256) -> U256 {
-    U256::from_be_slice(hash.as_slice())
-}
-
-fn expiring_nonce_hash_from_word(word: U256) -> B256 {
-    B256::from(word.to_be_bytes::<32>())
+fn expiring_nonce_cell_valid_before(word: U256) -> u64 {
+    (word >> 192usize).saturating_to::<u64>()
 }
 
 fn balance_key(token: Address, account: Address) -> StorageKey {
@@ -2465,7 +2382,7 @@ mod tests {
     }
 
     #[test]
-    fn expiring_nonce_writes_seen_ring_and_pointer() {
+    fn expiring_nonce_writes_replay_cell() {
         let recipient = address!("10000000000000000000000000000000000000e1");
         let beneficiary = address!("10000000000000000000000000000000000000e2");
         let valid_before = 30;
@@ -2499,23 +2416,10 @@ mod tests {
             )]),
         );
 
+        let replay_cell = expiring_nonce_first_cell_key(replay_hash, valid_before);
         assert_eq!(
-            execution.txs[0]
-                .written_value(expiring_nonce_seen_key(replay_hash))
-                .unwrap(),
-            U256::from(valid_before)
-        );
-        assert_eq!(
-            execution.txs[0]
-                .written_value(expiring_nonce_ring_key(0))
-                .unwrap(),
-            expiring_nonce_hash_to_word(replay_hash)
-        );
-        assert_eq!(
-            execution.txs[0]
-                .written_value(expiring_nonce_ring_ptr_key())
-                .unwrap(),
-            U256::from(1)
+            execution.txs[0].written_value(replay_cell).unwrap(),
+            NonceManager::expiring_nonce_cell_word(replay_hash, valid_before)
         );
     }
 
@@ -2991,16 +2895,9 @@ mod tests {
         apply_evm_state_updates_to_trie_state(&mut blockstm_poststate, &blockstm_updates);
 
         let (mut validation_executor, validation_updates) = build_hooked_executor(build_db());
-        for (expiring_nonce_idx, (recovered, tx_env)) in txs.iter().enumerate() {
-            let mut indexed_tx_env = tx_env.clone();
-            indexed_tx_env
-                .tempo_tx_env
-                .as_mut()
-                .expect("tempo tx env")
-                .expiring_nonce_idx = Some(expiring_nonce_idx);
-
+        for (recovered, tx_env) in &txs {
             validation_executor
-                .execute_transaction((indexed_tx_env, recovered))
+                .execute_transaction((tx_env.clone(), recovered))
                 .expect("payload re-execution transaction");
             validation_executor.evm_mut().db_mut().bump_bal_index();
         }
@@ -3111,16 +3008,9 @@ mod tests {
         }
 
         let (mut validation_executor, validation_updates) = build_hooked_executor(build_db());
-        for (expiring_nonce_idx, (recovered, tx_env)) in txs.iter().enumerate() {
-            let mut indexed_tx_env = tx_env.clone();
-            indexed_tx_env
-                .tempo_tx_env
-                .as_mut()
-                .expect("tempo tx env")
-                .expiring_nonce_idx = Some(expiring_nonce_idx);
-
+        for (recovered, tx_env) in &txs {
             validation_executor
-                .execute_transaction((indexed_tx_env, recovered))
+                .execute_transaction((tx_env.clone(), recovered))
                 .expect("payload re-execution transaction");
             validation_executor.evm_mut().db_mut().bump_bal_index();
         }

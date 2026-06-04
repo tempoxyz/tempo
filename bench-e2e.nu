@@ -20,6 +20,7 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
+const E2E_NONCE_WHEEL_BLOAT_MIB = 32768
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -289,6 +290,23 @@ def e2e-snapshot-ready [datadir: string] {
 
 def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
+def e2e-snapshot-nonce-wheel-bloat-matches [datadir: string, nonce_wheel_bloat: bool] {
+    let marker = (read-bench-marker $datadir)
+    if $marker == null {
+        return false
+    }
+    let marker_nonce_wheel_bloat = ($marker | get -o nonce_wheel_bloat | default false)
+    ($marker_nonce_wheel_bloat | into string) == ($nonce_wheel_bloat | into string)
+}
+
+def e2e-snapshots-nonce-wheel-bloat-match [
+    a_db: string
+    b_db: string
+    nonce_wheel_bloat: bool
+] {
+    (e2e-snapshot-nonce-wheel-bloat-matches $a_db $nonce_wheel_bloat) and (e2e-snapshot-nonce-wheel-bloat-matches $b_db $nonce_wheel_bloat)
 }
 
 def e2e-snapshot-state-hardfork [datadir: string] {
@@ -1095,6 +1113,7 @@ def e2e-write-summary-config [
     feature_hardfork: string
     baseline_removed_args: string
     feature_removed_args: string
+    nonce_wheel_bloat: bool
 ] {
     {
         baseline_label: $baseline_label
@@ -1110,6 +1129,7 @@ def e2e-write-summary-config [
         feature_hardfork: $feature_hardfork
         baseline_removed_args: $baseline_removed_args
         feature_removed_args: $feature_removed_args
+        nonce_wheel_bloat: $nonce_wheel_bloat
     } | to json | save -f $"($results_dir)/summary-config.json"
 }
 
@@ -1164,6 +1184,7 @@ def "main e2e" [
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
+    --nonce-wheel-bloat                                 # Add a full expiring nonce time-wheel prefill on top of TIP-20 bloat
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1258,6 +1279,8 @@ def "main e2e" [
     let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let a_identity = $a_db
     let b_identity = $b_db
+    let genesis_accounts = ([$accounts 3] | math max) + 1
+    let nonce_wheel_bloat_extra_mib = if $nonce_wheel_bloat { $E2E_NONCE_WHEEL_BLOAT_MIB } else { 0 }
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
     let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
@@ -1287,7 +1310,12 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    let snapshots_nonce_wheel_match = if $snapshots_ready {
+        e2e-snapshots-nonce-wheel-bloat-match $a_db $b_db $nonce_wheel_bloat
+    } else {
+        false
+    }
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready) or (not $snapshots_nonce_wheel_match)
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
@@ -1298,6 +1326,9 @@ def "main e2e" [
         if ($missing_b | length) > 0 {
             print $"  Missing from b: ($missing_b | str join ', ')"
         }
+    }
+    if $snapshots_ready and (not $snapshots_nonce_wheel_match) and (not $force_bloat) {
+        print $"Local e2e snapshot ($bloat) nonce-wheel bloat marker does not match requested value ($nonce_wheel_bloat); reinitializing it once."
     }
 
     if $should_init_snapshots {
@@ -1314,7 +1345,6 @@ def "main e2e" [
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
-        let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
         cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
 
@@ -1324,10 +1354,11 @@ def "main e2e" [
             exit 1
         }
         if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
+            ensure-bloat-space ($bloat_mib + $nonce_wheel_bloat_extra_mib)
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            let nonce_wheel_bloat_args = if $nonce_wheel_bloat { ["--prefill-expiring-nonce-wheel"] } else { [] }
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args ...$nonce_wheel_bloat_args
         }
 
         let marker = {
@@ -1340,6 +1371,7 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            nonce_wheel_bloat: $nonce_wheel_bloat
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
@@ -1539,7 +1571,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed) $nonce_wheel_bloat
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
