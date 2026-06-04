@@ -642,6 +642,7 @@ enum BestTransactionsCommand {
     NoUpdates,
     SkipBlobs(bool),
     Stop {
+        /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<BestTransaction>>,
     },
 }
