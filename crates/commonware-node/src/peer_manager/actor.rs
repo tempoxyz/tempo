@@ -28,9 +28,7 @@ use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
     utils::public_key_to_b256,
-    validators::{
-        DecodedValidatorV2, ValidatorConfigExecution, read_validator_config_at_block_hash,
-    },
+    validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
 };
 
 /// The interval on which the peer set is update during bootstrapping.
@@ -365,11 +363,7 @@ impl PeersBuilder {
     }
 
     #[instrument(skip_all, fields(%hash))]
-    fn resolve_at_hash(
-        self,
-        node: impl ValidatorConfigExecution,
-        hash: B256,
-    ) -> eyre::Result<Peers> {
+    fn resolve_at_hash(self, node: impl ExecutionNode, hash: B256) -> eyre::Result<Peers> {
         let Self { primary, secondary } = self;
         let (_, _, (primary, secondary)) = read_validator_config_at_block_hash(
             node,
@@ -507,14 +501,14 @@ mod tests {
     const VALIDATOR_CONFIG_V2_ADDRESS: AlloyAddress =
         alloy_primitives::address!("0xCCCCCCCC00000000000000000000000000000001");
 
-    struct TestValidatorConfigExecution {
+    struct TestExecutionNode {
         hash: B256,
         height: u64,
         provider: MockEthProvider,
     }
 
-    impl ValidatorConfigExecution for TestValidatorConfigExecution {
-        fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
+    impl ExecutionNode for TestExecutionNode {
+        fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
             assert_eq!(block_hash, self.hash);
             Ok(TempoHeader {
                 general_gas_limit: 30_000_000,
@@ -529,15 +523,12 @@ mod tests {
             })
         }
 
-        fn validator_config_state_by_block_hash(
-            &self,
-            block_hash: B256,
-        ) -> eyre::Result<StateProviderBox> {
+        fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
             assert_eq!(block_hash, self.hash);
             Ok(Box::new(self.provider.clone()))
         }
 
-        fn validator_config_evm_for_block(
+        fn evm_for_block(
             &self,
             db: State<StateProviderDatabase<StateProviderBox>>,
             header: &TempoHeader,
@@ -609,7 +600,7 @@ mod tests {
 
     fn execution_with_validators(
         validators: &[ValidatorFixture],
-    ) -> eyre::Result<TestValidatorConfigExecution> {
+    ) -> eyre::Result<TestExecutionNode> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = AlloyAddress::from([0xAA; 20]);
 
@@ -637,7 +628,7 @@ mod tests {
             );
         }
 
-        Ok(TestValidatorConfigExecution {
+        Ok(TestExecutionNode {
             hash: B256::from([0x42; 32]),
             height: 7,
             provider,

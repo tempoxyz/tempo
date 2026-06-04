@@ -30,39 +30,33 @@ use crate::utils::public_key_to_b256;
 /// use a mock that only provides a historical state provider and an EVM
 /// configured for the corresponding block, while still exercising the same
 /// validator config reader used in production.
-pub(crate) trait ValidatorConfigExecution {
-    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
+pub(crate) trait ExecutionNode {
+    fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
 
-    fn validator_config_state_by_block_hash(
-        &self,
-        block_hash: B256,
-    ) -> eyre::Result<StateProviderBox>;
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox>;
 
-    fn validator_config_evm_for_block(
+    fn evm_for_block(
         &self,
         db: State<StateProviderDatabase<StateProviderBox>>,
         header: &TempoHeader,
     ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>>;
 }
 
-impl ValidatorConfigExecution for TempoFullNode {
-    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
+impl ExecutionNode for TempoFullNode {
+    fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
         self.provider
             .header(block_hash)
             .map_err(eyre::Report::new)
             .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
     }
 
-    fn validator_config_state_by_block_hash(
-        &self,
-        block_hash: B256,
-    ) -> eyre::Result<StateProviderBox> {
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
         self.provider
             .state_by_block_hash(block_hash)
             .map_err(eyre::Report::new)
     }
 
-    fn validator_config_evm_for_block(
+    fn evm_for_block(
         &self,
         db: State<StateProviderDatabase<StateProviderBox>>,
         header: &TempoHeader,
@@ -73,27 +67,24 @@ impl ValidatorConfigExecution for TempoFullNode {
     }
 }
 
-impl<N> ValidatorConfigExecution for &N
+impl<N> ExecutionNode for &N
 where
-    N: ValidatorConfigExecution,
+    N: ExecutionNode,
 {
-    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
-        (*self).validator_config_header(block_hash)
+    fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
+        (*self).header(block_hash)
     }
 
-    fn validator_config_state_by_block_hash(
-        &self,
-        block_hash: B256,
-    ) -> eyre::Result<StateProviderBox> {
-        (*self).validator_config_state_by_block_hash(block_hash)
+    fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<StateProviderBox> {
+        (*self).state_by_block_hash(block_hash)
     }
 
-    fn validator_config_evm_for_block(
+    fn evm_for_block(
         &self,
         db: State<StateProviderDatabase<StateProviderBox>>,
         header: &TempoHeader,
     ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
-        (*self).validator_config_evm_for_block(db, header)
+        (*self).evm_for_block(db, header)
     }
 }
 
@@ -102,7 +93,7 @@ where
 /// This returns both the validators that are `active` as per the contract, and
 /// those that are `known`.
 pub(crate) fn read_active_and_known_peers_at_block_hash(
-    node: impl ValidatorConfigExecution,
+    node: impl ExecutionNode,
     known: &ordered::Set<PublicKey>,
     hash: B256,
 ) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
@@ -150,7 +141,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
 /// Reads the validator state at the given block hash.
 #[instrument(skip_all, fields(%block_hash), err(Display))]
 pub(crate) fn read_validator_config_at_block_hash<C, T>(
-    node: impl ValidatorConfigExecution,
+    node: impl ExecutionNode,
     block_hash: B256,
     read_fn: impl FnOnce(&C) -> eyre::Result<T>,
 ) -> eyre::Result<(u64, B256, T)>
@@ -158,22 +149,21 @@ where
     C: Default,
 {
     let header = node
-        .validator_config_header(block_hash)
+        .header(block_hash)
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     debug!(height = header.number(), "header found");
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.validator_config_state_by_block_hash(block_hash)
-                .wrap_err_with(|| {
-                    format!("failed to get state from node provider for hash `{block_hash}`")
-                })?,
+            node.state_by_block_hash(block_hash).wrap_err_with(|| {
+                format!("failed to get state from node provider for hash `{block_hash}`")
+            })?,
         ))
         .build();
 
     let mut evm = node
-        .validator_config_evm_for_block(db, &header)
+        .evm_for_block(db, &header)
         .wrap_err("failed instantiating evm for block")?;
 
     let ctx = evm.ctx_mut();
