@@ -10,6 +10,8 @@
 //! deterministic runtime to spend real life time to wait for the execution
 //! layer calls to complete.
 
+#[cfg(feature = "bal")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -130,6 +132,7 @@ struct ProposalReturn {
 struct SpeculativeBuildRegistry {
     active: Arc<AsyncMutex<Option<SpeculativeBuild>>>,
     current_control: Arc<AsyncMutex<Option<PayloadBuildControl>>>,
+    generation: Arc<AtomicU64>,
 }
 
 #[cfg(feature = "bal")]
@@ -151,7 +154,16 @@ impl Drop for SpeculativeBuild {
 
 #[cfg(feature = "bal")]
 impl SpeculativeBuildRegistry {
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn advance_generation(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
     async fn replace(&self, execution_node: Arc<TempoFullNode>, build: SpeculativeBuild) {
+        self.advance_generation();
         self.track_build_control(build.build_control.clone()).await;
         let old = self.active.lock().await.replace(build);
         if let Some(old) = old {
@@ -159,7 +171,35 @@ impl SpeculativeBuildRegistry {
         }
     }
 
+    async fn replace_if_generation(
+        &self,
+        execution_node: Arc<TempoFullNode>,
+        build: SpeculativeBuild,
+        expected_generation: u64,
+        stale_reason: &'static str,
+    ) -> bool {
+        let mut active = self.active.lock().await;
+        if self.generation() != expected_generation
+            || active
+                .as_ref()
+                .is_some_and(|active| active.parent_height >= build.parent_height)
+        {
+            drop(active);
+            Self::spawn_cancel(execution_node, build, stale_reason);
+            return false;
+        }
+
+        self.advance_generation();
+        let old = active.replace(build);
+        drop(active);
+        if let Some(old) = old {
+            Self::spawn_cancel(execution_node, old, "replaced_by_newer_successor");
+        }
+        true
+    }
+
     async fn stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        self.advance_generation();
         self.cancel_current_control(reason).await;
         if let Some(build) = self.active.lock().await.take() {
             Self::spawn_cancel(execution_node, build, reason);
@@ -167,6 +207,7 @@ impl SpeculativeBuildRegistry {
     }
 
     fn request_stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        self.advance_generation();
         let mut needs_async_cleanup = false;
 
         match self.current_control.try_lock() {
@@ -231,6 +272,7 @@ impl SpeculativeBuildRegistry {
         }) else {
             return;
         };
+        self.advance_generation();
         build.build_control.cancel();
         Self::spawn_cancel(execution_node, build, reason);
     }
@@ -241,6 +283,7 @@ impl SpeculativeBuildRegistry {
             .as_ref()
             .is_some_and(|build| build.parent_digest == parent_digest)
         {
+            self.advance_generation();
             active.take()
         } else {
             None
@@ -708,6 +751,8 @@ impl Inner<Init> {
                     let block_height = block.height();
                     #[cfg(feature = "bal")]
                     let block_hash = block.block_hash();
+                    #[cfg(feature = "bal")]
+                    let successor_parent = block.clone();
                     let fast_path_executed_block = proposal_return.fast_path_executed_block;
 
                     let persist_start = Instant::now();
@@ -722,6 +767,7 @@ impl Inner<Init> {
                     if let Some(executed_block) = fast_path_executed_block {
                         #[cfg(feature = "bal")]
                         {
+                            let successor_executed_block = executed_block.clone();
                             self.fast_path_payloads.insert(
                                 digest,
                                 block_height,
@@ -733,6 +779,22 @@ impl Inner<Init> {
                                 proposal.height = %block_height,
                                 proposal.hash = %block_hash,
                                 "cached gated built payload for finalization fast path",
+                            );
+                            let successor_return_wait = proposal_return
+                                .time
+                                .duration_since(context.current())
+                                .unwrap_or_default();
+                            debug!(
+                                proposal.digest = %digest,
+                                proposal.height = %block_height,
+                                proposal.hash = %block_hash,
+                                ?successor_return_wait,
+                                "scheduling speculative BAL successor build before proposal return sleep",
+                            );
+                            self.spawn_speculative_successor_build(
+                                context.clone(),
+                                successor_parent,
+                                successor_executed_block,
                             );
                         }
 
@@ -1210,7 +1272,8 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         )
-        .with_payload_build_control(build_control);
+        .with_payload_build_control(build_control)
+        .with_build_reason("canonical_handle_propose");
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
@@ -1360,6 +1423,7 @@ impl Inner<Init> {
             consensus_context,
             Vec::new,
         )
+        .with_build_reason(reason)
         .with_payload_build_control(build_control.clone())
         .with_speculative_parent(SpeculativePayloadParent::new(
             block.sealed_header().clone(),
@@ -1500,11 +1564,13 @@ impl Inner<Init> {
     }
 
     #[cfg(feature = "bal")]
-    async fn start_speculative_build<TContext: commonware_runtime::Clock>(
+    async fn start_speculative_build_from_parent<TContext: commonware_runtime::Clock>(
         &self,
         context: &TContext,
         block: &Block,
-    ) -> eyre::Result<()> {
+        reason: &'static str,
+        expected_generation: Option<u64>,
+    ) -> eyre::Result<bool> {
         if let Some(consensus_context) = block.header().consensus_context {
             if consensus_context.view > consensus_context.parent_view.saturating_add(1) {
                 debug!(
@@ -1512,9 +1578,10 @@ impl Inner<Init> {
                     parent.height = %block.height(),
                     block.view = consensus_context.view,
                     parent.view = consensus_context.parent_view,
-                    "skipping verify-time speculative BAL payload build after view gap"
+                    reason,
+                    "skipping speculative BAL payload build after view gap"
                 );
-                return Ok(());
+                return Ok(false);
             }
         }
 
@@ -1532,7 +1599,7 @@ impl Inner<Init> {
                 build_control,
                 Bytes::default(),
                 None,
-                "handle_verify",
+                reason,
             )
             .await?;
         let prepare_elapsed = prepare_start.elapsed();
@@ -1542,25 +1609,133 @@ impl Inner<Init> {
                 parent.digest = %block.digest(),
                 parent.height = %block.height(),
                 prepare_elapsed = ?prepare_elapsed,
+                reason,
                 "discarding cancelled speculative BAL payload build before registry insertion"
             );
-            return Ok(());
+            return Ok(false);
         }
 
-        self.state
-            .speculative_builds
-            .replace(self.execution_node.clone(), build)
-            .await;
-        self.metrics
-            .speculative_payload_builds_started_from_verify
-            .inc();
+        let inserted = if let Some(expected_generation) = expected_generation {
+            self.state
+                .speculative_builds
+                .replace_if_generation(
+                    self.execution_node.clone(),
+                    build,
+                    expected_generation,
+                    "stale_speculative_successor",
+                )
+                .await
+        } else {
+            self.state
+                .speculative_builds
+                .replace(self.execution_node.clone(), build)
+                .await;
+            true
+        };
+
+        if !inserted {
+            debug!(
+                parent.digest = %block.digest(),
+                parent.height = %block.height(),
+                prepare_elapsed = ?prepare_elapsed,
+                reason,
+                "discarding stale speculative BAL payload build after registry generation changed"
+            );
+            return Ok(false);
+        }
 
         debug!(
             parent.digest = %block.digest(),
             parent.height = %block.height(),
             prepare_elapsed = ?prepare_elapsed,
-            "started speculative BAL payload build from handle_verify"
+            reason,
+            "started speculative BAL payload build"
         );
+
+        Ok(true)
+    }
+
+    #[cfg(feature = "bal")]
+    async fn start_speculative_build<TContext: commonware_runtime::Clock>(
+        &self,
+        context: &TContext,
+        block: &Block,
+    ) -> eyre::Result<()> {
+        if self
+            .start_speculative_build_from_parent(context, block, "handle_verify", None)
+            .await?
+        {
+            self.metrics
+                .speculative_payload_builds_started_from_verify
+                .inc();
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bal")]
+    fn spawn_speculative_successor_build<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent: Block,
+        executed_block: TempoBuiltPayloadExecutedBlock,
+    ) {
+        let inner = (*self).clone();
+        let expected_generation = self.state.speculative_builds.generation();
+        let task_executor = self.execution_node.task_executor.clone();
+        task_executor.spawn_task(async move {
+            if let Err(error) = inner
+                .insert_and_start_speculative_successor_build(
+                    context,
+                    parent,
+                    executed_block,
+                    expected_generation,
+                )
+                .await
+            {
+                warn!(%error, "failed starting speculative BAL successor build");
+            }
+        });
+    }
+
+    #[cfg(feature = "bal")]
+    async fn insert_and_start_speculative_successor_build<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent: Block,
+        executed_block: TempoBuiltPayloadExecutedBlock,
+        expected_generation: u64,
+    ) -> eyre::Result<()> {
+        let insert_start = Instant::now();
+        self.execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .insert_executed_block_and_wait(executed_block)
+            .pace(&context, Duration::from_millis(20))
+            .await
+            .wrap_err("failed inserting self-built parent before speculative successor build")?;
+        let insert_elapsed = insert_start.elapsed();
+        debug!(
+            parent.digest = %parent.digest(),
+            parent.height = %parent.height(),
+            parent.hash = %parent.block_hash(),
+            ?insert_elapsed,
+            "inserted self-built parent before speculative successor build"
+        );
+
+        let started = self
+            .start_speculative_build_from_parent(
+                &context,
+                &parent,
+                "handle_propose_successor",
+                Some(expected_generation),
+            )
+            .await?;
+        if started {
+            self.metrics
+                .speculative_payload_builds_started_from_propose_successor
+                .inc();
+        }
 
         Ok(())
     }
@@ -2004,6 +2179,8 @@ struct Metrics {
     speculative_payload_builds_started_from_propose_fallback: Counter,
     #[cfg(feature = "bal")]
     speculative_payload_builds_started_from_propose_recovery: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_successor: Counter,
 }
 
 impl Metrics {
@@ -2057,6 +2234,16 @@ impl Metrics {
             );
             counter
         };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_successor = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_successor",
+                "number of BAL speculative payload builds started from a self-proposed parent",
+                counter.clone(),
+            );
+            counter
+        };
 
         Self {
             parent_ahead_of_local_time,
@@ -2068,6 +2255,8 @@ impl Metrics {
             speculative_payload_builds_started_from_propose_fallback,
             #[cfg(feature = "bal")]
             speculative_payload_builds_started_from_propose_recovery,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_successor,
         }
     }
 }

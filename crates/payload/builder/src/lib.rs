@@ -447,6 +447,8 @@ where
             attributes,
             payload_id,
         } = config;
+        let build_reason = attributes.build_reason().unwrap_or("unknown");
+        let payload_number = parent_header.number().saturating_add(1);
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
@@ -489,18 +491,18 @@ where
         #[cfg(feature = "bal")]
         let builder_local_cache = if cache_wrapped_under_bal {
             execution_cache.as_ref().map(|cache| {
-                    let cache_create_start = Instant::now();
-                    let local_cache = cache.empty_like(parent_header.hash());
-                    debug!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        parent_hash = %parent_header.hash(),
-                        parent_number = parent_header.number(),
-                        elapsed = ?cache_create_start.elapsed(),
-                        "created builder-local execution cache overlay for speculative BAL payload"
-                    );
-                    local_cache
-                })
+                let cache_create_start = Instant::now();
+                let local_cache = cache.empty_like(parent_header.hash());
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    elapsed = ?cache_create_start.elapsed(),
+                    "created builder-local execution cache overlay for speculative BAL payload"
+                );
+                local_cache
+            })
         } else {
             None
         };
@@ -822,6 +824,11 @@ where
                         .map(|attached_elapsed| elapsed.saturating_sub(attached_elapsed));
                     debug!(
                         target: "payload_builder",
+                        id = %payload_id,
+                        build_reason,
+                        parent_hash = %parent_header.hash(),
+                        parent_number = parent_header.number(),
+                        payload_number,
                         stop_reason = BlockBuildStopReason::BuildBudget.as_str(),
                         ?elapsed,
                         builder_elapsed = ?snapshot.builder_elapsed(),
@@ -836,6 +843,9 @@ where
                         ?estimate.total_budgeted_work,
                         proposal_timing_attached = proposal_timing_attached_elapsed.is_some(),
                         pool_transactions_yielded,
+                        pool_transactions_included,
+                        cumulative_gas_used,
+                        non_shared_gas_limit,
                         can_wait_for_pool,
                         build_once_with_shared_trie,
                         stopped_before_first_best_txs_next = !attempted_best_txs_next,
@@ -911,6 +921,11 @@ where
                 });
                 debug!(
                     target: "payload_builder",
+                    id = %payload_id,
+                    build_reason,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    payload_number,
                     stop_reason = stop_reason.as_str(),
                     ?elapsed,
                     ?builder_elapsed,
@@ -918,6 +933,7 @@ where
                     ?build_budget,
                     proposal_timing_attached,
                     pool_transactions_yielded,
+                    pool_transactions_included,
                     can_wait_for_pool,
                     build_once_with_shared_trie,
                     stopped_before_first_best_txs_next = !attempted_best_txs_next,
@@ -1077,6 +1093,7 @@ where
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
+        let block_build_stop_reason_label = block_build_stop_reason.as_str();
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start
@@ -1468,6 +1485,8 @@ where
             .set(recorded_block_size_bytes as f64);
 
         info!(
+            id = %payload_id,
+            build_reason,
             parent_hash = ?block.parent_hash(),
             number = block.number(),
             hash = ?block.hash(),
@@ -1483,6 +1502,13 @@ where
             excluded_pool_transaction_skips,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
+            block_build_stop_reason = block_build_stop_reason_label,
+            proposal_timing_attached = payload_build_control
+                .as_ref()
+                .is_some_and(|control| control.proposal_timing_attached()),
+            build_once_with_shared_trie,
+            is_budgeted_build,
+            speculative_bal_build,
             subblock_transactions,
             total_transactions,
             ?elapsed,

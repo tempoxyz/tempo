@@ -46,6 +46,9 @@ pub struct TempoPayloadAttributes {
     /// Whether this payload may expose executed block state to the node builder insertion fast path.
     #[serde(skip, default = "default_publish_executed_block")]
     publish_executed_block: bool,
+    /// Local diagnostic label for how this payload build was started.
+    #[serde(skip)]
+    build_reason: Option<&'static str>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -98,6 +101,7 @@ impl TempoPayloadAttributes {
             speculative_parent: None,
             excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,
+            build_reason: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -147,6 +151,12 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Sets the local diagnostic label for how this payload build was started.
+    pub fn with_build_reason(mut self, reason: &'static str) -> Self {
+        self.build_reason = Some(reason);
+        self
+    }
+
     /// Returns the shared build-control handle, if this is a controlled build.
     pub fn payload_build_control(&self) -> Option<&PayloadBuildControl> {
         self.payload_build_control.as_ref()
@@ -165,6 +175,11 @@ impl TempoPayloadAttributes {
     /// Returns whether this payload may expose executed block state for self-built insertion.
     pub fn publish_executed_block(&self) -> bool {
         self.publish_executed_block
+    }
+
+    /// Returns the local diagnostic label for how this payload build was started.
+    pub fn build_reason(&self) -> Option<&'static str> {
+        self.build_reason
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -202,6 +217,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             speculative_parent: None,
             excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,
+            build_reason: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -679,6 +695,10 @@ mod tests {
         assert_eq!(attrs.timestamp_millis_part(), 500);
         assert!(attrs.excluded_pool_transaction_hashes().is_empty());
         assert!(attrs.publish_executed_block());
+        assert_eq!(attrs.build_reason(), None);
+
+        let attrs_with_reason = attrs.clone().with_build_reason("test");
+        assert_eq!(attrs_with_reason.build_reason(), Some("test"));
 
         // Hardcoded in ::new()
         assert_eq!(attrs.prev_randao, B256::ZERO);
@@ -833,6 +853,7 @@ mod tests {
         let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.inner.timestamp, timestamp);
         assert_eq!(deserialized.timestamp_millis_part, timestamp_millis_part);
+        assert_eq!(deserialized.build_reason(), None);
 
         // Deref works
         assert_eq!(attrs.timestamp, timestamp);
