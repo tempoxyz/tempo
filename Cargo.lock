@@ -11316,8 +11316,7 @@ dependencies = [
 [[package]]
 name = "revm-bytecode"
 version = "11.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b378c2653331fe60969d9745e802cd773d82a20d8aaced914dfcf26ab8f0d9"
+source = "git+https://github.com/bluealloy/revm?rev=14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d#14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d"
 dependencies = [
  "bitvec",
  "phf",
@@ -11361,11 +11360,11 @@ dependencies = [
 [[package]]
 name = "revm-database"
 version = "15.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a69c3ce73454a09ef89a66177239d7c4f5f697227ae27254c99451866603b19d"
+source = "git+https://github.com/bluealloy/revm?rev=14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d#14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d"
 dependencies = [
  "alloy-eips",
  "derive_more",
+ "either",
  "revm-bytecode",
  "revm-database-interface",
  "revm-primitives",
@@ -11376,8 +11375,7 @@ dependencies = [
 [[package]]
 name = "revm-database-interface"
 version = "12.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a2656187f9f9c22ef9dd9300ed71aeaeca3506a6a0a229a07f264649b960d68"
+source = "git+https://github.com/bluealloy/revm?rev=14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d#14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d"
 dependencies = [
  "auto_impl",
  "either",
@@ -11486,8 +11484,7 @@ dependencies = [
 [[package]]
 name = "revm-primitives"
 version = "24.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe5102d804892908d4ebf68da29b8562895922dffa26c230ff2c4dadcf93916f"
+source = "git+https://github.com/bluealloy/revm?rev=14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d#14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d"
 dependencies = [
  "alloy-primitives",
  "once_cell",
@@ -11497,8 +11494,7 @@ dependencies = [
 [[package]]
 name = "revm-state"
 version = "12.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40eff6067185cf80932e06f6a9c8045b012ecb6f99a8d6edc618ec2792373e14"
+source = "git+https://github.com/bluealloy/revm?rev=14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d#14e2c260f9e0cef2303a3e99dd34d5b8fc88d62d"
 dependencies = [
  "alloy-eip7928 0.4.1",
  "bitflags 2.11.1",
