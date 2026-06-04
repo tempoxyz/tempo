@@ -17,12 +17,12 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        estimated_validator_replay_work, payload_budget_exhausted, scaled_build_time_multiplier,
-        SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER,
+        BUILD_TIME_MULTIPLIER_SCALE, SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER,
+        decay_build_time_multiplier, estimated_validator_replay_work,
+        observed_build_time_multiplier, payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmingStateProviderConfig},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -158,7 +158,7 @@ fn wait_for_late_proposal_context(
     }
 
     let wait_start = Instant::now();
-    match control.wait_for_proposal_context_while(|| should_cancel()) {
+    match control.wait_for_proposal_context_while(should_cancel) {
         Ok(proposal_context) => {
             *wait_elapsed += wait_start.elapsed();
             ctx.inner.extra_data = proposal_context.extra_data().clone();
@@ -187,10 +187,9 @@ fn poll_late_proposal_context(
     }
 
     let wait_start = Instant::now();
-    match control.wait_for_proposal_context_timeout_while(
-        PROPOSAL_CONTEXT_POOL_POLL_INTERVAL,
-        || should_cancel(),
-    ) {
+    match control
+        .wait_for_proposal_context_timeout_while(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL, should_cancel)
+    {
         Ok(Some(proposal_context)) => {
             *wait_elapsed += wait_start.elapsed();
             ctx.inner.extra_data = proposal_context.extra_data().clone();
@@ -487,20 +486,21 @@ where
             cfg!(feature = "bal") && attributes.speculative_parent().is_some();
         // Speculative BAL prewarm may share validation's cache, so it can read but must not fill.
         let prewarm_cache_fill_on_miss = !cache_wrapped_under_bal;
+        #[cfg(feature = "bal")]
         let builder_local_cache = if cache_wrapped_under_bal {
             execution_cache.as_ref().map(|cache| {
-                let cache_create_start = Instant::now();
-                let local_cache = cache.empty_like(parent_header.hash());
-                debug!(
-                    target: "payload_builder",
-                    id = %payload_id,
-                    parent_hash = %parent_header.hash(),
-                    parent_number = parent_header.number(),
-                    elapsed = ?cache_create_start.elapsed(),
-                    "created builder-local execution cache overlay for speculative BAL payload"
-                );
-                local_cache
-            })
+                    let cache_create_start = Instant::now();
+                    let local_cache = cache.empty_like(parent_header.hash());
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        parent_hash = %parent_header.hash(),
+                        parent_number = parent_header.number(),
+                        elapsed = ?cache_create_start.elapsed(),
+                        "created builder-local execution cache overlay for speculative BAL payload"
+                    );
+                    local_cache
+                })
         } else {
             None
         };
@@ -740,16 +740,23 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
+        let prewarming_config = PrewarmingStateProviderConfig::new(
+            self.provider.clone(),
+            prewarm_parent_hash,
+            execution_cache,
+            prewarm_cache_fill_on_miss,
+            executor.evm().evm_env(),
+        );
+        #[cfg(feature = "bal")]
+        let prewarming_config = prewarming_config.with_speculative_parent(
+            builder_local_cache,
+            attributes.speculative_parent().cloned(),
+        );
+
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                builder_local_cache.clone(),
-                prewarm_cache_fill_on_miss,
-                attributes.speculative_parent().cloned(),
-                prewarm_parent_hash,
-                executor.evm().evm_env(),
+                prewarming_config,
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
@@ -829,16 +836,12 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                let proposal_context_attached = payload_build_control
-                    .as_ref()
-                    .map_or(true, |control| control.proposal_timing_attached());
-                let can_wait_for_pool =
-                    cumulative_gas_used < non_shared_gas_limit
-                        && is_budgeted_build
-                        && build_once_with_shared_trie;
+                let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
+                    && is_budgeted_build
+                    && build_once_with_shared_trie;
                 if can_wait_for_pool {
-                    if !proposal_context_attached {
-                        if let Some(control) = payload_build_control.as_ref() {
+                    match payload_build_control.as_ref() {
+                        Some(control) if !control.proposal_timing_attached() => {
                             if !logged_proposal_context_pool_poll {
                                 debug!(
                                     target: "payload_builder",
@@ -862,6 +865,7 @@ where
                             check_cancel!();
                             continue;
                         }
+                        _ => {}
                     }
                     std::thread::sleep(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL);
                     normal_transaction_fill_idle_elapsed += PROPOSAL_CONTEXT_POOL_POLL_INTERVAL;
@@ -1027,8 +1031,9 @@ where
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
-        let normal_transaction_fill_elapsed =
-            execution_start.elapsed().saturating_sub(proposal_context_wait_elapsed);
+        let normal_transaction_fill_elapsed = execution_start
+            .elapsed()
+            .saturating_sub(proposal_context_wait_elapsed);
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
@@ -1166,22 +1171,23 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        if attributes.consensus_context().is_none() && ctx.consensus_context.is_none() {
-            if let Some(control) = attributes.payload_build_control() {
-                debug!(
-                    target: "payload_builder",
-                    id = %payload_id,
-                    "waiting for proposal context before finalizing speculative payload"
-                );
-                match wait_for_late_proposal_context(
-                    &mut ctx,
-                    control,
-                    &|| cancel.is_cancelled(),
-                    &mut proposal_context_wait_elapsed,
-                )? {
-                    ProposalContextWait::Attached => {}
-                    ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
-                }
+        if attributes.consensus_context().is_none()
+            && ctx.consensus_context.is_none()
+            && let Some(control) = attributes.payload_build_control()
+        {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                "waiting for proposal context before finalizing speculative payload"
+            );
+            match wait_for_late_proposal_context(
+                &mut ctx,
+                control,
+                &|| cancel.is_cancelled(),
+                &mut proposal_context_wait_elapsed,
+            )? {
+                ProposalContextWait::Attached => {}
+                ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
             }
         }
         check_cancel!();
@@ -1195,7 +1201,7 @@ where
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx())
         {
-            match recv_sparse_trie_with_cancel(hashed_state_rx, &build_cancelled) {
+            match recv_sparse_trie_with_cancel(hashed_state_rx, build_cancelled) {
                 CancelableRecv::Received(hashed_state) => hashed_state,
                 CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
                 CancelableRecv::Disconnected => {
@@ -1213,7 +1219,7 @@ where
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 let state_root_rx = handle.take_state_root_rx();
-                let state_root_result = recv_sparse_trie_with_cancel(state_root_rx, &build_cancelled);
+                let state_root_result = recv_sparse_trie_with_cancel(state_root_rx, build_cancelled);
                 drop(handle);
 
                 match state_root_result {

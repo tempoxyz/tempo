@@ -572,8 +572,7 @@ where
                 .take(block.digest(), block.height(), block.block_hash())
         {
             let block_digest = block.digest();
-            self
-                .execution_node
+            self.execution_node
                 .add_ons_handle
                 .beacon_engine_handle
                 .insert_executed_block_and_wait(executed_block)

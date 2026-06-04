@@ -16,6 +16,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+#[cfg(feature = "bal")]
 use tempo_payload_types::SpeculativePayloadParent;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -40,17 +41,58 @@ pub(crate) struct BestTransactionsPrewarming {
     stop: Arc<AtomicBool>,
 }
 
+/// State-provider inputs for transaction prewarming.
+#[derive(Clone)]
+pub(crate) struct PrewarmingStateProviderConfig<Provider> {
+    provider: Provider,
+    parent_hash: B256,
+    cache: Option<SavedCache>,
+    #[cfg(feature = "bal")]
+    local_cache: Option<SavedCache>,
+    cache_fill_on_miss: bool,
+    #[cfg(feature = "bal")]
+    speculative_parent: Option<SpeculativePayloadParent>,
+    evm_env: EvmEnvFor<TempoEvmConfig>,
+}
+
+impl<Provider> PrewarmingStateProviderConfig<Provider> {
+    pub(crate) fn new(
+        provider: Provider,
+        parent_hash: B256,
+        cache: Option<SavedCache>,
+        cache_fill_on_miss: bool,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+    ) -> Self {
+        Self {
+            provider,
+            parent_hash,
+            cache,
+            #[cfg(feature = "bal")]
+            local_cache: None,
+            cache_fill_on_miss,
+            #[cfg(feature = "bal")]
+            speculative_parent: None,
+            evm_env,
+        }
+    }
+
+    #[cfg(feature = "bal")]
+    pub(crate) fn with_speculative_parent(
+        mut self,
+        local_cache: Option<SavedCache>,
+        speculative_parent: Option<SpeculativePayloadParent>,
+    ) -> Self {
+        self.local_cache = local_cache;
+        self.speculative_parent = speculative_parent;
+        self
+    }
+}
+
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
         executor: TaskExecutor,
-        provider: Provider,
-        cache: Option<SavedCache>,
-        local_cache: Option<SavedCache>,
-        cache_fill_on_miss: bool,
-        speculative_parent: Option<SpeculativePayloadParent>,
-        parent_hash: B256,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
+        config: PrewarmingStateProviderConfig<Provider>,
         best_txs: Txs,
     ) -> Self
     where
@@ -61,13 +103,7 @@ impl BestTransactionsPrewarming {
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
-            provider,
-            parent_hash,
-            cache,
-            local_cache,
-            cache_fill_on_miss,
-            speculative_parent,
-            evm_env,
+            config,
             stop: stop.clone(),
         };
 
@@ -201,7 +237,7 @@ impl BestTransactionsPrewarming {
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches = storage_touches_for_transaction(
                     &tx,
-                    prewarm.evm_env.block_env.beneficiary,
+                    prewarm.config.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
                 );
 
@@ -313,13 +349,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
 struct PrewarmingExecutionContext<Provider> {
-    provider: Provider,
-    parent_hash: B256,
-    cache: Option<SavedCache>,
-    local_cache: Option<SavedCache>,
-    cache_fill_on_miss: bool,
-    speculative_parent: Option<SpeculativePayloadParent>,
-    evm_env: EvmEnvFor<TempoEvmConfig>,
+    config: PrewarmingStateProviderConfig<Provider>,
     stop: Arc<AtomicBool>,
 }
 
@@ -334,7 +364,7 @@ where
                 trace!(
                     target: "payload_builder",
                     %err,
-                    parent_hash = ?self.parent_hash,
+                    parent_hash = ?self.config.parent_hash,
                     "failed to build state provider for transaction prewarming"
                 );
                 return None;
@@ -342,7 +372,7 @@ where
         };
 
         let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
+        let mut evm_env = self.config.evm_env.clone();
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
@@ -351,12 +381,13 @@ where
 
     fn state_provider_for_ctx(&self) -> ProviderResult<StateProviderBox> {
         #[cfg(feature = "bal")]
-        if let Some(speculative_parent) = &self.speculative_parent {
+        if let Some(speculative_parent) = &self.config.speculative_parent {
             let mut state_provider = self
+                .config
                 .provider
                 .state_by_block_hash(speculative_parent.base_parent_hash())?;
 
-            if let Some(cache) = &self.cache {
+            if let Some(cache) = &self.config.cache {
                 state_provider = Box::new(CachedStateProvider::new(
                     state_provider,
                     cache.cache().clone(),
@@ -370,7 +401,7 @@ where
                 speculative_parent.block_access_list().clone(),
             )?);
 
-            if let Some(cache) = &self.local_cache {
+            if let Some(cache) = &self.config.local_cache {
                 state_provider = Box::new(CachedStateProvider::new_prewarm(
                     state_provider,
                     cache.cache().clone(),
@@ -380,9 +411,12 @@ where
             return Ok(state_provider);
         }
 
-        let mut state_provider = self.provider.state_by_block_hash(self.parent_hash)?;
-        if let Some(cache) = &self.cache {
-            state_provider = if self.cache_fill_on_miss {
+        let mut state_provider = self
+            .config
+            .provider
+            .state_by_block_hash(self.config.parent_hash)?;
+        if let Some(cache) = &self.config.cache {
+            state_provider = if self.config.cache_fill_on_miss {
                 Box::new(CachedStateProvider::new_prewarm(
                     state_provider,
                     cache.cache().clone(),
@@ -906,15 +940,11 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
+        let config =
+            PrewarmingStateProviderConfig::new(provider, parent_header.hash(), None, true, evm_env);
         let prewarming = BestTransactionsPrewarming::new(
             executor.clone(),
-            provider,
-            None,
-            None,
-            true,
-            None,
-            parent_header.hash(),
-            evm_env,
+            config,
             TestBestTransactions::new(txs, log),
         );
         TestPrewarming {

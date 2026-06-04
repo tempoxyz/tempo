@@ -21,7 +21,8 @@ use tempo_payload_types::MarshalPersistEstimator;
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
-pub(crate) const SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER: u64 = BUILD_TIME_MULTIPLIER_SCALE;
+pub(crate) const SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER: u64 =
+    BUILD_TIME_MULTIPLIER_SCALE + BUILD_TIME_MULTIPLIER_SCALE / 10;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
@@ -189,72 +190,84 @@ mod tests {
 
     #[test]
     fn payload_budget_accounts_for_leader_idle_once() {
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(182),
-            MarshalPersistEstimator::default(),
-            0
-        )
-        .is_some());
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(183),
-            MarshalPersistEstimator::default(),
-            0
-        )
-        .is_none());
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(350),
-            Duration::from_millis(250),
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(432),
-            MarshalPersistEstimator::default(),
-            0
-        )
-        .is_some());
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(350),
-            Duration::from_millis(250),
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(433),
-            MarshalPersistEstimator::default(),
-            0
-        )
-        .is_none());
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(182),
+                MarshalPersistEstimator::default(),
+                0
+            )
+            .is_some()
+        );
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(183),
+                MarshalPersistEstimator::default(),
+                0
+            )
+            .is_none()
+        );
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(350),
+                Duration::from_millis(250),
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(432),
+                MarshalPersistEstimator::default(),
+                0
+            )
+            .is_some()
+        );
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(350),
+                Duration::from_millis(250),
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(433),
+                MarshalPersistEstimator::default(),
+                0
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn payload_budget_accounts_for_marshal_persist_twice() {
         let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
 
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(212),
-            marshal_persist,
-            15_000
-        )
-        .is_some());
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            Some(Duration::ZERO),
-            1_350_000,
-            Duration::from_millis(212),
-            marshal_persist,
-            14_874
-        )
-        .is_none());
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(212),
+                marshal_persist,
+                15_000
+            )
+            .is_some()
+        );
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_millis(212),
+                marshal_persist,
+                14_874
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -273,7 +286,10 @@ mod tests {
         assert_eq!(estimate.work_elapsed, Duration::from_millis(100));
         assert_eq!(estimate.predicted_work, Duration::from_millis(135));
         assert_eq!(estimate.proposer_work, Duration::from_millis(35));
-        assert_eq!(estimate.validator_replay_work, Duration::from_micros(47_250));
+        assert_eq!(
+            estimate.validator_replay_work,
+            Duration::from_micros(47_250)
+        );
         assert_eq!(estimate.total_budgeted_work, Duration::from_micros(82_250));
 
         assert!(
@@ -328,6 +344,6 @@ mod tests {
             scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
         );
-        assert_eq!(SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER, 1_000_000);
+        assert_eq!(SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER, 1_100_000);
     }
 }

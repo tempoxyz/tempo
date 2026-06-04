@@ -4,9 +4,9 @@ use reth_basic_payload_builder::{
     PayloadConfig,
 };
 use reth_engine_tree::tree::SavedCache;
-use reth_payload_builder::PayloadBuilderError;
 use reth_payload_builder::{
-    BuildNewPayload, KeepPayloadJobAlive, PayloadId, PayloadJob, PayloadJobGenerator,
+    BuildNewPayload, KeepPayloadJobAlive, PayloadBuilderError, PayloadId, PayloadJob,
+    PayloadJobGenerator,
 };
 use reth_payload_primitives::{BuiltPayload, PayloadAttributes, PayloadKind};
 use reth_revm::{cached::CachedReads, cancelled::CancelOnDrop};
@@ -469,6 +469,13 @@ impl<P> Future for PendingPayload<P> {
     }
 }
 
+fn duration_until(unix_timestamp_secs: u64) -> Duration {
+    let unix_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    Duration::from_secs(unix_timestamp_secs).saturating_sub(unix_now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,9 +546,11 @@ mod tests {
     async fn controlled_pending_build_survives_elapsed_deadline() {
         let (job, _tx) = pending_job(true);
 
-        assert!(tokio::time::timeout(Duration::from_millis(50), job)
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), job)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -553,11 +562,4 @@ mod tests {
             Ok(Ok(()))
         ));
     }
-}
-
-fn duration_until(unix_timestamp_secs: u64) -> Duration {
-    let unix_now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    Duration::from_secs(unix_timestamp_secs).saturating_sub(unix_now)
 }
