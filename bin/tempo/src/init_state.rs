@@ -4,6 +4,7 @@
 //! to the genesis state. The binary format is produced by `tempo-xtask generate-state-bloat`.
 
 use std::{
+    collections::HashSet,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
@@ -22,7 +23,7 @@ use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRW},
-    models::{CompactU256, StorageBeforeTx},
+    models::{CompactU256, StorageBeforeTx, storage_sharded_key::StorageShardedKey},
     table::Decompress,
     tables,
     transaction::{DbTx, DbTxMut},
@@ -103,6 +104,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         // Track addresses and their account data for hashing
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
+        let mut genesis_storage_keys = HashSet::new();
 
         // ETL collectors: accumulate entries sorted, spill to disk when full
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
@@ -111,6 +113,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             Collector::new(ETL_FILE_SIZE, None);
         let mut storage_history_collector: Collector<Vec<u8>, CompactU256> =
             Collector::new(ETL_FILE_SIZE, None);
+
+        for (index, entry) in provider_rw.storage_changeset(0)? {
+            let raw_key = raw_storage_key(index.address(), entry.key);
+            genesis_storage_keys.insert(raw_key.clone());
+            storage_changeset_collector
+                .insert(raw_key, CompactU256::from(entry.value))
+                .wrap_err("storage changeset ETL insert of genesis storage failed")?;
+        }
 
         // Single worker thread for keccak hashing: owns the hashed ETL collector, receives
         // batches over a bounded channel, and returns the collector when the sender drops.
@@ -224,15 +234,14 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 let compact_value = CompactU256::from(value);
 
                 let raw_key = raw_storage_key(address, slot);
-                storage_changeset_collector
-                    .insert(raw_key, CompactU256::from(U256::ZERO))
-                    .wrap_err("storage changeset ETL insert failed")?;
-                storage_history_collector
-                    .insert(
-                        raw_storage_key(address, slot),
-                        CompactU256::from(U256::ZERO),
-                    )
-                    .wrap_err("storage history ETL insert failed")?;
+                if !genesis_storage_keys.contains(&raw_key) {
+                    storage_changeset_collector
+                        .insert(raw_key.clone(), CompactU256::from(U256::ZERO))
+                        .wrap_err("storage changeset ETL insert failed")?;
+                    storage_history_collector
+                        .insert(raw_key, CompactU256::from(U256::ZERO))
+                        .wrap_err("storage history ETL insert failed")?;
+                }
 
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
@@ -304,15 +313,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Writing storage changesets..."
         );
 
-        for (index, entry) in provider_rw.storage_changeset(0)? {
-            storage_changeset_collector
-                .insert(
-                    raw_storage_key(index.address(), entry.key),
-                    CompactU256::from(entry.value),
-                )
-                .wrap_err("storage changeset ETL insert of genesis storage failed")?;
-        }
-
         provider_rw
             .static_file_provider()
             .delete_segment(StaticFileSegment::StorageChangeSets)?;
@@ -337,13 +337,21 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         drop(storage_changeset_writer);
 
         let storage_history_total = storage_history_collector.len();
+        let block_zero_history =
+            tables::BlockNumberList::new([0]).expect("single block is always sorted");
         provider_rw.with_rocksdb_batch_auto_commit(|mut batch| {
             load_storage_etl(
                 &mut storage_history_collector,
                 storage_history_total,
                 "storage history",
                 |address, key, _| {
-                    batch.append_storage_history_shard(address, key, [0])?;
+                    let history_key = StorageShardedKey::last(address, key);
+                    if batch
+                        .get::<tables::StoragesHistory>(history_key.clone())?
+                        .is_none()
+                    {
+                        batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
+                    }
                     Ok(())
                 },
             )
