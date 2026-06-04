@@ -149,15 +149,10 @@ struct StorageKey {
     slot: U256,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Tip20BlockstmBaseState {
-    storage: HashMap<StorageKey, U256>,
-    accounts: HashMap<Address, AccountInfo>,
-}
-
 #[derive(Debug, Clone)]
 struct Tip20BlockstmTxExecution {
     storage: HashMap<StorageKey, Tip20BlockstmTxStorage>,
+    accounts: HashMap<Address, AccountInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -410,16 +405,15 @@ where
 
         self.validate_tip20_transfer_state(&plan)?;
 
-        let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
+        let mut tx_execution = self.read_plan_execution_state(&plan, block_timestamp)?;
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
-        let mut tx_execution =
-            execute_tip20_transfer_plan_with_deltas(&plan, &base_state, is_t6, block_timestamp)
-                .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
-        let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &base_state, &cfg)
+        execute_tip20_transfer_plan_with_deltas(&plan, &mut tx_execution, is_t6, block_timestamp)
+            .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
+        let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &cfg)
             .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
-        settle_actual_fee_with_deltas(&plan, &mut tx_execution, &base_state, actual_fee, is_t6)
+        settle_actual_fee_with_deltas(&plan, &mut tx_execution, actual_fee, is_t6)
             .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let tx_gas_used = gas.tx_gas_used();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
@@ -435,7 +429,7 @@ where
             })?;
         let result = TempoTxResult::new_blockstm_tip20_success(
             tx.recovered.tx(),
-            execution_state(&tx_execution, &base_state),
+            execution_state(&tx_execution),
             synthetic_tip20_logs(&plan, actual_fee),
             gas,
             next_section,
@@ -549,19 +543,22 @@ where
             .map_err(Tip20TransferBlockstmExecutionError::Database)
     }
 
-    fn read_plan_base_state(
+    fn read_plan_execution_state(
         &mut self,
         plan: &Tip20TransferBlockstmPlan,
         block_timestamp: u64,
-    ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmExecutionError> {
-        let mut storage = HashMap::new();
+    ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmExecutionError> {
+        let mut execution = Tip20BlockstmTxExecution {
+            storage: HashMap::new(),
+            accounts: HashMap::new(),
+        };
         for key in plan.base_storage_keys() {
-            let _ = self.read_base_storage(&mut storage, key)?;
+            let _ = self.read_execution_storage(&mut execution, key)?;
         }
         read_expiring_nonce_base_storage(
             plan,
             block_timestamp,
-            |key| self.read_base_storage(&mut storage, key),
+            |key| self.read_execution_storage(&mut execution, key),
             |ptr_word, expiring_nonce_idx| {
                 let ptr = expiring_nonce_ring_ptr_from_word(ptr_word)
                     .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
@@ -570,15 +567,14 @@ where
             },
         )?;
 
-        let mut account_infos = HashMap::new();
         for account in plan.base_accounts() {
-            if account_infos.contains_key(&account) {
+            if execution.accounts.contains_key(&account) {
                 continue;
             }
             let info = self.read_account_info(account)?;
-            account_infos.insert(account, info);
+            execution.accounts.insert(account, info);
         }
-        let Some(info) = account_infos.get(&plan.nonce.caller) else {
+        let Some(info) = execution.accounts.get(&plan.nonce.caller) else {
             return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::StmValidation,
             ));
@@ -589,23 +585,26 @@ where
             ));
         }
 
-        Ok(Tip20BlockstmBaseState {
-            storage,
-            accounts: account_infos,
-        })
+        Ok(execution)
     }
 
-    fn read_base_storage(
+    fn read_execution_storage(
         &mut self,
-        storage: &mut HashMap<StorageKey, U256>,
+        execution: &mut Tip20BlockstmTxExecution,
         key: StorageKey,
     ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
-        if let Some(value) = storage.get(&key) {
-            return Ok(*value);
+        if let Some(value) = execution.storage.get(&key) {
+            return Ok(value.original);
         }
 
         let value = self.read_storage(key.address, key.slot)?;
-        storage.insert(key, value);
+        execution.storage.insert(
+            key,
+            Tip20BlockstmTxStorage {
+                original: value,
+                written: None,
+            },
+        );
         Ok(value)
     }
 
@@ -734,20 +733,15 @@ pub fn build_tip20_transfer_blockstm_plan(
 
 fn execute_tip20_transfer_plan_with_deltas(
     plan: &Tip20TransferBlockstmPlan,
-    base_state: &Tip20BlockstmBaseState,
+    execution: &mut Tip20BlockstmTxExecution,
     is_t6: bool,
     block_timestamp: u64,
-) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmFallback> {
-    let mut execution = Tip20BlockstmTxExecution {
-        storage: HashMap::new(),
-    };
-
+) -> Result<(), Tip20TransferBlockstmFallback> {
     apply_expiring_nonce_action(
         plan.nonce.replay_hash,
         plan.nonce.valid_before,
         plan.nonce.expiring_nonce_idx,
-        &mut execution,
-        base_state,
+        execution,
         block_timestamp,
     )?;
     reserve_fee_balance(
@@ -755,8 +749,7 @@ fn execute_tip20_transfer_plan_with_deltas(
         plan.fee_reserve.fee_payer,
         plan.fee_reserve.amount,
         is_t6,
-        &mut execution,
-        base_state,
+        execution,
     )?;
     transfer_balance(
         plan.transfer.token,
@@ -764,11 +757,10 @@ fn execute_tip20_transfer_plan_with_deltas(
         plan.transfer.to,
         plan.transfer.amount,
         is_t6,
-        &mut execution,
-        base_state,
+        execution,
     )?;
 
-    Ok(execution)
+    Ok(())
 }
 
 fn apply_expiring_nonce_action(
@@ -776,7 +768,6 @@ fn apply_expiring_nonce_action(
     valid_before: u64,
     expiring_nonce_idx: Option<usize>,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     block_timestamp: u64,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if valid_before <= block_timestamp
@@ -786,38 +777,37 @@ fn apply_expiring_nonce_action(
     }
 
     let seen_key = expiring_nonce_seen_key(replay_hash);
-    let seen_expiry = read_for_write(execution, base_state, seen_key);
+    let seen_expiry = read_for_write(execution, seen_key);
     if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
         return Err(Tip20TransferBlockstmFallback::ExpiringNonceReplay);
     }
 
     let ptr_key = expiring_nonce_ring_ptr_key();
-    let ptr = expiring_nonce_ring_ptr_from_word(read_for_write(execution, base_state, ptr_key))?;
+    let ptr = expiring_nonce_ring_ptr_from_word(read_for_write(execution, ptr_key))?;
     let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)?;
     let ring_key = expiring_nonce_ring_key(idx);
-    let old_hash_word = read_for_write(execution, base_state, ring_key);
+    let old_hash_word = read_for_write(execution, ring_key);
 
     if old_hash_word != U256::ZERO {
         let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-        let old_expiry = read_for_write(execution, base_state, old_seen_key);
+        let old_expiry = read_for_write(execution, old_seen_key);
         if old_expiry != U256::ZERO && old_expiry > U256::from(block_timestamp) {
             return Err(Tip20TransferBlockstmFallback::ExpiringNonceSetFull);
         }
-        write_value(execution, base_state, old_seen_key, U256::ZERO);
+        write_value(execution, old_seen_key, U256::ZERO);
     }
 
     write_value(
         execution,
-        base_state,
         ring_key,
         expiring_nonce_hash_to_word(replay_hash),
     );
-    write_value(execution, base_state, seen_key, U256::from(valid_before));
+    write_value(execution, seen_key, U256::from(valid_before));
 
     let next_ptr = expiring_nonce_next_ring_ptr(idx);
-    write_value(execution, base_state, ptr_key, U256::from(next_ptr));
+    write_value(execution, ptr_key, U256::from(next_ptr));
     if expiring_nonce_idx.is_some() {
-        write_value(execution, base_state, ptr_key, U256::from(ptr));
+        write_value(execution, ptr_key, U256::from(ptr));
     }
 
     Ok(())
@@ -826,7 +816,6 @@ fn apply_expiring_nonce_action(
 fn settle_actual_fee_with_deltas(
     plan: &Tip20TransferBlockstmPlan,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     actual_fee: U256,
     is_t6: bool,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
@@ -843,29 +832,26 @@ fn settle_actual_fee_with_deltas(
 
     let refund = max_amount - actual_fee;
     if !refund.is_zero() {
-        refund_fee_balance(token, fee_payer, refund, is_t6, execution, base_state)?;
+        refund_fee_balance(token, fee_payer, refund, is_t6, execution)?;
     }
 
     let collected_key = collected_fees_key(beneficiary, token);
-    let collected = read_for_write(execution, base_state, collected_key);
+    let collected = read_for_write(execution, collected_key);
     let new_collected = collected
         .checked_add(actual_fee)
         .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
-    write_value(execution, base_state, collected_key, new_collected);
+    write_value(execution, collected_key, new_collected);
 
     Ok(())
 }
 
-fn execution_state(
-    execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
-) -> EvmState {
+fn execution_state(execution: &Tip20BlockstmTxExecution) -> EvmState {
     let mut state = EvmState::default();
 
     for (key, original, written) in execution.written_storage() {
         let account = state.entry(key.address).or_insert_with(|| {
             let mut account = Account::from(
-                base_state
+                execution
                     .accounts
                     .get(&key.address)
                     .cloned()
@@ -904,7 +890,6 @@ fn reserve_fee_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -915,7 +900,6 @@ fn reserve_fee_balance(
         BalanceWriteFlag::Inactive,
         BalanceWriteFlag::Preserve,
         execution,
-        base_state,
     )
 }
 
@@ -925,7 +909,6 @@ fn refund_fee_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -936,7 +919,6 @@ fn refund_fee_balance(
         BalanceWriteFlag::Preserve,
         BalanceWriteFlag::Inactive,
         execution,
-        base_state,
     )
 }
 
@@ -947,7 +929,6 @@ fn transfer_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -958,7 +939,6 @@ fn transfer_balance(
         BalanceWriteFlag::Inactive,
         BalanceWriteFlag::Inactive,
         execution,
-        base_state,
     )
 }
 
@@ -972,7 +952,6 @@ fn transfer_balance_with_flags(
     from_write_flag: BalanceWriteFlag,
     to_write_flag: BalanceWriteFlag,
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if amount.is_zero() {
         return Ok(());
@@ -980,7 +959,7 @@ fn transfer_balance_with_flags(
 
     let from_key = balance_key(token, from);
     let to_key = balance_key(token, to);
-    let from_balance = read_balance_for_write(execution, base_state, from_key)?;
+    let from_balance = read_balance_for_write(execution, from_key)?;
 
     if from_balance.amount < amount {
         return Err(Tip20TransferBlockstmFallback::InsufficientBalance);
@@ -988,12 +967,11 @@ fn transfer_balance_with_flags(
     let new_from = from_balance.amount - amount;
     write_value(
         execution,
-        base_state,
         from_key,
         encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
     );
 
-    let to_balance = read_balance_for_write(execution, base_state, to_key)?;
+    let to_balance = read_balance_for_write(execution, to_key)?;
     let new_to = to_balance
         .amount
         .checked_add(amount)
@@ -1004,7 +982,6 @@ fn transfer_balance_with_flags(
 
     write_value(
         execution,
-        base_state,
         to_key,
         encode_balance(new_to, to_write_flag.resolve(to_balance), is_t6),
     );
@@ -1014,23 +991,18 @@ fn transfer_balance_with_flags(
 
 fn read_balance_for_write(
     execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
 ) -> Result<Tip20BalanceState, Tip20TransferBlockstmFallback> {
-    let raw = read_for_write(execution, base_state, key);
+    let raw = read_for_write(execution, key);
     decode_balance_state(raw)
 }
 
-fn read_for_write(
-    execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
-    key: StorageKey,
-) -> U256 {
+fn read_for_write(execution: &mut Tip20BlockstmTxExecution, key: StorageKey) -> U256 {
     if let Some(value) = execution.storage.get(&key) {
         return value.written.unwrap_or(value.original);
     }
 
-    let original = base_storage_value(base_state, key);
+    let original = U256::ZERO;
     execution.storage.insert(
         key,
         Tip20BlockstmTxStorage {
@@ -1041,18 +1013,13 @@ fn read_for_write(
     original
 }
 
-fn write_value(
-    execution: &mut Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
-    key: StorageKey,
-    value: U256,
-) {
+fn write_value(execution: &mut Tip20BlockstmTxExecution, key: StorageKey, value: U256) {
     execution
         .storage
         .entry(key)
         .and_modify(|storage| storage.written = Some(value))
         .or_insert_with(|| Tip20BlockstmTxStorage {
-            original: base_storage_value(base_state, key),
+            original: U256::ZERO,
             written: Some(value),
         });
 }
@@ -1061,7 +1028,6 @@ fn synthetic_tip20_result_gas(
     tx: &TempoTxEnv,
     plan: &Tip20TransferBlockstmPlan,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     cfg: &CfgEnv<TempoHardfork>,
 ) -> Result<ResultGas, Tip20TransferBlockstmFallback> {
     let initial = synthetic_initial_gas(tx, cfg)?;
@@ -1072,7 +1038,6 @@ fn synthetic_tip20_result_gas(
     seed_fee_reserve_gas_state(
         plan,
         execution,
-        base_state,
         cfg,
         &mut meter,
         &mut original_values,
@@ -1082,7 +1047,6 @@ fn synthetic_tip20_result_gas(
     meter_tip20_transfer_action_gas(
         &plan.transfer,
         execution,
-        base_state,
         cfg,
         &mut meter,
         &mut original_values,
@@ -1115,7 +1079,6 @@ fn synthetic_tip20_result_gas(
 fn seed_fee_reserve_gas_state(
     plan: &Tip20TransferBlockstmPlan,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     cfg: &CfgEnv<TempoHardfork>,
     meter: &mut SyntheticTip20GasMeter,
     original_values: &mut HashMap<StorageKey, U256>,
@@ -1137,20 +1100,10 @@ fn seed_fee_reserve_gas_state(
     meter.warm_storage(manager_key);
 
     if !amount.is_zero() {
-        let payer_raw = synthetic_present_value(
-            present_values,
-            original_values,
-            execution,
-            base_state,
-            payer_key,
-        );
-        let manager_raw = synthetic_present_value(
-            present_values,
-            original_values,
-            execution,
-            base_state,
-            manager_key,
-        );
+        let payer_raw =
+            synthetic_present_value(present_values, original_values, execution, payer_key);
+        let manager_raw =
+            synthetic_present_value(present_values, original_values, execution, manager_key);
         let payer_balance = decode_balance_state(payer_raw)?;
         let manager_balance = decode_balance_state(manager_raw)?;
         let new_payer = payer_balance
@@ -1182,7 +1135,6 @@ fn seed_fee_reserve_gas_state(
 fn meter_tip20_transfer_action_gas(
     action: &Tip20TransferAction,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     cfg: &CfgEnv<TempoHardfork>,
     meter: &mut SyntheticTip20GasMeter,
     original_values: &mut HashMap<StorageKey, U256>,
@@ -1205,7 +1157,6 @@ fn meter_tip20_transfer_action_gas(
         present_values,
         original_values,
         execution,
-        base_state,
         from_key,
     ))?;
     if from_balance.amount < action.amount {
@@ -1216,7 +1167,6 @@ fn meter_tip20_transfer_action_gas(
         action.token,
         action.from,
         execution,
-        base_state,
         cfg,
         meter,
         original_values,
@@ -1226,7 +1176,6 @@ fn meter_tip20_transfer_action_gas(
         action.token,
         action.to,
         execution,
-        base_state,
         cfg,
         meter,
         original_values,
@@ -1237,13 +1186,8 @@ fn meter_tip20_transfer_action_gas(
     }
 
     if !action.amount.is_zero() {
-        let from_present_raw = synthetic_present_value(
-            present_values,
-            original_values,
-            execution,
-            base_state,
-            from_key,
-        );
+        let from_present_raw =
+            synthetic_present_value(present_values, original_values, execution, from_key);
         let from_present = decode_balance_state(from_present_raw)?;
         let new_from = from_present
             .amount
@@ -1252,7 +1196,7 @@ fn meter_tip20_transfer_action_gas(
         let new_from_raw = encode_balance(new_from, from_flag, cfg.spec.is_t6());
         meter.sstore(
             from_key,
-            synthetic_original_value(original_values, execution, base_state, from_key),
+            synthetic_original_value(original_values, execution, from_key),
             from_present_raw,
             new_from_raw,
             gas_params,
@@ -1260,13 +1204,8 @@ fn meter_tip20_transfer_action_gas(
         present_values.insert(from_key, new_from_raw);
 
         meter.sload(to_key, gas_params)?;
-        let to_present_raw = synthetic_present_value(
-            present_values,
-            original_values,
-            execution,
-            base_state,
-            to_key,
-        );
+        let to_present_raw =
+            synthetic_present_value(present_values, original_values, execution, to_key);
         let to_present = decode_balance_state(to_present_raw)?;
         let new_to = to_present
             .amount
@@ -1275,7 +1214,7 @@ fn meter_tip20_transfer_action_gas(
         let new_to_raw = encode_balance(new_to, to_flag, cfg.spec.is_t6());
         meter.sstore(
             to_key,
-            synthetic_original_value(original_values, execution, base_state, to_key),
+            synthetic_original_value(original_values, execution, to_key),
             to_present_raw,
             new_to_raw,
             gas_params,
@@ -1307,7 +1246,6 @@ fn meter_tip20_t6_reward_update(
     token: Address,
     holder: Address,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     cfg: &CfgEnv<TempoHardfork>,
     meter: &mut SyntheticTip20GasMeter,
     original_values: &mut HashMap<StorageKey, U256>,
@@ -1323,7 +1261,6 @@ fn meter_tip20_t6_reward_update(
         present_values,
         original_values,
         execution,
-        base_state,
         balance_key,
     ))?;
 
@@ -1339,7 +1276,6 @@ fn meter_tip20_t6_reward_update(
                 present_values,
                 original_values,
                 execution,
-                base_state,
                 reward_recipient_key,
             );
             if reward_recipient != U256::ZERO {
@@ -1496,44 +1432,34 @@ impl SyntheticTip20GasMeter {
 fn synthetic_original_value(
     original_values: &mut HashMap<StorageKey, U256>,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
 ) -> U256 {
     *original_values
         .entry(key)
-        .or_insert_with(|| tx_storage_value(execution, base_state, key))
+        .or_insert_with(|| tx_storage_value(execution, key))
 }
 
 fn synthetic_present_value(
     present_values: &mut HashMap<StorageKey, U256>,
     original_values: &mut HashMap<StorageKey, U256>,
     execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
 ) -> U256 {
     if let Some(value) = present_values.get(&key) {
         return *value;
     }
 
-    let value = synthetic_original_value(original_values, execution, base_state, key);
+    let value = synthetic_original_value(original_values, execution, key);
     present_values.insert(key, value);
     value
 }
 
-fn tx_storage_value(
-    execution: &Tip20BlockstmTxExecution,
-    base_state: &Tip20BlockstmBaseState,
-    key: StorageKey,
-) -> U256 {
+fn tx_storage_value(execution: &Tip20BlockstmTxExecution, key: StorageKey) -> U256 {
     execution
         .storage
         .get(&key)
         .map(|value| value.original)
-        .unwrap_or_else(|| base_storage_value(base_state, key))
-}
-
-fn base_storage_value(base_state: &Tip20BlockstmBaseState, key: StorageKey) -> U256 {
-    base_state.storage.get(&key).copied().unwrap_or_default()
+        .unwrap_or_default()
 }
 
 fn synthetic_actual_fee(tx: &TempoTxEnv, gas: &ResultGas, basefee: u128, is_t6: bool) -> U256 {
@@ -2124,9 +2050,20 @@ mod tests {
         cfg
     }
 
-    fn test_base_state(storage: HashMap<StorageKey, U256>) -> Tip20BlockstmBaseState {
-        Tip20BlockstmBaseState {
-            storage,
+    fn test_execution_state(storage: HashMap<StorageKey, U256>) -> Tip20BlockstmTxExecution {
+        Tip20BlockstmTxExecution {
+            storage: storage
+                .into_iter()
+                .map(|(key, original)| {
+                    (
+                        key,
+                        Tip20BlockstmTxStorage {
+                            original,
+                            written: None,
+                        },
+                    )
+                })
+                .collect(),
             accounts: HashMap::new(),
         }
     }
@@ -2382,22 +2319,26 @@ mod tests {
         plans: &[Tip20TransferBlockstmPlan],
         base_storage: HashMap<StorageKey, U256>,
     ) -> TestTip20BlockstmExecution {
-        let mut base_state = test_base_state(base_storage);
+        let mut base_execution = test_execution_state(base_storage);
         let cfg = t6_test_cfg();
         let mut executions = Vec::with_capacity(plans.len());
         let mut actual_fees = Vec::with_capacity(plans.len());
 
         for (tx, plan) in txs.iter().zip(plans) {
-            let mut execution =
-                execute_tip20_transfer_plan_with_deltas(plan, &base_state, true, 1).unwrap();
-            let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, &base_state, &cfg)
-                .unwrap();
+            let mut execution = base_execution.clone();
+            execute_tip20_transfer_plan_with_deltas(plan, &mut execution, true, 1).unwrap();
+            let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, &cfg).unwrap();
             let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, 1, true);
-            settle_actual_fee_with_deltas(plan, &mut execution, &base_state, actual_fee, true)
-                .unwrap();
+            settle_actual_fee_with_deltas(plan, &mut execution, actual_fee, true).unwrap();
 
             for (key, _, written) in execution.written_storage() {
-                base_state.storage.insert(key, written);
+                base_execution.storage.insert(
+                    key,
+                    Tip20BlockstmTxStorage {
+                        original: written,
+                        written: None,
+                    },
+                );
             }
 
             executions.push(execution);
