@@ -32,7 +32,9 @@ use tempo_contracts::precompiles::{
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_precompiles::{
+    feature_registry::FeatureRegistry, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -363,17 +365,23 @@ where
 
         let public_key = B256::from(&consensus_context.proposer);
         let spec = self.evm().cfg.spec;
-        let validator = self
+        let (validator, reported_features_tip) = self
             .evm_mut()
             .db_mut()
-            .with_read_only_storage_ctx(spec, || {
-                ValidatorConfigV2::new().validator_by_public_key(public_key)
+            .with_read_only_storage_ctx(spec, || -> tempo_precompiles::error::Result<_> {
+                let validator = ValidatorConfigV2::new().validator_by_public_key(public_key)?;
+                let reported_features_tip =
+                    FeatureRegistry::new().validator_supported_features_tip(call.validator)?;
+                Ok((validator, reported_features_tip))
             })
             .map_err(|_| {
                 BlockValidationError::msg("invalid feature registry system transaction")
             })?;
 
-        if validator.deactivatedAtHeight != 0 || validator.validatorAddress != call.validator {
+        if validator.deactivatedAtHeight != 0
+            || validator.validatorAddress != call.validator
+            || reported_features_tip >= call.featuresTip
+        {
             return Err(BlockValidationError::msg(
                 "invalid feature registry system transaction",
             ));
@@ -807,7 +815,7 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Keccak256, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Keccak256, Log, Signature, TxKind, bytes::BytesMut, keccak256};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
@@ -884,6 +892,22 @@ mod tests {
                 scheduled_features_tip,
                 scheduled_activation_epoch,
             ),
+        );
+        storage
+    }
+
+    fn validator_supported_features_tip_slot(validator: Address) -> U256 {
+        let mut buf = [0u8; 64];
+        buf[12..32].copy_from_slice(validator.as_ref());
+        buf[32..].copy_from_slice(&U256::ONE.to_be_bytes::<32>());
+        U256::from_be_bytes(keccak256(buf).0)
+    }
+
+    fn feature_registry_report_storage(validator: Address, features_tip: u64) -> PlainStorage {
+        let mut storage = PlainStorage::default();
+        storage.insert(
+            validator_supported_features_tip_slot(validator),
+            U256::from(features_tip),
         );
         storage
     }
@@ -1162,6 +1186,40 @@ mod tests {
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             validator: Address::repeat_byte(0x22),
+            featuresTip: 13,
+        }
+        .abi_encode()
+        .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "invalid feature registry system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_registry_report_rejects_noop_report() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let validator = Address::repeat_byte(0x11);
+        let owner = Address::repeat_byte(0xaa);
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_report_storage(validator, 13),
+        );
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let mut executor = builder.build(&mut db, &chainspec);
+        initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
+
+        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
+            validator,
             featuresTip: 13,
         }
         .abi_encode()
