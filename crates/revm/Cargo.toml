@@ -36,6 +36,7 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 eyre.workspace = true
+criterion.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-eips.workspace = true
 alloy-signer.workspace = true
@@ -47,6 +48,10 @@ sha2.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 test-case.workspace = true
+
+[[bench]]
+name = "modexp"
+harness = false
 
 [features]
 reth = ["dep:reth-storage-api"]

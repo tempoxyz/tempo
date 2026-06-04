@@ -13431,6 +13431,7 @@ dependencies = [
  "alloy-sol-types",
  "auto_impl",
  "base64 0.22.1",
+ "codspeed-criterion-compat",
  "derive_more",
  "eyre",
  "p256",
