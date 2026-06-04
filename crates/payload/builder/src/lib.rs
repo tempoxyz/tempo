@@ -66,9 +66,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes, TempoStateAccess,
-    Tip20ActionReplayState, Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback,
-    evm::TempoEvm,
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, Tip20ActionReplayState,
+    Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
 };
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -540,23 +539,12 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let blockstm_prewarm = if self.enable_prewarming && self.enable_blockstm_tip20_transfers {
-            Some(PrewarmingExecutionContext::new(
-                self.provider.clone(),
-                execution_cache.clone(),
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                Arc::new(AtomicBool::new(false)),
-            ))
-        } else {
-            None
-        };
         let mut best_txs = Some(StateAwareBestTransactions::new(
             if self.enable_prewarming && !self.enable_blockstm_tip20_transfers {
                 Box::new(BestTransactionsPrewarming::new(
                     self.executor.clone(),
                     self.provider.clone(),
-                    execution_cache,
+                    execution_cache.clone(),
                     parent_header.hash(),
                     executor.evm().evm_env(),
                     best_txs,
@@ -582,6 +570,10 @@ where
                 return Err(PayloadBuilderError::other(
                     blockstm::PayloadBuildError::Unsupported("subblocks"),
                 ));
+            } else if !self.enable_prewarming {
+                return Err(PayloadBuilderError::other(
+                    blockstm::PayloadBuildError::Unsupported("prewarming_disabled"),
+                ));
             } else {
                 self.metrics.inc_blockstm_tip20_attempted();
 
@@ -598,7 +590,13 @@ where
                         validator_token,
                         spec: executor.evm().cfg.spec,
                     },
-                    blockstm_prewarm,
+                    PrewarmingExecutionContext::new(
+                        self.provider.clone(),
+                        execution_cache.clone(),
+                        parent_header.hash(),
+                        executor.evm().evm_env(),
+                        Arc::new(AtomicBool::new(false)),
+                    ),
                     best_txs
                         .take()
                         .expect("best transactions are available before BlockSTM planning"),
@@ -743,28 +741,6 @@ where
                         }
                         Ok(false) => {
                             break stop_reason.unwrap_or(BlockBuildStopReason::GasLimit);
-                        }
-                        Err(Tip20TransferBlockstmExecutionError::Fallback(
-                            Tip20TransferBlockstmFallback::ExpiringNonceReplay,
-                        )) => {
-                            let tx_hash = *pool_tx.hash();
-                            planner.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
-                                    TempoInvalidTransaction::NonceManagerError(
-                                        "replayed expiring nonce".to_string(),
-                                    ),
-                                )),
-                            );
-                            let removed_count = self.pool.remove_transactions(vec![tx_hash]).len();
-                            self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
-                            trace!(
-                                target: "payload_builder",
-                                ?tx_hash,
-                                removed_count,
-                                "Skipping BlockSTM TIP-20 transaction with replayed expiring nonce"
-                            );
-                            continue;
                         }
                         Err(Tip20TransferBlockstmExecutionError::Fallback(
                             Tip20TransferBlockstmFallback::InsufficientBalance,

@@ -416,18 +416,6 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns true if the packed replay cell matches this expiring nonce transaction.
-    pub fn matches_expiring_nonce_cell(&self, word: U256) -> bool {
-        let Some(hash) = self.expiring_nonce_hash() else {
-            return false;
-        };
-        let Some(valid_before) = self.expiring_nonce_valid_before() else {
-            return false;
-        };
-
-        NonceManager::expiring_nonce_cell_matches(word, hash, valid_before)
-    }
-
     /// Warms the global keccak cache with storage slot hashes that will be accessed
     /// during payment execution after pool validation.
     ///

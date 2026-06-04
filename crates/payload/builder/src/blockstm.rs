@@ -79,7 +79,7 @@ pub(crate) struct Planner<Provider> {
     commands_tx: Sender<PlannerCommand>,
     results_rx: Receiver<PlannerMessage>,
     stop: Arc<AtomicBool>,
-    prewarm: Option<PrewarmingExecutionContext<Provider>>,
+    prewarm: PrewarmingExecutionContext<Provider>,
     scheduled_count: Arc<AtomicUsize>,
     completed_count: usize,
     source_exhausted: bool,
@@ -97,7 +97,7 @@ where
     pub(crate) fn new<Txs>(
         executor: TaskExecutor,
         ctx: PlanningContext,
-        prewarm: Option<PrewarmingExecutionContext<Provider>>,
+        prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: StateAwareBestTransactions<Txs>,
     ) -> Self
     where
@@ -151,11 +151,10 @@ where
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            if let Some(prewarm) = planner.prewarm.clone() {
-                scope.spawn(move |_| {
-                    pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-                });
-            }
+            let prewarm = planner.prewarm.clone();
+            scope.spawn(move |_| {
+                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+            });
 
             let advance =
                 |planner: &mut PlannerContext<StateAwareBestTransactions<Txs>, Provider>| {
@@ -187,9 +186,6 @@ where
                                 ctx.validator_token,
                                 ctx.spec,
                             )?;
-                            let Some(prewarm) = prewarm else {
-                                return Err(Tip20TransferBlockstmFallback::MissingActions);
-                            };
                             match prewarm_tip20_transfer_actions(&prewarm, candidate, sequence)? {
                                 Ok(replay) => Ok(PlannedTransfer::Valid { tx, replay }),
                                 Err(kind) => Ok(PlannedTransfer::Invalid { tx, kind }),
@@ -217,18 +213,14 @@ where
                     }
                     PlannerCommand::Stop => {
                         planner.stop.store(true, Ordering::Relaxed);
-                        if let Some(prewarm) = &planner.prewarm {
-                            prewarm.stop();
-                        }
+                        planner.prewarm.stop();
                         return;
                     }
                 }
             }
         });
 
-        if planner.prewarm.is_some() {
-            pool.clear();
-        }
+        pool.clear();
     }
 
     pub(crate) fn mark_invalid(&self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
@@ -283,9 +275,7 @@ where
 impl<Provider> Drop for Planner<Provider> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(prewarm) = &self.prewarm {
-            prewarm.stop();
-        }
+        self.prewarm.stop();
         let _ = self.commands_tx.send(PlannerCommand::Stop);
     }
 }
@@ -296,7 +286,7 @@ struct PlannerContext<Txs, Provider> {
     commands_rx: Receiver<PlannerCommand>,
     commands_tx: Sender<PlannerCommand>,
     stop: Arc<AtomicBool>,
-    prewarm: Option<PrewarmingExecutionContext<Provider>>,
+    prewarm: PrewarmingExecutionContext<Provider>,
     ctx: PlanningContext,
     scheduled_count: Arc<AtomicUsize>,
     next_sequence: usize,

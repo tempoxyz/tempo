@@ -83,16 +83,6 @@ pub trait PrecompileStorageProvider {
         Ok(value)
     }
 
-    /// Decrements a persistent storage slot by `delta`, returning the new value.
-    fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
-        let value = self
-            .sload(address, key)?
-            .checked_sub(delta)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.sstore(address, key, value)?;
-        Ok(value)
-    }
-
     /// Increments a TIP-20 balance slot while preserving its cached reward flag.
     fn tip20_balance_sinc(
         &mut self,
@@ -226,16 +216,6 @@ pub trait StorageOps {
         let value = self
             .load(slot)?
             .checked_add(delta)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.store(slot, value)?;
-        Ok(value)
-    }
-
-    /// Decrements a value at the provided slot by `delta`, returning the new value.
-    fn sdec(&mut self, slot: U256, delta: U256) -> Result<U256> {
-        let value = self
-            .load(slot)?
-            .checked_sub(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.store(slot, value)?;
         Ok(value)

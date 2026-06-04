@@ -55,13 +55,8 @@ pub enum Tip20TransferBlockstmFallback {
     InvalidFeePayer,
     InvalidNonce,
     MissingExpiringNonceValidBefore,
-    ExpiringNonceReplay,
-    AccountHasCode,
-    GasLimit,
-    GasOverflow,
     InsufficientBalance,
     BalanceOverflow,
-    StmValidation,
     EmptyCalls,
     ContractCreation,
     NonTip20Target,
@@ -70,9 +65,6 @@ pub enum Tip20TransferBlockstmFallback {
     InvalidCalldata,
     InvalidRecipient,
     VirtualRecipient,
-    TokenPaused,
-    TransferPolicy,
-    ReceivePolicy,
     RewardActive,
     ActionExecutionFailed,
     MissingActions,
@@ -94,13 +86,8 @@ impl Tip20TransferBlockstmFallback {
             Self::InvalidFeePayer => "invalid_fee_payer",
             Self::InvalidNonce => "invalid_nonce",
             Self::MissingExpiringNonceValidBefore => "missing_expiring_nonce_valid_before",
-            Self::ExpiringNonceReplay => "expiring_nonce_replay",
-            Self::AccountHasCode => "account_has_code",
-            Self::GasLimit => "gas_limit",
-            Self::GasOverflow => "gas_overflow",
             Self::InsufficientBalance => "insufficient_balance",
             Self::BalanceOverflow => "balance_overflow",
-            Self::StmValidation => "stm_validation",
             Self::EmptyCalls => "empty_calls",
             Self::ContractCreation => "contract_creation",
             Self::NonTip20Target => "non_tip20_target",
@@ -109,9 +96,6 @@ impl Tip20TransferBlockstmFallback {
             Self::InvalidCalldata => "invalid_calldata",
             Self::InvalidRecipient => "invalid_recipient",
             Self::VirtualRecipient => "virtual_recipient",
-            Self::TokenPaused => "token_paused",
-            Self::TransferPolicy => "transfer_policy",
-            Self::ReceivePolicy => "receive_policy",
             Self::RewardActive => "reward_active",
             Self::ActionExecutionFailed => "action_execution_failed",
             Self::MissingActions => "missing_actions",
@@ -384,24 +368,6 @@ fn action_replay_state<DB: StateDB>(
                 let value = action_current_value(db, &writes, &mut originals, key)?
                     .checked_add(delta)
                     .ok_or_else(balance_overflow)?;
-                action_write_value(
-                    db,
-                    &mut writes,
-                    &mut originals,
-                    &mut write_kinds,
-                    key,
-                    value,
-                    WriteKind::Delta,
-                )?;
-            }
-            EvmAction::Sdec(address, slot, delta) => {
-                let key = StorageKey { address, slot };
-                if replay_state.has_store(key) {
-                    return Err(action_conflict());
-                }
-                let value = action_current_value(db, &writes, &mut originals, key)?
-                    .checked_sub(delta)
-                    .ok_or_else(insufficient_balance)?;
                 action_write_value(
                     db,
                     &mut writes,

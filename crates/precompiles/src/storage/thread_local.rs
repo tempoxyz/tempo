@@ -166,11 +166,6 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sinc(address, key, delta))
     }
 
-    /// Decrements a persistent storage slot by `delta`, returning the new value.
-    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
-        Self::try_with_storage(|s| s.sdec(address, key, delta))
-    }
-
     /// Increments a TIP-20 balance slot while preserving its cached reward flag.
     pub fn tip20_balance_sinc(
         &mut self,

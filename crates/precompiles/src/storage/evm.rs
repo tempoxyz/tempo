@@ -304,26 +304,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn sdec(
-        &mut self,
-        address: Address,
-        key: U256,
-        delta: U256,
-    ) -> Result<U256, TempoPrecompileError> {
-        let value = self
-            .sload_inner(address, key, None)?
-            .checked_sub(delta)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.sstore_inner(
-            address,
-            key,
-            value,
-            Some(EvmAction::Sdec(address, key, delta)),
-        )?;
-        Ok(value)
-    }
-
-    #[inline]
     fn tip20_balance_sinc(
         &mut self,
         address: Address,
@@ -507,12 +487,11 @@ impl EvmPrecompileStorageProvider<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EvmAction {
     Sload(Address, U256),
     Sstore(Address, U256, U256),
     Sinc(Address, U256, U256),
-    Sdec(Address, U256, U256),
     Tip20BalanceSinc(Address, U256, U256, RewardFlag),
     Tip20BalanceSdec(Address, U256, U256, RewardFlag),
 }

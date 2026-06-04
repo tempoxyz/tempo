@@ -139,27 +139,10 @@ impl NonceManager {
         Ok(false)
     }
 
-    /// Validates an expiring nonce transaction without recording it. Uses a fixed time wheel where
-    /// `valid_before` selects the reusable bucket and the replay hash selects a deterministic
-    /// probe path inside that bucket.
-    ///
-    /// The `expiring_nonce_hash` parameter is
-    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
-    ///
-    /// This is called during transaction execution to:
-    /// 1. Validate the expiry is within the allowed window
-    /// 2. Probe the `valid_before` bucket for an empty/expired cell or matching fingerprint
-    ///
-    /// # Errors
-    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
-    /// - `ExpiringNonceProbeExhausted` — all cells on the deterministic probe path are occupied
-    pub fn check_expiring_nonce(&self, expiring_nonce_hash: B256, valid_before: u64) -> Result<()> {
-        self.checked_expiring_nonce_cell(expiring_nonce_hash, valid_before)
-            .map(|_| ())
-    }
-
     /// Validates and records an expiring nonce transaction.
+    ///
+    /// Uses a fixed time wheel where `valid_before` selects the reusable bucket
+    /// and the replay hash selects a deterministic probe path inside that bucket.
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,
@@ -170,8 +153,7 @@ impl NonceManager {
         self.expiring_nonce_cells[cell_id].write(cell)
     }
 
-    /// Returns the replay-cell write for a valid expiring nonce transaction.
-    pub fn checked_expiring_nonce_cell(
+    fn checked_expiring_nonce_cell(
         &self,
         expiring_nonce_hash: B256,
         valid_before: u64,
@@ -218,17 +200,6 @@ impl NonceManager {
         Err(NonceError::expiring_nonce_probe_exhausted().into())
     }
 
-    /// Returns all storage slots on a transaction's deterministic probe path.
-    pub fn expiring_nonce_cell_slots(
-        expiring_nonce_hash: B256,
-        valid_before: u64,
-    ) -> [U256; EXPIRING_NONCE_MAX_PROBES] {
-        std::array::from_fn(|probe| {
-            let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, probe);
-            Self::new().expiring_nonce_cells[cell_id].slot()
-        })
-    }
-
     /// Returns the first replay-table storage slot touched by an expiring nonce transaction.
     pub fn expiring_nonce_first_cell_slot(expiring_nonce_hash: B256, valid_before: u64) -> U256 {
         let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, 0);
@@ -238,25 +209,6 @@ impl NonceManager {
     /// Returns the storage slot for a raw replay-table cell id.
     pub fn expiring_nonce_cell_slot(cell_id: u32) -> U256 {
         Self::new().expiring_nonce_cells[cell_id].slot()
-    }
-
-    /// Returns true if a packed replay cell is the record for this transaction.
-    pub fn expiring_nonce_cell_matches(
-        word: U256,
-        expiring_nonce_hash: B256,
-        valid_before: u64,
-    ) -> bool {
-        let (stored_v, stored_fingerprint) = Self::unpack_expiring_nonce_cell(word);
-        stored_v == valid_before
-            && stored_fingerprint == Self::expiring_nonce_fingerprint(expiring_nonce_hash)
-    }
-
-    /// Returns the packed replay-cell word written for this transaction.
-    pub fn expiring_nonce_cell_word(expiring_nonce_hash: B256, valid_before: u64) -> U256 {
-        Self::pack_expiring_nonce_cell(
-            valid_before,
-            Self::expiring_nonce_fingerprint(expiring_nonce_hash),
-        )
     }
 
     fn expiring_nonce_cell_id(expiring_nonce_hash: B256, valid_before: u64, probe: usize) -> u32 {
@@ -459,50 +411,6 @@ mod tests {
 
             // Same tx hash should fail (replay)
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
-            assert_eq!(
-                result.unwrap_err(),
-                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_check_expiring_nonce_does_not_mark() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let now = 1000u64;
-        storage.set_timestamp(U256::from(now));
-        StorageCtx::enter(&mut storage, || {
-            let mut mgr = NonceManager::new();
-
-            let tx_hash = B256::repeat_byte(0x12);
-            let valid_before = now + 20;
-
-            mgr.check_expiring_nonce(tx_hash, valid_before)?;
-            assert!(!mgr.is_expiring_nonce_seen_at(tx_hash, valid_before)?);
-
-            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
-            assert!(mgr.is_expiring_nonce_seen_at(tx_hash, valid_before)?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_check_expiring_nonce_rejects_replay() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let now = 1000u64;
-        storage.set_timestamp(U256::from(now));
-        StorageCtx::enter(&mut storage, || {
-            let mut mgr = NonceManager::new();
-
-            let tx_hash = B256::repeat_byte(0x13);
-            let valid_before = now + 20;
-
-            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
-
-            let result = mgr.check_expiring_nonce(tx_hash, valid_before);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())

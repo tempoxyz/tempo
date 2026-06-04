@@ -82,8 +82,6 @@ pub struct AA2dPool {
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
     /// Scratch buffer reused while processing nonce state updates.
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
-    /// Scratch buffer reused while processing included expiring nonce transactions.
-    state_update_included_expiring_nonce_hashes: Vec<B256>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -136,7 +134,6 @@ impl AA2dPool {
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
             state_update_nonce_changes: Default::default(),
-            state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
@@ -1329,12 +1326,8 @@ impl AA2dPool {
         I: IntoIterator<Item = B256>,
     {
         self.state_update_nonce_changes.clear();
-        self.state_update_included_expiring_nonce_hashes.clear();
 
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
-        let mut included_hashes =
-            std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
-        included_hashes.extend(included_expiring_nonce_hashes);
 
         // Process known 2D nonce slot changes.
         if let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) {
@@ -1348,13 +1341,12 @@ impl AA2dPool {
         let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
 
         // Remove included expiring nonce transactions
-        for expiring_nonce_hash in included_hashes.drain(..) {
+        for expiring_nonce_hash in included_expiring_nonce_hashes {
             if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
                 mined.push(tx);
             }
         }
         self.state_update_nonce_changes = changes;
-        self.state_update_included_expiring_nonce_hashes = included_hashes;
 
         // Record metrics for all changes
         if !promoted.is_empty() {
@@ -5504,12 +5496,10 @@ mod tests {
     // ============================================
 
     #[test]
-    fn on_state_updates_clears_scratch_buffers_without_nonce_state() {
+    fn on_state_updates_clears_scratch_buffer_without_nonce_state() {
         let mut pool = AA2dPool::default();
         pool.state_update_nonce_changes
             .insert(AASequenceId::new(Address::random(), U256::from(1)), 1);
-        pool.state_update_included_expiring_nonce_hashes
-            .push(B256::random());
 
         let state = AddressMap::default();
         let (promoted, mined) = pool.on_state_updates(&state);
@@ -5517,7 +5507,6 @@ mod tests {
         assert!(promoted.is_empty());
         assert!(mined.is_empty());
         assert!(pool.state_update_nonce_changes.is_empty());
-        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
 
     #[test]
@@ -5580,7 +5569,6 @@ mod tests {
 
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
-        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
 
     #[test]
@@ -6285,7 +6273,6 @@ mod tests {
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
-        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
 
     /// Pool with pending limit of 2 for eviction tests.

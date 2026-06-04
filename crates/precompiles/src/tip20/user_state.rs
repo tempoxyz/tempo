@@ -25,7 +25,7 @@ use tempo_precompiles_macros::Storable;
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
 // only needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the
 // future, `UserState` should not derive `StorableLayout` and switch to a manual bit-level layout.
-#[derive(Default, Debug, Clone, Storable, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
 #[repr(u8)]
 pub enum RewardFlag {
     #[default]
