@@ -6,11 +6,12 @@
 //! between tx execution cutoff time, total replayable build work, and the
 //! size-dependent cost of persisting large blocks through consensus.
 //!
-//! The decision model is:
-//! `leader_idle + predicted_builder_work + validator_replay_work + 2 * marshal_persist >= budget`.
-//! Idle waiting only happens on the proposer. Validator BAL replay is cheaper than proposer-side
-//! block filling, so we reserve a measured fraction of builder work for validator replay instead
-//! of charging a second full builder pass.
+//! The decision model reserves proposer work that can still delay proposal
+//! return, validator replay work, and marshal persistence for both sides.
+//! Before `handle_propose`, completed builder work is already paid locally and
+//! only the remaining builder tail affects proposal return. Validator BAL
+//! replay is cheaper than proposer-side block filling, so we reserve a measured
+//! fraction of builder work instead of charging a second full builder pass.
 
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use tempo_payload_types::MarshalPersistEstimator;
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
+pub(crate) const SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER: u64 = BUILD_TIME_MULTIPLIER_SCALE;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
@@ -49,36 +51,85 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     )
 }
 
-/// Returns true when the shared proposer/validator budget is exhausted.
+/// Predicted proposal-return work for a payload budget check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PayloadBudgetEstimate {
+    pub(crate) work_elapsed: Duration,
+    pub(crate) predicted_work: Duration,
+    pub(crate) proposer_work: Duration,
+    pub(crate) validator_replay_work: Duration,
+    pub(crate) marshal_persist: Duration,
+    pub(crate) total_budgeted_work: Duration,
+}
+
+fn payload_budget_estimate(
+    elapsed: Duration,
+    idle_elapsed: Duration,
+    proposal_timing_attached_elapsed: Option<Duration>,
+    multiplier: u64,
+    marshal_persist: MarshalPersistEstimator,
+    block_size_bytes: usize,
+) -> PayloadBudgetEstimate {
+    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
+    let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_remaining_work = predicted_work.saturating_sub(work_elapsed);
+    let proposer_work =
+        proposal_timing_attached_elapsed.map_or(predicted_remaining_work, |attached_elapsed| {
+            elapsed
+                .saturating_sub(attached_elapsed)
+                .saturating_add(predicted_remaining_work)
+        });
+    let validator_replay_work = scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE);
+    let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let total_budgeted_work = proposer_work
+        .saturating_add(validator_replay_work)
+        .saturating_add(marshal_persist)
+        .saturating_add(marshal_persist);
+
+    PayloadBudgetEstimate {
+        work_elapsed,
+        predicted_work,
+        proposer_work,
+        validator_replay_work,
+        marshal_persist,
+        total_budgeted_work,
+    }
+}
+
+/// Returns the budget estimate when the shared proposer/validator budget is exhausted.
 ///
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
-/// replayed by validators and therefore counts once.
+/// replayed by validators.
+/// `proposal_timing_attached_elapsed` is `None` before `handle_propose`
+/// attaches timing. In that mode, already completed builder work does not delay
+/// proposal return, but the remaining builder tail and validator replay still
+/// reserve budget.
 /// `budget` is the remaining consensus payload build budget. `block_size_bytes`
 /// is the current encoded-size estimate used for marshal persistence.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected replayable work once for the proposer,
-/// a smaller validator replay reservation, and marshal persistence once for
-/// each side.
+/// charge projected proposer work that can still delay proposal return, a
+/// smaller validator replay reservation, and marshal persistence once for each
+/// side.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
+    proposal_timing_attached_elapsed: Option<Duration>,
     multiplier: u64,
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
-) -> bool {
-    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_work = scaled_duration(work_elapsed, multiplier);
-    let validator_replay_work = scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE);
-    let marshal_persist = marshal_persist.estimate(block_size_bytes);
-    idle_elapsed
-        .saturating_add(predicted_work)
-        .saturating_add(validator_replay_work)
-        .saturating_add(marshal_persist)
-        .saturating_add(marshal_persist)
-        >= budget
+) -> Option<PayloadBudgetEstimate> {
+    let estimate = payload_budget_estimate(
+        elapsed,
+        idle_elapsed,
+        proposal_timing_attached_elapsed,
+        multiplier,
+        marshal_persist,
+        block_size_bytes,
+    );
+    (estimate.total_budgeted_work >= budget).then_some(estimate)
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
@@ -137,35 +188,43 @@ mod tests {
         assert!(payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(182),
             MarshalPersistEstimator::default(),
             0
-        ));
-        assert!(!payload_budget_exhausted(
+        )
+        .is_some());
+        assert!(payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(183),
             MarshalPersistEstimator::default(),
             0
-        ));
+        )
+        .is_none());
         assert!(payload_budget_exhausted(
             Duration::from_millis(350),
             Duration::from_millis(250),
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(432),
             MarshalPersistEstimator::default(),
             0
-        ));
-        assert!(!payload_budget_exhausted(
+        )
+        .is_some());
+        assert!(payload_budget_exhausted(
             Duration::from_millis(350),
             Duration::from_millis(250),
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(433),
             MarshalPersistEstimator::default(),
             0
-        ));
+        )
+        .is_none());
     }
 
     #[test]
@@ -175,19 +234,88 @@ mod tests {
         assert!(payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(212),
             marshal_persist,
             15_000
-        ));
-        assert!(!payload_budget_exhausted(
+        )
+        .is_some());
+        assert!(payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
             Duration::from_millis(212),
             marshal_persist,
             14_874
-        ));
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn payload_budget_before_propose_only_charges_remaining_builder_work() {
+        let estimate = payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            None,
+            1_350_000,
+            Duration::from_millis(82),
+            MarshalPersistEstimator::default(),
+            0,
+        )
+        .expect("remaining builder tail plus validator replay exceeds budget");
+
+        assert_eq!(estimate.work_elapsed, Duration::from_millis(100));
+        assert_eq!(estimate.predicted_work, Duration::from_millis(135));
+        assert_eq!(estimate.proposer_work, Duration::from_millis(35));
+        assert_eq!(estimate.validator_replay_work, Duration::from_micros(47_250));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_micros(82_250));
+
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                None,
+                1_350_000,
+                Duration::from_millis(83),
+                MarshalPersistEstimator::default(),
+                0,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn payload_budget_after_propose_charges_post_propose_elapsed() {
+        let estimate = payload_budget_exhausted(
+            Duration::from_millis(120),
+            Duration::ZERO,
+            Some(Duration::from_millis(100)),
+            1_000_000,
+            Duration::from_millis(62),
+            MarshalPersistEstimator::default(),
+            0,
+        )
+        .expect("post-propose work plus validator replay reaches budget");
+
+        assert_eq!(estimate.predicted_work, Duration::from_millis(120));
+        assert_eq!(estimate.proposer_work, Duration::from_millis(20));
+        assert_eq!(estimate.validator_replay_work, Duration::from_millis(42));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(62));
+
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(120),
+                Duration::ZERO,
+                Some(Duration::from_millis(100)),
+                1_000_000,
+                Duration::from_millis(63),
+                MarshalPersistEstimator::default(),
+                0,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -196,5 +324,6 @@ mod tests {
             scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
         );
+        assert_eq!(SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER, 1_000_000);
     }
 }
