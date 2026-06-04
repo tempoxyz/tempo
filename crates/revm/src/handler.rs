@@ -558,7 +558,13 @@ where
         let first_frame_input = self.first_frame_input(evm, gas_limit, reservoir)?;
 
         // Run execution loop (standard or inspector)
-        let mut frame_result = run_loop(self, evm, first_frame_input)?;
+        let mut frame_result = run_loop(self, evm, first_frame_input.clone())?;
+
+        if frame_result.instruction_result().is_halt() {
+            tracing::info!("result: {:?}", frame_result);
+            tracing::info!("input: {:?}", first_frame_input);
+            tracing::info!("state: {:?}", evm.ctx().journaled_state.state());
+        }
 
         // Handle last frame result
         self.last_frame_result(evm, reservoir, &mut frame_result)?;
