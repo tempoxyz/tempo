@@ -118,7 +118,10 @@ impl BlockHashReader for BalOverlayStateProvider {
     ) -> ProviderResult<Vec<B256>> {
         let mut hashes = self.inner.canonical_hashes_range(start, end)?;
         if (start..end).contains(&self.parent_header.number()) {
-            hashes.push(self.parent_header.hash());
+            let index = (self.parent_header.number() - start) as usize;
+            if let Some(hash) = hashes.get_mut(index) {
+                *hash = self.parent_header.hash();
+            }
         }
         Ok(hashes)
     }
@@ -167,7 +170,7 @@ impl StateProvider for BalOverlayStateProvider {
 
 impl HashedPostStateProvider for BalOverlayStateProvider {
     fn hashed_post_state(&self, bundle_state: &BundleState) -> HashedPostState {
-        self.inner.hashed_post_state(bundle_state)
+        self.merge_hashed_state(self.inner.hashed_post_state(bundle_state))
     }
 }
 
@@ -396,6 +399,7 @@ mod tests {
         storage: HashMap<(Address, StorageKey), StorageValue>,
         bytecodes: HashMap<B256, Bytecode>,
         block_hashes: HashMap<BlockNumber, B256>,
+        hashed_post_state: HashedPostState,
     }
 
     impl BlockHashReader for MockStateProvider {
@@ -438,7 +442,7 @@ mod tests {
 
     impl HashedPostStateProvider for MockStateProvider {
         fn hashed_post_state(&self, _bundle_state: &BundleState) -> HashedPostState {
-            HashedPostState::default()
+            self.hashed_post_state.clone()
         }
     }
 
@@ -579,5 +583,94 @@ mod tests {
             Some(Bytecode::new_raw(code))
         );
         assert_eq!(overlay.block_hash(10).unwrap(), Some(parent_header.hash()));
+    }
+
+    #[test]
+    fn bal_overlay_hashed_post_state_includes_parent_overlay() {
+        let address = Address::from([0x22; 20]);
+        let parent_slot = U256::from(7);
+        let child_slot = U256::from(8);
+
+        let mut inner = MockStateProvider::default();
+        inner.accounts.insert(
+            address,
+            Account {
+                balance: U256::from(1),
+                nonce: 1,
+                bytecode_hash: None,
+            },
+        );
+
+        let hashed_address = keccak256(address);
+        let child_hashed_slot = keccak256(child_slot.to_be_bytes::<32>());
+        inner.hashed_post_state = HashedPostState::default().with_storages([(
+            hashed_address,
+            HashedStorage::from_iter(false, [(child_hashed_slot, U256::from(0xccu64))]),
+        )]);
+
+        let bal = Bal::new(vec![AccountChanges::new(address).with_storage_change(
+            SlotChanges::new(
+                parent_slot,
+                vec![StorageChange::new(
+                    BlockAccessIndex::new(1),
+                    U256::from(0xbeefu64),
+                )],
+            ),
+        )]);
+        let raw_bal = Bytes::from(alloy_rlp::encode(bal));
+
+        let parent_header = Arc::new(SealedHeader::new_unhashed(TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let overlay =
+            BalOverlayStateProvider::new(Box::new(inner), parent_header, raw_bal).unwrap();
+
+        let merged = overlay.hashed_post_state(&BundleState::default());
+        let storage = merged.storages.get(&hashed_address).unwrap();
+        assert_eq!(
+            storage
+                .storage
+                .get(&keccak256(parent_slot.to_be_bytes::<32>()))
+                .copied(),
+            Some(U256::from(0xbeefu64))
+        );
+        assert_eq!(
+            storage.storage.get(&child_hashed_slot).copied(),
+            Some(U256::from(0xccu64))
+        );
+    }
+
+    #[test]
+    fn bal_overlay_canonical_hashes_range_replaces_parent_hash() {
+        let inner_hash_9 = B256::from([0x09; 32]);
+        let inner_hash_10 = B256::from([0x10; 32]);
+        let inner_hash_11 = B256::from([0x11; 32]);
+
+        let mut inner = MockStateProvider::default();
+        inner.block_hashes.insert(9, inner_hash_9);
+        inner.block_hashes.insert(10, inner_hash_10);
+        inner.block_hashes.insert(11, inner_hash_11);
+
+        let parent_header = Arc::new(SealedHeader::new_unhashed(TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let expected_parent_hash = parent_header.hash();
+        let raw_bal = Bytes::from(alloy_rlp::encode(Bal::new(vec![])));
+        let overlay =
+            BalOverlayStateProvider::new(Box::new(inner), parent_header, raw_bal).unwrap();
+
+        let hashes = overlay.canonical_hashes_range(9, 12).unwrap();
+        assert_eq!(
+            hashes,
+            vec![inner_hash_9, expected_parent_hash, inner_hash_11]
+        );
     }
 }
