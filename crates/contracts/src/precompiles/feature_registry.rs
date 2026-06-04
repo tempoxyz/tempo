@@ -22,7 +22,7 @@ crate::sol! {
         /// @notice Returns the scheduled feature tip and earliest activation epoch.
         function scheduledFeaturesTip() external view returns (uint64 featuresTip, uint64 activationEpoch);
 
-        /// @notice Reports the highest protocol feature ID a validator supports.
+        /// @notice Records the highest protocol feature tip reported for a validator. System caller only.
         function setSupportedFeaturesTip(address validator, uint64 featuresTip) external;
 
         /// @notice Schedules a higher feature tip for activation at the target epoch.
