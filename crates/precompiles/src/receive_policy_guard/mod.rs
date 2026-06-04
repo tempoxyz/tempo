@@ -964,6 +964,103 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_rejects_guard_destination() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let blocked_at = 1_728_005u64;
+        storage.set_timestamp(U256::from(blocked_at));
+
+        let admin = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+        let amount = U256::from(100u64);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("T", "T", admin)
+                .with_issuer(admin)
+                .with_mint(originator, amount)
+                .apply()?;
+            block_all_senders(receiver, receiver)?;
+            token.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver,
+                    amount,
+                },
+            )?;
+
+            let receipt = ClaimReceiptV1::new(
+                token.address(),
+                receiver,
+                originator,
+                receiver,
+                blocked_at,
+                1,
+                BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+
+            // Funds are blocked and the caller is authorized, but routing the
+            // claim back into the guard itself must be rejected before any
+            // balance is moved.
+            let mut guard = ReceivePolicyGuard::new();
+            assert_eq!(
+                guard
+                    .claim(
+                        receiver,
+                        RECEIVE_POLICY_GUARD_ADDRESS,
+                        receipt.abi_encode().into(),
+                    )
+                    .unwrap_err(),
+                ReceivePolicyGuardError::invalid_claim_address().into()
+            );
+            // The blocked balance is untouched and a valid claim still works.
+            assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
+            guard.claim(receiver, receiver, receipt.abi_encode().into())?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_blocked_receipt_rejects_missing() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let blocked_at = 1_728_006u64;
+        storage.set_timestamp(U256::from(blocked_at));
+
+        let admin = Address::random();
+        let burner = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let _token = TIP20Setup::create("T", "T", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .apply()?;
+
+            // A well-formed receipt that was never blocked has a zero balance and
+            // must be rejected instead of attempting a burn of nothing.
+            let receipt = ClaimReceiptV1::new(
+                _token.address(),
+                receiver,
+                originator,
+                receiver,
+                blocked_at,
+                1,
+                BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+
+            let mut guard = ReceivePolicyGuard::new();
+            assert_invalid_receipt(guard.burn_blocked_receipt(burner, receipt.abi_encode().into()));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_claim_requires_authorized_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_004u64));
