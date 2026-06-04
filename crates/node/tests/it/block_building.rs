@@ -5,23 +5,34 @@ use alloy::{
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
-    sol_types::SolEvent,
+    sol_types::{SolCall, SolEvent},
 };
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use commonware_codec::Encode;
+use commonware_cryptography::{Signer as _, ed25519::PrivateKey as Ed25519PrivateKey};
 use reth_node_api::BuiltPayload;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use std::net::{IpAddr, SocketAddr};
+use tempo_chainspec::{features::highest_supported_protocol_feature_id, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
+    IFeatureRegistry, IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory,
+    ITIPFeeAMM, IValidatorConfigV2,
 };
 use tempo_node::node::TempoNode;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+    FEATURE_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+    validator_config_v2::VALIDATOR_NS_ADD,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
+    transaction::calc_gas_balance_spending,
+};
+use tempo_validator_config::ValidatorConfig;
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -126,6 +137,83 @@ fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelo
         .collect()
 }
 
+fn feature_registry_reports(
+    payload: &TempoBuiltPayload,
+) -> eyre::Result<Vec<IFeatureRegistry::setSupportedFeaturesTipCall>> {
+    let mut reports = Vec::new();
+    for tx in payload.block().body().transactions() {
+        if tx.is_system_tx() && tx.to() == Some(FEATURE_REGISTRY_ADDRESS) {
+            reports.push(IFeatureRegistry::setSupportedFeaturesTipCall::abi_decode(
+                tx.input(),
+            )?);
+        }
+    }
+    Ok(reports)
+}
+
+async fn advance_block_with_proposer(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    public_key: B256,
+) -> eyre::Result<TempoBuiltPayload> {
+    node.payload.timestamp += 1;
+    let consensus_context = Some(TempoConsensusContext {
+        epoch: 0,
+        view: 0,
+        parent_view: 0,
+        proposer: PublicKey::try_from(public_key)
+            .expect("active validator public key must be valid"),
+    });
+    let attrs = TempoPayloadAttributes::new(
+        Some(public_key),
+        node.payload.timestamp,
+        0,
+        Bytes::new(),
+        consensus_context,
+        Vec::new,
+    );
+    let payload_id = node
+        .inner
+        .add_ons_handle
+        .beacon_engine_handle
+        .fork_choice_updated(node.current_forkchoice_state()?, Some(attrs.clone()))
+        .await?
+        .payload_id
+        .ok_or_else(|| eyre::eyre!("payload id missing"))?;
+
+    node.payload.expect_attr_event(attrs).await?;
+    node.payload.wait_for_built_payload(payload_id).await;
+    let payload = node.payload.expect_built_payload().await?;
+    node.submit_payload(payload.clone()).await?;
+    node.update_forkchoice(payload.block().hash(), payload.block().hash())
+        .await?;
+
+    Ok(payload)
+}
+
+fn sign_add_validator_args(
+    chain_id: u64,
+    private_key: &Ed25519PrivateKey,
+    validator: Address,
+    public_key: B256,
+    ingress: SocketAddr,
+    egress: IpAddr,
+    fee_recipient: Address,
+) -> Vec<u8> {
+    let message = ValidatorConfig {
+        chain_id,
+        validator_address: validator,
+        public_key,
+        ingress,
+        egress,
+    }
+    .add_validator_message_hash(fee_recipient);
+
+    private_key
+        .sign(VALIDATOR_NS_ADD, message.as_slice())
+        .encode()
+        .to_vec()
+}
+
 /// Helper to inject non-payment transactions from multiple wallets
 async fn inject_non_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
@@ -224,6 +312,82 @@ async fn sign_and_inject(
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
     let payment_count = transactions.iter().filter(|tx| tx.is_payment_v2()).count();
     (payment_count, transactions.len() - payment_count)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_reports_supported_features_tip_once() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let validator_private_key = Ed25519PrivateKey::from_seed(0);
+    let validator_public_key = B256::from_slice(&validator_private_key.public_key().encode());
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let owner = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(owner.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let validator_config = IValidatorConfigV2::new(VALIDATOR_CONFIG_V2_ADDRESS, provider.clone());
+
+    let ingress: SocketAddr = "127.0.0.1:9000".parse()?;
+    let egress: IpAddr = "127.0.0.1".parse()?;
+    let pending = validator_config
+        .addValidator(
+            owner.address(),
+            validator_public_key,
+            ingress.to_string(),
+            egress.to_string(),
+            owner.address(),
+            sign_add_validator_args(
+                chain_id,
+                &validator_private_key,
+                owner.address(),
+                validator_public_key,
+                ingress,
+                egress,
+                owner.address(),
+            )
+            .into(),
+        )
+        .gas(5_000_000)
+        .send()
+        .await?;
+    setup.node.advance_block().await?;
+    assert!(pending.get_receipt().await?.status());
+
+    let validator = validator_config
+        .validatorByPublicKey(validator_public_key)
+        .call()
+        .await?;
+    assert_eq!(validator.deactivatedAtHeight, 0);
+
+    let feature_registry = IFeatureRegistry::new(FEATURE_REGISTRY_ADDRESS, provider);
+    let expected_features_tip = highest_supported_protocol_feature_id();
+    assert!(expected_features_tip > 0);
+    assert_eq!(
+        feature_registry
+            .validatorSupportedFeaturesTip(validator.validatorAddress)
+            .call()
+            .await?,
+        0
+    );
+
+    let first_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
+    let reports = feature_registry_reports(&first_payload)?;
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].publicKey, validator.publicKey);
+    assert_eq!(reports[0].featuresTip, expected_features_tip);
+    assert_eq!(
+        feature_registry
+            .validatorSupportedFeaturesTip(validator.validatorAddress)
+            .call()
+            .await?,
+        expected_features_tip
+    );
+
+    let second_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
+    assert!(feature_registry_reports(&second_payload)?.is_empty());
+
+    Ok(())
 }
 
 /// Test with only a few mixed payment and non-payment transactions
