@@ -821,12 +821,14 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        let mut frame_result = if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
-        }
+        }?;
+        tip1060::apply_refund(evm, frame_result.gas_mut())?;
+        Ok(frame_result)
     }
 
     /// Take logs from the Journal if outcome is Halt Or Revert.
@@ -1531,22 +1533,6 @@ where
             }
         }
 
-        Ok(())
-    }
-
-    #[inline]
-    fn last_frame_result(
-        &mut self,
-        evm: &mut Self::Evm,
-        original_reservoir: u64,
-        frame_result: &mut FrameResult,
-    ) -> Result<(), Self::Error> {
-        MainnetHandler::<_, Self::Error, _>::default().last_frame_result(
-            evm,
-            original_reservoir,
-            frame_result,
-        )?;
-        tip1060::apply_refund(evm, frame_result.gas_mut())?;
         Ok(())
     }
 
@@ -2354,12 +2340,14 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        let mut frame_result = if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
-        }
+        }?;
+        tip1060::apply_refund(evm, frame_result.gas_mut())?;
+        Ok(frame_result)
     }
 }
 

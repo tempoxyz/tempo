@@ -83,7 +83,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         skip_refund: true,
     };
 
-    if values.is_new_eq_present() {
+    // Only account for storage credits when the slot crosses the zero boundary
+    // (zero -> non-zero or non-zero -> zero). If both values are zero or both are
+    // non-zero, slot occupancy is unchanged, so skip storage credits accounting.
+    if values.is_present_zero() == values.is_new_zero() {
         return Ok(outcome);
     }
 
@@ -101,16 +104,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             skip_gas: true,
             skip_refund: true,
         });
-    }
-
-    // 0→x: slot create (charged EIP-8037 state gas today).
-    let is_create = values.is_original_eq_present() && values.is_original_zero();
-    // x→0: slot clear (present non-zero set to zero).
-    let is_clear = values.is_new_zero() && !values.is_present_zero();
-
-    // x→y: return from instruction, nothing to be done.
-    if !(is_create || is_clear) {
-        return Ok(outcome);
     }
 
     // Load token_state for the contract
@@ -131,10 +124,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         AccountState::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
 
     let mut was_changed = false;
-    if is_clear {
+    if values.is_new_zero() {
+        // x→0: slot clear (present non-zero set to zero).
         storage_credits.balance = storage_credits.balance.saturating_add(1);
         was_changed = true;
     } else {
+        // 0→x: slot create (charged EIP-8037 state gas today).
         match storage_credits.mode {
             CreditMode::Direct => {
                 // Only if there is a credit available, skip gas
