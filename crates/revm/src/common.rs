@@ -240,11 +240,12 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
+        actions: &EvmActions,
     ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, || {
+        self.with_read_only_storage_ctx_with_actions(spec, actions, || {
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
@@ -818,7 +819,7 @@ mod tests {
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
         let err = db
-            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token)
+            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::default())
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,
