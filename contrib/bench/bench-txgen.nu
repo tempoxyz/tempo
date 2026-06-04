@@ -58,6 +58,7 @@ def run-txgen-bench-single [
     --tracy-seconds: int = 0
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
+    --tracing-chrome
 ] {
     print $"=== Starting txgen run: ($run_label) ==="
 
@@ -89,7 +90,7 @@ def run-txgen-bench-single [
     } else { [] }
     let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
-    let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else { "" }
+    let profiling_label = if $samply { " (samply)" } else if $tracy != "off" { $" \(tracy=($tracy)\)" } else if $tracing_chrome { " (tracing-chrome)" } else { "" }
     let env_prefix = if $extra_env != "" { $"($extra_env) " } else { "" }
     print $"  Starting node: ($tempo_bin | path basename)($profiling_label)"
     job spawn { sh -c $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1" | lines | each { |line| print $"[($run_label)] ($line)" } }
@@ -209,6 +210,7 @@ def "main run" [
     --max-concurrent-requests: int = 100
     --samply
     --samply-args: string = ""
+    --tracing-chrome
     --loud
     --profile: string = $DEFAULT_PROFILE
     --features: string = $DEFAULT_FEATURES
@@ -270,6 +272,9 @@ def "main run" [
     let tracy = (normalize-tracy-mode $tracy)
     if $samply and $tracy != "off" {
         error make { msg: "--samply and --tracy are mutually exclusive" }
+    }
+    if $tracing_chrome and $tracing_otlp == "" {
+        error make { msg: "--tracing-chrome requires --tracing-otlp or TEMPO_TELEMETRY_URL/GRAFANA_TEMPO" }
     }
     if $tracy != "off" and ((which tracy-capture | length) == 0) {
         error make { msg: "tracy-capture not found in PATH" }
@@ -573,6 +578,7 @@ def "main run" [
             --tracy-seconds $tracy_seconds
             --tracy-offset $tracy_offset
             --tracing-otlp $tracing_otlp
+            --tracing-chrome=$tracing_chrome
             --platform $platform
             --scenario $resolved_scenario)
     }
@@ -604,6 +610,20 @@ def "main run" [
             let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
             if $viewer_url != null {
                 $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+            }
+        }
+    }
+
+    if $tracing_chrome {
+        print "\nExporting chrome traces for Perfetto..."
+        let end_epoch = ((date now | into int) / 1_000_000_000 | into int)
+        for run in $runs {
+            let trace = $"($results_dir)/chrome-trace-($run.label).json"
+            if (export-chrome-trace $tracing_otlp $benchmark_id $run.label $reference_epoch $end_epoch $trace) {
+                let url = (upload-chrome-trace $trace $run.label $run.git_ref)
+                if $url != null {
+                    $url | save -f $"($results_dir)/chrome-trace-($run.label)-url.txt"
+                }
             }
         }
     }

@@ -860,6 +860,52 @@ def upload-tracy-profile [profile_path: string, label: string, commit_sha: strin
     }
 }
 
+# Upload a Chrome trace JSON file to R2 and return a Perfetto UI URL.
+def upload-chrome-trace [trace_path: string, label: string, commit_sha: string] {
+    if not ($trace_path | path exists) {
+        print $"  Warning: chrome trace not found: ($trace_path)"
+        return null
+    }
+    if not (has-mc) {
+        print "  Warning: mc not available, skipping chrome trace upload"
+        return null
+    }
+
+    let trace_size = (ls $trace_path | get size | first)
+    print $"  Uploading ($trace_path | path basename) \(($trace_size)\) to R2..."
+
+    let timestamp = (date now | format date "%Y%m%d-%H%M%S")
+    let short_sha = ($commit_sha | str substring 0..7)
+    let remote_name = $"($label)-($short_sha)-($timestamp).json"
+    let mc_alias = "r2"
+    let public_url = $"https://tracy.tempoxyz.dev/chrome-traces/($remote_name)"
+    let perfetto_url = $"https://ui.perfetto.dev/#!/?url=($public_url | url encode)"
+
+    try {
+        mc cp $trace_path $"($mc_alias)/tracy/chrome-traces/($remote_name)"
+        print $"  ($label): ($perfetto_url)"
+        $perfetto_url
+    } catch {
+        print "  Warning: failed to upload chrome trace"
+        null
+    }
+}
+
+def export-chrome-trace [tempo_url: string, benchmark_id: string, run_label: string, start_epoch: int, end_epoch: int, output_path: string] {
+    if $tempo_url == "" {
+        print "  Warning: tracing chrome requested but no Tempo query URL is configured"
+        return false
+    }
+    let script = $"($BENCH_DIR)/export-chrome-trace.py"
+    let result = (python3 $script --tempo-url $tempo_url --benchmark-id $benchmark_id --run-label $run_label --start $start_epoch --end $end_epoch --output $output_path | complete)
+    if $result.exit_code != 0 {
+        print $"  Warning: failed to export chrome trace for ($run_label)"
+        if $result.stderr != "" { print $result.stderr }
+        return false
+    }
+    true
+}
+
 # Generate summary.md from multiple report files
 # Compute percentile from a sorted list (0-100)
 def percentile [sorted_vals: list<any>, pct: int] {

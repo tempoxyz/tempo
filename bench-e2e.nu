@@ -1182,6 +1182,7 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
+    --tracing-chrome                                    # Export Tempo spans as Chrome trace JSON and upload Perfetto links
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
@@ -1486,6 +1487,8 @@ def "main e2e" [
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
+        tracing_chrome: $tracing_chrome
+        tracing_otlp: $tracing_otlp
         baseline_args: $baseline_args
         feature_args: $feature_args
         bench_args: $bench_args
@@ -1575,6 +1578,19 @@ def "main e2e" [
             let viewer_url = (upload-tracy-profile $profile $run.phase $run.ref)
             if $viewer_url != null {
                 $viewer_url | save -f $"($results_dir)/tracy-($run.phase)-url.txt"
+            }
+        }
+    }
+    if $e2e_exit == 0 and $tracing_chrome {
+        print "\nExporting local e2e chrome traces for Perfetto..."
+        let end_epoch = ((date now | into int) / 1_000_000_000 | into int)
+        for run in $runs {
+            let trace = $"($results_dir)/chrome-trace-($run.phase).json"
+            if (export-chrome-trace $tracing_otlp $benchmark_id $run.phase $reference_epoch $end_epoch $trace) {
+                let viewer_url = (upload-chrome-trace $trace $run.phase $run.ref)
+                if $viewer_url != null {
+                    $viewer_url | save -f $"($results_dir)/chrome-trace-($run.phase)-url.txt"
+                }
             }
         }
     }
