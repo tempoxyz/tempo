@@ -77,7 +77,8 @@ use tempo_evm::{
     evm::TempoEvm,
 };
 use tempo_payload_types::{
-    PayloadBuildControl, TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate,
+    PayloadBuildControl, PayloadBuildControlSnapshot, TempoBuiltPayload, TempoPayloadAttributes,
+    marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -144,6 +145,14 @@ fn builder_elapsed_excluding_proposal_wait_at(
         .map(|control| control.snapshot_at(now).builder_elapsed())
         .unwrap_or_else(|| now.saturating_duration_since(start))
         .saturating_sub(proposal_context_wait_elapsed)
+}
+
+fn active_payload_build_budget_snapshot(
+    payload_build_control: Option<&PayloadBuildControl>,
+) -> Option<PayloadBuildControlSnapshot> {
+    payload_build_control
+        .filter(|control| control.proposal_timing_attached())
+        .map(|control| control.snapshot())
 }
 
 fn wait_for_late_proposal_context(
@@ -241,6 +250,7 @@ pub struct TempoPayloadBuilder<Provider> {
     ///
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
+    default_build_time_multiplier: u64,
     build_time_multiplier: Arc<AtomicU64>,
 }
 
@@ -280,6 +290,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
     ) -> Self {
+        let build_time_multiplier = scaled_build_time_multiplier(config.build_time_multiplier);
         Self {
             pool,
             provider,
@@ -292,9 +303,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
-            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
-                config.build_time_multiplier,
-            ))),
+            default_build_time_multiplier: build_time_multiplier,
+            build_time_multiplier: Arc::new(AtomicU64::new(build_time_multiplier)),
         }
     }
 
@@ -454,6 +464,8 @@ where
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
         let payload_build_control = attributes.payload_build_control().cloned();
+        let speculative_bal_build =
+            cfg!(feature = "bal") && attributes.speculative_parent().is_some();
         let build_cancelled = || {
             cancel.is_cancelled()
                 || payload_build_control
@@ -776,14 +788,17 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let is_budgeted_build = payload_build_control.is_some();
-        let build_time_multiplier = self.build_time_multiplier();
+        let build_time_multiplier = if speculative_bal_build {
+            self.default_build_time_multiplier
+        } else {
+            self.build_time_multiplier()
+        };
         let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            let build_budget_snapshot = payload_build_control
-                .as_ref()
-                .map(|control| control.snapshot());
+            let build_budget_snapshot =
+                active_payload_build_budget_snapshot(payload_build_control.as_ref());
             let active_build_budget = build_budget_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.proposal_return_budget());
@@ -1378,7 +1393,7 @@ where
             Instant::now(),
         );
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
-        if is_budgeted_build {
+        if is_budgeted_build && !speculative_bal_build {
             self.update_build_time_multiplier(
                 validation_work_duration,
                 validation_work_at_tx_cutoff,
@@ -1628,8 +1643,8 @@ mod tests {
     use reth_primitives_traits::Block as _;
     use reth_revm::cancelled::CancelOnDrop;
     use tempo_primitives::{
-        AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
-        TempoTransaction,
+        AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoConsensusContext,
+        TempoSignature, TempoTransaction,
     };
 
     fn nz(value: u64) -> NonZeroU64 {
@@ -1701,6 +1716,37 @@ mod tests {
             ),
             Duration::from_millis(85)
         );
+    }
+
+    #[test]
+    fn payload_budget_is_inactive_until_proposal_timing_is_attached() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+
+        assert!(active_payload_build_budget_snapshot(Some(&control)).is_none());
+
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: B256::from_slice(&[
+                0x24, 0x8a, 0xcb, 0xdb, 0xaf, 0x9e, 0x05, 0x01, 0x96, 0xde, 0x70, 0x4b, 0xea,
+                0x2d, 0x68, 0x77, 0x0e, 0x51, 0x91, 0x50, 0xd1, 0x03, 0xb5, 0x87, 0xda, 0xe2,
+                0xd9, 0xca, 0xd5, 0x3d, 0xd9, 0x30,
+            ])
+            .try_into()
+            .expect("valid ed25519 public key"),
+        };
+        control
+            .attach_proposal_context_with_budget(
+                Bytes::default(),
+                consensus_context,
+                Duration::from_millis(120),
+            )
+            .unwrap();
+
+        let budget = active_payload_build_budget_snapshot(Some(&control))
+            .expect("proposal timing attached");
+        assert_eq!(budget.proposal_return_budget(), Duration::from_millis(120));
     }
 
     trait TestExt {
