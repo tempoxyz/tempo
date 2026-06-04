@@ -80,6 +80,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     {
         info!(target: "tempo::cli", "Tempo init-from-binary-dump starting");
 
+        let etl_dir = self
+            .env
+            .datadir
+            .clone()
+            .resolve_datadir(self.env.chain.chain())
+            .data_dir()
+            .join("etl");
         let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
 
@@ -110,9 +117,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
         let mut storage_changeset_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
+            Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
         let mut storage_history_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
+            Collector::new(ETL_FILE_SIZE, Some(etl_dir.clone()));
 
         for (index, entry) in provider_rw.storage_changeset(0)? {
             let raw_key = raw_storage_key(index.address(), entry.key);
@@ -127,10 +134,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let (hash_tx, hash_rx) = mpsc::sync_channel::<
             Vec<(alloy_primitives::Address, B256, CompactU256)>,
         >(HASH_WORKER_QUEUE_DEPTH);
+        let hashed_etl_dir = etl_dir.clone();
         let hash_worker =
             thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
                 let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
-                    Collector::new(ETL_FILE_SIZE, None);
+                    Collector::new(ETL_FILE_SIZE, Some(hashed_etl_dir));
                 while let Ok(chunk) = hash_rx.recv() {
                     let mut last_addr = alloy_primitives::Address::ZERO;
                     let mut hashed_addr = B256::ZERO;
