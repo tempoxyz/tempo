@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
@@ -26,9 +26,11 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec, features::highest_supported_protocol_feature_id, hardfork::TempoHardforks,
+};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, IFeatureRegistry,
+    ADDRESS_REGISTRY_ADDRESS, FEATURE_REGISTRY_ADDRESS, IFeatureRegistry, IValidatorConfigV2,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -213,6 +215,113 @@ where
         Ok(())
     }
 
+    fn transact_precompile_system_call(
+        &mut self,
+        contract: Address,
+        data: Bytes,
+        context: &str,
+        commit: bool,
+    ) -> Result<Bytes, BlockExecutionError> {
+        let result_and_state = self
+            .evm_mut()
+            .transact_system_call(SYSTEM_CALLER_ADDRESS, contract, data)
+            .map_err(|err| {
+                BlockExecutionError::msg(format!("{context} system call failed: {err}"))
+            })?;
+
+        match result_and_state.result {
+            ExecutionResult::Success { output, .. } => {
+                if commit {
+                    self.evm_mut().db_mut().commit(result_and_state.state);
+                }
+                Ok(output.into_data())
+            }
+            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call reverted: {output}"
+            ))),
+            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call halted: {reason:?}"
+            ))),
+        }
+    }
+
+    fn validator_supported_features_tip(
+        &mut self,
+        validator: Address,
+    ) -> Result<u64, BlockExecutionError> {
+        let call = IFeatureRegistry::validatorSupportedFeaturesTipCall { validator };
+        let output = self.transact_precompile_system_call(
+            FEATURE_REGISTRY_ADDRESS,
+            call.abi_encode().into(),
+            "feature registry support read",
+            false,
+        )?;
+
+        IFeatureRegistry::validatorSupportedFeaturesTipCall::abi_decode_returns(&output)
+            .map_err(BlockExecutionError::other)
+    }
+
+    fn report_supported_features_tip(
+        &mut self,
+        validator: Address,
+        supported_features_tip: u64,
+    ) -> Result<(), BlockExecutionError> {
+        let reported_features_tip = self.validator_supported_features_tip(validator)?;
+        if reported_features_tip >= supported_features_tip {
+            return Ok(());
+        }
+
+        let call = IFeatureRegistry::setSupportedFeaturesTipCall {
+            validator,
+            featuresTip: supported_features_tip,
+        };
+        self.transact_precompile_system_call(
+            FEATURE_REGISTRY_ADDRESS,
+            call.abi_encode().into(),
+            "feature registry support report",
+            true,
+        )?;
+
+        Ok(())
+    }
+
+    fn consensus_proposer_validator(&mut self) -> Result<Option<Address>, BlockExecutionError> {
+        let Some(consensus_context) = self.consensus_context else {
+            return Ok(None);
+        };
+
+        let call = IValidatorConfigV2::validatorByPublicKeyCall {
+            publicKey: B256::from(&consensus_context.proposer),
+        };
+        let output = self.transact_precompile_system_call(
+            VALIDATOR_CONFIG_V2_ADDRESS,
+            call.abi_encode().into(),
+            "validator config proposer lookup",
+            false,
+        )?;
+        let validator = IValidatorConfigV2::validatorByPublicKeyCall::abi_decode_returns(&output)
+            .map_err(BlockExecutionError::other)?;
+
+        if validator.deactivatedAtHeight != 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(validator.validatorAddress))
+    }
+
+    fn report_local_supported_features_tip(&mut self) -> Result<(), BlockExecutionError> {
+        let supported_features_tip = highest_supported_protocol_feature_id();
+        if supported_features_tip == 0 {
+            return Ok(());
+        }
+
+        let Some(validator) = self.consensus_proposer_validator()? else {
+            return Ok(());
+        };
+
+        self.report_supported_features_tip(validator, supported_features_tip)
+    }
+
     /// Activates a scheduled feature tip once the consensus epoch reaches the target epoch.
     fn activate_scheduled_features_tip(&mut self) -> Result<(), BlockExecutionError> {
         let Some(consensus_context) = self.consensus_context else {
@@ -222,29 +331,14 @@ where
         let call = IFeatureRegistry::activateScheduledFeaturesTipCall {
             currentEpoch: consensus_context.epoch,
         };
-        let result_and_state = self
-            .evm_mut()
-            .transact_system_call(
-                SYSTEM_CALLER_ADDRESS,
-                FEATURE_REGISTRY_ADDRESS,
-                call.abi_encode().into(),
-            )
-            .map_err(|err| {
-                BlockExecutionError::msg(format!("feature registry activation failed: {err}"))
-            })?;
+        self.transact_precompile_system_call(
+            FEATURE_REGISTRY_ADDRESS,
+            call.abi_encode().into(),
+            "feature registry activation",
+            true,
+        )?;
 
-        match result_and_state.result {
-            ExecutionResult::Success { .. } => {
-                self.evm_mut().db_mut().commit(result_and_state.state);
-                Ok(())
-            }
-            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
-                "feature registry activation reverted: {output}"
-            ))),
-            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
-                "feature registry activation halted: {reason:?}"
-            ))),
-        }
+        Ok(())
     }
 
     /// Validates a system transaction.
@@ -533,6 +627,7 @@ where
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
             // TODO(TIP-1063): update this gate to T7 before merging.
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
+            self.report_local_supported_features_tip()?;
             self.activate_scheduled_features_tip()?;
         }
 
@@ -732,7 +827,7 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
@@ -1817,6 +1912,79 @@ mod tests {
         assert_eq!(
             acc.storage_slot(U256::ZERO).unwrap(),
             packed_feature_registry_tips(7, 13, 21)
+        );
+    }
+
+    #[test]
+    fn test_report_supported_features_tip_updates_validator_report() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T6)
+            .build(&mut db, &chainspec);
+        let validator = Address::repeat_byte(0x11);
+
+        executor
+            .deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)
+            .unwrap();
+        executor
+            .report_supported_features_tip(validator, 13)
+            .unwrap();
+
+        assert_eq!(
+            executor
+                .validator_supported_features_tip(validator)
+                .unwrap(),
+            13
+        );
+    }
+
+    #[test]
+    fn test_report_supported_features_tip_does_not_lower_validator_report() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T6)
+            .build(&mut db, &chainspec);
+        let validator = Address::repeat_byte(0x11);
+
+        executor
+            .deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)
+            .unwrap();
+        executor
+            .report_supported_features_tip(validator, 13)
+            .unwrap();
+        executor
+            .report_supported_features_tip(validator, 12)
+            .unwrap();
+
+        assert_eq!(
+            executor
+                .validator_supported_features_tip(validator)
+                .unwrap(),
+            13
+        );
+    }
+
+    #[test]
+    fn test_apply_pre_execution_skips_supported_features_tip_report_when_none_supported() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T6)
+            .with_consensus_epoch(21)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        assert_eq!(
+            executor
+                .validator_supported_features_tip(Address::repeat_byte(0x11))
+                .unwrap(),
+            0
         );
     }
 
