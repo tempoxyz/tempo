@@ -15,9 +15,8 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    Tip20BlockstmBaseState, Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan,
-    Tip20TransferBlockstmTx, build_tip20_transfer_blockstm_plan,
-    prewarm_tip20_transfer_blockstm_plan_with_expiring_nonce_offset,
+    Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
+    build_tip20_transfer_blockstm_plan, prewarm_tip20_transfer_blockstm_plan,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
@@ -71,7 +70,6 @@ pub(crate) struct PlanningContext {
 pub(crate) struct PlannedTransfer {
     pub(crate) tx: BestTransaction,
     pub(crate) plan: Tip20TransferBlockstmPlan,
-    pub(crate) base_state: Tip20BlockstmBaseState,
 }
 
 #[derive(Debug)]
@@ -130,7 +128,6 @@ where
                     prewarm: coordinator_prewarm,
                     ctx,
                     next_sequence: 0,
-                    next_expiring_nonce_offset: 0,
                     source_exhausted: false,
                 },
             );
@@ -177,13 +174,6 @@ where
                         return;
                     };
 
-                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                        let offset = planner.next_expiring_nonce_offset;
-                        planner.next_expiring_nonce_offset += 1;
-                        Some(offset)
-                    } else {
-                        None
-                    };
                     let sequence = planner.next_sequence;
                     planner.next_sequence += 1;
                     let _ = planner.results_tx.send(PlannerMessage::Scheduled {
@@ -203,22 +193,16 @@ where
                             ctx.blob_gasprice,
                             ctx.spec,
                         )
-                        .and_then(|plan| {
-                            let Some(prewarm) = prewarm else {
-                                return Err(Tip20TransferBlockstmFallback::StmValidation);
-                            };
-                            let base_state = prewarm_tip20_transfer_plan(
-                                &prewarm,
-                                &plan,
-                                ctx.block_timestamp,
-                                expiring_nonce_offset,
-                                sequence,
-                            )?;
-                            Ok(PlannedTransfer {
-                                tx,
-                                plan,
-                                base_state,
-                            })
+                        .map(|plan| {
+                            if let Some(prewarm) = prewarm {
+                                prewarm_tip20_transfer_plan(
+                                    &prewarm,
+                                    &plan,
+                                    ctx.block_timestamp,
+                                    sequence,
+                                );
+                            }
+                            PlannedTransfer { tx, plan }
                         });
                         let _ = results_tx
                             .send(PlannerMessage::Planned(PlanningResult { sequence, item }));
@@ -341,7 +325,6 @@ struct PlannerContext<Txs, Provider> {
     prewarm: Option<PrewarmingExecutionContext<Provider>>,
     ctx: PlanningContext,
     next_sequence: usize,
-    next_expiring_nonce_offset: usize,
     source_exhausted: bool,
 }
 
@@ -367,37 +350,29 @@ fn prewarm_tip20_transfer_plan<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
     plan: &Tip20TransferBlockstmPlan,
     block_timestamp: u64,
-    expiring_nonce_offset: Option<usize>,
     sequence: usize,
-) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmFallback>
-where
+) where
     Provider: StateProviderFactory + Clone + 'static,
 {
     if prewarm.is_stopped() {
-        return Err(Tip20TransferBlockstmFallback::StmValidation);
+        return;
     }
 
     WorkerPool::with_worker_mut(|worker| {
         let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-            return Err(Tip20TransferBlockstmFallback::StmValidation);
+            return;
         };
 
-        prewarm_tip20_transfer_blockstm_plan_with_expiring_nonce_offset(
-            evm.db_mut(),
-            plan,
-            block_timestamp,
-            expiring_nonce_offset,
-        )
-        .map_err(|err| {
+        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan, block_timestamp)
+        {
             trace!(
                 target: "payload_builder",
                 ?err,
                 sequence,
                 "Failed to prewarm BlockSTM TIP-20 plan storage"
             );
-            Tip20TransferBlockstmFallback::StmValidation
-        })
-    })
+        }
+    });
 }
 
 /// Builds an executor-owned BlockSTM candidate from a pooled transaction.
