@@ -155,10 +155,20 @@ jobs:
             exit 0
           fi
 
+          # The forge job (specs.yml) checks tempo out into a nested "tempo/"
+          # subdir, so its binary bakes source paths as
+          # $GITHUB_WORKSPACE/tempo/crates/... while the cargo test binaries use
+          # $GITHUB_WORKSPACE/crates/... . Without remapping, llvm-cov treats
+          # these as distinct files and emits a duplicate (forge-only, low %)
+          # row per source file. Collapse them onto the canonical workspace path.
+          WS="${GITHUB_WORKSPACE:-$PWD}"
+          PATH_EQ="${WS}/tempo,${WS}"
+
           # Generate report
           "$LLVM_BIN/llvm-cov" report \
             --instr-profile=coverage-report/merged.profdata \
             $OBJECT_FLAGS \
+            --path-equivalence="$PATH_EQ" \
             --ignore-filename-regex='/rustc/' \
             --ignore-filename-regex='\.cargo/' \
             --ignore-filename-regex='\.rustup/' \
@@ -166,9 +176,10 @@ jobs:
             --ignore-filename-regex='library/' \
             2>/dev/null > coverage-report/full-summary.txt || true
 
-          # Filter to precompiles crates (precompiles/ and contracts/)
-          # Paths in llvm-cov output are like: precompiles/src/... and contracts/src/...
-          grep -E '^Filename|^precompiles/|^contracts/|^TOTAL' coverage-report/full-summary.txt \
+          # Filter to precompiles crates. After path-equivalence + relative
+          # display, llvm-cov emits paths like: crates/precompiles/src/... and
+          # crates/contracts/src/... .
+          grep -E '^Filename|^crates/precompiles/|^crates/contracts/|^TOTAL' coverage-report/full-summary.txt \
             > coverage-report/summary.txt || true
 
           echo "=== Precompiles Coverage ==="
@@ -178,11 +189,13 @@ jobs:
           echo "=== Debug: Line count in summary.txt ==="
           wc -l coverage-report/summary.txt || true
 
-          # Generate lcov
+          # Generate lcov (same path-equivalence so forge + cargo entries for a
+          # source file collapse into one record instead of duplicating).
           "$LLVM_BIN/llvm-cov" export \
             --format=lcov \
             --instr-profile=coverage-report/merged.profdata \
             $OBJECT_FLAGS \
+            --path-equivalence="$PATH_EQ" \
             --ignore-filename-regex='/rustc/' \
             --ignore-filename-regex='\.cargo/' \
             --ignore-filename-regex='\.rustup/' \
@@ -313,17 +326,17 @@ jobs:
                     const linesCoverage = parts[9];
                     const linesCovered = linesTotal - linesMissed;
                     
-                    // Determine which crate this file belongs to
-                    // Paths are like: precompiles/src/... or contracts/src/...
+                    // Determine which crate this file belongs to.
+                    // Paths are like: crates/precompiles/src/... or crates/contracts/src/...
                     let crateName = null;
                     let shortPath = fullPath;
                     
-                    if (fullPath.startsWith('precompiles/')) {
+                    if (fullPath.startsWith('crates/precompiles/')) {
                       crateName = 'precompiles';
-                      shortPath = fullPath.substring('precompiles/'.length);
-                    } else if (fullPath.startsWith('contracts/')) {
+                      shortPath = fullPath.substring('crates/precompiles/'.length);
+                    } else if (fullPath.startsWith('crates/contracts/')) {
                       crateName = 'contracts';
-                      shortPath = fullPath.substring('contracts/'.length);
+                      shortPath = fullPath.substring('crates/contracts/'.length);
                     }
                     
                     if (crateName && crates[crateName]) {
