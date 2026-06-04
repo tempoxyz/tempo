@@ -147,7 +147,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg))
-        } else if *address == STORAGE_CREDITS_ADDRESS {
+        } else if *address == STORAGE_CREDITS_ADDRESS && cfg.spec.is_t6() {
             Some(TIP1060StorageCredits::create_precompile(&cfg))
         } else {
             None
