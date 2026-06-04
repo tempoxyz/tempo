@@ -26,7 +26,7 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -310,7 +310,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
-struct PrewarmingExecutionContext<Provider> {
+pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     cache: Option<SavedCache>,
@@ -318,11 +318,37 @@ struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
 }
 
+impl<Provider> PrewarmingExecutionContext<Provider> {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn evm_for_ctx(&self) -> PrewarmEvmState {
+    pub(crate) fn new(
+        provider: Provider,
+        cache: Option<SavedCache>,
+        parent_hash: B256,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            provider,
+            parent_hash,
+            cache,
+            evm_env,
+            stop,
+        }
+    }
+
+    pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
         let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -349,14 +375,6 @@ where
         evm_env.cfg_env.disable_balance_check = true;
 
         Some(TempoEvm::new(state_provider, evm_env))
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
