@@ -18,7 +18,7 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_exhausted, scaled_build_time_multiplier,
+        estimated_validator_replay_work, payload_budget_exhausted, scaled_build_time_multiplier,
         SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
@@ -1387,10 +1387,15 @@ where
             proposal_context_wait_elapsed,
             Instant::now(),
         );
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let replayable_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = if speculative_bal_build {
+            estimated_validator_replay_work(replayable_work_duration)
+        } else {
+            replayable_work_duration
+        };
         if is_budgeted_build && !speculative_bal_build {
             self.update_build_time_multiplier(
-                validation_work_duration,
+                replayable_work_duration,
                 validation_work_at_tx_cutoff,
             );
         }

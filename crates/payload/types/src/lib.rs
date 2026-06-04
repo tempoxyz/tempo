@@ -52,9 +52,8 @@ pub struct TempoBuiltPayload {
     /// This excludes proposer-only idle waiting, but includes replayable work
     /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size used for proposal return marshal estimates and
-    /// learning the rate used by future builder budgets.
-    rlp_block_size_bytes: usize,
+    /// RLP-encoded execution block size, excluding Commonware/BAL sidecar framing.
+    execution_block_size_bytes: usize,
 }
 
 impl TempoBuiltPayload {
@@ -65,7 +64,7 @@ impl TempoBuiltPayload {
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         gated_executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
-        rlp_block_size_bytes: usize,
+        execution_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
@@ -73,7 +72,7 @@ impl TempoBuiltPayload {
             executed_block,
             gated_executed_block,
             validation_work_duration,
-            rlp_block_size_bytes,
+            execution_block_size_bytes,
         }
     }
 
@@ -105,12 +104,9 @@ impl TempoBuiltPayload {
         self.validation_work_duration
     }
 
-    /// Returns the RLP-encoded block size in bytes.
-    ///
-    /// Consensus uses this with the learned marshal persistence rate to reserve
-    /// time for validators to persist similarly sized proposals.
-    pub fn rlp_block_size_bytes(&self) -> usize {
-        self.rlp_block_size_bytes
+    /// Returns the RLP-encoded execution block size in bytes.
+    pub fn execution_block_size_bytes(&self) -> usize {
+        self.execution_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

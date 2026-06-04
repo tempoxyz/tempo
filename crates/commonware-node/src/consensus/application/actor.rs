@@ -20,7 +20,7 @@ use alloy_consensus::BlockHeader;
 use alloy_consensus::transaction::TxHashRef as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -1248,7 +1248,15 @@ impl Inner<Init> {
 
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_elapsed = payload.validation_work_duration();
-        let block_size_bytes = payload.rlp_block_size_bytes();
+        let execution_block_size_bytes = payload.execution_block_size_bytes();
+        let (block, block_access_list) = payload.into_execution_payload();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let block_size_bytes = proposal.encode_size();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
@@ -1271,14 +1279,6 @@ impl Inner<Init> {
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
-
-        let (block, block_access_list) = payload.into_execution_payload();
-        let proposal = Block::from_execution_block_with_encoded_size(
-            block,
-            block_access_list,
-            block_size_bytes,
-        )
-        .wrap_err("payload builder produced an invalid block access list")?;
 
         Ok((
             proposal,
@@ -1434,7 +1434,16 @@ impl Inner<Init> {
         let marshal_persist = marshal_persist_estimate();
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_elapsed = payload.validation_work_duration();
-        let block_size_bytes = payload.rlp_block_size_bytes();
+        let execution_block_size_bytes = payload.execution_block_size_bytes();
+        let (block, block_access_list, fast_path_executed_block) =
+            payload.into_execution_payload_with_gated_fast_path();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let block_size_bytes = proposal.encode_size();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         let return_delay = proposal_return_delay(
@@ -1457,10 +1466,6 @@ impl Inner<Init> {
         );
         let proposal_return_time = context.current() + return_delay;
 
-        let (block, block_access_list, fast_path_executed_block) =
-            payload.into_execution_payload_with_gated_fast_path();
-        let proposal = Block::from_execution_block(block, block_access_list)
-            .wrap_err("payload builder produced an invalid block access list")?;
         ensure!(
             proposal.parent_digest() == speculative_build.parent_digest,
             "speculative payload parent `{}` did not match requested parent `{}`",

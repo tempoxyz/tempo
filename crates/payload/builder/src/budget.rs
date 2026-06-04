@@ -51,6 +51,10 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     )
 }
 
+pub(crate) fn estimated_validator_replay_work(predicted_work: Duration) -> Duration {
+    scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE)
+}
+
 /// Predicted proposal-return work for a payload budget check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PayloadBudgetEstimate {
@@ -79,7 +83,7 @@ fn payload_budget_estimate(
                 .saturating_sub(attached_elapsed)
                 .saturating_add(predicted_remaining_work)
         });
-    let validator_replay_work = scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE);
+    let validator_replay_work = estimated_validator_replay_work(predicted_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_budgeted_work = proposer_work
         .saturating_add(validator_replay_work)

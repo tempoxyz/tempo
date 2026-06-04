@@ -13,8 +13,10 @@ use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase};
 
+// Consensus messages carry the execution block plus Commonware/BAL framing, so
+// the transport cap needs headroom beyond the EL RLP validity cap.
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
-    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
+    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32 * 4;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
