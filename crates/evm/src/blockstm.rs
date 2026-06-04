@@ -157,8 +157,26 @@ struct Tip20BlockstmBaseState {
 
 #[derive(Debug, Clone)]
 struct Tip20BlockstmTxExecution {
-    reads: HashMap<StorageKey, U256>,
-    writes: HashMap<StorageKey, U256>,
+    storage: HashMap<StorageKey, Tip20BlockstmTxStorage>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Tip20BlockstmTxStorage {
+    original: U256,
+    written: Option<U256>,
+}
+
+impl Tip20BlockstmTxExecution {
+    fn written_storage(&self) -> impl Iterator<Item = (StorageKey, U256, U256)> + '_ {
+        self.storage
+            .iter()
+            .filter_map(|(key, value)| value.written.map(|written| (*key, value.original, written)))
+    }
+
+    #[cfg(test)]
+    fn written_value(&self, key: StorageKey) -> Option<U256> {
+        self.storage.get(&key).and_then(|value| value.written)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,14 +413,13 @@ where
         let base_state = self.read_plan_base_state(&plan, block_timestamp)?;
         let cfg = self.inner.evm.cfg.clone();
         let is_t6 = cfg.spec.is_t6();
-        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
         let mut tx_execution =
-            execute_tip20_transfer_plan_with_deltas(&plan, &mut ledger, is_t6, block_timestamp)
+            execute_tip20_transfer_plan_with_deltas(&plan, &base_state, is_t6, block_timestamp)
                 .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let gas = synthetic_tip20_result_gas(&tx.tx_env, &plan, &tx_execution, &base_state, &cfg)
             .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
-        settle_actual_fee_with_deltas(&plan, &mut tx_execution, &mut ledger, actual_fee, is_t6)
+        settle_actual_fee_with_deltas(&plan, &mut tx_execution, &base_state, actual_fee, is_t6)
             .map_err(Tip20TransferBlockstmExecutionError::Fallback)?;
         let tx_gas_used = gas.tx_gas_used();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
@@ -717,29 +734,20 @@ pub fn build_tip20_transfer_blockstm_plan(
 
 fn execute_tip20_transfer_plan_with_deltas(
     plan: &Tip20TransferBlockstmPlan,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     is_t6: bool,
     block_timestamp: u64,
 ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmFallback> {
     let mut execution = Tip20BlockstmTxExecution {
-        reads: HashMap::new(),
-        writes: HashMap::new(),
+        storage: HashMap::new(),
     };
-
-    for key in plan.read_set() {
-        if execution.reads.contains_key(&key) {
-            continue;
-        }
-        let value = ledger.read(key);
-        execution.reads.insert(key, value);
-    }
 
     apply_expiring_nonce_action(
         plan.nonce.replay_hash,
         plan.nonce.valid_before,
         plan.nonce.expiring_nonce_idx,
         &mut execution,
-        ledger,
+        base_state,
         block_timestamp,
     )?;
     reserve_fee_balance(
@@ -748,7 +756,7 @@ fn execute_tip20_transfer_plan_with_deltas(
         plan.fee_reserve.amount,
         is_t6,
         &mut execution,
-        ledger,
+        base_state,
     )?;
     transfer_balance(
         plan.transfer.token,
@@ -757,7 +765,7 @@ fn execute_tip20_transfer_plan_with_deltas(
         plan.transfer.amount,
         is_t6,
         &mut execution,
-        ledger,
+        base_state,
     )?;
 
     Ok(execution)
@@ -768,7 +776,7 @@ fn apply_expiring_nonce_action(
     valid_before: u64,
     expiring_nonce_idx: Option<usize>,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     block_timestamp: u64,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if valid_before <= block_timestamp
@@ -778,38 +786,38 @@ fn apply_expiring_nonce_action(
     }
 
     let seen_key = expiring_nonce_seen_key(replay_hash);
-    let seen_expiry = read_for_write(execution, ledger, seen_key);
+    let seen_expiry = read_for_write(execution, base_state, seen_key);
     if seen_expiry != U256::ZERO && seen_expiry > U256::from(block_timestamp) {
         return Err(Tip20TransferBlockstmFallback::ExpiringNonceReplay);
     }
 
     let ptr_key = expiring_nonce_ring_ptr_key();
-    let ptr = expiring_nonce_ring_ptr_from_word(read_for_write(execution, ledger, ptr_key))?;
+    let ptr = expiring_nonce_ring_ptr_from_word(read_for_write(execution, base_state, ptr_key))?;
     let idx = expiring_nonce_ring_index(ptr, expiring_nonce_idx)?;
     let ring_key = expiring_nonce_ring_key(idx);
-    let old_hash_word = read_for_write(execution, ledger, ring_key);
+    let old_hash_word = read_for_write(execution, base_state, ring_key);
 
     if old_hash_word != U256::ZERO {
         let old_seen_key = expiring_nonce_seen_key(expiring_nonce_hash_from_word(old_hash_word));
-        let old_expiry = read_for_write(execution, ledger, old_seen_key);
+        let old_expiry = read_for_write(execution, base_state, old_seen_key);
         if old_expiry != U256::ZERO && old_expiry > U256::from(block_timestamp) {
             return Err(Tip20TransferBlockstmFallback::ExpiringNonceSetFull);
         }
-        write_value(execution, ledger, old_seen_key, U256::ZERO);
+        write_value(execution, base_state, old_seen_key, U256::ZERO);
     }
 
     write_value(
         execution,
-        ledger,
+        base_state,
         ring_key,
         expiring_nonce_hash_to_word(replay_hash),
     );
-    write_value(execution, ledger, seen_key, U256::from(valid_before));
+    write_value(execution, base_state, seen_key, U256::from(valid_before));
 
     let next_ptr = expiring_nonce_next_ring_ptr(idx);
-    write_value(execution, ledger, ptr_key, U256::from(next_ptr));
+    write_value(execution, base_state, ptr_key, U256::from(next_ptr));
     if expiring_nonce_idx.is_some() {
-        write_value(execution, ledger, ptr_key, U256::from(ptr));
+        write_value(execution, base_state, ptr_key, U256::from(ptr));
     }
 
     Ok(())
@@ -818,7 +826,7 @@ fn apply_expiring_nonce_action(
 fn settle_actual_fee_with_deltas(
     plan: &Tip20TransferBlockstmPlan,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     actual_fee: U256,
     is_t6: bool,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
@@ -835,15 +843,15 @@ fn settle_actual_fee_with_deltas(
 
     let refund = max_amount - actual_fee;
     if !refund.is_zero() {
-        refund_fee_balance(token, fee_payer, refund, is_t6, execution, ledger)?;
+        refund_fee_balance(token, fee_payer, refund, is_t6, execution, base_state)?;
     }
 
     let collected_key = collected_fees_key(beneficiary, token);
-    let collected = read_for_write(execution, ledger, collected_key);
+    let collected = read_for_write(execution, base_state, collected_key);
     let new_collected = collected
         .checked_add(actual_fee)
         .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
-    write_value(execution, ledger, collected_key, new_collected);
+    write_value(execution, base_state, collected_key, new_collected);
 
     Ok(())
 }
@@ -854,7 +862,7 @@ fn execution_state(
 ) -> EvmState {
     let mut state = EvmState::default();
 
-    for (key, value) in &execution.writes {
+    for (key, original, written) in execution.written_storage() {
         let account = state.entry(key.address).or_insert_with(|| {
             let mut account = Account::from(
                 base_state
@@ -866,40 +874,13 @@ fn execution_state(
             account.mark_touch();
             account
         });
-        let original = execution.reads.get(key).copied().unwrap_or_default();
         account.storage.insert(
             key.slot,
-            EvmStorageSlot::new_changed(original, *value, TransactionId::ZERO),
+            EvmStorageSlot::new_changed(original, written, TransactionId::ZERO),
         );
     }
 
     state
-}
-
-#[derive(Debug)]
-struct Tip20DeltaLedger<'a> {
-    base_storage: &'a HashMap<StorageKey, U256>,
-    current: HashMap<StorageKey, U256>,
-}
-
-impl<'a> Tip20DeltaLedger<'a> {
-    fn new(base_storage: &'a HashMap<StorageKey, U256>) -> Self {
-        Self {
-            base_storage,
-            current: HashMap::new(),
-        }
-    }
-
-    fn read(&self, key: StorageKey) -> U256 {
-        self.current
-            .get(&key)
-            .copied()
-            .unwrap_or_else(|| *self.base_storage.get(&key).unwrap_or(&U256::ZERO))
-    }
-
-    fn write(&mut self, key: StorageKey, value: U256) {
-        self.current.insert(key, value);
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -923,7 +904,7 @@ fn reserve_fee_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -934,7 +915,7 @@ fn reserve_fee_balance(
         BalanceWriteFlag::Inactive,
         BalanceWriteFlag::Preserve,
         execution,
-        ledger,
+        base_state,
     )
 }
 
@@ -944,7 +925,7 @@ fn refund_fee_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -955,7 +936,7 @@ fn refund_fee_balance(
         BalanceWriteFlag::Preserve,
         BalanceWriteFlag::Inactive,
         execution,
-        ledger,
+        base_state,
     )
 }
 
@@ -966,7 +947,7 @@ fn transfer_balance(
     amount: U256,
     is_t6: bool,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     transfer_balance_with_flags(
         token,
@@ -977,7 +958,7 @@ fn transfer_balance(
         BalanceWriteFlag::Inactive,
         BalanceWriteFlag::Inactive,
         execution,
-        ledger,
+        base_state,
     )
 }
 
@@ -991,7 +972,7 @@ fn transfer_balance_with_flags(
     from_write_flag: BalanceWriteFlag,
     to_write_flag: BalanceWriteFlag,
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     if amount.is_zero() {
         return Ok(());
@@ -999,7 +980,7 @@ fn transfer_balance_with_flags(
 
     let from_key = balance_key(token, from);
     let to_key = balance_key(token, to);
-    let from_balance = read_balance_for_write(execution, ledger, from_key)?;
+    let from_balance = read_balance_for_write(execution, base_state, from_key)?;
 
     if from_balance.amount < amount {
         return Err(Tip20TransferBlockstmFallback::InsufficientBalance);
@@ -1007,12 +988,12 @@ fn transfer_balance_with_flags(
     let new_from = from_balance.amount - amount;
     write_value(
         execution,
-        ledger,
+        base_state,
         from_key,
         encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
     );
 
-    let to_balance = read_balance_for_write(execution, ledger, to_key)?;
+    let to_balance = read_balance_for_write(execution, base_state, to_key)?;
     let new_to = to_balance
         .amount
         .checked_add(amount)
@@ -1023,7 +1004,7 @@ fn transfer_balance_with_flags(
 
     write_value(
         execution,
-        ledger,
+        base_state,
         to_key,
         encode_balance(new_to, to_write_flag.resolve(to_balance), is_t6),
     );
@@ -1033,35 +1014,47 @@ fn transfer_balance_with_flags(
 
 fn read_balance_for_write(
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
 ) -> Result<Tip20BalanceState, Tip20TransferBlockstmFallback> {
-    let raw = read_for_write(execution, ledger, key);
+    let raw = read_for_write(execution, base_state, key);
     decode_balance_state(raw)
 }
 
 fn read_for_write(
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
 ) -> U256 {
-    if let Some(value) = execution.writes.get(&key) {
-        return *value;
+    if let Some(value) = execution.storage.get(&key) {
+        return value.written.unwrap_or(value.original);
     }
 
-    let value = ledger.read(key);
-    execution.reads.entry(key).or_insert(value);
-    value
+    let original = base_storage_value(base_state, key);
+    execution.storage.insert(
+        key,
+        Tip20BlockstmTxStorage {
+            original,
+            written: None,
+        },
+    );
+    original
 }
 
 fn write_value(
     execution: &mut Tip20BlockstmTxExecution,
-    ledger: &mut Tip20DeltaLedger<'_>,
+    base_state: &Tip20BlockstmBaseState,
     key: StorageKey,
     value: U256,
 ) {
-    execution.writes.insert(key, value);
-    ledger.write(key, value);
+    execution
+        .storage
+        .entry(key)
+        .and_modify(|storage| storage.written = Some(value))
+        .or_insert_with(|| Tip20BlockstmTxStorage {
+            original: base_storage_value(base_state, key),
+            written: Some(value),
+        });
 }
 
 fn synthetic_tip20_result_gas(
@@ -1533,11 +1526,14 @@ fn tx_storage_value(
     key: StorageKey,
 ) -> U256 {
     execution
-        .reads
+        .storage
         .get(&key)
-        .copied()
-        .or_else(|| base_state.storage.get(&key).copied())
-        .unwrap_or_default()
+        .map(|value| value.original)
+        .unwrap_or_else(|| base_storage_value(base_state, key))
+}
+
+fn base_storage_value(base_state: &Tip20BlockstmBaseState, key: StorageKey) -> U256 {
+    base_state.storage.get(&key).copied().unwrap_or_default()
 }
 
 fn synthetic_actual_fee(tx: &TempoTxEnv, gas: &ResultGas, basefee: u128, is_t6: bool) -> U256 {
@@ -2386,20 +2382,23 @@ mod tests {
         plans: &[Tip20TransferBlockstmPlan],
         base_storage: HashMap<StorageKey, U256>,
     ) -> TestTip20BlockstmExecution {
-        let base_state = test_base_state(base_storage);
+        let mut base_state = test_base_state(base_storage);
         let cfg = t6_test_cfg();
-        let mut ledger = Tip20DeltaLedger::new(&base_state.storage);
         let mut executions = Vec::with_capacity(plans.len());
         let mut actual_fees = Vec::with_capacity(plans.len());
 
         for (tx, plan) in txs.iter().zip(plans) {
             let mut execution =
-                execute_tip20_transfer_plan_with_deltas(plan, &mut ledger, true, 1).unwrap();
+                execute_tip20_transfer_plan_with_deltas(plan, &base_state, true, 1).unwrap();
             let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, &base_state, &cfg)
                 .unwrap();
             let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, 1, true);
-            settle_actual_fee_with_deltas(plan, &mut execution, &mut ledger, actual_fee, true)
+            settle_actual_fee_with_deltas(plan, &mut execution, &base_state, actual_fee, true)
                 .unwrap();
+
+            for (key, _, written) in execution.written_storage() {
+                base_state.storage.insert(key, written);
+            }
 
             executions.push(execution);
             actual_fees.push(actual_fee);
@@ -2558,17 +2557,25 @@ mod tests {
                 encode_balance(U256::from(1_000_000), REWARD_FLAG_OPTED_OUT, true),
             )]),
         );
-        let writes = &execution.txs[0].writes;
 
         assert_eq!(
-            writes[&expiring_nonce_seen_key(replay_hash)],
+            execution.txs[0]
+                .written_value(expiring_nonce_seen_key(replay_hash))
+                .unwrap(),
             U256::from(valid_before)
         );
         assert_eq!(
-            writes[&expiring_nonce_ring_key(0)],
+            execution.txs[0]
+                .written_value(expiring_nonce_ring_key(0))
+                .unwrap(),
             expiring_nonce_hash_to_word(replay_hash)
         );
-        assert_eq!(writes[&expiring_nonce_ring_ptr_key()], U256::from(1));
+        assert_eq!(
+            execution.txs[0]
+                .written_value(expiring_nonce_ring_ptr_key())
+                .unwrap(),
+            U256::from(1)
+        );
     }
 
     #[test]
@@ -2743,9 +2750,10 @@ mod tests {
 
         let execution = execute_test_blockstm(&[tx], &[plan], base_storage);
         let actual_fee = execution.actual_fees[0];
-        let writes = &execution.txs[0].writes;
         assert_eq!(
-            writes[&balance_key(TOKEN, SENDER)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, SENDER))
+                .unwrap(),
             encode_balance(
                 sender_balance - transfer_amount - actual_fee,
                 REWARD_FLAG_OPTED_OUT,
@@ -2753,7 +2761,9 @@ mod tests {
             )
         );
         assert_eq!(
-            writes[&balance_key(TOKEN, recipient)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, recipient))
+                .unwrap(),
             encode_balance(
                 recipient_balance + transfer_amount,
                 REWARD_FLAG_OPTED_OUT,
@@ -2761,11 +2771,15 @@ mod tests {
             )
         );
         assert_eq!(
-            writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS))
+                .unwrap(),
             encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
         assert_eq!(
-            writes[&collected_fees_key(beneficiary, TOKEN)],
+            execution.txs[0]
+                .written_value(collected_fees_key(beneficiary, TOKEN))
+                .unwrap(),
             collected_fees + actual_fee
         );
     }
@@ -2795,14 +2809,17 @@ mod tests {
 
         let execution = execute_test_blockstm(&[tx], &[plan], base_storage);
         let actual_fee = execution.actual_fees[0];
-        let writes = &execution.txs[0].writes;
 
         assert_eq!(
-            writes[&balance_key(TOKEN, SENDER)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, SENDER))
+                .unwrap(),
             encode_balance(sender_balance - actual_fee, REWARD_FLAG_OPTED_OUT, true)
         );
         assert_eq!(
-            writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS))
+                .unwrap(),
             encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
     }
@@ -2842,10 +2859,11 @@ mod tests {
 
         let execution = execute_test_blockstm(&[tx], &[plan], base_storage);
         let actual_fee = execution.actual_fees[0];
-        let writes = &execution.txs[0].writes;
         assert!(actual_fee < U256::from(700_000));
         assert_eq!(
-            writes[&balance_key(TOKEN, SENDER)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, SENDER))
+                .unwrap(),
             encode_balance(
                 sender_balance - transfer_amount - actual_fee,
                 REWARD_FLAG_OPTED_OUT,
@@ -2853,11 +2871,15 @@ mod tests {
             )
         );
         assert_eq!(
-            writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
+            execution.txs[0]
+                .written_value(balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS))
+                .unwrap(),
             encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
         assert_eq!(
-            writes[&collected_fees_key(beneficiary, TOKEN)],
+            execution.txs[0]
+                .written_value(collected_fees_key(beneficiary, TOKEN))
+                .unwrap(),
             collected_fees + actual_fee
         );
     }
@@ -2913,7 +2935,9 @@ mod tests {
         let execution = execute_test_blockstm(&[tx_a, tx_b], &[plan_a, plan_b], base_storage);
         let total_fee = execution.actual_fees[0] + execution.actual_fees[1];
         assert_eq!(
-            execution.txs[1].writes[&balance_key(TOKEN, SENDER)],
+            execution.txs[1]
+                .written_value(balance_key(TOKEN, SENDER))
+                .unwrap(),
             encode_balance(
                 sender_balance - U256::from(30) - total_fee,
                 REWARD_FLAG_OPTED_OUT,
@@ -2921,11 +2945,15 @@ mod tests {
             )
         );
         assert_eq!(
-            execution.txs[1].writes[&balance_key(TOKEN, recipient_b)],
+            execution.txs[1]
+                .written_value(balance_key(TOKEN, recipient_b))
+                .unwrap(),
             encode_balance(U256::from(120), REWARD_FLAG_OPTED_OUT, true)
         );
         assert_eq!(
-            execution.txs[1].writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
+            execution.txs[1]
+                .written_value(balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS))
+                .unwrap(),
             encode_balance(total_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
     }
