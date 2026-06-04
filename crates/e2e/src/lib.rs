@@ -134,14 +134,8 @@ pub struct Setup {
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
-    /// The amount of time the node waits for the execution layer to return
-    /// a build a payload.
-    pub new_payload_wait_time: Duration,
-
-    /// The t4 hardfork time.
-    ///
-    /// Default: `None` (not activated).
-    pub t4_time: Option<u64>,
+    /// Local proposal return budget, excluding the network propagation allowance.
+    pub proposal_return_budget: Duration,
 
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
@@ -167,8 +161,7 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            new_payload_wait_time: Duration::from_millis(300),
-            t4_time: None,
+            proposal_return_budget: Duration::from_millis(300),
             with_subblocks: false,
             fee_recipient: Address::ZERO,
             no_legacy_archive: false,
@@ -204,9 +197,9 @@ impl Setup {
         }
     }
 
-    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
+    pub fn proposal_return_budget(self, proposal_return_budget: Duration) -> Self {
         Self {
-            new_payload_wait_time,
+            proposal_return_budget,
             ..self
         }
     }
@@ -221,13 +214,6 @@ impl Setup {
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
-            ..self
-        }
-    }
-
-    pub fn t4_time(self, t4_time: u64) -> Self {
-        Self {
-            t4_time: Some(t4_time),
             ..self
         }
     }
@@ -259,8 +245,7 @@ pub async fn setup_validators(
         how_many_signers,
         how_many_verifiers,
         linkage,
-        new_payload_wait_time,
-        t4_time,
+        proposal_return_budget,
         with_subblocks,
         fee_recipient,
         no_legacy_archive,
@@ -287,7 +272,6 @@ pub async fn setup_validators(
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_t4_time(t4_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();
@@ -330,8 +314,7 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            payload_interrupt_time: Duration::from_millis(200),
-            new_payload_wait_time,
+            proposal_return_budget,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),

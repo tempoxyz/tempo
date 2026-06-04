@@ -7,21 +7,21 @@ use crate::{
 };
 
 mod backfill;
+mod consensus_context;
 mod consensus_rpc;
 mod dkg;
 mod fee_recipient;
 mod follow;
 mod linkage;
 mod metrics;
-mod migration_from_v3_to_v4;
 mod payload_builder;
 mod restart;
 mod simple;
 mod snapshot;
 // FIXME: subblocks are currently flaky.
 // mod subblocks;
+mod blocked_transfers;
 mod sync;
-mod v4_at_genesis;
 
 #[test_traced]
 fn spawning_execution_node_works() {

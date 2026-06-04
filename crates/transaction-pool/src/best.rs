@@ -1,41 +1,46 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
-    error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
+    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
+type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
 pub struct MergeBestTransactions {
-    protocol_pool: BestProtocolTransactions<TxOrdering>,
+    protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    base_fee: u64,
 }
 
 impl MergeBestTransactions {
     /// Creates a new iterator over the given iterators.
     pub(crate) fn new(
-        protocol_pool: BestProtocolTransactions<TxOrdering>,
+        protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
         aa_2d_pool: BestAA2dTransactions,
+        base_fee: u64,
     ) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            base_fee,
         }
     }
 }
@@ -44,7 +49,10 @@ impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
-            self.next_protocol_pool = self.protocol_pool.next_tx_and_priority();
+            self.next_protocol_pool = self.protocol_pool.next().map(|tx| {
+                let priority = TempoTipOrdering::default().priority(&tx.transaction, self.base_fee);
+                (tx, priority)
+            });
         }
         if self.next_aa_2d_pool.is_none() {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
@@ -140,9 +148,14 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
+                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
+                let present_balance = decode_tip20_balance(storage_slot.present_value);
+                let original_balance = decode_tip20_balance(storage_slot.original_value);
+                if present_balance < original_balance {
                     self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
+                        .insert((address, slot), present_balance);
+                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                    *balance = present_balance;
                 }
             }
         }
@@ -204,6 +217,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        ordering::TempoTipOrdering,
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
@@ -225,7 +239,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .nonce(nonce)
                 .max_priority_fee(priority)
-                .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
+                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
                 .build(),
             TransactionOrigin::External,
         ))
@@ -247,10 +261,12 @@ mod tests {
         tx_with_nonce_key(U256::from(1), sender, nonce, priority)
     }
 
-    fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
+    fn protocol_best_transactions(
+        txs: Vec<TestTx>,
+    ) -> Box<dyn BestTransactions<Item = BestTransaction>> {
         let pool = Pool::new(
             OkValidator::<TempoPooledTransaction>::default(),
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -263,7 +279,7 @@ mod tests {
             results.iter().all(Result::is_ok),
             "all protocol transactions must be added successfully: {results:?}"
         );
-        pool.inner().best_transactions()
+        Box::new(pool.inner().best_transactions())
     }
 
     fn aa_2d_best_transactions(txs: Vec<TestTx>) -> BestAA2dTransactions {
@@ -280,6 +296,7 @@ mod tests {
                 .or_insert(id.nonce);
         }
 
+        pool.set_base_fee(TempoHardfork::T1.base_fee());
         for tx in txs {
             let id = tx
                 .transaction
@@ -299,6 +316,7 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
+            TempoHardfork::T1.base_fee(),
         )
     }
 

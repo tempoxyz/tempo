@@ -35,15 +35,54 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @dev Constants
     uint256 internal constant ACC_PRECISION = 1e18;
+    uint256 internal constant USER_STATE_BALANCE_MASK = type(uint128).max;
+    uint256 internal constant USER_STATE_REWARD_FLAG_MASK = uint256(3) << 128;
+    uint256 internal constant USER_STATE_RESERVED_MASK = type(uint256).max << 130;
+    uint256 internal constant USER_STATE_BALANCES_SLOT = 9;
+
+    enum RewardFlag {
+        Uninitialized,
+        OptedOut,
+        OptedIn
+    }
+
     bytes32 internal constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
     );
+    address internal constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
+    address internal constant TEMPORARY_STORAGE = 0x5800000000000000000000000000000000000000;
 
     /// @dev Register an address as a potential token holder
     function _registerHolder(address token, address holder) internal {
         if (!_tokenHolderSeen[token][holder]) {
             _tokenHolderSeen[token][holder] = true;
             _tokenHolders[token].push(holder);
+        }
+    }
+
+    function _registerPrecompileHolders(address token) internal {
+        address[14] memory precompiles = [
+            KEYCHAIN,
+            TIP403_REGISTRY,
+            ADDRESS_REGISTRY,
+            TIP20_FACTORY,
+            PATH_USD,
+            STABLE_DEX,
+            FEE_AMM,
+            NONCE,
+            VALIDATOR_CONFIG,
+            VALIDATOR_CONFIG_V2,
+            SIGNATURE_VERIFIER,
+            TIP20_CHANNEL_RESERVE,
+            RECEIVE_POLICY_GUARD,
+            TEMPORARY_STORAGE
+        ];
+
+        for (uint256 i = 0; i < precompiles.length; i++) {
+            for (uint256 j = i + 1; j < precompiles.length; j++) {
+                assertTrue(precompiles[i] != precompiles[j], "Duplicate precompile address");
+            }
+            _registerHolder(token, precompiles[i]);
         }
     }
 
@@ -73,13 +112,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // Register system addresses
             _registerHolder(tokenAddr, admin);
             _registerHolder(tokenAddr, tokenAddr); // token contract itself
-            _registerHolder(tokenAddr, address(amm));
-            _registerHolder(tokenAddr, address(exchange));
-            _registerHolder(tokenAddr, address(pathUSD));
             _registerHolder(tokenAddr, alice);
             _registerHolder(tokenAddr, bob);
             _registerHolder(tokenAddr, charlie);
             _registerHolder(tokenAddr, pathUSDAdmin);
+            _registerPrecompileHolders(tokenAddr);
         }
 
         // One-time constant checks (immutable after deployment)
@@ -550,6 +587,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             (address storedRecipient,,) = token.userRewardInfo(actor);
 
             assertEq(storedRecipient, newRecipient, "Reward recipient not set correctly");
+            _assertTip1065RewardFlagMatchesRecipient(token, actor, newRecipient);
 
             // Opted-in supply should update correctly
             uint128 optedInSupplyAfter = token.optedInSupply();
@@ -1369,7 +1407,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Run all invariant checks in a single unified loop
     /// @dev Combines TEMPO-TIP18, TIP19, TIP20, TIP22, and rewards conservation checks
     ///      Decimals (TIP21) and quote token acyclic checks moved to setUp() as they're immutable
-    function invariant_globalInvariants() public view {
+    function invariant_tip20SupplyGlobal() public view {
         for (uint256 i = 0; i < _tokens.length; i++) {
             ITIP20 token = _tokens[i];
             address tokenAddr = address(token);
@@ -1390,10 +1428,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(totalSupply, expectedSupply, "TEMPO-TIP18: Supply conservation violated");
 
             // TEMPO-TIP20: Balance sum equals supply
+            // TIP-1065: T6 packed user-state balance slots must expose only low 128-bit balances
+            // through balanceOf, keep reserved bits zero, and keep initialized rewardFlag values
+            // consistent with rewardRecipient, which remains the source of truth.
             address[] storage holders = _tokenHolders[tokenAddr];
             uint256 balanceSum = 0;
             for (uint256 j = 0; j < holders.length; j++) {
-                balanceSum += token.balanceOf(holders[j]);
+                address holder = holders[j];
+                uint256 exposedBalance = token.balanceOf(holder);
+                balanceSum += exposedBalance;
+                _assertTip1065UserState(token, holder, exposedBalance);
             }
             assertEq(balanceSum, totalSupply, "TEMPO-TIP20: Balance sum does not equal totalSupply");
 
@@ -1418,6 +1462,81 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 }
             }
         }
+    }
+
+    function _userState(
+        address token,
+        address account
+    )
+        internal
+        view
+        returns (uint256 balance, RewardFlag rewardFlag, uint256 reservedBits)
+    {
+        uint256 stateWord =
+            uint256(vm.load(token, keccak256(abi.encode(account, USER_STATE_BALANCES_SLOT))));
+        uint256 rewardFlagValue = (stateWord & USER_STATE_REWARD_FLAG_MASK) >> 128;
+        assertLe(
+            rewardFlagValue,
+            uint256(type(RewardFlag).max),
+            "TIP-1065: invalid rewardFlag value in user-state slot"
+        );
+
+        return (
+            stateWord & USER_STATE_BALANCE_MASK,
+            RewardFlag(rewardFlagValue),
+            stateWord & USER_STATE_RESERVED_MASK
+        );
+    }
+
+    function _assertTip1065UserState(
+        ITIP20 token,
+        address account,
+        uint256 exposedBalance
+    )
+        internal
+        view
+    {
+        (uint256 decodedBalance, RewardFlag rewardFlag, uint256 reservedBits) =
+            _userState(address(token), account);
+
+        assertEq(
+            decodedBalance, exposedBalance, "TIP-1065: low 128 bits must equal balanceOf(account)"
+        );
+        assertLe(
+            exposedBalance,
+            USER_STATE_BALANCE_MASK,
+            "TIP-1065: account balance exceeds uint128::MAX"
+        );
+        assertEq(reservedBits, 0, "TIP-1065: reserved user-state bits must remain zero");
+
+        if (rewardFlag != RewardFlag.Uninitialized) {
+            (address rewardRecipient,,) = token.userRewardInfo(account);
+            RewardFlag expectedFlag =
+                rewardRecipient == address(0) ? RewardFlag.OptedOut : RewardFlag.OptedIn;
+            assertEq(
+                uint256(rewardFlag),
+                uint256(expectedFlag),
+                "TIP-1065: initialized rewardFlag stale vs rewardRecipient"
+            );
+        }
+    }
+
+    function _assertTip1065RewardFlagMatchesRecipient(
+        ITIP20 token,
+        address account,
+        address rewardRecipient
+    )
+        internal
+        view
+    {
+        (, RewardFlag rewardFlag,) = _userState(address(token), account);
+        RewardFlag expectedFlag =
+            rewardRecipient == address(0) ? RewardFlag.OptedOut : RewardFlag.OptedIn;
+        assertEq(
+            uint256(rewardFlag),
+            uint256(expectedFlag),
+            "TIP-1065: rewardRecipient update must atomically update rewardFlag"
+        );
     }
 
     // Helper function to select key associated with seed

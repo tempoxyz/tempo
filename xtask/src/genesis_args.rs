@@ -27,7 +27,6 @@ use reth_evm::{
         DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
-        inspector::JournalExt,
         state::{AccountInfo, Bytecode},
     },
 };
@@ -52,6 +51,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     nonce::NonceManager,
+    receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
@@ -185,6 +185,10 @@ pub(crate) struct GenesisArgs {
     /// T6 hardfork activation time.
     #[arg(long, default_value = "0")]
     t6_time: u64,
+
+    /// T7 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t7_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -418,6 +422,11 @@ impl GenesisArgs {
             initialize_signature_verifier(&mut evm)?;
         }
 
+        if self.t6_time == 0 {
+            println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
+            initialize_receive_policy_guard(&mut evm)?;
+        }
+
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
                 (alpha_token_address, beta_token_address, theta_token_address)
@@ -555,6 +564,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t6Time".to_string(), self.t6_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t7Time".to_string(), self.t7_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -925,6 +937,19 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.cfg,
         &ctx.tx,
         || SignatureVerifier::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || ReceivePolicyGuard::new().initialize(),
     )?;
 
     Ok(())
