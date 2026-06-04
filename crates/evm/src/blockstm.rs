@@ -131,6 +131,7 @@ struct StorageKey {
 pub struct Tip20ActionReplayState {
     writes: HashMap<StorageKey, WriteKind>,
     changes: HashMap<StorageKey, SlotChange>,
+    tx_writes: Vec<(StorageKey, WriteKind)>,
 }
 
 impl Tip20ActionReplayState {
@@ -144,8 +145,8 @@ impl Tip20ActionReplayState {
             .is_some_and(|kind| *kind == WriteKind::Store)
     }
 
-    fn commit(&mut self, writes: impl IntoIterator<Item = (StorageKey, WriteKind)>) {
-        for (key, kind) in writes {
+    fn commit_tx_writes(&mut self) {
+        for (key, kind) in self.tx_writes.drain(..) {
             merge_committed_write_kind(&mut self.writes, key, kind);
         }
     }
@@ -166,7 +167,6 @@ struct SlotChange {
 
 struct AppliedActionReplay {
     state: EvmState,
-    writes: Vec<(StorageKey, WriteKind)>,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -226,7 +226,7 @@ where
         }
 
         self.commit_transaction(result);
-        replay_state.commit(applied.writes);
+        replay_state.commit_tx_writes();
         Ok(true)
     }
 }
@@ -399,7 +399,6 @@ fn action_replay_state<DB: StateDB>(
     }
 
     let mut state = EvmState::default();
-    let mut writes = Vec::new();
     for (key, change) in replay_state.changes.drain() {
         let Some(write_kind) = change.write_kind else {
             continue;
@@ -417,10 +416,10 @@ fn action_replay_state<DB: StateDB>(
             key.slot,
             EvmStorageSlot::new_changed(change.original, change.current, TransactionId::ZERO),
         );
-        writes.push((key, write_kind));
+        replay_state.tx_writes.push((key, write_kind));
     }
 
-    Ok(AppliedActionReplay { state, writes })
+    Ok(AppliedActionReplay { state })
 }
 
 fn action_current_value<DB: StateDB>(
