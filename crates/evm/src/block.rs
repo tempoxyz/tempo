@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
@@ -52,7 +52,10 @@ pub(crate) enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System { seen_subblocks_signatures: bool },
+    System {
+        seen_subblocks_signatures: bool,
+        seen_features_tip_report: bool,
+    },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -213,6 +216,33 @@ where
         Ok(())
     }
 
+    fn transact_precompile_system_call(
+        &mut self,
+        contract: Address,
+        data: Bytes,
+        context: &str,
+    ) -> Result<(), BlockExecutionError> {
+        let result_and_state = self
+            .evm_mut()
+            .transact_system_call(SYSTEM_CALLER_ADDRESS, contract, data)
+            .map_err(|err| {
+                BlockExecutionError::msg(format!("{context} system call failed: {err}"))
+            })?;
+
+        match result_and_state.result {
+            ExecutionResult::Success { .. } => {
+                self.evm_mut().db_mut().commit(result_and_state.state);
+                Ok(())
+            }
+            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call reverted: {output}"
+            ))),
+            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call halted: {reason:?}"
+            ))),
+        }
+    }
+
     /// Activates a scheduled feature tip once the consensus epoch reaches the target epoch.
     fn activate_scheduled_features_tip(&mut self) -> Result<(), BlockExecutionError> {
         let Some(consensus_context) = self.consensus_context else {
@@ -222,34 +252,18 @@ where
         let call = IFeatureRegistry::activateScheduledFeaturesTipCall {
             currentEpoch: consensus_context.epoch,
         };
-        let result_and_state = self
-            .evm_mut()
-            .transact_system_call(
-                SYSTEM_CALLER_ADDRESS,
-                FEATURE_REGISTRY_ADDRESS,
-                call.abi_encode().into(),
-            )
-            .map_err(|err| {
-                BlockExecutionError::msg(format!("feature registry activation failed: {err}"))
-            })?;
+        self.transact_precompile_system_call(
+            FEATURE_REGISTRY_ADDRESS,
+            call.abi_encode().into(),
+            "feature registry activation",
+        )?;
 
-        match result_and_state.result {
-            ExecutionResult::Success { .. } => {
-                self.evm_mut().db_mut().commit(result_and_state.state);
-                Ok(())
-            }
-            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
-                "feature registry activation reverted: {output}"
-            ))),
-            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
-                "feature registry activation halted: {reason:?}"
-            ))),
-        }
+        Ok(())
     }
 
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
@@ -260,7 +274,15 @@ where
         let mut seen_subblocks_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
+                ..
             } => seen_subblocks_signatures,
+            _ => false,
+        };
+        let mut seen_features_tip_report = match self.section {
+            BlockSection::System {
+                seen_features_tip_report,
+                ..
+            } => seen_features_tip_report,
             _ => false,
         };
 
@@ -299,13 +321,52 @@ where
             self.validate_shared_gas(&metadata)?;
 
             seen_subblocks_signatures = true;
+        } else if to == FEATURE_REGISTRY_ADDRESS {
+            if seen_features_tip_report {
+                return Err(BlockValidationError::msg(
+                    "duplicate feature registry system transaction",
+                ));
+            }
+
+            if !self.evm().cfg.spec.is_t6() {
+                return Err(BlockValidationError::msg(
+                    "feature registry system transaction is disabled",
+                ));
+            }
+
+            self.validate_feature_registry_system_tx(tx)?;
+
+            seen_features_tip_report = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
 
         Ok(BlockSection::System {
             seen_subblocks_signatures,
+            seen_features_tip_report,
         })
+    }
+
+    fn validate_feature_registry_system_tx(
+        &mut self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<(), BlockValidationError> {
+        let call = IFeatureRegistry::setSupportedFeaturesTipCall::abi_decode(tx.input()).map_err(
+            |_| BlockValidationError::msg("invalid feature registry system transaction"),
+        )?;
+        let Some(consensus_context) = self.consensus_context else {
+            return Err(BlockValidationError::msg(
+                "invalid feature registry system transaction",
+            ));
+        };
+
+        if call.publicKey != B256::from(&consensus_context.proposer) {
+            return Err(BlockValidationError::msg(
+                "invalid feature registry system transaction",
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn validate_shared_gas(
@@ -406,7 +467,7 @@ where
     /// the regular block gas limit checks and we need to make sure that they
     /// only perform explicitly allowed actions.
     pub(crate) fn validate_tx_pre_execution(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
@@ -432,7 +493,7 @@ where
     }
 
     pub(crate) fn validate_tx(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
@@ -656,6 +717,7 @@ where
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
+                ..
             } => seen_subblocks_signatures,
             _ => false,
         };
@@ -732,8 +794,9 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
+    use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
@@ -805,6 +868,28 @@ mod tests {
         storage
     }
 
+    fn public_key_from_private_key(
+        private_key: &PrivateKey,
+    ) -> tempo_primitives::ed25519::PublicKey {
+        tempo_primitives::ed25519::PublicKey::try_from(B256::from_slice(
+            &private_key.public_key().encode(),
+        ))
+        .unwrap()
+    }
+
+    fn b256_public_key_from_private_key(private_key: &PrivateKey) -> B256 {
+        B256::from_slice(&private_key.public_key().encode())
+    }
+
+    fn consensus_context_from_proposer(proposer_key: &PrivateKey) -> TempoConsensusContext {
+        TempoConsensusContext {
+            epoch: 21,
+            view: 0,
+            parent_view: 0,
+            proposer: public_key_from_private_key(proposer_key),
+        }
+    }
+
     #[test]
     fn test_build_receipt() {
         let builder = TempoReceiptBuilder;
@@ -844,7 +929,7 @@ mod tests {
     fn test_validate_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
@@ -860,7 +945,8 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             BlockSection::System {
-                seen_subblocks_signatures: true
+                seen_subblocks_signatures: true,
+                seen_features_tip_report: false,
             }
         );
     }
@@ -873,13 +959,17 @@ mod tests {
     }
 
     fn create_system_tx(chain_id: u64, input: Bytes) -> TempoTxEnvelope {
+        create_system_tx_to(chain_id, Address::ZERO, input)
+    }
+
+    fn create_system_tx_to(chain_id: u64, to: Address, input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(Address::ZERO),
+                to: TxKind::Call(to),
                 value: U256::ZERO,
                 input,
             },
@@ -910,9 +1000,10 @@ mod tests {
     fn test_validate_system_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
+                seen_features_tip_report: false,
             })
             .build(&mut db, &chainspec);
 
@@ -930,10 +1021,98 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_system_tx_feature_registry_report() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let mut executor = builder.build(&mut db, &chainspec);
+
+        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
+            publicKey: b256_public_key_from_private_key(&proposer_key),
+            featuresTip: 13,
+        }
+        .abi_encode()
+        .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(
+            result.is_ok(),
+            "validate_system_tx failed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+                seen_features_tip_report: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_registry_report_rejects_other_public_key() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let other_key = PrivateKey::from_seed(1);
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let mut executor = builder.build(&mut db, &chainspec);
+
+        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
+            publicKey: b256_public_key_from_private_key(&other_key),
+            featuresTip: 13,
+        }
+        .abi_encode()
+        .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "invalid feature registry system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_duplicate_feature_registry_report() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_runtime_spec(TempoHardfork::T6)
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: false,
+                seen_features_tip_report: true,
+            })
+            .build(&mut db, &chainspec);
+        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
+            publicKey: B256::repeat_byte(0x11),
+            featuresTip: 13,
+        }
+        .abi_encode()
+        .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "duplicate feature registry system transaction"
+        );
+    }
+
+    #[test]
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
@@ -952,7 +1131,7 @@ mod tests {
     fn test_validate_system_tx_invalid_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -1234,7 +1413,7 @@ mod tests {
     fn test_validate_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
@@ -1275,7 +1454,7 @@ mod tests {
         let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
 
         // Test with GasIncentive section
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::GasIncentive)
             .build(&mut db, &chainspec);
 
@@ -1289,9 +1468,10 @@ mod tests {
 
         // Also test with System section
         let mut db2 = State::builder().with_bundle_update().build();
-        let executor2 = TestExecutorBuilder::default()
+        let mut executor2 = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
+                seen_features_tip_report: false,
             })
             .build(&mut db2, &chainspec);
 
@@ -1316,7 +1496,7 @@ mod tests {
         let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
 
         // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::SubBlock {
                 proposer: proposer2,
             })
@@ -1339,9 +1519,10 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
 
         // Set section to System
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
+                seen_features_tip_report: false,
             })
             .build(&mut db, &chainspec);
 

@@ -75,20 +75,62 @@ mod tests {
     use crate::{
         FEATURE_REGISTRY_ADDRESS, SYSTEM_CALLER_ADDRESS,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        validator_config_v2::ValidatorConfigV2,
+        validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
     };
     use alloy::{
-        primitives::U256,
+        primitives::{B256, Keccak256, U256},
         sol_types::{SolCall, SolError, SolValue},
     };
+    use commonware_codec::Encode;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::{
         epoch::EPOCH_LENGTH_BLOCKS, features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT,
     };
-    use tempo_contracts::precompiles::{FeatureRegistryError, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::{
+        FeatureRegistryError, IValidatorConfigV2, UnknownFunctionSelector,
+        VALIDATOR_CONFIG_V2_ADDRESS,
+    };
 
     fn initialize_validator_config_owner(owner: Address) -> eyre::Result<()> {
         ValidatorConfigV2::new().initialize(owner)?;
         Ok(())
+    }
+
+    fn add_test_validator(owner: Address, validator: Address, seed: u64) -> eyre::Result<B256> {
+        let private_key = PrivateKey::from_seed(seed);
+        let public_key = B256::from_slice(&private_key.public_key().encode());
+        let ingress = format!("127.0.0.1:{}", 9000 + seed);
+        let egress = format!("127.0.0.{}", seed + 1);
+        let fee_recipient = Address::repeat_byte(0x03);
+
+        let mut hasher = Keccak256::new();
+        hasher.update(1u64.to_be_bytes());
+        hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+        hasher.update(validator.as_slice());
+        hasher.update([u8::try_from(ingress.len())?]);
+        hasher.update(ingress.as_bytes());
+        hasher.update([u8::try_from(egress.len())?]);
+        hasher.update(egress.as_bytes());
+        hasher.update(fee_recipient.as_slice());
+        let message = hasher.finalize();
+        let signature = private_key
+            .sign(VALIDATOR_NS_ADD, message.as_slice())
+            .encode()
+            .to_vec();
+
+        ValidatorConfigV2::new().add_validator(
+            owner,
+            IValidatorConfigV2::addValidatorCall {
+                validatorAddress: validator,
+                publicKey: public_key,
+                ingress,
+                egress,
+                feeRecipient: fee_recipient,
+                signature: signature.into(),
+            },
+        )?;
+
+        Ok(public_key)
     }
 
     #[test]
@@ -532,12 +574,15 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
 
             registry.set_supported_features_tip(
-                SYSTEM_CALLER_ADDRESS,
+                Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
-                    validator,
+                    publicKey: public_key,
                     featuresTip: 13,
                 },
             )?;
@@ -553,13 +598,16 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
             registry.validator_supported_features_tip[validator].write(13)?;
 
             let result = registry.set_supported_features_tip(
-                SYSTEM_CALLER_ADDRESS,
+                Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
-                    validator,
+                    publicKey: public_key,
                     featuresTip: 12,
                 },
             );
@@ -628,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_rejects_non_system_caller() -> eyre::Result<()> {
+    fn set_supported_features_tip_rejects_non_system_tx_sender() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
@@ -637,7 +685,7 @@ mod tests {
             let result = registry.set_supported_features_tip(
                 Address::repeat_byte(0x02),
                 IFeatureRegistry::setSupportedFeaturesTipCall {
-                    validator,
+                    publicKey: B256::repeat_byte(0x03),
                     featuresTip: 13,
                 },
             );
@@ -649,17 +697,21 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_sets_validator_report_from_system() -> eyre::Result<()> {
+    fn set_supported_features_tip_dispatch_sets_validator_report_from_system_tx_sender()
+    -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
-                validator,
+                publicKey: public_key,
                 featuresTip: 34,
             };
-            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
 
@@ -668,14 +720,14 @@ mod tests {
     }
 
     #[test]
-    fn set_supported_features_tip_dispatch_rejects_non_system_caller() -> eyre::Result<()> {
+    fn set_supported_features_tip_dispatch_rejects_non_system_tx_sender() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             let validator = Address::repeat_byte(0x01);
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
-                validator,
+                publicKey: B256::repeat_byte(0x03),
                 featuresTip: 34,
             };
             let result = registry.call(&call.abi_encode(), Address::repeat_byte(0x02))?;
@@ -694,14 +746,17 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
             let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
             registry.validator_supported_features_tip[validator].write(34)?;
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
-                validator,
+                publicKey: public_key,
                 featuresTip: 33,
             };
-            let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(result.is_revert());
             let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
             assert_eq!(

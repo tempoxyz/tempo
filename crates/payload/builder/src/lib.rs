@@ -24,6 +24,7 @@ use alloy_eip7928::compute_block_access_list_hash;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rlp::{Decodable, Encodable};
+use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -63,10 +64,15 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec, features::highest_supported_protocol_feature_id, hardfork::TempoHardforks,
+};
+use tempo_contracts::precompiles::{FEATURE_REGISTRY_ADDRESS, IFeatureRegistry};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_precompiles::{
+    feature_registry::FeatureRegistry, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -194,22 +200,23 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to seal the block.
-    ///
-    /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        evm: &TempoEvm<impl Database>,
+        evm: &mut TempoEvm<impl Database>,
+        attributes: &TempoPayloadAttributes,
         subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
-        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
-            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
-            return vec![];
-        }
-
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
+        let mut txs = Vec::new();
+
+        if let Some(tx) = self.build_supported_features_tip_tx(evm, attributes, chain_id) {
+            txs.push(tx);
+        }
+
+        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
+            return txs;
+        }
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -221,23 +228,76 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .chain(evm.block.number.to_be_bytes_vec())
             .collect();
 
-        let subblocks_signatures_tx = Recovered::new_unchecked(
+        txs.push(Self::system_tx(chain_id, Address::ZERO, subblocks_input));
+        txs
+    }
+
+    fn build_supported_features_tip_tx(
+        &self,
+        evm: &mut TempoEvm<impl Database>,
+        attributes: &TempoPayloadAttributes,
+        chain_id: Option<u64>,
+    ) -> Option<Recovered<TempoTxEnvelope>> {
+        if !evm.cfg.spec.is_t6() {
+            return None;
+        }
+
+        let supported_features_tip = highest_supported_protocol_feature_id();
+        if supported_features_tip == 0 {
+            return None;
+        }
+
+        let Some(public_key) = attributes.proposer_public_key() else {
+            return None;
+        };
+
+        let spec = evm.cfg.spec;
+        let should_report = match evm
+            .ctx_mut()
+            .journaled_state
+            .database
+            .with_read_only_storage_ctx(spec, || -> Result<bool, PayloadBuilderError> {
+                let reported_features_tip = FeatureRegistry::new()
+                    .validator_supported_features_tip_by_public_key(*public_key)
+                    .map_err(PayloadBuilderError::other)?;
+                Ok(reported_features_tip < supported_features_tip)
+            }) {
+            Ok(should_report) => should_report,
+            Err(err) => {
+                debug!(%err, "skipping supported feature tip report");
+                false
+            }
+        };
+
+        if !should_report {
+            return None;
+        }
+
+        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
+            publicKey: *public_key,
+            featuresTip: supported_features_tip,
+        }
+        .abi_encode()
+        .into();
+        Some(Self::system_tx(chain_id, FEATURE_REGISTRY_ADDRESS, input))
+    }
+
+    fn system_tx(chain_id: Option<u64>, to: Address, input: Bytes) -> Recovered<TempoTxEnvelope> {
+        Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
                     chain_id,
                     nonce: 0,
                     gas_price: 0,
                     gas_limit: 0,
-                    to: Address::ZERO.into(),
+                    to: to.into(),
                     value: U256::ZERO,
-                    input: subblocks_input,
+                    input,
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
             TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        vec![subblocks_signatures_tx]
+        )
     }
 }
 
@@ -507,7 +567,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
+        let system_txs = self.build_seal_block_txs(executor.evm_mut(), &attributes, &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
