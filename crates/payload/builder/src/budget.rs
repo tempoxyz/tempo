@@ -7,9 +7,10 @@
 //! size-dependent cost of persisting large blocks through consensus.
 //!
 //! The decision model is:
-//! `leader_idle + 2 * predicted_replayable_work + 2 * marshal_persist >= budget`.
-//! Idle waiting only happens on the proposer, while replayable work and marshal
-//! persistence happen on both proposer and validators.
+//! `leader_idle + predicted_builder_work + validator_replay_work + 2 * marshal_persist >= budget`.
+//! Idle waiting only happens on the proposer. Validator BAL replay is cheaper than proposer-side
+//! block filling, so we reserve a measured fraction of builder work for validator replay instead
+//! of charging a second full builder pass.
 
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
+const VALIDATOR_REPLAY_WORK_SCALE: u64 = 350_000;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
@@ -56,8 +58,9 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 /// is the current encoded-size estimate used for marshal persistence.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected replayable work once for the proposer
-/// and once for validators, and marshal persistence once for each side.
+/// charge proposer idle once, projected replayable work once for the proposer,
+/// a smaller validator replay reservation, and marshal persistence once for
+/// each side.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -68,10 +71,11 @@ pub(crate) fn payload_budget_exhausted(
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let validator_replay_work = scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     idle_elapsed
         .saturating_add(predicted_work)
-        .saturating_add(predicted_work)
+        .saturating_add(validator_replay_work)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist)
         >= budget
@@ -134,7 +138,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(270),
+            Duration::from_millis(182),
             MarshalPersistEstimator::default(),
             0
         ));
@@ -142,7 +146,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(271),
+            Duration::from_millis(183),
             MarshalPersistEstimator::default(),
             0
         ));
@@ -150,7 +154,7 @@ mod tests {
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
-            Duration::from_millis(520),
+            Duration::from_millis(432),
             MarshalPersistEstimator::default(),
             0
         ));
@@ -158,7 +162,7 @@ mod tests {
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
-            Duration::from_millis(521),
+            Duration::from_millis(433),
             MarshalPersistEstimator::default(),
             0
         ));
@@ -172,7 +176,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(300),
+            Duration::from_millis(212),
             marshal_persist,
             15_000
         ));
@@ -180,9 +184,9 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(300),
+            Duration::from_millis(212),
             marshal_persist,
-            14_999
+            14_874
         ));
     }
 
