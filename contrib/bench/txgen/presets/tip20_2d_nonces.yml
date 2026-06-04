@@ -11,14 +11,6 @@ accounts:
       - 0
       - ${TXGEN_ACCOUNTS}
 
-address_pools:
-  existing_recipients:
-    fast:
-      seed: "test test test test test test test test test test test junk"
-      range:
-        - ${TXGEN_EXISTING_RECIPIENTS_START}
-        - ${TXGEN_EXISTING_RECIPIENTS_END}
-
 artifacts:
   ERC20: ../erc20.abi.json
 
@@ -39,8 +31,8 @@ templates:
       abi: ERC20
       function: transfer
       args:
-        - address_pool:
-            pool: existing_recipients
+        - pool:
+            pool: users
             select: random
         - 1
 
