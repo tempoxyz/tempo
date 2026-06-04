@@ -17,7 +17,11 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     Precompile,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    storage::{
+        PrecompileStorageProvider,
+        evm::{EvmActions, EvmPrecompileStorageProvider},
+    },
+    tip20::{RewardFlag, UserState},
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
@@ -155,6 +159,38 @@ impl StorageCtx {
     /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
+    }
+
+    /// Increments a persistent storage slot by `delta`, returning the new value.
+    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        Self::try_with_storage(|s| s.sinc(address, key, delta))
+    }
+
+    /// Decrements a persistent storage slot by `delta`, returning the new value.
+    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        Self::try_with_storage(|s| s.sdec(address, key, delta))
+    }
+
+    /// Increments a TIP-20 balance slot while preserving its cached reward flag.
+    pub fn tip20_balance_sinc(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        Self::try_with_storage(|s| s.tip20_balance_sinc(address, key, delta, flag))
+    }
+
+    /// Decrements a TIP-20 balance slot while preserving its cached reward flag.
+    pub fn tip20_balance_sdec(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        flag: RewardFlag,
+    ) -> Result<UserState> {
+        Self::try_with_storage(|s| s.tip20_balance_sdec(address, key, delta, flag))
     }
 
     /// Performs a TSTORE operation (transient storage write).
@@ -344,6 +380,25 @@ impl<'evm> StorageCtx {
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
         // The core logic of setting up thread-local storage is here.
+        Self::enter(&mut provider, f)
+    }
+
+    /// Like [`enter_evm`](Self::enter_evm), but records EVM actions into `actions`.
+    pub fn enter_evm_with_actions<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        actions: EvmActions,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
+
         Self::enter(&mut provider, f)
     }
 

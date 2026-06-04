@@ -349,7 +349,7 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
+        Some(TempoEvm::new(state_provider, evm_env).with_actions())
     }
 }
 

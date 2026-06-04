@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -19,9 +19,11 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_evm::block::StateDB;
+#[cfg(feature = "engine")]
+use reth_revm::context::result::ExecutionResult;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason},
+    context::result::ResultAndState,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -106,12 +108,11 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_blockstm_tip20_success(
+    #[cfg(feature = "engine")]
+    pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
+        result: ExecutionResult<TempoHaltReason>,
         state: EvmState,
-        logs: Vec<Log>,
-        gas: ResultGas,
         next_section: BlockSection,
         is_payment: bool,
         block_gas_used: u64,
@@ -119,15 +120,7 @@ impl TempoTxResult {
     ) -> Self {
         Self {
             inner: EthTxResult {
-                result: ResultAndState::new(
-                    ExecutionResult::Success {
-                        reason: SuccessReason::Return,
-                        gas,
-                        logs,
-                        output: Output::Call(Bytes::new()),
-                    },
-                    state,
-                ),
+                result: ResultAndState::new(result, state),
                 blob_gas_used: 0,
                 tx_type: tx.tx_type(),
             },

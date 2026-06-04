@@ -1,5 +1,7 @@
 use alloy_primitives::Address;
 use reth_evm::{Database, Evm};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_revm::context::result::{EVMError, InvalidTransaction};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
@@ -14,8 +16,8 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    Tip20TransferBlockstmFallback, Tip20TransferBlockstmPlan, Tip20TransferBlockstmTx,
-    build_tip20_transfer_blockstm_plan, prewarm_tip20_transfer_blockstm_plan,
+    TempoInvalidTransaction, Tip20TransferActionReplay, Tip20TransferBlockstmFallback,
+    Tip20TransferBlockstmTx, validate_tip20_transfer_blockstm_tx,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
@@ -23,6 +25,7 @@ use tempo_precompiles::{
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},
+    transaction::TempoPoolTransactionError,
 };
 use tracing::trace;
 
@@ -41,11 +44,9 @@ impl fmt::Display for PayloadBuildError {
             Self::Unsupported(reason) => {
                 write!(f, "BlockSTM TIP-20 payload build unsupported: {reason}")
             }
-            Self::Planning(reason) => write!(
-                f,
-                "BlockSTM TIP-20 plan creation failed: {}",
-                reason.as_str()
-            ),
+            Self::Planning(reason) => {
+                write!(f, "BlockSTM TIP-20 planning failed: {}", reason.as_str())
+            }
             Self::Execution(reason) => {
                 write!(f, "BlockSTM TIP-20 execution failed: {}", reason.as_str())
             }
@@ -58,16 +59,19 @@ impl Error for PayloadBuildError {}
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlanningContext {
     pub(crate) validator_token: Address,
-    pub(crate) beneficiary: Address,
-    pub(crate) basefee: u128,
-    pub(crate) blob_gasprice: u128,
     pub(crate) spec: TempoHardfork,
 }
 
 #[derive(Debug)]
-pub(crate) struct PlannedTransfer {
-    pub(crate) tx: BestTransaction,
-    pub(crate) plan: Tip20TransferBlockstmPlan,
+pub(crate) enum PlannedTransfer {
+    Valid {
+        tx: BestTransaction,
+        replay: Tip20TransferActionReplay,
+    },
+    Invalid {
+        tx: BestTransaction,
+        kind: InvalidPoolTransactionError,
+    },
 }
 
 /// TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
@@ -176,20 +180,21 @@ where
                     let prewarm = planner.prewarm.clone();
                     let ctx = planner.ctx;
                     scope.spawn(move |_| {
-                        let item = build_tip20_transfer_blockstm_plan(
-                            &candidate(&tx),
-                            ctx.validator_token,
-                            ctx.beneficiary,
-                            ctx.basefee,
-                            ctx.blob_gasprice,
-                            ctx.spec,
-                        )
-                        .map(|plan| {
-                            if let Some(prewarm) = prewarm {
-                                prewarm_tip20_transfer_plan(&prewarm, &plan, sequence);
+                        let item = (|| {
+                            let candidate = candidate(&tx);
+                            validate_tip20_transfer_blockstm_tx(
+                                &candidate,
+                                ctx.validator_token,
+                                ctx.spec,
+                            )?;
+                            let Some(prewarm) = prewarm else {
+                                return Err(Tip20TransferBlockstmFallback::MissingActions);
+                            };
+                            match prewarm_tip20_transfer_actions(&prewarm, candidate, sequence)? {
+                                Ok(replay) => Ok(PlannedTransfer::Valid { tx, replay }),
+                                Err(kind) => Ok(PlannedTransfer::Invalid { tx, kind }),
                             }
-                            PlannedTransfer { tx, plan }
-                        });
+                        })();
                         let _ = results_tx.send(PlannerMessage::Planned(item));
                         let _ = commands_tx.send(PlannerCommand::Advance);
                     });
@@ -315,31 +320,82 @@ enum PlannerCommand {
     Stop,
 }
 
-fn prewarm_tip20_transfer_plan<Provider>(
+fn prewarm_tip20_transfer_actions<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
-    plan: &Tip20TransferBlockstmPlan,
+    candidate: Tip20TransferBlockstmTx<'_>,
     sequence: usize,
-) where
+) -> Result<
+    Result<Tip20TransferActionReplay, InvalidPoolTransactionError>,
+    Tip20TransferBlockstmFallback,
+>
+where
     Provider: StateProviderFactory + Clone + 'static,
 {
     if prewarm.is_stopped() {
-        return;
+        return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
     }
 
     WorkerPool::with_worker_mut(|worker| {
         let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-            return;
+            return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         };
 
-        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan) {
-            trace!(
+        let _ = evm.take_actions();
+        let result = match evm.transact_raw(candidate.tx_env) {
+            Ok(result) => result,
+            Err(err) => {
+                trace!(
                 target: "payload_builder",
                 ?err,
                 sequence,
-                "Failed to prewarm BlockSTM TIP-20 plan storage"
+                "Failed to prewarm BlockSTM TIP-20 transfer actions"
+                );
+                return invalid_pool_error_from_evm_error(err).map(Err);
+            }
+        };
+        if !result.result.is_success() {
+            trace!(
+                target: "payload_builder",
+                sequence,
+                result = ?result.result,
+                "BlockSTM TIP-20 action prewarm produced non-success result"
             );
+            return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         }
-    });
+
+        let actions = evm
+            .take_actions()
+            .filter(|actions| !actions.is_empty())
+            .ok_or(Tip20TransferBlockstmFallback::MissingActions)?;
+
+        Ok(Ok(Tip20TransferActionReplay {
+            result: result.result,
+            actions,
+            validator_fee: evm.validator_fee(),
+        }))
+    })
+}
+
+fn invalid_pool_error_from_evm_error<DBError>(
+    error: EVMError<DBError, TempoInvalidTransaction>,
+) -> Result<InvalidPoolTransactionError, Tip20TransferBlockstmFallback> {
+    match error {
+        EVMError::Transaction(error) => Ok(invalid_pool_error_from_transaction_error(error)),
+        _ => Err(Tip20TransferBlockstmFallback::ActionExecutionFailed),
+    }
+}
+
+fn invalid_pool_error_from_transaction_error(
+    error: TempoInvalidTransaction,
+) -> InvalidPoolTransactionError {
+    match error {
+        TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance },
+        ) => InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(
+            (*balance, *fee).into(),
+        )),
+        error => InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(error)),
+    }
 }
 
 /// Builds an executor-owned BlockSTM candidate from a pooled transaction.

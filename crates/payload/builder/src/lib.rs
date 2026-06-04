@@ -67,7 +67,8 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes, TempoStateAccess,
-    Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
+    Tip20ActionReplayState, Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback,
+    evm::TempoEvm,
 };
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -595,9 +596,6 @@ where
                     self.executor.clone(),
                     blockstm::PlanningContext {
                         validator_token,
-                        beneficiary,
-                        basefee: base_fee as u128,
-                        blob_gasprice: executor.evm().block().blob_gasprice().unwrap_or_default(),
                         spec: executor.evm().cfg.spec,
                     },
                     blockstm_prewarm,
@@ -617,6 +615,7 @@ where
                 };
                 let mut candidate_count = 0usize;
                 let receipt_start = executor.receipts().len();
+                let mut action_replay_state = Tip20ActionReplayState::default();
                 let blockstm_stop_reason = loop {
                     check_cancel!();
 
@@ -634,8 +633,24 @@ where
                         }
                     }
 
-                    let planned_tx = match planner.next() {
-                        blockstm::PlannerNext::Planned(Ok(planned_tx)) => planned_tx,
+                    let (pool_tx, replay) = match planner.next() {
+                        blockstm::PlannerNext::Planned(Ok(blockstm::PlannedTransfer::Valid {
+                            tx,
+                            replay,
+                        })) => (tx, replay),
+                        blockstm::PlannerNext::Planned(Ok(
+                            blockstm::PlannedTransfer::Invalid { tx, kind },
+                        )) => {
+                            planner.mark_invalid(&tx, kind);
+                            invalid_pool_transaction_execution_attempts += 1;
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?tx.hash(),
+                                "Skipping BlockSTM TIP-20 transaction invalidated during action planning"
+                            );
+                            continue;
+                        }
                         blockstm::PlannerNext::Planned(Err(reason)) => {
                             return Err(planning_error(reason));
                         }
@@ -650,7 +665,6 @@ where
                         }
                     };
 
-                    let pool_tx = planned_tx.tx;
                     let tx_rlp_length = pool_tx.transaction.encoded_length();
                     let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
                     if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -673,9 +687,10 @@ where
                     };
                     let mut stop_reason = None;
 
-                    let execution_result = executor.execute_tip20_transfer_blockstm_planned_tx(
+                    let execution_result = executor.execute_tip20_transfer_action_replay_tx(
                         blockstm::candidate(&pool_tx),
-                        planned_tx.plan,
+                        replay,
+                        &mut action_replay_state,
                         candidate_count,
                         |result| {
                             if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit
@@ -768,6 +783,17 @@ where
                                 target: "payload_builder",
                                 tx_hash = ?pool_tx.hash(),
                                 "Skipping BlockSTM TIP-20 transaction with insufficient balance"
+                            );
+                            continue;
+                        }
+                        Err(Tip20TransferBlockstmExecutionError::Fallback(
+                            Tip20TransferBlockstmFallback::ActionConflict,
+                        )) => {
+                            self.metrics.inc_pool_tx_skipped("blockstm_action_conflict");
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?pool_tx.hash(),
+                                "Skipping BlockSTM TIP-20 transaction with conflicting replay actions"
                             );
                             continue;
                         }
