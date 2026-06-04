@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+
 use crate::{TempoBlockExecutor, TempoTxResult};
 use alloy_evm::{
     Evm, RecoveredTx,
@@ -331,9 +333,9 @@ fn action_replay_state<DB: StateDB>(
         ));
     }
 
-    let mut originals = HashMap::<StorageKey, U256>::new();
-    let mut writes = HashMap::<StorageKey, U256>::new();
-    let mut write_kinds = HashMap::<StorageKey, WriteKind>::new();
+    let mut originals = HashMap::<StorageKey, U256>::default();
+    let mut writes = HashMap::<StorageKey, U256>::default();
+    let mut write_kinds = HashMap::<StorageKey, WriteKind>::default();
 
     for action in actions {
         match *action {
@@ -426,10 +428,10 @@ fn action_replay_state<DB: StateDB>(
 
     let mut state = EvmState::default();
     for (key, value) in writes {
-        if !state.contains_key(&key.address) {
+        if let Entry::Vacant(e) = state.entry(key.address) {
             let mut account = Account::from(action_account_info(db, key.address)?);
             account.mark_touch();
-            state.insert(key.address, account);
+            e.insert(account);
         }
         let account = state
             .get_mut(&key.address)
