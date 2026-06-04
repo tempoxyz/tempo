@@ -4,6 +4,8 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+#[cfg(feature = "bal")]
+use crate::bal_overlay::SharedBalOverlay;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
@@ -27,7 +29,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{debug, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -52,6 +54,8 @@ pub(crate) struct PrewarmingStateProviderConfig<Provider> {
     cache_fill_on_miss: bool,
     #[cfg(feature = "bal")]
     speculative_parent: Option<SpeculativePayloadParent>,
+    #[cfg(feature = "bal")]
+    speculative_bal_overlay: Option<SharedBalOverlay>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
 }
 
@@ -72,6 +76,8 @@ impl<Provider> PrewarmingStateProviderConfig<Provider> {
             cache_fill_on_miss,
             #[cfg(feature = "bal")]
             speculative_parent: None,
+            #[cfg(feature = "bal")]
+            speculative_bal_overlay: None,
             evm_env,
         }
     }
@@ -81,9 +87,11 @@ impl<Provider> PrewarmingStateProviderConfig<Provider> {
         mut self,
         local_cache: Option<SavedCache>,
         speculative_parent: Option<SpeculativePayloadParent>,
+        speculative_bal_overlay: Option<SharedBalOverlay>,
     ) -> Self {
         self.local_cache = local_cache;
         self.speculative_parent = speculative_parent;
+        self.speculative_bal_overlay = speculative_bal_overlay;
         self
     }
 }
@@ -142,6 +150,23 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let prewarming_threads = pool.current_num_threads();
+        let initial_lookahead = prewarming_threads * 2;
+        #[cfg(feature = "bal")]
+        let (speculative_bal_prewarm, shared_bal_overlay) = (
+            ctx.prewarm.config.speculative_parent.is_some(),
+            ctx.prewarm.config.speculative_bal_overlay.is_some(),
+        );
+        #[cfg(not(feature = "bal"))]
+        let (speculative_bal_prewarm, shared_bal_overlay) = (false, false);
+        debug!(
+            target: "payload_builder",
+            prewarming_threads,
+            initial_lookahead,
+            speculative_bal_prewarm,
+            shared_bal_overlay,
+            "starting builder transaction prewarming"
+        );
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -174,7 +199,7 @@ impl BestTransactionsPrewarming {
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            for _ in 0..initial_lookahead {
                 advance(&mut ctx);
             }
 
@@ -395,11 +420,21 @@ where
                 ));
             }
 
-            state_provider = Box::new(crate::bal_overlay::BalOverlayStateProvider::new(
+            let parent_header = speculative_parent.parent_header();
+            let overlay = if let Some(overlay) = &self.config.speculative_bal_overlay {
+                overlay.clone()
+            } else {
+                SharedBalOverlay::new(
+                    state_provider.as_ref(),
+                    parent_header.as_ref(),
+                    speculative_parent.block_access_list(),
+                )?
+            };
+            state_provider = Box::new(crate::bal_overlay::BalOverlayStateProvider::from_shared(
                 state_provider,
-                speculative_parent.parent_header(),
-                speculative_parent.block_access_list().clone(),
-            )?);
+                parent_header,
+                overlay,
+            ));
 
             if let Some(cache) = &self.config.local_cache {
                 state_provider = Box::new(CachedStateProvider::new_prewarm(

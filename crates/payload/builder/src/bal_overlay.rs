@@ -22,10 +22,7 @@ use tracing::debug;
 pub(crate) struct BalOverlayStateProvider {
     inner: StateProviderBox,
     parent_header: Arc<SealedHeader<TempoHeader>>,
-    accounts: HashMap<Address, Account>,
-    storage: HashMap<Address, HashMap<StorageKey, StorageValue>>,
-    bytecodes: HashMap<B256, Bytecode>,
-    hashed_post_state: HashedPostState,
+    overlay: SharedBalOverlay,
 }
 
 struct DecodedBalOverlay {
@@ -33,6 +30,12 @@ struct DecodedBalOverlay {
     storage: HashMap<Address, HashMap<StorageKey, StorageValue>>,
     bytecodes: HashMap<B256, Bytecode>,
     hashed_post_state: HashedPostState,
+}
+
+/// BAL post-state decoded and applied once for a speculative parent.
+#[derive(Clone)]
+pub(crate) struct SharedBalOverlay {
+    inner: Arc<DecodedBalOverlay>,
 }
 
 /// Builds the hashed post-state represented by a block access list.
@@ -43,55 +46,73 @@ pub fn block_access_list_hashed_post_state(
     Ok(decode_block_access_list_overlay(inner, raw_bal)?.hashed_post_state)
 }
 
-impl BalOverlayStateProvider {
+impl SharedBalOverlay {
     pub(crate) fn new(
-        inner: StateProviderBox,
-        parent_header: Arc<SealedHeader<TempoHeader>>,
-        raw_bal: Bytes,
+        inner: &dyn StateProvider,
+        parent_header: &SealedHeader<TempoHeader>,
+        raw_bal: &Bytes,
     ) -> ProviderResult<Self> {
         let decode_start = Instant::now();
-        let DecodedBalOverlay {
-            accounts,
-            storage,
-            bytecodes,
-            hashed_post_state,
-        } = decode_block_access_list_overlay(inner.as_ref(), &raw_bal)?;
+        let overlay = decode_block_access_list_overlay(inner, raw_bal)?;
 
         debug!(
             target: "payload_builder",
             parent_hash = %parent_header.hash(),
             parent_number = parent_header.number(),
-            accounts = accounts.len(),
-            storage_accounts = storage.len(),
-            bytecodes = bytecodes.len(),
+            accounts = overlay.accounts.len(),
+            storage_accounts = overlay.storage.len(),
+            bytecodes = overlay.bytecodes.len(),
             elapsed = ?decode_start.elapsed(),
-            "constructed BAL overlay state provider"
+            "constructed shared BAL overlay state"
         );
 
         Ok(Self {
-            inner,
-            parent_header,
-            accounts,
-            storage,
-            bytecodes,
-            hashed_post_state,
+            inner: Arc::new(overlay),
         })
     }
 }
 
 impl BalOverlayStateProvider {
+    #[cfg(test)]
+    pub(crate) fn new(
+        inner: StateProviderBox,
+        parent_header: Arc<SealedHeader<TempoHeader>>,
+        raw_bal: Bytes,
+    ) -> ProviderResult<Self> {
+        let overlay = SharedBalOverlay::new(inner.as_ref(), parent_header.as_ref(), &raw_bal)?;
+        Ok(Self::from_shared(inner, parent_header, overlay))
+    }
+
+    pub(crate) fn from_shared(
+        inner: StateProviderBox,
+        parent_header: Arc<SealedHeader<TempoHeader>>,
+        overlay: SharedBalOverlay,
+    ) -> Self {
+        Self {
+            inner,
+            parent_header,
+            overlay,
+        }
+    }
+}
+
+impl BalOverlayStateProvider {
     fn merge_hashed_state(&self, child_state: HashedPostState) -> HashedPostState {
-        let mut state = self.hashed_post_state.clone();
+        let mut state = self.overlay.inner.hashed_post_state.clone();
         state.extend(child_state);
         state
     }
 
     fn prepend_overlay(&self, input: &mut TrieInput) {
-        input.prepend_self(TrieInput::from_state(self.hashed_post_state.clone()));
+        input.prepend_self(TrieInput::from_state(
+            self.overlay.inner.hashed_post_state.clone(),
+        ));
     }
 
     fn merged_storage(&self, address: Address, child_storage: HashedStorage) -> HashedStorage {
         let mut storage = self
+            .overlay
+            .inner
             .hashed_post_state
             .storages
             .get(&keccak256(address))
@@ -129,7 +150,7 @@ impl BlockHashReader for BalOverlayStateProvider {
 
 impl AccountReader for BalOverlayStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        if let Some(account) = self.accounts.get(address) {
+        if let Some(account) = self.overlay.inner.accounts.get(address) {
             return Ok(Some(*account));
         }
 
@@ -142,7 +163,7 @@ impl BytecodeReader for BalOverlayStateProvider {
         if *code_hash == KECCAK_EMPTY {
             return Ok(None);
         }
-        if let Some(bytecode) = self.bytecodes.get(code_hash) {
+        if let Some(bytecode) = self.overlay.inner.bytecodes.get(code_hash) {
             return Ok(Some(bytecode.clone()));
         }
 
@@ -157,6 +178,8 @@ impl StateProvider for BalOverlayStateProvider {
         storage_key: StorageKey,
     ) -> ProviderResult<Option<StorageValue>> {
         if let Some(value) = self
+            .overlay
+            .inner
             .storage
             .get(&account)
             .and_then(|slots| slots.get(&storage_key))

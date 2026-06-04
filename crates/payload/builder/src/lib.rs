@@ -506,6 +506,8 @@ where
         } else {
             None
         };
+        #[cfg(feature = "bal")]
+        let mut speculative_bal_overlay = None;
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
@@ -529,11 +531,18 @@ where
             } else {
                 base_provider
             };
-            let state_provider = Box::new(bal_overlay::BalOverlayStateProvider::new(
+            let parent_header = speculative_parent.parent_header();
+            let overlay = bal_overlay::SharedBalOverlay::new(
+                base_provider.as_ref(),
+                parent_header.as_ref(),
+                speculative_parent.block_access_list(),
+            )?;
+            speculative_bal_overlay = Some(overlay.clone());
+            let state_provider = Box::new(bal_overlay::BalOverlayStateProvider::from_shared(
                 base_provider,
-                speculative_parent.parent_header(),
-                speculative_parent.block_access_list().clone(),
-            )?) as reth_storage_api::StateProviderBox;
+                parent_header,
+                overlay,
+            )) as reth_storage_api::StateProviderBox;
             if let Some(cache) = &builder_local_cache {
                 Box::new(CachedStateProvider::new_with_mode(
                     state_provider,
@@ -753,6 +762,7 @@ where
         let prewarming_config = prewarming_config.with_speculative_parent(
             builder_local_cache,
             attributes.speculative_parent().cloned(),
+            speculative_bal_overlay,
         );
 
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
