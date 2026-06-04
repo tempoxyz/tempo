@@ -319,7 +319,7 @@ def read-bench-marker [datadir: string] {
 # ============================================================================
 
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4" "T5" "T6"]
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4" "T5" "T6" "T7"]
 const TEMPO_DISABLED_HARDFORK_TIME = 9223372036854775807
 
 def normalize-hardfork [fork: string] {
