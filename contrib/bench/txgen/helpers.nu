@@ -4,7 +4,7 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-shell-quote [value: any] {
@@ -142,7 +142,7 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
-    if $preset_name != $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET {
+    if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
         return
     }
 

@@ -17,7 +17,7 @@ use reth_transaction_pool::{
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::slots as nonce_slots,
+    nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
@@ -79,6 +79,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     commands_tx,
                     prewarm,
+                    next_expiring_nonce_offset: 0,
                 },
             );
         });
@@ -109,12 +110,19 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                    let offset = ctx.next_expiring_nonce_offset;
+                    ctx.next_expiring_nonce_offset += 1;
+                    Some(offset)
+                } else {
+                    None
+                };
                 let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -167,6 +175,7 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
+        expiring_nonce_offset: Option<usize>,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
@@ -182,14 +191,17 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let touches = storage_touches_for_transaction(
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                    expiring_nonce_offset,
+                );
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm) {
+                    if let Err(err) = touch.warm(evm.db_mut()) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -206,7 +218,12 @@ impl BestTransactionsPrewarming {
                     return;
                 }
 
-                if let Err(err) = evm.transact_raw(tx.transaction.clone_tx_env()) {
+                let mut tx_env = tx.transaction.clone_tx_env();
+                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+                }
+
+                if let Err(err) = evm.transact_raw(tx_env) {
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -282,6 +299,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    next_expiring_nonce_offset: usize,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -340,16 +358,45 @@ where
 enum StorageTouch {
     Account(Address),
     Storage { address: Address, slot: U256 },
+    ExpiringNonce { seen_slot: U256, ring_offset: usize },
 }
 
 impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
+    fn warm<DB: Database>(&self, db: &mut DB) -> Result<(), DB::Error> {
         match *self {
             Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
+                let _ = db.basic(address)?;
             }
             Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
+                let _ = db.storage(address, slot)?;
+            }
+            Self::ExpiringNonce {
+                seen_slot,
+                ring_offset,
+            } => {
+                let _ = db.basic(NONCE_PRECOMPILE_ADDRESS)?;
+                let _ = db.storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
+
+                let ptr = db
+                    .storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_slots::EXPIRING_NONCE_RING_PTR,
+                    )?
+                    .to::<u32>();
+                let offset = (ring_offset % EXPIRING_NONCE_SET_CAPACITY as usize) as u32;
+                let idx = (ptr + offset) % EXPIRING_NONCE_SET_CAPACITY;
+                let old_hash = db.storage(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    idx.mapping_slot(nonce_slots::EXPIRING_NONCE_RING),
+                )?;
+
+                if !old_hash.is_zero() {
+                    let old_hash = B256::from(old_hash.to_be_bytes::<32>());
+                    let _ = db.storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
+                    )?;
+                }
             }
         }
 
@@ -392,6 +439,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
+    expiring_nonce_offset: Option<usize>,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
@@ -412,7 +460,7 @@ fn storage_touches_for_transaction(
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx);
+    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
 
     touches
 }
@@ -543,17 +591,21 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(
+    touches: &mut Vec<StorageTouch>,
+    tx: &BestTransaction,
+    expiring_nonce_offset: Option<usize>,
+) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
 
-    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
-    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
-    add_storage_touch(
+    add_unique_touch(
         touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_slots::EXPIRING_NONCE_RING_PTR,
+        StorageTouch::ExpiringNonce {
+            seen_slot: expiring_nonce_slot,
+            ring_offset: expiring_nonce_offset.unwrap_or_default(),
+        },
     );
 }
 
