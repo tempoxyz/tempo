@@ -247,9 +247,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             return None;
         }
 
-        let Some(public_key) = attributes.proposer_public_key() else {
-            return None;
-        };
+        let public_key = attributes.proposer_public_key()?;
 
         let spec = evm.cfg.spec;
         let should_report = match evm
