@@ -1172,6 +1172,9 @@ impl TIP20Token {
 
         if to.target != Address::ZERO {
             let to_balance = self.get_balance(to.target)?;
+            if to_balance.amount().is_zero() && to.target != TIP_FEE_MANAGER_ADDRESS {
+                tracing::error!("to_balance is zero: {:?} {:?}", to.target, to_balance);
+            }
             self.set_balance(
                 to.target,
                 UserState::new(to_balance.checked_add(amount)?, to_flag)?,
