@@ -33,6 +33,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--txpool.max-pending-txns" "200000"
     "--txpool.max-new-txns" "200000"
     "--txpool.max-batch-size" "200000"
+    "--engine.disable-state-cache"
 ]
 
 def merge-e2e-features [...features: string] {
