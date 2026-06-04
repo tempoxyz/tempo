@@ -32,9 +32,9 @@ use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{
-    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, ProviderError,
-    RocksDBProviderFactory, StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader,
-    StorageSettingsCache, TrieWriter,
+    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, RocksDBProviderFactory,
+    StaticFileProviderFactory, StaticFileSegment, StorageChangeSetReader, StorageSettingsCache,
+    TrieWriter,
 };
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
@@ -198,11 +198,11 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // set during genesis, and overwriting with Account::default() would clear the
             // code hash, making the token appear uninitialized.
             if let Entry::Vacant(e) = accounts_seen.entry(address) {
-                let address = keccak256(address);
+                let hashed_address = keccak256(address);
                 let mut account_cursor = provider_rw
                     .tx_ref()
-                    .cursor_write::<tables::HashedAccounts>()?;
-                let account = match account_cursor.seek_exact(address)? {
+                    .cursor_read::<tables::HashedAccounts>()?;
+                let account = match account_cursor.seek_exact(hashed_address)? {
                     Some((_, account)) => account,
                     None => {
                         return Err(eyre::eyre!(
@@ -308,56 +308,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "init-from-binary-dump only supports storage v2 databases"
         );
 
-        info!(
-            target: "tempo::cli",
-            "Writing storage changesets..."
-        );
+        let storage_changeset_factory = provider_factory.clone();
+        let storage_changeset_worker = thread::spawn(move || {
+            write_storage_changesets(storage_changeset_factory, storage_changeset_collector)
+        });
 
-        provider_rw
-            .static_file_provider()
-            .delete_segment(StaticFileSegment::StorageChangeSets)?;
-
-        let mut storage_changeset_writer =
-            provider_rw.get_static_file_writer(0, StaticFileSegment::StorageChangeSets)?;
-        storage_changeset_writer.begin_storage_changeset(0)?;
-        let storage_changeset_total = storage_changeset_collector.len();
-        load_storage_etl(
-            &mut storage_changeset_collector,
-            storage_changeset_total,
-            "storage changeset",
-            |address, key, value| {
-                storage_changeset_writer.append_storage_changeset_entry(StorageBeforeTx {
-                    address,
-                    key,
-                    value,
-                })?;
-                Ok(())
-            },
-        )?;
-        drop(storage_changeset_writer);
-
-        let storage_history_total = storage_history_collector.len();
-        let block_zero_history =
-            tables::BlockNumberList::new([0]).expect("single block is always sorted");
-        provider_rw.with_rocksdb_batch_auto_commit(|mut batch| {
-            load_storage_etl(
-                &mut storage_history_collector,
-                storage_history_total,
-                "storage history",
-                |address, key, _| {
-                    let history_key = StorageShardedKey::last(address, key);
-                    if batch
-                        .get::<tables::StoragesHistory>(history_key.clone())?
-                        .is_none()
-                    {
-                        batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|err| ProviderError::other(std::io::Error::other(err.to_string())))?;
-            Ok(((), Some(batch.into_inner())))
-        })?;
+        let storage_history_factory = provider_factory.clone();
+        let storage_history_worker = thread::spawn(move || {
+            write_storage_history(storage_history_factory, storage_history_collector)
+        });
 
         // Load sorted entries from each ETL collector into its database table.
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
@@ -397,6 +356,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 .iter()
                 .map(|(addr, account)| (*addr, Some(*account))),
         )?;
+
+        storage_changeset_worker
+            .join()
+            .map_err(|_| eyre::eyre!("storage changeset worker panicked"))??;
+        storage_history_worker
+            .join()
+            .map_err(|_| eyre::eyre!("storage history worker panicked"))??;
 
         info!(
             target: "tempo::cli",
@@ -469,6 +435,74 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         Ok(())
     }
+}
+
+fn write_storage_changesets<P>(
+    provider: P,
+    mut collector: Collector<Vec<u8>, CompactU256>,
+) -> eyre::Result<()>
+where
+    P: StaticFileProviderFactory + Send + 'static,
+{
+    info!(target: "tempo::cli", "Writing storage changesets...");
+
+    provider
+        .static_file_provider()
+        .delete_segment(StaticFileSegment::StorageChangeSets)?;
+
+    let mut writer = provider.get_static_file_writer(0, StaticFileSegment::StorageChangeSets)?;
+    writer.begin_storage_changeset(0)?;
+    let total = collector.len();
+    load_storage_etl(
+        &mut collector,
+        total,
+        "storage changeset",
+        |address, key, value| {
+            writer.append_storage_changeset_entry(StorageBeforeTx {
+                address,
+                key,
+                value,
+            })?;
+            Ok(())
+        },
+    )?;
+    drop(writer);
+
+    Ok(())
+}
+
+fn write_storage_history<P>(
+    provider: P,
+    mut collector: Collector<Vec<u8>, CompactU256>,
+) -> eyre::Result<()>
+where
+    P: RocksDBProviderFactory + Send + 'static,
+{
+    info!(target: "tempo::cli", "Writing storage history...");
+
+    let rocksdb = provider.rocksdb_provider();
+    let mut batch = rocksdb.batch_with_auto_commit();
+    let block_zero_history =
+        tables::BlockNumberList::new([0]).expect("single block is always sorted");
+    let total = collector.len();
+    load_storage_etl(
+        &mut collector,
+        total,
+        "storage history",
+        |address, key, _| {
+            let history_key = StorageShardedKey::last(address, key);
+            if batch
+                .get::<tables::StoragesHistory>(history_key.clone())?
+                .is_none()
+            {
+                batch.put::<tables::StoragesHistory>(history_key, &block_zero_history)?;
+            }
+            Ok(())
+        },
+    )?;
+    batch.commit()?;
+
+    Ok(())
 }
 
 /// Composite ETL key for unhashed storage, sorted by address then slot.
