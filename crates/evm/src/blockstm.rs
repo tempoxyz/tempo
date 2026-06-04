@@ -217,6 +217,7 @@ where
     /// `should_commit` observes the result before state mutation. Returning `false` leaves
     /// executor state unchanged, allowing the payload builder to stop at the exact block gas
     /// boundary.
+    #[expect(clippy::too_many_arguments)]
     pub fn execute_tip20_transfer_action_replay_tx(
         &mut self,
         tx: impl ExecutableTx<Self>,
@@ -225,6 +226,7 @@ where
         transaction_index: usize,
         should_commit: impl FnOnce(&TempoTxResult) -> bool,
         recycle_actions: impl FnOnce(Vec<EvmAction>),
+        commit_reads: bool,
     ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
@@ -260,6 +262,7 @@ where
             actions.as_slice(),
             replay_state,
             cfg.spec,
+            commit_reads,
         )?;
         drop(actions);
         let result = TempoTxResult::new_precomputed(
@@ -385,6 +388,7 @@ fn action_replay_state<DB: Database>(
     actions: &[EvmAction],
     replay_state: &mut Tip20ActionReplayState,
     spec: TempoHardfork,
+    commit_reads: bool,
 ) -> Result<AppliedActionReplay, Tip20TransferBlockstmExecutionError> {
     if actions.is_empty() {
         return Err(Tip20TransferBlockstmExecutionError::Fallback(
@@ -450,7 +454,7 @@ fn action_replay_state<DB: Database>(
     }
 
     let mut state = EvmState::default();
-    if db.bal_state.bal_builder.is_some() {
+    if commit_reads {
         let sender = tx.caller();
         let account = action_account_info(db, sender)?;
         let mut account = Account::from(account);
@@ -458,7 +462,7 @@ fn action_replay_state<DB: Database>(
         state.insert(sender, account);
     }
     for (key, change) in replay_state.changes.drain() {
-        if change.write_kind.is_none() && db.bal_state.bal_builder.is_none() {
+        if change.write_kind.is_none() && commit_reads {
             continue;
         }
 
