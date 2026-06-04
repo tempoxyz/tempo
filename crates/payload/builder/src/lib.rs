@@ -598,7 +598,6 @@ where
                         beneficiary,
                         basefee: base_fee as u128,
                         blob_gasprice: executor.evm().block().blob_gasprice().unwrap_or_default(),
-                        block_timestamp: executor.evm().block().timestamp().saturating_to::<u64>(),
                         spec: executor.evm().cfg.spec,
                     },
                     blockstm_prewarm,

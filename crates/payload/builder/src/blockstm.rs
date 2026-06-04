@@ -4,12 +4,11 @@ use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use std::{
-    collections::BTreeMap,
     error::Error,
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -62,7 +61,6 @@ pub(crate) struct PlanningContext {
     pub(crate) beneficiary: Address,
     pub(crate) basefee: u128,
     pub(crate) blob_gasprice: u128,
-    pub(crate) block_timestamp: u64,
     pub(crate) spec: TempoHardfork,
 }
 
@@ -72,22 +70,15 @@ pub(crate) struct PlannedTransfer {
     pub(crate) plan: Tip20TransferBlockstmPlan,
 }
 
-#[derive(Debug)]
-struct PlanningResult {
-    sequence: usize,
-    item: Result<PlannedTransfer, Tip20TransferBlockstmFallback>,
-}
-
-/// Ordered TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
+/// TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
 pub(crate) struct Planner<Provider> {
     commands_tx: Sender<PlannerCommand>,
     results_rx: Receiver<PlannerMessage>,
     stop: Arc<AtomicBool>,
     prewarm: Option<PrewarmingExecutionContext<Provider>>,
-    next_emit: usize,
-    scheduled_count: usize,
-    final_sequence: Option<usize>,
-    buffered: BTreeMap<usize, Result<PlannedTransfer, Tip20TransferBlockstmFallback>>,
+    scheduled_count: Arc<AtomicUsize>,
+    completed_count: usize,
+    source_exhausted: bool,
 }
 
 pub(crate) enum PlannerNext {
@@ -111,11 +102,13 @@ where
         let (results_tx, results_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let scheduled_count = Arc::new(AtomicUsize::new(0));
         let coordinator_stop = stop.clone();
 
         let coordinator_executor = executor.clone();
         let coordinator_commands_tx = commands_tx.clone();
         let coordinator_prewarm = prewarm.clone();
+        let coordinator_scheduled_count = scheduled_count.clone();
         executor.spawn_blocking_named("builder-blockstm-planner", move || {
             Self::start_planning(
                 coordinator_executor,
@@ -127,6 +120,7 @@ where
                     stop: coordinator_stop,
                     prewarm: coordinator_prewarm,
                     ctx,
+                    scheduled_count: coordinator_scheduled_count,
                     next_sequence: 0,
                     source_exhausted: false,
                 },
@@ -138,10 +132,9 @@ where
             results_rx,
             stop,
             prewarm,
-            next_emit: 0,
-            scheduled_count: 0,
-            final_sequence: None,
-            buffered: BTreeMap::new(),
+            scheduled_count,
+            completed_count: 0,
+            source_exhausted: false,
         }
     }
 
@@ -168,17 +161,15 @@ where
 
                     let Some(tx) = planner.best_txs.next() else {
                         planner.source_exhausted = true;
-                        let _ = planner.results_tx.send(PlannerMessage::SourceExhausted {
-                            scheduled_count: planner.next_sequence,
-                        });
+                        let _ = planner.results_tx.send(PlannerMessage::SourceExhausted);
                         return;
                     };
 
                     let sequence = planner.next_sequence;
                     planner.next_sequence += 1;
-                    let _ = planner.results_tx.send(PlannerMessage::Scheduled {
-                        scheduled_count: planner.next_sequence,
-                    });
+                    planner
+                        .scheduled_count
+                        .store(planner.next_sequence, Ordering::Relaxed);
 
                     let results_tx = planner.results_tx.clone();
                     let commands_tx = planner.commands_tx.clone();
@@ -195,17 +186,11 @@ where
                         )
                         .map(|plan| {
                             if let Some(prewarm) = prewarm {
-                                prewarm_tip20_transfer_plan(
-                                    &prewarm,
-                                    &plan,
-                                    ctx.block_timestamp,
-                                    sequence,
-                                );
+                                prewarm_tip20_transfer_plan(&prewarm, &plan, sequence);
                             }
                             PlannedTransfer { tx, plan }
                         });
-                        let _ = results_tx
-                            .send(PlannerMessage::Planned(PlanningResult { sequence, item }));
+                        let _ = results_tx.send(PlannerMessage::Planned(item));
                         let _ = commands_tx.send(PlannerCommand::Advance);
                     });
                 };
@@ -252,26 +237,14 @@ where
         let _ = self.commands_tx.send(PlannerCommand::StateUpdate(update));
     }
 
-    pub(crate) fn scheduled_count(&mut self) -> usize {
-        self.drain_messages();
-        self.scheduled_count
+    pub(crate) fn scheduled_count(&self) -> usize {
+        self.scheduled_count.load(Ordering::Relaxed)
     }
 
     pub(crate) fn next(&mut self) -> PlannerNext {
         loop {
-            if let Some(item) = self.buffered.remove(&self.next_emit) {
-                self.next_emit += 1;
-                return PlannerNext::Planned(item);
-            }
-
-            self.drain_messages();
-            if let Some(item) = self.buffered.remove(&self.next_emit) {
-                self.next_emit += 1;
-                return PlannerNext::Planned(item);
-            }
-            if self
-                .final_sequence
-                .is_some_and(|final_sequence| self.next_emit == final_sequence)
+            if self.source_exhausted
+                && self.completed_count == self.scheduled_count.load(Ordering::Relaxed)
             {
                 return PlannerNext::Empty;
             }
@@ -279,28 +252,24 @@ where
             let Ok(message) = self.results_rx.recv() else {
                 return PlannerNext::Empty;
             };
-            self.record_message(message);
+            if let Some(item) = self.record_message(message) {
+                return PlannerNext::Planned(item);
+            }
         }
     }
 
-    fn drain_messages(&mut self) {
-        while let Ok(message) = self.results_rx.try_recv() {
-            self.record_message(message);
-        }
-    }
-
-    fn record_message(&mut self, message: PlannerMessage) {
+    fn record_message(
+        &mut self,
+        message: PlannerMessage,
+    ) -> Option<Result<PlannedTransfer, Tip20TransferBlockstmFallback>> {
         match message {
-            PlannerMessage::Scheduled { scheduled_count } => {
-                self.scheduled_count = self.scheduled_count.max(scheduled_count);
+            PlannerMessage::SourceExhausted => {
+                self.source_exhausted = true;
+                None
             }
-            PlannerMessage::SourceExhausted { scheduled_count } => {
-                self.scheduled_count = self.scheduled_count.max(scheduled_count);
-                self.final_sequence = Some(scheduled_count);
-            }
-            PlannerMessage::Planned(result) => {
-                self.scheduled_count = self.scheduled_count.max(result.sequence + 1);
-                self.buffered.insert(result.sequence, result.item);
+            PlannerMessage::Planned(item) => {
+                self.completed_count += 1;
+                Some(item)
             }
         }
     }
@@ -324,15 +293,15 @@ struct PlannerContext<Txs, Provider> {
     stop: Arc<AtomicBool>,
     prewarm: Option<PrewarmingExecutionContext<Provider>>,
     ctx: PlanningContext,
+    scheduled_count: Arc<AtomicUsize>,
     next_sequence: usize,
     source_exhausted: bool,
 }
 
 #[derive(Debug)]
 enum PlannerMessage {
-    Scheduled { scheduled_count: usize },
-    Planned(PlanningResult),
-    SourceExhausted { scheduled_count: usize },
+    Planned(Result<PlannedTransfer, Tip20TransferBlockstmFallback>),
+    SourceExhausted,
 }
 
 #[derive(Debug)]
@@ -349,7 +318,6 @@ enum PlannerCommand {
 fn prewarm_tip20_transfer_plan<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
     plan: &Tip20TransferBlockstmPlan,
-    block_timestamp: u64,
     sequence: usize,
 ) where
     Provider: StateProviderFactory + Clone + 'static,
@@ -363,8 +331,7 @@ fn prewarm_tip20_transfer_plan<Provider>(
             return;
         };
 
-        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan, block_timestamp)
-        {
+        if let Err(err) = prewarm_tip20_transfer_blockstm_plan(evm.db_mut(), plan) {
             trace!(
                 target: "payload_builder",
                 ?err,

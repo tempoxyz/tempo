@@ -262,24 +262,16 @@ struct Tip20BlockstmBaseAccesses {
 pub fn prewarm_tip20_transfer_blockstm_plan<DB: Database>(
     db: &mut DB,
     plan: &Tip20TransferBlockstmPlan,
-    block_timestamp: u64,
 ) -> Result<(), DB::Error> {
     let accesses = plan.base_accesses();
+    let nonce_ring_ptr_key = expiring_nonce_ring_ptr_key();
 
     for key in accesses.storage.iter().copied() {
+        if key == nonce_ring_ptr_key {
+            continue;
+        }
         let _ = db.storage(key.address, key.slot)?;
     }
-    read_expiring_nonce_base_storage(
-        plan,
-        block_timestamp,
-        |key| db.storage(key.address, key.slot),
-        |ptr_word, expiring_nonce_idx| -> Result<u32, DB::Error> {
-            let ptr = ptr_word.to::<u32>();
-            let offset =
-                expiring_nonce_idx.unwrap_or_default() % EXPIRING_NONCE_SET_CAPACITY as usize;
-            Ok(((u64::from(ptr) + offset as u64) % u64::from(EXPIRING_NONCE_SET_CAPACITY)) as u32)
-        },
-    )?;
 
     for account in accesses.accounts.iter().copied() {
         let _ = db.basic(account)?;
