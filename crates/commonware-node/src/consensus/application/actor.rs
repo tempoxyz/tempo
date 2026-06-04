@@ -1145,6 +1145,10 @@ impl Inner<Init> {
                 );
             }
 
+            self.state
+                .speculative_builds
+                .track_build_control(build_control.clone())
+                .await;
             let mut speculative_build = self
                 .dispatch_speculative_payload_build(
                     &context,
@@ -1317,10 +1321,6 @@ impl Inner<Init> {
         consensus_context: Option<TempoConsensusContext>,
         reason: &'static str,
     ) -> eyre::Result<SpeculativeBuild> {
-        self.state
-            .speculative_builds
-            .track_build_control(build_control.clone())
-            .await;
         let block_access_list = block.required_block_access_list().clone();
 
         let mut epoch_millis = context.current().epoch_millis();
@@ -1514,6 +1514,12 @@ impl Inner<Init> {
         }
 
         let build_control = PayloadBuildControl::new(self.proposal_return_budget);
+        self.state
+            .speculative_builds
+            .track_build_control(build_control.clone())
+            .await;
+
+        let prepare_start = Instant::now();
         let build = self
             .dispatch_speculative_payload_build(
                 context,
@@ -1524,6 +1530,17 @@ impl Inner<Init> {
                 "handle_verify",
             )
             .await?;
+        let prepare_elapsed = prepare_start.elapsed();
+
+        if build.build_control.is_cancelled() {
+            debug!(
+                parent.digest = %block.digest(),
+                parent.height = %block.height(),
+                prepare_elapsed = ?prepare_elapsed,
+                "discarding cancelled speculative BAL payload build before registry insertion"
+            );
+            return Ok(());
+        }
 
         self.state
             .speculative_builds
@@ -1536,6 +1553,7 @@ impl Inner<Init> {
         debug!(
             parent.digest = %block.digest(),
             parent.height = %block.height(),
+            prepare_elapsed = ?prepare_elapsed,
             "started speculative BAL payload build from handle_verify"
         );
 
@@ -1615,8 +1633,8 @@ impl Inner<Init> {
         }
 
         #[cfg(feature = "bal")]
-        // Dispatch B+1 before validating B. Reth only snapshots B-1 synchronously; the BAL parent
-        // prep and B+1 execution run while B validation is in flight.
+        // Capture the private sparse-trie snapshot and deferred builder handle before validating B.
+        // Reth fulfills the BAL-derived parent prep and the B+1 build asynchronously after this.
         if let Err(error) = self.start_speculative_build(&context, &block).await {
             warn!(
                 %error,
