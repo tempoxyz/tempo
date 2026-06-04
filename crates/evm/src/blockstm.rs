@@ -145,7 +145,7 @@ impl Tip20ActionReplayState {
 
     fn commit(&mut self, writes: impl IntoIterator<Item = (StorageKey, WriteKind)>) {
         for (key, kind) in writes {
-            merge_write_kind(&mut self.writes, key, kind);
+            merge_committed_write_kind(&mut self.writes, key, kind);
         }
     }
 }
@@ -154,6 +154,12 @@ impl Tip20ActionReplayState {
 enum WriteKind {
     Store,
     Delta,
+}
+
+struct SlotChange {
+    original: U256,
+    current: U256,
+    write_kind: Option<WriteKind>,
 }
 
 struct AppliedActionReplay {
@@ -333,9 +339,7 @@ fn action_replay_state<DB: StateDB>(
         ));
     }
 
-    let mut originals = HashMap::<StorageKey, U256>::default();
-    let mut writes = HashMap::<StorageKey, U256>::default();
-    let mut write_kinds = HashMap::<StorageKey, WriteKind>::default();
+    let mut changes = HashMap::<StorageKey, SlotChange>::default();
 
     for action in actions {
         match *action {
@@ -344,40 +348,24 @@ fn action_replay_state<DB: StateDB>(
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
                 }
-                let _ = action_current_value(db, &writes, &mut originals, key)?;
+                let _ = action_current_value(db, &mut changes, key)?;
             }
             EvmAction::Sstore(address, slot, value) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_write(key) {
                     return Err(action_conflict());
                 }
-                action_write_value(
-                    db,
-                    &mut writes,
-                    &mut originals,
-                    &mut write_kinds,
-                    key,
-                    value,
-                    WriteKind::Store,
-                )?;
+                action_write_value(db, &mut changes, key, value, WriteKind::Store)?;
             }
             EvmAction::Sinc(address, slot, delta) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(key) {
                     return Err(action_conflict());
                 }
-                let value = action_current_value(db, &writes, &mut originals, key)?
+                let value = action_current_value(db, &mut changes, key)?
                     .checked_add(delta)
                     .ok_or_else(balance_overflow)?;
-                action_write_value(
-                    db,
-                    &mut writes,
-                    &mut originals,
-                    &mut write_kinds,
-                    key,
-                    value,
-                    WriteKind::Delta,
-                )?;
+                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
             }
             EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -385,21 +373,13 @@ fn action_replay_state<DB: StateDB>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &writes, &mut originals, key)?,
+                    action_current_value(db, &mut changes, key)?,
                     spec,
                     delta,
                     flag,
                     true,
                 )?;
-                action_write_value(
-                    db,
-                    &mut writes,
-                    &mut originals,
-                    &mut write_kinds,
-                    key,
-                    value,
-                    WriteKind::Delta,
-                )?;
+                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
             }
             EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -407,27 +387,24 @@ fn action_replay_state<DB: StateDB>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &writes, &mut originals, key)?,
+                    action_current_value(db, &mut changes, key)?,
                     spec,
                     delta,
                     flag,
                     false,
                 )?;
-                action_write_value(
-                    db,
-                    &mut writes,
-                    &mut originals,
-                    &mut write_kinds,
-                    key,
-                    value,
-                    WriteKind::Delta,
-                )?;
+                action_write_value(db, &mut changes, key, value, WriteKind::Delta)?;
             }
         }
     }
 
     let mut state = EvmState::default();
-    for (key, value) in writes {
+    let mut writes = Vec::new();
+    for (key, change) in changes {
+        let Some(write_kind) = change.write_kind else {
+            continue;
+        };
+
         if let Entry::Vacant(e) = state.entry(key.address) {
             let mut account = Account::from(action_account_info(db, key.address)?);
             account.mark_touch();
@@ -436,54 +413,53 @@ fn action_replay_state<DB: StateDB>(
         let account = state
             .get_mut(&key.address)
             .expect("action replay account inserted");
-        let original = originals.get(&key).copied().unwrap_or_default();
         account.storage.insert(
             key.slot,
-            EvmStorageSlot::new_changed(original, value, TransactionId::ZERO),
+            EvmStorageSlot::new_changed(change.original, change.current, TransactionId::ZERO),
         );
+        writes.push((key, write_kind));
     }
 
-    Ok(AppliedActionReplay {
-        state,
-        writes: write_kinds.into_iter().collect(),
-    })
+    Ok(AppliedActionReplay { state, writes })
 }
 
 fn action_current_value<DB: StateDB>(
     db: &mut DB,
-    writes: &HashMap<StorageKey, U256>,
-    originals: &mut HashMap<StorageKey, U256>,
+    changes: &mut HashMap<StorageKey, SlotChange>,
     key: StorageKey,
 ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
-    if let Some(value) = writes.get(&key) {
-        return Ok(*value);
-    }
-    if let Some(value) = originals.get(&key) {
-        return Ok(*value);
+    if let Some(change) = changes.get(&key) {
+        return Ok(change.current);
     }
 
     let value = db
         .storage(key.address, key.slot)
         .map_err(BlockExecutionError::other)
         .map_err(Tip20TransferBlockstmExecutionError::Database)?;
-    originals.insert(key, value);
+    changes.insert(
+        key,
+        SlotChange {
+            original: value,
+            current: value,
+            write_kind: None,
+        },
+    );
     Ok(value)
 }
 
 fn action_write_value<DB: StateDB>(
     db: &mut DB,
-    writes: &mut HashMap<StorageKey, U256>,
-    originals: &mut HashMap<StorageKey, U256>,
-    write_kinds: &mut HashMap<StorageKey, WriteKind>,
+    changes: &mut HashMap<StorageKey, SlotChange>,
     key: StorageKey,
     value: U256,
     kind: WriteKind,
 ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-    if !originals.contains_key(&key) {
-        let _ = action_current_value(db, writes, originals, key)?;
-    }
-    writes.insert(key, value);
-    merge_write_kind(write_kinds, key, kind);
+    let _ = action_current_value(db, changes, key)?;
+    let change = changes
+        .get_mut(&key)
+        .expect("action replay slot change inserted");
+    change.current = value;
+    merge_write_kind(&mut change.write_kind, kind);
     Ok(())
 }
 
@@ -511,7 +487,17 @@ fn action_tip20_balance_value(
     })
 }
 
-fn merge_write_kind(writes: &mut HashMap<StorageKey, WriteKind>, key: StorageKey, kind: WriteKind) {
+fn merge_write_kind(existing: &mut Option<WriteKind>, kind: WriteKind) {
+    if existing.is_none() || kind == WriteKind::Store {
+        *existing = Some(kind);
+    }
+}
+
+fn merge_committed_write_kind(
+    writes: &mut HashMap<StorageKey, WriteKind>,
+    key: StorageKey,
+    kind: WriteKind,
+) {
     writes
         .entry(key)
         .and_modify(|existing| {
