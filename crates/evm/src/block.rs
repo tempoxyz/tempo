@@ -32,9 +32,7 @@ use tempo_contracts::precompiles::{
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, SYSTEM_CALLER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
-use tempo_precompiles::{
-    feature_registry::FeatureRegistry, validator_config_v2::ValidatorConfigV2,
-};
+use tempo_precompiles::feature_registry::FeatureRegistry;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
@@ -363,25 +361,25 @@ where
             ));
         };
 
-        let public_key = B256::from(&consensus_context.proposer);
+        if call.publicKey != B256::from(&consensus_context.proposer) {
+            return Err(BlockValidationError::msg(
+                "invalid feature registry system transaction",
+            ));
+        }
+
         let spec = self.evm().cfg.spec;
-        let (validator, reported_features_tip) = self
+        let reported_features_tip = self
             .evm_mut()
             .db_mut()
-            .with_read_only_storage_ctx(spec, || -> tempo_precompiles::error::Result<_> {
-                let validator = ValidatorConfigV2::new().validator_by_public_key(public_key)?;
-                let reported_features_tip =
-                    FeatureRegistry::new().validator_supported_features_tip(call.validator)?;
-                Ok((validator, reported_features_tip))
+            .with_read_only_storage_ctx(spec, || {
+                FeatureRegistry::new()
+                    .validator_supported_features_tip_by_public_key(call.publicKey)
             })
             .map_err(|_| {
                 BlockValidationError::msg("invalid feature registry system transaction")
             })?;
 
-        if validator.deactivatedAtHeight != 0
-            || validator.validatorAddress != call.validator
-            || reported_features_tip >= call.featuresTip
-        {
+        if reported_features_tip >= call.featuresTip {
             return Err(BlockValidationError::msg(
                 "invalid feature registry system transaction",
             ));
@@ -833,7 +831,7 @@ mod tests {
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_precompiles::{
         storage::StorageCtx,
-        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
+        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
     };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
@@ -919,6 +917,10 @@ mod tests {
             &private_key.public_key().encode(),
         ))
         .unwrap()
+    }
+
+    fn b256_public_key_from_private_key(private_key: &PrivateKey) -> B256 {
+        B256::from_slice(&private_key.public_key().encode())
     }
 
     fn add_validator_signature(
@@ -1149,7 +1151,7 @@ mod tests {
         initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            validator,
+            publicKey: b256_public_key_from_private_key(&proposer_key),
             featuresTip: 13,
         }
         .abi_encode()
@@ -1173,10 +1175,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_system_tx_feature_registry_report_rejects_other_validator() {
+    fn test_validate_system_tx_feature_registry_report_rejects_other_public_key() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let proposer_key = PrivateKey::from_seed(0);
+        let other_key = PrivateKey::from_seed(1);
         let validator = Address::repeat_byte(0x11);
         let owner = Address::repeat_byte(0xaa);
         let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T6);
@@ -1185,7 +1188,7 @@ mod tests {
         initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            validator: Address::repeat_byte(0x22),
+            publicKey: b256_public_key_from_private_key(&other_key),
             featuresTip: 13,
         }
         .abi_encode()
@@ -1219,7 +1222,7 @@ mod tests {
         initialize_validator_config_v2(&mut executor, owner, validator, &proposer_key);
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            validator,
+            publicKey: b256_public_key_from_private_key(&proposer_key),
             featuresTip: 13,
         }
         .abi_encode()
@@ -1247,7 +1250,7 @@ mod tests {
             })
             .build(&mut db, &chainspec);
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            validator: Address::repeat_byte(0x11),
+            publicKey: B256::repeat_byte(0x11),
             featuresTip: 13,
         }
         .abi_encode()

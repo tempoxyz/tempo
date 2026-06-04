@@ -252,49 +252,29 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         };
 
         let spec = evm.cfg.spec;
-        let parent_number = evm.block.number.saturating_to::<u64>().saturating_sub(1);
-        let validator = match evm
+        let should_report = match evm
             .ctx_mut()
             .journaled_state
             .database
-            .with_read_only_storage_ctx(spec, || -> Result<Option<Address>, PayloadBuilderError> {
-                let config = ValidatorConfigV2::new();
-                if !config
-                    .is_initialized()
-                    .map_err(PayloadBuilderError::other)?
-                {
-                    return Ok(None);
-                }
-                if config
-                    .get_initialized_at_height()
-                    .map_err(PayloadBuilderError::other)?
-                    > parent_number
-                {
-                    return Ok(None);
-                }
-
-                let validator = config
-                    .validator_by_public_key(*public_key)
-                    .map_err(PayloadBuilderError::other)?;
-                if validator.deactivatedAtHeight != 0 {
-                    return Ok(None);
-                }
-
+            .with_read_only_storage_ctx(spec, || -> Result<bool, PayloadBuilderError> {
                 let reported_features_tip = FeatureRegistry::new()
-                    .validator_supported_features_tip(validator.validatorAddress)
+                    .validator_supported_features_tip_by_public_key(*public_key)
                     .map_err(PayloadBuilderError::other)?;
-                Ok((reported_features_tip < supported_features_tip)
-                    .then_some(validator.validatorAddress))
+                Ok(reported_features_tip < supported_features_tip)
             }) {
-            Ok(validator) => validator,
+            Ok(should_report) => should_report,
             Err(err) => {
-                warn!(%err, "failed resolving supported feature tip report; skipping");
-                None
+                debug!(%err, "skipping supported feature tip report");
+                false
             }
-        }?;
+        };
+
+        if !should_report {
+            return None;
+        }
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            validator,
+            publicKey: *public_key,
             featuresTip: supported_features_tip,
         }
         .abi_encode()

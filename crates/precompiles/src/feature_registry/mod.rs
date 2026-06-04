@@ -8,9 +8,11 @@ use crate::{
     storage::{Handler, Mapping},
     validator_config_v2::ValidatorConfigV2,
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256};
 use tempo_chainspec::epoch::block_to_epoch;
-use tempo_contracts::precompiles::{FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry};
+use tempo_contracts::precompiles::{
+    FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry, ValidatorConfigV2Error,
+};
 use tempo_precompiles_macros::contract;
 
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
@@ -79,6 +81,20 @@ impl FeatureRegistry {
         self.validator_supported_features_tip[validator].read()
     }
 
+    pub fn validator_supported_features_tip_by_public_key(&self, public_key: B256) -> Result<u64> {
+        let validator = self.validator_address_by_public_key(public_key)?;
+        self.validator_supported_features_tip(validator)
+    }
+
+    fn validator_address_by_public_key(&self, public_key: B256) -> Result<Address> {
+        let validator = ValidatorConfigV2::new().validator_by_public_key(public_key)?;
+        if validator.deactivatedAtHeight != 0 {
+            return Err(ValidatorConfigV2Error::validator_already_deactivated().into());
+        }
+
+        Ok(validator.validatorAddress)
+    }
+
     pub fn set_supported_features_tip(
         &mut self,
         msg_sender: Address,
@@ -88,12 +104,13 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::unauthorized().into());
         }
 
-        let previous = self.validator_supported_features_tip[call.validator].read()?;
+        let validator = self.validator_address_by_public_key(call.publicKey)?;
+        let previous = self.validator_supported_features_tip[validator].read()?;
         if call.featuresTip < previous {
             return Err(FeatureRegistryError::supported_features_tip_decreased().into());
         }
 
-        self.validator_supported_features_tip[call.validator].write(call.featuresTip)
+        self.validator_supported_features_tip[validator].write(call.featuresTip)
     }
 
     pub fn schedule_features_tip(
