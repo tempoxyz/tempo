@@ -83,8 +83,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         skip_refund: true,
     };
 
-    // if new and present value are equal or if both present value are not zero, skip storage credits accounting.
-    if values.is_new_eq_present() || (!values.is_present_zero() && !values.is_new_zero()) {
+    // Only account for storage credits when the slot crosses the zero boundary
+    // (zero -> non-zero or non-zero -> zero). If both values are zero or both are
+    // non-zero, slot occupancy is unchanged, so skip storage credits accounting.
+    if values.is_present_zero() == values.is_new_zero() {
         return Ok(outcome);
     }
 
