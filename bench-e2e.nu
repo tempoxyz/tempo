@@ -28,6 +28,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
+    "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
     "--txpool.queued-max-count" "200000"
@@ -206,11 +207,14 @@ def ensure-bloat-space [bloat: int] {
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
+    if $bloat == 0 {
+        return 0
+    }
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
     }
 
-    print "Error: --bloat must be one of: 1, 10, 100"
+    print "Error: --bloat must be one of: 0, 1, 10, 100"
     exit 1
 }
 
@@ -1089,6 +1093,7 @@ def e2e-write-summary-config [
     duration: int
     benchmark_id: string
     reference_epoch: int
+    summary_warmup_blocks: int
     baseline_hardfork: string
     feature_hardfork: string
     baseline_removed_args: string
@@ -1103,6 +1108,7 @@ def e2e-write-summary-config [
         duration: $duration
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        summary_warmup_blocks: $summary_warmup_blocks
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
         baseline_removed_args: $baseline_removed_args
@@ -1120,7 +1126,8 @@ def e2e-generate-summary [results_dir: string] {
     let config = (open $config_path)
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
-    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+    let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
@@ -1156,9 +1163,10 @@ def "main e2e" [
     --preset: string = ""                               # Txgen preset name
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
+    --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1204,6 +1212,10 @@ def "main e2e" [
     }
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $summary_warmup_blocks < 0 {
+        print "Error: --summary-warmup-blocks must be non-negative"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1530,7 +1542,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

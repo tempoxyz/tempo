@@ -17,7 +17,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{PoolTransaction, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, PoolTransaction, TransactionPool};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     time::Instant,
@@ -582,7 +582,7 @@ where
 
     // Populate expiry tracking with existing transactions to prevent race conditions at start-up
     let all_txs = pool.all_transactions();
-    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+    for tx in all_txs.iter() {
         state.track(&tx.transaction);
     }
 
@@ -672,6 +672,9 @@ where
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
+                let mut all_txs: Option<AllPoolTransactions<TempoPooledTransaction>> = None;
+                let mut removed_this_iteration = B256Set::default();
+
                 // 5. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
 
@@ -687,20 +690,23 @@ where
                 // Process pause events: fetch pool transactions once for all pause tokens.
                 // This avoids the O(pause_events * pool_size) cost of fetching per event.
                 if !pause_tokens.is_empty() {
-                    let all_txs = pool.all_transactions();
-
                     // Group transactions by effective fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token = all_txs.into_iter().fold(
-                        AddressMap::<Vec<TxHash>>::default(),
-                        |mut by_token, tx| {
-                            by_token
-                                .entry(tx.transaction.effective_fee_token())
-                                .or_default()
-                                .push(*tx.hash());
-                            by_token
-                        },
-                    );
+                    let mut by_token = {
+                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                        all_txs.iter()
+                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .fold(
+                                AddressMap::<Vec<TxHash>>::default(),
+                                |mut by_token, tx| {
+                                    by_token
+                                        .entry(tx.transaction.effective_fee_token())
+                                        .or_default()
+                                        .push(*tx.hash());
+                                    by_token
+                                },
+                            )
+                    };
 
                     // Process each pause token
                     for token in pause_tokens {
@@ -716,6 +722,7 @@ where
                             // Clean up expiry tracking for paused txs
                             for tx in &removed_txs {
                                 state.untrack(tx.hash());
+                                removed_this_iteration.insert(*tx.hash());
                             }
 
                             let entries: Vec<_> = removed_txs
@@ -834,24 +841,26 @@ where
                         continue;
                     }
 
-                    let all_txs = pool.all_transactions();
-                    let hashes: Vec<TxHash> = all_txs
-                        .pending
-                        .iter()
-                        .chain(all_txs.queued.iter())
-                        .filter(|tx| {
-                            tx.transaction
-                                .resolved_fee_token()
-                                .is_some_and(|t| updated.contains(&t))
-                        })
-                        .map(|tx| *tx.hash())
-                        .collect();
+                    let hashes: Vec<TxHash> = {
+                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                        all_txs
+                            .iter()
+                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| {
+                                tx.transaction
+                                    .resolved_fee_token()
+                                    .is_some_and(|t| updated.contains(&t))
+                            })
+                            .map(|tx| *tx.hash())
+                            .collect()
+                    };
                     if !hashes.is_empty() {
                         let removed_txs = pool.remove_transactions(hashes);
                         let count = removed_txs.len();
 
                         for tx in &removed_txs {
                             state.untrack(tx.hash());
+                            removed_this_iteration.insert(*tx.hash());
                         }
 
                         counter.increment(count as u64);
@@ -895,7 +904,15 @@ where
                         whitelist_removals = updates.whitelist_removals.len(),
                         "Processing transaction invalidation events"
                     );
-                    let evicted = pool.evict_invalidated_transactions(&updates);
+                    let evicted = {
+                        let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                        pool.evict_invalidated_transactions_from(
+                            &updates,
+                            all_txs
+                                .iter()
+                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                        )
+                    };
                     for hash in &evicted {
                         state.untrack(hash);
                     }

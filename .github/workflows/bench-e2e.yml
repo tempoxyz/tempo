@@ -58,6 +58,7 @@ on:
         default: tip20
         options:
           - tip20
+          - tip20_2d_nonces
           - tip20_random_recipients
           - tip20_existing_recipients
           - mpp
@@ -73,6 +74,7 @@ on:
         required: true
         default: "100"
         options:
+          - "0"
           - "1"
           - "10"
           - "100"
