@@ -517,6 +517,14 @@ impl EvmActions {
         Some(std::mem::take(&mut *self.actions.borrow_mut()))
     }
 
+    pub fn replace(&self, actions: Vec<EvmAction>) -> Option<Vec<EvmAction>> {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        Some(std::mem::replace(&mut *self.actions.borrow_mut(), actions))
+    }
+
     pub fn record(&self, action: EvmAction) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;

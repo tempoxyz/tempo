@@ -680,6 +680,7 @@ where
                         pool_tx.transaction.inner().is_payment_v1()
                     };
                     let mut stop_reason = None;
+                    let action_recycler = planner.action_recycler();
 
                     let execution_result = executor.execute_tip20_transfer_action_replay_tx(
                         blockstm::candidate(&pool_tx),
@@ -715,6 +716,7 @@ where
                             ));
                             true
                         },
+                        move |actions| action_recycler.recycle(actions),
                     );
 
                     match execution_result {

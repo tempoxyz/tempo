@@ -1,4 +1,7 @@
 use alloy_primitives::Address;
+use crossbeam_channel::{
+    Receiver as ActionBufferReceiver, Sender as ActionBufferSender, TryRecvError,
+};
 use reth_evm::{Database, Evm};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_revm::context::result::{EVMError, InvalidTransaction};
@@ -20,7 +23,8 @@ use tempo_evm::{
     Tip20TransferBlockstmTx, validate_tip20_transfer_blockstm_tx,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::evm::EvmAction,
+    tip_fee_manager::TipFeeManager,
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
@@ -78,6 +82,7 @@ pub(crate) enum PlannedTransfer {
 pub(crate) struct Planner<Provider> {
     commands_tx: Sender<PlannerCommand>,
     results_rx: Receiver<PlannerMessage>,
+    action_buffer_recycler: ActionBufferRecycler,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
     scheduled_count: Arc<AtomicUsize>,
@@ -88,6 +93,18 @@ pub(crate) struct Planner<Provider> {
 pub(crate) enum PlannerNext {
     Planned(Result<PlannedTransfer, Tip20TransferBlockstmFallback>),
     Empty,
+}
+
+#[derive(Clone)]
+pub(crate) struct ActionBufferRecycler {
+    tx: ActionBufferSender<Vec<EvmAction>>,
+}
+
+impl ActionBufferRecycler {
+    pub(crate) fn recycle(&self, mut actions: Vec<EvmAction>) {
+        actions.clear();
+        let _ = self.tx.try_send(actions);
+    }
 }
 
 impl<Provider> Planner<Provider>
@@ -105,6 +122,12 @@ where
     {
         let (results_tx, results_rx) = mpsc::sync_channel(1);
         let (commands_tx, commands_rx) = mpsc::channel();
+        let action_buffer_capacity = (executor.prewarming_pool().current_num_threads() * 2).max(1);
+        let (action_buffers_tx, action_buffers_rx) =
+            crossbeam_channel::bounded(action_buffer_capacity);
+        let action_buffer_recycler = ActionBufferRecycler {
+            tx: action_buffers_tx,
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let scheduled_count = Arc::new(AtomicUsize::new(0));
         let coordinator_stop = stop.clone();
@@ -125,6 +148,7 @@ where
                     prewarm: coordinator_prewarm,
                     ctx,
                     scheduled_count: coordinator_scheduled_count,
+                    action_buffers_rx,
                     next_sequence: 0,
                     source_exhausted: false,
                 },
@@ -134,6 +158,7 @@ where
         Self {
             commands_tx,
             results_rx,
+            action_buffer_recycler,
             stop,
             prewarm,
             scheduled_count,
@@ -177,6 +202,7 @@ where
                     let results_tx = planner.results_tx.clone();
                     let commands_tx = planner.commands_tx.clone();
                     let prewarm = planner.prewarm.clone();
+                    let action_buffers_rx = planner.action_buffers_rx.clone();
                     let ctx = planner.ctx;
                     scope.spawn(move |_| {
                         let item = (|| {
@@ -186,7 +212,12 @@ where
                                 ctx.validator_token,
                                 ctx.spec,
                             )?;
-                            match prewarm_tip20_transfer_actions(&prewarm, candidate, sequence)? {
+                            match prewarm_tip20_transfer_actions(
+                                &prewarm,
+                                candidate,
+                                sequence,
+                                &action_buffers_rx,
+                            )? {
                                 Ok(replay) => Ok(PlannedTransfer::Valid { tx, replay }),
                                 Err(kind) => Ok(PlannedTransfer::Invalid { tx, kind }),
                             }
@@ -236,6 +267,10 @@ where
 
     pub(crate) fn scheduled_count(&self) -> usize {
         self.scheduled_count.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn action_recycler(&self) -> ActionBufferRecycler {
+        self.action_buffer_recycler.clone()
     }
 
     pub(crate) fn next(&mut self) -> PlannerNext {
@@ -289,6 +324,7 @@ struct PlannerContext<Txs, Provider> {
     prewarm: PrewarmingExecutionContext<Provider>,
     ctx: PlanningContext,
     scheduled_count: Arc<AtomicUsize>,
+    action_buffers_rx: ActionBufferReceiver<Vec<EvmAction>>,
     next_sequence: usize,
     source_exhausted: bool,
 }
@@ -314,6 +350,7 @@ fn prewarm_tip20_transfer_actions<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
     candidate: Tip20TransferBlockstmTx<'_>,
     sequence: usize,
+    action_buffers_rx: &ActionBufferReceiver<Vec<EvmAction>>,
 ) -> Result<
     Result<Tip20TransferActionReplay, InvalidPoolTransactionError>,
     Tip20TransferBlockstmFallback,
@@ -336,7 +373,6 @@ where
             candidate.recovered.is_payment_v1();
         }
 
-        let _ = evm.take_actions();
         let result = match evm.transact_raw(candidate.tx_env) {
             Ok(result) => result,
             Err(err) => {
@@ -360,7 +396,7 @@ where
         }
 
         let actions = evm
-            .take_actions()
+            .replace_actions(reusable_action_buffer(action_buffers_rx))
             .filter(|actions| !actions.is_empty())
             .ok_or(Tip20TransferBlockstmFallback::MissingActions)?;
 
@@ -370,6 +406,18 @@ where
             validator_fee: evm.validator_fee(),
         }))
     })
+}
+
+fn reusable_action_buffer(
+    action_buffers_rx: &ActionBufferReceiver<Vec<EvmAction>>,
+) -> Vec<EvmAction> {
+    match action_buffers_rx.try_recv() {
+        Ok(mut actions) => {
+            actions.clear();
+            actions
+        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => Vec::new(),
+    }
 }
 
 fn invalid_pool_error_from_evm_error<DBError>(

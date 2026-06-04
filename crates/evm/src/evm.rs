@@ -176,6 +176,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn take_actions(&mut self) -> Option<Vec<EvmAction>> {
         self.actions.take()
     }
+
+    /// Replaces the precompile storage action buffer, if recording is enabled.
+    #[cfg(feature = "engine")]
+    pub fn replace_actions(&mut self, actions: Vec<EvmAction>) -> Option<Vec<EvmAction>> {
+        self.actions.replace(actions)
+    }
 }
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>

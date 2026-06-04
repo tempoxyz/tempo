@@ -169,6 +169,41 @@ struct AppliedActionReplay {
     state: EvmState,
 }
 
+struct ActionBufferRecycleGuard<F>
+where
+    F: FnOnce(Vec<EvmAction>),
+{
+    actions: Option<Vec<EvmAction>>,
+    recycle: Option<F>,
+}
+
+impl<F> ActionBufferRecycleGuard<F>
+where
+    F: FnOnce(Vec<EvmAction>),
+{
+    fn new(actions: Vec<EvmAction>, recycle: F) -> Self {
+        Self {
+            actions: Some(actions),
+            recycle: Some(recycle),
+        }
+    }
+
+    fn as_slice(&self) -> &[EvmAction] {
+        self.actions.as_deref().unwrap_or_default()
+    }
+}
+
+impl<F> Drop for ActionBufferRecycleGuard<F>
+where
+    F: FnOnce(Vec<EvmAction>),
+{
+    fn drop(&mut self) {
+        if let (Some(actions), Some(recycle)) = (self.actions.take(), self.recycle.take()) {
+            recycle(actions);
+        }
+    }
+}
+
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
     DB: Database,
@@ -186,15 +221,23 @@ where
         replay_state: &mut Tip20ActionReplayState,
         transaction_index: usize,
         should_commit: impl FnOnce(&TempoTxResult) -> bool,
+        recycle_actions: impl FnOnce(Vec<EvmAction>),
     ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
-        if !replay.result.is_success() {
+        let Tip20TransferActionReplay {
+            result,
+            actions,
+            validator_fee,
+        } = replay;
+        let actions = ActionBufferRecycleGuard::new(actions, recycle_actions);
+
+        if !result.is_success() {
             return Err(Tip20TransferBlockstmExecutionError::Fallback(
                 Tip20TransferBlockstmFallback::ActionExecutionFailed,
             ));
         }
 
         let cfg = self.inner.evm.cfg_env().clone();
-        let gas = replay.result.gas();
+        let gas = result.gas();
         let block_gas_used = if cfg.enable_amsterdam_eip8037 {
             gas.block_regular_gas_used()
         } else {
@@ -209,18 +252,19 @@ where
         let applied = action_replay_state(
             &tx.tx_env,
             self.inner.evm.db_mut(),
-            &replay.actions,
+            actions.as_slice(),
             replay_state,
             cfg.spec,
         )?;
+        drop(actions);
         let result = TempoTxResult::new_precomputed(
             tx.recovered.tx(),
-            replay.result,
+            result,
             applied.state,
             next_section,
             self.is_payment(tx.recovered.tx()),
             block_gas_used,
-            replay.validator_fee,
+            validator_fee,
         );
         if !should_commit(&result) {
             return Ok(false);
