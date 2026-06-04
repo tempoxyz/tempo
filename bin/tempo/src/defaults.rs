@@ -13,6 +13,7 @@ use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
+/// One Tempo epoch length plus one block.
 const MINIMAL_PRUNING_DISTANCE: u64 = 86_401;
 const DEFAULT_BLOCKS_PER_STATIC_FILE: u64 = 50_000;
 
