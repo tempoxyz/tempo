@@ -8,7 +8,7 @@ pub use gas_state::{StorageCreditsBackend, sstore_storage_credits};
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
@@ -115,20 +115,229 @@ impl TIP1060StorageCredits {
     }
 
     #[inline]
-    fn write_state_of(&mut self, account: Address, state: AccountState) -> Result<()> {
+    pub fn set_state_of(&mut self, account: Address, state: AccountState) -> Result<()> {
         AccountState::handle(Self::slot(account), LayoutCtx::FULL, self.address).write(state)
     }
 
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mut state = self.state_of(msg_sender)?;
         state.mode = CreditMode::try_from(mode)?;
-        self.write_state_of(msg_sender, state)?;
+        self.set_state_of(msg_sender, state)?;
 
         self.emit_event(TIP1060StorageCreditsEvent::mode_updated(msg_sender, mode))
+    }
+
+    /// Runs `f` with an internal direct TIP-1060 budget for `account`.
+    pub fn with_budget<T>(
+        &mut self,
+        account: Address,
+        budget: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, u64)> {
+        let mut storage = StorageCtx;
+
+        // Install this scope's budget, and run `f`.
+        let previous = storage.set_storage_credit_budget(account, Some(budget))?;
+        debug_assert!(previous.is_none());
+        let result = f();
+
+        // Clear this scope and use the remaining budget to compute actual consumption.
+        let consumed = budget.saturating_sub(
+            storage
+                .set_storage_credit_budget(account, None)?
+                .unwrap_or_default(),
+        );
+        result.map(|value| (value, consumed))
     }
 
     #[inline]
     pub fn slot(account: Address) -> U256 {
         U256::from_be_bytes(account.into_word().0)
+    }
+}
+
+/// Per-user reusable storage credit state accumulated by a precompile call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageCreditAccount {
+    pub user: Address,
+    pub initial: u64,
+    pub persisted: u64,
+    pub current: u64,
+}
+
+impl StorageCreditAccount {
+    pub fn load(
+        user: Address,
+        read_credit: impl FnOnce(Address) -> Result<u64>,
+    ) -> Result<Option<Self>> {
+        if !StorageCtx.spec().is_t7() {
+            return Ok(None);
+        }
+
+        let initial = read_credit(user)?;
+        Ok(Some(Self {
+            user,
+            initial,
+            persisted: initial,
+            current: initial,
+        }))
+    }
+
+    fn counter_backed(&self) -> bool {
+        self.persisted > 0 && self.current > 0
+    }
+
+    fn free_backed_credits(&self) -> u64 {
+        self.current
+            .saturating_sub(u64::from(self.counter_backed()))
+    }
+
+    pub fn credit_slots(&mut self, slots: u64) {
+        self.current = self.current.saturating_add(slots);
+    }
+
+    /// Runs `write_storage` while allowing up to `slots.min(current)` TIP-1060 token consumptions.
+    ///
+    /// If spending all remaining credits, the persisted `dex_storage_credits[user]` counter is
+    /// cleared first so the credit embodied by that nonzero counter slot becomes an available
+    /// TIP-1060 token for the storage creation.
+    pub fn spend_storage_credits_for_create<T>(
+        &mut self,
+        slots: u64,
+        credit_owner: Address,
+        write_credit: impl FnOnce(Address, u64) -> Result<()>,
+        write_storage: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let budget = self.current.min(slots);
+        if budget == 0 {
+            return write_storage();
+        }
+
+        let old = *self;
+        if budget > self.free_backed_credits() {
+            write_credit(self.user, 0)?;
+            self.persisted = 0;
+        }
+
+        match TIP1060StorageCredits::new().with_budget(credit_owner, budget, write_storage) {
+            Ok((value, consumed)) if consumed == budget => {
+                self.current -= budget;
+                Ok(value)
+            }
+            Ok((_value, _consumed)) => {
+                *self = old;
+                Err(TempoPrecompileError::Fatal(
+                    "TIP-1060 direct budget was not fully consumed".to_string(),
+                ))
+            }
+            Err(err) => {
+                *self = old;
+                Err(err)
+            }
+        }
+    }
+
+    pub fn has_changed(&self) -> bool {
+        self.current != self.persisted
+    }
+
+    /// Flushes this user-level storage credit counter if it changed.
+    pub fn flush(
+        self,
+        credit_owner: Address,
+        write_credit: impl FnOnce(Address, u64) -> Result<()>,
+    ) -> Result<()> {
+        if !self.has_changed() {
+            return Ok(());
+        }
+
+        if self.persisted == 0 && self.current > 0 {
+            let ((), consumed) =
+                TIP1060StorageCredits::new()
+                    .with_budget(credit_owner, 1, || write_credit(self.user, self.current))?;
+            if consumed != 1 {
+                return Err(TempoPrecompileError::Fatal(
+                    "TIP-1060 direct budget was not fully consumed".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
+        write_credit(self.user, self.current)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageCreditAccounts(Vec<StorageCreditAccount>);
+
+impl StorageCreditAccounts {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn account(
+        &mut self,
+        user: Address,
+        read_credit: impl FnOnce(Address) -> Result<u64>,
+    ) -> Result<Option<&mut StorageCreditAccount>> {
+        if let Some(index) = self.0.iter().position(|account| account.user == user) {
+            return Ok(Some(&mut self.0[index]));
+        }
+        let Some(account) = StorageCreditAccount::load(user, read_credit)? else {
+            return Ok(None);
+        };
+        self.0.push(account);
+        Ok(self.0.last_mut())
+    }
+
+    /// Adds `slots` reusable-storage credits to `user`, saturating at `u64::MAX`.
+    pub fn credit_slots(
+        &mut self,
+        user: Address,
+        slots: u64,
+        read_credit: impl FnOnce(Address) -> Result<u64>,
+    ) -> Result<()> {
+        if let Some(account) = self.account(user, read_credit)? {
+            account.credit_slots(slots);
+        }
+        Ok(())
+    }
+
+    pub fn flush(
+        mut self,
+        credit_owner: Address,
+        mut write_credit: impl FnMut(Address, u64) -> Result<()>,
+    ) -> Result<()> {
+        self.0.sort_by_key(|account| account.user);
+
+        for account in self.0 {
+            if !account.has_changed() {
+                continue;
+            }
+
+            if account.persisted == 0 && account.current > 0 {
+                let ((), consumed) =
+                    TIP1060StorageCredits::new().with_budget(credit_owner, 1, || {
+                        write_credit(account.user, account.current)
+                    })?;
+                if consumed != 1 {
+                    return Err(TempoPrecompileError::Fatal(
+                        "TIP-1060 direct budget was not fully consumed".to_string(),
+                    ));
+                }
+            } else {
+                write_credit(account.user, account.current)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn into_inner(self) -> Vec<StorageCreditAccount> {
+        self.0
     }
 }

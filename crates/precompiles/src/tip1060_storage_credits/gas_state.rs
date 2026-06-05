@@ -62,6 +62,16 @@ pub trait StorageCreditsBackend {
     /// Increments the pending refund count held in the storage credits contract's
     /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
     fn credit_tstore_increment(&mut self, key: U256);
+
+    /// Returns the active scoped direct TIP-1060 budget for `owner`, if any.
+    fn storage_credit_budget(&self, _owner: Address) -> Option<u64> {
+        None
+    }
+
+    /// Consumes one unit from the active scoped direct TIP-1060 budget for `owner`.
+    fn consume_storage_credit_budget(&mut self, _owner: Address) -> bool {
+        false
+    }
 }
 
 /// Applies the TIP-1060 storage credits policy for a single SSTORE.
@@ -130,26 +140,40 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: slot create (charged EIP-8037 state gas today).
-        match storage_credits.mode {
-            CreditMode::Direct => {
-                // Only if there is a credit available, skip gas
-                if storage_credits.balance > 0 {
-                    // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
-                    if caller_state_load.is_cold {
-                        backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+        let budget = backend.storage_credit_budget(owner);
+        let credit_creation = match budget {
+            Some(0) => None,
+            Some(_) => Some(CreditMode::Direct),
+            None => Some(storage_credits.mode),
+        };
+
+        if let Some(mode) = credit_creation {
+            match mode {
+                CreditMode::Direct => {
+                    // Only if there is a credit available, skip gas.
+                    if storage_credits.balance > 0 {
+                        if budget.is_some() {
+                            let consumed = backend.consume_storage_credit_budget(owner);
+                            debug_assert!(consumed);
+                        }
+
+                        // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
+                        if is_cold {
+                            backend.charge_gas(backend.gas_params().cold_storage_cost())?;
+                        }
+                        backend.charge_gas(20_000)?;
+                        storage_credits.balance -= 1;
+                        was_changed = true;
+                        outcome.skip_gas = true;
                     }
-                    backend.charge_gas(20_000)?;
-                    storage_credits.balance -= 1;
-                    was_changed = true;
-                    outcome.skip_gas = true;
+                    // Otherwise, leave gas enabled so revm charges full creation costs.
                 }
-                // Otherwise, leave gas enabled so revm charges full creation costs.
-            }
-            CreditMode::Preserve => {
-                // Do nothing, so revm takes care of gas accounting after this hook.
-            }
-            CreditMode::Refund => {
-                backend.credit_tstore_increment(account_slot);
+                CreditMode::Refund => {
+                    backend.credit_tstore_increment(account_slot);
+                }
+                CreditMode::Preserve => {
+                    // Do nothing, so revm takes care of gas accounting after this hook.
+                }
             }
         }
     }

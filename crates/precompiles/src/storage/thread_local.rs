@@ -213,6 +213,20 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// Returns the active scoped direct TIP-1060 budget for `owner`, if any.
+    pub fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
+        Self::with_storage(|s| s.storage_credit_budget(owner))
+    }
+
+    /// Sets the scoped direct TIP-1060 budget for `owner`, returning the previous budget.
+    pub fn set_storage_credit_budget(
+        &mut self,
+        owner: Address,
+        budget: Option<u64>,
+    ) -> Result<Option<u64>> {
+        Self::try_with_storage(|s| s.set_storage_credit_budget(owner, budget))
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically
