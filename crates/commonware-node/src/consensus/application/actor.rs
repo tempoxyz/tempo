@@ -16,7 +16,7 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
@@ -842,19 +842,6 @@ impl Inner<Init> {
         let proposal_return_time = context.current() + return_delay;
 
         let (block, block_access_list) = payload.into_execution_payload();
-        let proposal_block_access_list_hash = block.header().block_access_list_hash();
-        let proposal_block_access_list_len = block_access_list.as_ref().map_or(0, |bal| bal.len());
-        let proposal_block_access_list_sidecar_hash = block_access_list
-            .as_ref()
-            .map(|bal| keccak256(bal.as_ref()));
-        info!(
-            proposal_number = block.number(),
-            proposal_hash = ?block.hash(),
-            header_block_access_list_hash = ?proposal_block_access_list_hash,
-            sidecar_block_access_list_hash = ?proposal_block_access_list_sidecar_hash,
-            proposal_block_access_list_len,
-            "constructing proposal with block access list sidecar"
-        );
         let proposal = Block::from_execution_block_with_encoded_size(
             block,
             block_access_list,
@@ -1105,19 +1092,6 @@ async fn verify_block<TContext: Pacer>(
             .collect(),
     );
     let (block, block_access_list) = block.clone().into_parts();
-    let verify_block_access_list_hash = block.header().block_access_list_hash();
-    let verify_block_access_list_len = block_access_list.as_ref().map_or(0, |bal| bal.len());
-    let verify_block_access_list_sidecar_hash = block_access_list
-        .as_ref()
-        .map(|bal| keccak256(bal.as_ref()));
-    info!(
-        verify_number = block.number(),
-        verify_hash = ?block.hash(),
-        header_block_access_list_hash = ?verify_block_access_list_hash,
-        sidecar_block_access_list_hash = ?verify_block_access_list_sidecar_hash,
-        verify_block_access_list_len,
-        "verifying block with block access list sidecar"
-    );
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
         block_access_list,
