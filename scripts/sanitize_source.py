@@ -276,6 +276,7 @@ def _strip_rust_strings(line):
 def sanitize_chainspec(chainspec_dir):
     """Strip reth-gated code from tempo-chainspec source files."""
     lib_rs = f"{chainspec_dir}/src/lib.rs"
+    epoch_rs = f"{chainspec_dir}/src/epoch.rs"
 
     # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
     delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)
@@ -286,7 +287,10 @@ def sanitize_chainspec(chainspec_dir):
     # Delete #[cfg(feature = "reth")] gated mod/pub declarations and re-exports.
     _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=5)
 
-    print(f"  chainspec/src/lib.rs: stripped reth-gated code", file=sys.stderr)
+    if Path(epoch_rs).exists():
+        _delete_cfg_gated_block(epoch_rs, '#[cfg(feature = "reth")]', expected=1)
+
+    print("  chainspec: stripped reth-gated code", file=sys.stderr)
 
 
 def sanitize_alloy(alloy_dir):
