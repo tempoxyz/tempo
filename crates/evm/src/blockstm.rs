@@ -135,8 +135,7 @@ struct StorageKey {
 #[derive(Debug, Default)]
 pub struct Tip20ActionReplayState {
     writes: HashMap<StorageKey, WriteKind>,
-    changes: HashMap<StorageKey, SlotChange>,
-    tx_writes: Vec<(StorageKey, WriteKind)>,
+    tx_changes: HashMap<StorageKey, SlotChange>,
 }
 
 impl Tip20ActionReplayState {
@@ -150,9 +149,15 @@ impl Tip20ActionReplayState {
             .is_some_and(|kind| *kind == WriteKind::Store)
     }
 
-    fn commit_tx_writes(&mut self) {
-        for (key, kind) in self.tx_writes.drain(..) {
-            merge_committed_write_kind(&mut self.writes, key, kind);
+    fn reset_tx_changes(&mut self) {
+        self.tx_changes.clear();
+    }
+
+    fn commit_tx_changes(&mut self) {
+        for (key, change) in self.tx_changes.drain() {
+            if let Some(kind) = change.write_kind {
+                merge_committed_write_kind(&mut self.writes, key, kind);
+            }
         }
     }
 }
@@ -239,6 +244,7 @@ where
             validator_fee_credit,
         } = replay;
         let actions = ActionBufferRecycleGuard::new(actions, recycle_actions);
+        replay_state.reset_tx_changes();
 
         if !result.is_success() {
             return Err(Tip20TransferBlockstmExecutionError::Fallback(
@@ -259,14 +265,20 @@ where
                 transaction_index,
                 error: error.into(),
             })?;
-        let applied = action_replay_state(
+        let applied = match action_replay_state(
             &tx_env,
             self.inner.evm.db_mut(),
             actions.as_slice(),
             replay_state,
             cfg.spec,
             commit_reads,
-        )?;
+        ) {
+            Ok(applied) => applied,
+            Err(error) => {
+                replay_state.reset_tx_changes();
+                return Err(error);
+            }
+        };
         drop(actions);
         let result = TempoTxResult::new_precomputed(
             recovered.tx(),
@@ -279,11 +291,12 @@ where
             validator_fee_credit,
         );
         if !should_commit(&result) {
+            replay_state.reset_tx_changes();
             return Ok(false);
         }
 
         self.commit_transaction(result);
-        replay_state.commit_tx_writes();
+        replay_state.commit_tx_changes();
         Ok(true)
     }
 }
@@ -407,24 +420,36 @@ fn action_replay_state<DB: Database>(
                 if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
-                let _ = action_current_value(db, &mut replay_state.changes, key)?;
+                let _ = action_current_value(db, &mut replay_state.tx_changes, key)?;
             }
             EvmAction::Sstore(address, slot, value) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_write(&key) {
                     return Err(action_conflict());
                 }
-                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Store)?;
+                action_write_value(
+                    db,
+                    &mut replay_state.tx_changes,
+                    key,
+                    value,
+                    WriteKind::Store,
+                )?;
             }
             EvmAction::Sinc(address, slot, delta) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
-                let value = action_current_value(db, &mut replay_state.changes, key)?
+                let value = action_current_value(db, &mut replay_state.tx_changes, key)?
                     .checked_add(delta)
                     .ok_or_else(balance_overflow)?;
-                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
+                action_write_value(
+                    db,
+                    &mut replay_state.tx_changes,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
             }
             EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -432,13 +457,19 @@ fn action_replay_state<DB: Database>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut replay_state.changes, key)?,
+                    action_current_value(db, &mut replay_state.tx_changes, key)?,
                     spec,
                     delta,
                     flag,
                     true,
                 )?;
-                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
+                action_write_value(
+                    db,
+                    &mut replay_state.tx_changes,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
             }
             EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
@@ -446,13 +477,19 @@ fn action_replay_state<DB: Database>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut replay_state.changes, key)?,
+                    action_current_value(db, &mut replay_state.tx_changes, key)?,
                     spec,
                     delta,
                     flag,
                     false,
                 )?;
-                action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Delta)?;
+                action_write_value(
+                    db,
+                    &mut replay_state.tx_changes,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
             }
         }
     }
@@ -465,7 +502,7 @@ fn action_replay_state<DB: Database>(
         account.mark_touch();
         state.insert(sender, account);
     }
-    for (key, change) in replay_state.changes.drain() {
+    for (key, change) in replay_state.tx_changes.iter() {
         if change.write_kind.is_none() && !commit_reads {
             continue;
         }
@@ -482,9 +519,6 @@ fn action_replay_state<DB: Database>(
             key.slot,
             EvmStorageSlot::new_changed(change.original, change.current, TransactionId::ZERO),
         );
-        if let Some(write_kind) = change.write_kind {
-            replay_state.tx_writes.push((key, write_kind));
-        }
     }
 
     Ok(AppliedActionReplay { state })
@@ -596,4 +630,40 @@ fn insufficient_balance() -> Tip20TransferBlockstmExecutionError {
     Tip20TransferBlockstmExecutionError::Fallback(
         Tip20TransferBlockstmFallback::InsufficientBalance,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot_change(kind: WriteKind) -> SlotChange {
+        SlotChange {
+            original: U256::ZERO,
+            current: U256::from(1),
+            write_kind: Some(kind),
+        }
+    }
+
+    #[test]
+    fn replay_state_discards_uncommitted_tx_changes() {
+        let mut state = Tip20ActionReplayState::default();
+        let key = StorageKey {
+            address: Address::from([1; 20]),
+            slot: U256::from(1),
+        };
+
+        state.tx_changes.insert(key, slot_change(WriteKind::Store));
+        let capacity = state.tx_changes.capacity();
+        state.reset_tx_changes();
+
+        assert!(state.tx_changes.is_empty());
+        assert!(state.tx_changes.capacity() >= capacity);
+        assert!(!state.writes.contains_key(&key));
+
+        state.tx_changes.insert(key, slot_change(WriteKind::Delta));
+        state.commit_tx_changes();
+
+        assert!(state.tx_changes.is_empty());
+        assert_eq!(state.writes.get(&key), Some(&WriteKind::Delta));
+    }
 }
