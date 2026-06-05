@@ -1528,8 +1528,8 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: EvmState| {
-                hook_calls_clone.lock().unwrap().push(state);
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
             })));
 
         executor.apply_deferred_collected_fees().unwrap();

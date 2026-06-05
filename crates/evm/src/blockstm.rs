@@ -5,7 +5,7 @@ use alloy_evm::{
     Evm, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor},
 };
-use alloy_primitives::{Address, B256, TxKind, U256, map::HashMap};
+use alloy_primitives::{Address, TxKind, U256, map::HashMap};
 use alloy_sol_types::SolInterface;
 use reth_evm::{
     Database,
@@ -20,8 +20,6 @@ use reth_revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS,
-    nonce::{EXPIRING_NONCE_MAX_PROBES, NonceManager},
     storage::evm::EvmAction,
     tip_fee_manager::CollectedFeeCredit,
     tip20::{RewardFlag, UserState},
@@ -415,18 +413,7 @@ fn action_replay_state<DB: Database>(
         ));
     }
 
-    // Expiring-nonce probe paths depend on the live replay table, so prewarmed nonce actions can
-    // be stale by the time the builder replays them against the current parent and block prefix.
-    let expiring_nonce_replay = expiring_nonce_replay_input(tx, spec)?;
-    if let Some((valid_before, replay_hash)) = expiring_nonce_replay {
-        action_replay_expiring_nonce(db, replay_state, replay_hash, valid_before)?;
-    }
-
     for action in actions {
-        if expiring_nonce_replay.is_some() && is_expiring_nonce_action(action) {
-            continue;
-        }
-
         match *action {
             EvmAction::Sload(address, slot) => {
                 let key = StorageKey { address, slot };
@@ -535,79 +522,6 @@ fn action_replay_state<DB: Database>(
     }
 
     Ok(AppliedActionReplay { state })
-}
-
-fn expiring_nonce_replay_input(
-    tx: &TempoTxEnv,
-    spec: TempoHardfork,
-) -> Result<Option<(u64, B256)>, Tip20TransferBlockstmExecutionError> {
-    let Some(aa_env) = tx.tempo_tx_env.as_ref() else {
-        return Ok(None);
-    };
-    if aa_env.nonce_key != TEMPO_EXPIRING_NONCE_KEY {
-        return Ok(None);
-    }
-
-    let Some(valid_before) = aa_env.valid_before else {
-        return Ok(None);
-    };
-    let replay_hash = if spec.is_t1b() {
-        tx.unique_tx_identifier().ok_or_else(action_conflict)?
-    } else {
-        aa_env.tx_hash
-    };
-
-    Ok(Some((valid_before, replay_hash)))
-}
-
-fn action_replay_expiring_nonce<DB: StateDB>(
-    db: &mut DB,
-    replay_state: &mut Tip20ActionReplayState,
-    expiring_nonce_hash: B256,
-    valid_before: u64,
-) -> Result<(), Tip20TransferBlockstmExecutionError> {
-    let fingerprint = NonceManager::expiring_nonce_fingerprint(expiring_nonce_hash);
-
-    for probe in 0..EXPIRING_NONCE_MAX_PROBES {
-        let slot =
-            NonceManager::expiring_nonce_probe_cell_slot(expiring_nonce_hash, valid_before, probe);
-        let key = StorageKey {
-            address: NONCE_PRECOMPILE_ADDRESS,
-            slot,
-        };
-        if replay_state.has_store(&key) {
-            return Err(action_conflict());
-        }
-
-        let word = action_current_value(db, &mut replay_state.tx_changes, key)?;
-        let (stored_valid_before, stored_fingerprint) =
-            NonceManager::unpack_expiring_nonce_cell(word);
-        if stored_valid_before != valid_before {
-            let cell = NonceManager::pack_expiring_nonce_cell(valid_before, fingerprint);
-            action_write_value(
-                db,
-                &mut replay_state.tx_changes,
-                key,
-                cell,
-                WriteKind::Store,
-            )?;
-            return Ok(());
-        }
-
-        if stored_fingerprint == fingerprint {
-            return Err(action_conflict());
-        }
-    }
-
-    Err(action_conflict())
-}
-
-fn is_expiring_nonce_action(action: &EvmAction) -> bool {
-    matches!(
-        *action,
-        EvmAction::Sload(address, _) | EvmAction::Sstore(address, _, _)
-            if address == NONCE_PRECOMPILE_ADDRESS
-    )
 }
 
 fn action_current_value<DB: StateDB>(
