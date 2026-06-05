@@ -395,6 +395,12 @@ vergen-git2 = "9.1.0"
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch.crates-io]
+# TODO: remove once https://github.com/paradigmxyz/reth-core/pull/26 lands.
+reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", branch = "mattsse/avoid-sealed-block-encode-clone" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth-core", branch = "mattsse/avoid-sealed-block-encode-clone" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", branch = "mattsse/avoid-sealed-block-encode-clone" }
+reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", branch = "mattsse/avoid-sealed-block-encode-clone" }
+
 # Commonware at HEAD after PR #3588 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }

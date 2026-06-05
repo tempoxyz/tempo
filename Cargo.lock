@@ -8804,8 +8804,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f54468f34d9ed03356dee71bb182a2815a490934f1a291f58158053eee946ba"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Favoid-sealed-block-encode-clone#8d4c83e68e86840c7edda93fd565f708ad78d305"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8825,8 +8824,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs-derive"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c80c0516faf1698c57f91f07c98ecd9f3a9d3f163f1ad4bb263d9c495b3928e0"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Favoid-sealed-block-encode-clone#8d4c83e68e86840c7edda93fd565f708ad78d305"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10379,8 +10377,7 @@ dependencies = [
 [[package]]
 name = "reth-primitives-traits"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1216ba179909d41d8d55c5eae6c1c33698bc7a3053c35fd425c7789a5de3c1"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Favoid-sealed-block-encode-clone#8d4c83e68e86840c7edda93fd565f708ad78d305"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10398,7 +10395,6 @@ dependencies = [
  "once_cell",
  "proptest",
  "proptest-arbitrary-interop",
- "quanta",
  "rayon",
  "reth-codecs",
  "revm-bytecode",
@@ -11289,8 +11285,7 @@ dependencies = [
 [[package]]
 name = "reth-zstd-compressors"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80dcfa0327b7642cc41c71d8cd3626a48ac76fb8304c28bcbdf416a45615d020"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Favoid-sealed-block-encode-clone#8d4c83e68e86840c7edda93fd565f708ad78d305"
 dependencies = [
  "zstd",
 ]
