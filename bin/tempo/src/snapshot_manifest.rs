@@ -12,7 +12,7 @@ use commonware_codec::Encode as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::Runner as _;
-use eyre::{Context as _, OptionExt, Result, bail, ensure};
+use eyre::{Context as _, OptionExt, bail, ensure};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::download::{
     manifest::SnapshotManifest, manifest_cmd::SnapshotManifestCommand,
@@ -60,7 +60,7 @@ pub(crate) struct Args {
     chain: Option<Arc<TempoChainSpec>>,
 }
 
-pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
+pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).map_err(|e| eyre::eyre!("{e}"))?;
 
     let source_datadir = matches
@@ -77,7 +77,7 @@ pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
 }
 
 impl Args {
-    fn execute(self, source_datadir: &Path, output_dir: &Path) -> Result<()> {
+    fn execute(self, source_datadir: &Path, output_dir: &Path) -> eyre::Result<()> {
         let chainspec = self.chain;
 
         fs::create_dir_all(output_dir)
@@ -101,16 +101,14 @@ impl Args {
         }
 
         let manifest_path = output_dir.join("manifest.json");
-        let manifest_bytes = fs::read(&manifest_path)
-            .wrap_err_with(|| format!("failed to read {manifest_path:?}"))?;
-        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)
-            .wrap_err("failed to parse manifest.json produced by reth snapshot-manifest")?;
+        let manifest = read_manifest(&manifest_path)
+            .wrap_err_with(|| format!("failed reading manifest: {manifest_path:?}"))?;
 
         eprintln!("reading snapshot block and finalization {}", manifest.block);
 
         let chainspec = match chainspec {
             None => chainspec_from_chain_id(manifest.chain_id).ok_or_eyre(format!(
-                "unknown chain id {}, pass --chain explicitly",
+                "unknown manifest chain id {}, pass --chain explicitly",
                 manifest.chain_id
             ))?,
             Some(spec) if spec.chain_id() == manifest.chain_id => spec,
@@ -162,10 +160,15 @@ impl Args {
     }
 }
 
+fn read_manifest(manifest_path: &Path) -> eyre::Result<SnapshotManifest> {
+    let manifest_bytes = fs::read(&manifest_path).wrap_err("failed to read file")?;
+    serde_json::from_slice(&manifest_bytes).wrap_err("failed to parse manifest")
+}
+
 fn read_finalization_at_height(
     height: u64,
     consensus_dir: &Path,
-) -> Result<Finalization<Scheme<PublicKey, MinSig>, Digest>> {
+) -> eyre::Result<Finalization<Scheme<PublicKey, MinSig>, Digest>> {
     ensure!(
         consensus_dir.is_dir(),
         format!("consensus dir does not exist: {consensus_dir:?}")
