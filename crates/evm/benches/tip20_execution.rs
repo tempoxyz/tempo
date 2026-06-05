@@ -7,7 +7,7 @@
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
 use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory, FromRecoveredTx,
+    Evm, EvmEnv, EvmFactory, FromRecoveredTx,
     block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
     revm::inspector::NoOpInspector,
@@ -46,7 +46,7 @@ use std::{
     num::NonZeroU64,
     path::Path,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -893,24 +893,6 @@ where
     executor
 }
 
-fn bench_replay_executor<'a, DB>(
-    config: &'a TempoEvmConfig,
-    db: &'a mut State<DB>,
-    tx_count_hint: usize,
-    block_timestamp: u64,
-    hardfork: TempoHardfork,
-) -> TempoBlockExecutor<'a, &'a mut State<DB>, NoOpInspector>
-where
-    DB: Database,
-{
-    let evm = TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
-    let mut executor = config.create_executor(evm, bench_execution_ctx(tx_count_hint));
-    executor
-        .apply_pre_execution_changes()
-        .expect("failed to apply pre-execution changes");
-    executor
-}
-
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -999,13 +981,10 @@ where
     batch
 }
 
-fn replay_action_replays<'a, DB>(
-    mut executor: TempoBlockExecutor<'a, &'a mut State<DB>, NoOpInspector>,
+fn replay_action_replays(
+    mut executor: TempoBlockExecutor<'_, FixedCacheDb, NoOpInspector>,
     batch: ActionReplayBatch,
-) -> ExecutionStats
-where
-    DB: Database,
-{
+) -> ExecutionStats {
     let ActionReplayBatch {
         transactions,
         tx_envs,
@@ -1143,14 +1122,14 @@ fn tip20_action_replay(c: &mut Criterion) {
             hardfork,
         );
 
-        let mut prewarm_db = fixture.prewarm_state_db();
         let stats = replay_action_replays(
-            bench_replay_executor(
+            bench_executor(
                 &config,
-                &mut prewarm_db,
+                fixture.prewarm_state_db(),
                 batch.replays.len(),
                 workload.block_timestamp,
                 hardfork,
+                false,
             ),
             batch.clone(),
         );
@@ -1159,27 +1138,26 @@ fn tip20_action_replay(c: &mut Criterion) {
         let mut group = c.benchmark_group(format!("{label}/tip20_action_replay"));
         group.throughput(Throughput::Elements(batch.replays.len() as u64));
         group.bench_function("txgen_tip20_action_replay", |b| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for _ in 0..iters {
-                    let mut db = fixture.state_db();
-                    let executor = bench_replay_executor(
-                        &config,
-                        &mut db,
-                        batch.replays.len(),
-                        workload.block_timestamp,
-                        hardfork,
-                    );
-                    let batch = batch.clone();
-
-                    let start = Instant::now();
+            b.iter_batched(
+                || {
+                    (
+                        bench_executor(
+                            &config,
+                            fixture.state_db(),
+                            batch.replays.len(),
+                            workload.block_timestamp,
+                            hardfork,
+                            false,
+                        ),
+                        batch.clone(),
+                    )
+                },
+                |(executor, batch)| {
                     let stats = replay_action_replays(executor, batch);
-                    let elapsed = start.elapsed();
                     black_box(stats.gas_used);
-                    total += elapsed;
-                }
-                total
-            })
+                },
+                BatchSize::SmallInput,
+            )
         });
         group.finish();
     }
