@@ -4,9 +4,7 @@ use alloy::{
 };
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{
-        Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
-    },
+    context::{Block, CfgEnv, ContextTr, JournalTr, Transaction},
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
@@ -223,7 +221,22 @@ impl StorageCtx {
     ///
     /// Panics if no storage context is set.
     pub fn checkpoint(&mut self) -> CheckpointGuard {
-        // spec: only available +T1C. Prior to that checkpoints are a no-op.
+        CheckpointGuard {
+            frame: self.checkpoint_frame(),
+        }
+    }
+
+    /// Creates an explicit storage checkpoint frame.
+    ///
+    /// The returned frame must be resolved with [`StorageCtx::commit_frame`] or
+    /// [`StorageCtx::revert_frame`] in strict LIFO order. Unlike
+    /// [`StorageCtx::checkpoint`], dropping the token does not automatically
+    /// revert.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no storage context is set.
+    pub fn checkpoint_frame(&mut self) -> CheckpointFrame {
         let checkpoint = Self::with_storage(|s| {
             if s.spec().is_t1c() {
                 Some(s.checkpoint())
@@ -232,7 +245,25 @@ impl StorageCtx {
             }
         });
 
-        CheckpointGuard { checkpoint }
+        CheckpointFrame { checkpoint }
+    }
+
+    /// Commits all state changes since `frame`.
+    ///
+    /// The underlying provider enforces LIFO frame resolution.
+    pub fn commit_frame(&mut self, mut frame: CheckpointFrame) {
+        if let Some(cp) = frame.checkpoint.take() {
+            Self::with_storage(|s| s.checkpoint_commit(cp));
+        }
+    }
+
+    /// Reverts all state changes since `frame`.
+    ///
+    /// The underlying provider enforces LIFO frame resolution.
+    pub fn revert_frame(&mut self, mut frame: CheckpointFrame) {
+        if let Some(cp) = frame.checkpoint.take() {
+            Self::with_storage(|s| s.checkpoint_revert(cp));
+        }
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
@@ -290,6 +321,16 @@ impl StorageCtx {
     }
 }
 
+/// Explicit storage checkpoint token.
+///
+/// This is the non-RAII counterpart to [`CheckpointGuard`]. It intentionally
+/// does nothing on drop so EVM call-frame code can decide whether to commit or
+/// revert after it has observed the inner frame result.
+#[must_use = "checkpoint frames must be committed or reverted"]
+pub struct CheckpointFrame {
+    checkpoint: Option<revm::context::journaled_state::JournalCheckpoint>,
+}
+
 /// RAII guard for atomic state mutation batching.
 ///
 /// On drop, automatically reverts all state changes made since the checkpoint
@@ -307,23 +348,27 @@ impl StorageCtx {
 /// guard.commit();  // finalizes all mutations
 /// ```
 pub struct CheckpointGuard {
-    checkpoint: Option<JournalCheckpoint>,
+    frame: CheckpointFrame,
 }
 
 impl CheckpointGuard {
     /// Commits all state changes since the checkpoint.
     pub fn commit(mut self) {
-        if let Some(cp) = self.checkpoint.take() {
-            StorageCtx::with_storage(|s| s.checkpoint_commit(cp));
-        }
+        let mut ctx = StorageCtx;
+        ctx.commit_frame(std::mem::replace(
+            &mut self.frame,
+            CheckpointFrame { checkpoint: None },
+        ));
     }
 }
 
 impl Drop for CheckpointGuard {
     fn drop(&mut self) {
-        if let Some(cp) = self.checkpoint.take() {
-            StorageCtx::with_storage(|s| s.checkpoint_revert(cp));
-        }
+        let mut ctx = StorageCtx;
+        ctx.revert_frame(std::mem::replace(
+            &mut self.frame,
+            CheckpointFrame { checkpoint: None },
+        ));
     }
 }
 
@@ -543,6 +588,46 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_checkpoint_frame_commit_and_revert() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            ctx.sstore(addr, key, U256::from(10)).unwrap();
+            let frame = ctx.checkpoint_frame();
+            ctx.sstore(addr, key, U256::from(20)).unwrap();
+            ctx.commit_frame(frame);
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(20));
+
+            let frame = ctx.checkpoint_frame();
+            ctx.sstore(addr, key, U256::from(30)).unwrap();
+            ctx.revert_frame(frame);
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(20));
+        });
+    }
+
+    #[test]
+    fn test_explicit_checkpoint_frame_drop_does_not_revert() {
+        let mut storage = t1c_storage();
+        let addr = Address::ZERO;
+        let key = U256::from(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            ctx.sstore(addr, key, U256::from(10)).unwrap();
+            {
+                let _frame = ctx.checkpoint_frame();
+                ctx.sstore(addr, key, U256::from(20)).unwrap();
+            }
+            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(20));
+        });
+    }
+
+    #[test]
     fn test_nested_checkpoints_lifo() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
@@ -586,6 +671,22 @@ mod tests {
 
             // Wrong order: committing outer while inner is still active
             outer.commit();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-order")]
+    fn test_nested_explicit_checkpoint_out_of_order_revert_panics() {
+        let mut storage = t1c_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+
+            let outer = ctx.checkpoint_frame();
+            let _inner = ctx.checkpoint_frame();
+
+            // Wrong order: reverting outer while inner is still active
+            ctx.revert_frame(outer);
         });
     }
 
