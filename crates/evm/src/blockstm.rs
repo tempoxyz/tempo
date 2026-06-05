@@ -7,7 +7,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, TxKind, U256, map::HashMap};
 use alloy_sol_types::SolInterface;
-use reth_evm::{Database, block::StateDB};
+use reth_evm::{
+    Database,
+    block::{ExecutableTx, StateDB},
+};
 use reth_primitives_traits::Recovered;
 use reth_revm::{
     Inspector, State,
@@ -214,15 +217,17 @@ where
     /// `should_commit` observes the result before state mutation. Returning `false` leaves
     /// executor state unchanged, allowing the payload builder to stop at the exact block gas
     /// boundary.
-    pub fn execute_tip20_transfer_action_replay_tx<'tx>(
+    pub fn execute_tip20_transfer_action_replay_tx(
         &mut self,
-        tx: Tip20TransferBlockstmTx<'tx>,
+        tx: impl ExecutableTx<Self>,
         replay: Tip20TransferActionReplay,
         replay_state: &mut Tip20ActionReplayState,
         transaction_index: usize,
         should_commit: impl FnOnce(&TempoTxResult) -> bool,
         recycle_actions: impl FnOnce(Vec<EvmAction>),
     ) -> Result<bool, Tip20TransferBlockstmExecutionError> {
+        let (tx_env, recovered) = tx.into_parts();
+
         let Tip20TransferActionReplay {
             result,
             actions,
@@ -244,13 +249,13 @@ where
             gas.tx_gas_used()
         };
         let next_section = self
-            .validate_tx(tx.recovered.tx(), block_gas_used)
+            .validate_tx(recovered.tx(), block_gas_used)
             .map_err(|error| Tip20TransferBlockstmExecutionError::Execution {
                 transaction_index,
                 error: error.into(),
             })?;
         let applied = action_replay_state(
-            &tx.tx_env,
+            &tx_env,
             self.inner.evm.db_mut(),
             actions.as_slice(),
             replay_state,
@@ -258,11 +263,11 @@ where
         )?;
         drop(actions);
         let result = TempoTxResult::new_precomputed(
-            tx.recovered.tx(),
+            recovered.tx(),
             result,
             applied.state,
             next_section,
-            self.is_payment(tx.recovered.tx()),
+            self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
         );

@@ -19,7 +19,7 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
-    TempoInvalidTransaction, Tip20TransferActionReplay, Tip20TransferBlockstmFallback,
+    TempoInvalidTransaction, TempoTxEnv, Tip20TransferActionReplay, Tip20TransferBlockstmFallback,
     Tip20TransferBlockstmTx, validate_tip20_transfer_blockstm_tx,
 };
 use tempo_precompiles::{
@@ -70,6 +70,7 @@ pub(crate) struct PlanningContext {
 pub(crate) enum PlannedTransfer {
     Valid {
         tx: BestTransaction,
+        tx_env: Box<TempoTxEnv>,
         replay: Tip20TransferActionReplay,
     },
     Invalid {
@@ -214,11 +215,15 @@ where
                             )?;
                             match prewarm_tip20_transfer_actions(
                                 &prewarm,
-                                candidate,
+                                &candidate,
                                 sequence,
                                 &action_buffers_rx,
                             )? {
-                                Ok(replay) => Ok(PlannedTransfer::Valid { tx, replay }),
+                                Ok(replay) => Ok(PlannedTransfer::Valid {
+                                    tx_env: Box::new(candidate.tx_env),
+                                    tx,
+                                    replay,
+                                }),
                                 Err(kind) => Ok(PlannedTransfer::Invalid { tx, kind }),
                             }
                         })();
@@ -358,7 +363,7 @@ enum PlannerCommand {
 
 fn prewarm_tip20_transfer_actions<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
-    candidate: Tip20TransferBlockstmTx<'_>,
+    candidate: &Tip20TransferBlockstmTx<'_>,
     sequence: usize,
     action_buffers_rx: &ActionBufferReceiver<Vec<EvmAction>>,
 ) -> Result<
@@ -383,7 +388,7 @@ where
             candidate.recovered.is_payment_v1();
         }
 
-        let result = match evm.transact_raw(candidate.tx_env) {
+        let result = match evm.transact_raw(candidate.tx_env.clone()) {
             Ok(result) => result,
             Err(err) => {
                 trace!(

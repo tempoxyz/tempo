@@ -627,11 +627,12 @@ where
                         }
                     }
 
-                    let (pool_tx, replay) = match planner.next() {
+                    let (pool_tx, tx_env, replay) = match planner.next() {
                         blockstm::PlannerNext::Planned(Ok(blockstm::PlannedTransfer::Valid {
                             tx,
+                            tx_env,
                             replay,
-                        })) => (tx, replay),
+                        })) => (tx, tx_env, replay),
                         blockstm::PlannerNext::Planned(Ok(
                             blockstm::PlannedTransfer::Invalid { tx, kind },
                         )) => {
@@ -683,7 +684,7 @@ where
                     let action_recycler = planner.action_recycler();
 
                     let execution_result = executor.execute_tip20_transfer_action_replay_tx(
-                        blockstm::candidate(&pool_tx),
+                        (*tx_env, pool_tx.transaction.inner()),
                         replay,
                         &mut action_replay_state,
                         candidate_count,

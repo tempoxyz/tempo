@@ -48,7 +48,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
+    TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
     gas_params::SSTORE_SET_COST,
 };
 
