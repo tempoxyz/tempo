@@ -161,8 +161,9 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
                     }
-                    BestTransactionsCommand::Stop => {
+                    BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
+                        drop(drain_rx);
                         return;
                     }
                 }
@@ -249,7 +250,12 @@ impl BestTransactionsPrewarming {
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.commands_tx.send(BestTransactionsCommand::Stop);
+        // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
+        let (_drain_tx, replacement_rx) = mpsc::channel();
+        let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::Stop { drain_rx });
     }
 }
 
@@ -635,7 +641,10 @@ enum BestTransactionsCommand {
     },
     NoUpdates,
     SkipBlobs(bool),
-    Stop,
+    Stop {
+        /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
+        drain_rx: Receiver<Option<BestTransaction>>,
+    },
 }
 
 /// Invalid transaction encountered during execution.
