@@ -12,6 +12,7 @@ pub use slots as tip403_registry_slots;
 
 use crate::{
     StorageCtx,
+    feature_registry::FeatureRegistry,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -26,7 +27,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{features::RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID, hardfork::TempoHardfork};
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -187,6 +188,12 @@ impl ReceivePolicyConfig {
     }
 }
 
+fn policy_type(policy_type: u8) -> Result<PolicyType> {
+    policy_type
+        .try_into()
+        .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
+}
+
 impl TIP403Registry {
     /// Initializes the TIP-403 registry precompile.
     pub fn initialize(&mut self) -> Result<()> {
@@ -288,14 +295,34 @@ impl TIP403Registry {
     /// Returns `account`'s receive-policy configuration.
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let config = self.receive_policies[account].config.read()?;
+        let (sender_policy_type, token_filter_type) = if self.receive_policy_type_cache_enabled()? {
+            (
+                policy_type(config.sender_policy_type)?,
+                policy_type(config.token_filter_type)?,
+            )
+        } else {
+            (
+                self.receive_policy_type(config.sender_policy_id)?,
+                self.receive_policy_type(config.token_filter_id)?,
+            )
+        };
+
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
-            senderPolicyType: self.receive_policy_type(config.sender_policy_id)?,
+            senderPolicyType: sender_policy_type,
             tokenFilterId: config.token_filter_id,
-            tokenFilterType: self.receive_policy_type(config.token_filter_id)?,
+            tokenFilterType: token_filter_type,
             recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
         })
+    }
+
+    fn receive_policy_type_cache_enabled(&self) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+
+        Ok(FeatureRegistry::new().features_tip()? >= RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID)
     }
 
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
@@ -832,9 +859,7 @@ impl TIP403Registry {
     /// Returns the [`PolicyType`] of a receive-policy slot.
     fn receive_policy_type(&self, policy_id: u64) -> Result<PolicyType> {
         if self.builtin_authorization(policy_id).is_some() {
-            return (policy_id as u8)
-                .try_into()
-                .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into());
+            return policy_type(policy_id as u8);
         }
 
         let data = self.get_policy_data(policy_id)?;
@@ -953,11 +978,14 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
-        primitives::{Address, Log},
+        primitives::{Address, Log, U256},
         sol_types::SolEvent,
     };
     use rand_08::Rng;
-    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
+    use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
+    use tempo_contracts::precompiles::{
+        FEATURE_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
@@ -1242,6 +1270,98 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_receive_policy_type_cache_requires_feature_tip() -> eyre::Result<()> {
+        for (
+            hardfork,
+            active_features_tip,
+            expected_sender_type,
+            expected_token_type,
+            expected_sloads,
+        ) in [
+            (
+                TempoHardfork::T5,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                ITIP403Registry::PolicyType::WHITELIST,
+                3,
+            ),
+            (
+                TempoHardfork::T6,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID - 1,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                ITIP403Registry::PolicyType::WHITELIST,
+                4,
+            ),
+            (
+                TempoHardfork::T6,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID,
+                ITIP403Registry::PolicyType::WHITELIST,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                2,
+            ),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let account = Address::random();
+            let admin = Address::random();
+            let (sender_policy_id, token_filter_id) = StorageCtx::enter(&mut storage, || {
+                let mut storage = StorageCtx;
+                storage.sstore(
+                    FEATURE_REGISTRY_ADDRESS,
+                    HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT,
+                    U256::from(active_features_tip),
+                )?;
+
+                let mut registry = TIP403Registry::new();
+                let sender_policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+                let token_filter_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                )?;
+                registry.receive_policies[account]
+                    .config
+                    .write(ReceivePolicyConfig {
+                        has_receive_policy: true,
+                        sender_policy_id,
+                        sender_policy_type: PolicyType::WHITELIST as u8,
+                        token_filter_id,
+                        token_filter_type: PolicyType::BLACKLIST as u8,
+                        recovery_mode: RecoveryMode::Originator,
+                    })?;
+
+                Ok::<_, TempoPrecompileError>((sender_policy_id, token_filter_id))
+            })?;
+
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                let registry = TIP403Registry::new();
+                let policy = registry.receive_policy(account)?;
+                assert_eq!(policy.senderPolicyId, sender_policy_id);
+                assert_eq!(policy.senderPolicyType, expected_sender_type);
+                assert_eq!(policy.tokenFilterId, token_filter_id);
+                assert_eq!(policy.tokenFilterType, expected_token_type);
+
+                Ok::<_, TempoPrecompileError>(())
+            })?;
+            assert_eq!(
+                storage.counter_sload(),
+                expected_sloads,
+                "{hardfork:?} receive_policy SLOAD count"
+            );
+        }
+
+        Ok(())
     }
 
     #[test]

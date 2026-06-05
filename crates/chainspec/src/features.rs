@@ -12,6 +12,9 @@ pub const NO_ACTIVE_PROTOCOL_FEATURE_ID: u64 = 0;
 pub const HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT: alloy_primitives::U256 =
     alloy_primitives::U256::ZERO;
 
+pub const FEATURE_REGISTRY_FEATURE_ID: u64 = 1;
+pub const RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID: u64 = 2;
+
 /// A protocol feature supported by this binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProtocolFeature {
@@ -24,12 +27,20 @@ pub struct ProtocolFeature {
 }
 
 /// Protocol features supported by this binary, in activation-cursor order.
-pub const PROTOCOL_FEATURE_REGISTRY: &[ProtocolFeature] = &[ProtocolFeature {
-    id: 1,
-    name: "tip-1063.feature-registry",
-    // TODO: update before merge if this feature does not ship in 1.8.1.
-    minimum_supported_version_key: version_key(1, 8, 1),
-}];
+pub const PROTOCOL_FEATURE_REGISTRY: &[ProtocolFeature] = &[
+    ProtocolFeature {
+        id: FEATURE_REGISTRY_FEATURE_ID,
+        name: "tip-1063.feature-registry",
+        // TODO: update before merge if this feature does not ship in 1.8.1.
+        minimum_supported_version_key: version_key(1, 8, 1),
+    },
+    ProtocolFeature {
+        id: RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID,
+        name: "tip-403.receive-policy-type-cache",
+        // TODO: update before merge if this feature does not ship in 1.8.1.
+        minimum_supported_version_key: version_key(1, 8, 1),
+    },
+];
 
 /// Encodes a semver version as `(major << 32) | (minor << 16) | patch`.
 #[allow(clippy::cast_lossless)]
