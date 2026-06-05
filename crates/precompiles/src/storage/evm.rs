@@ -10,7 +10,6 @@ use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
-    primitives::AddressMap,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -25,7 +24,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
-    storage_credit_budgets: AddressMap<u64>,
+    storage_credit_budget: Option<u64>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -49,7 +48,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
-            storage_credit_budgets: AddressMap::default(),
+            storage_credit_budget: None,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
@@ -162,19 +161,18 @@ impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
         );
     }
 
-    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
-        self.storage_credit_budgets.get(&owner).copied()
+    fn storage_credit_budget(&self) -> Option<u64> {
+        self.storage_credit_budget
     }
 
-    fn consume_storage_credit_budget(&mut self, owner: Address) -> bool {
-        let Some(remaining) = self.storage_credit_budgets.get_mut(&owner) else {
-            return false;
-        };
-        if *remaining == 0 {
-            return false;
+    fn consume_storage_credit_budget(&mut self) -> bool {
+        match &mut self.storage_credit_budget {
+            Some(remaining) if *remaining > 0 => {
+                *remaining -= 1;
+                true
+            }
+            _ => false,
         }
-        *remaining -= 1;
-        true
     }
 }
 
@@ -433,20 +431,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
-        self.storage_credit_budgets.get(&owner).copied()
+    fn storage_credit_budget(&self) -> Option<u64> {
+        self.storage_credit_budget
     }
 
     #[inline]
     fn set_storage_credit_budget(
         &mut self,
-        owner: Address,
         budget: Option<u64>,
     ) -> Result<Option<u64>, TempoPrecompileError> {
-        Ok(match budget {
-            Some(budget) => self.storage_credit_budgets.insert(owner, budget),
-            None => self.storage_credit_budgets.remove(&owner),
-        })
+        Ok(std::mem::replace(&mut self.storage_credit_budget, budget))
     }
 
     #[inline]

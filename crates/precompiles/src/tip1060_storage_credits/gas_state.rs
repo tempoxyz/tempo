@@ -63,13 +63,13 @@ pub trait StorageCreditsBackend {
     /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
     fn credit_tstore_increment(&mut self, key: U256);
 
-    /// Returns the active scoped direct TIP-1060 budget for `owner`, if any.
-    fn storage_credit_budget(&self, _owner: Address) -> Option<u64> {
+    /// Returns the active scoped direct TIP-1060 budget, if any.
+    fn storage_credit_budget(&self) -> Option<u64> {
         None
     }
 
-    /// Consumes one unit from the active scoped direct TIP-1060 budget for `owner`.
-    fn consume_storage_credit_budget(&mut self, _owner: Address) -> bool {
+    /// Consumes one unit from the active scoped direct TIP-1060 budget.
+    fn consume_storage_credit_budget(&mut self) -> bool {
         false
     }
 }
@@ -140,7 +140,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: slot create (charged EIP-8037 state gas today).
-        let credit_action = match backend.storage_credit_budget(owner) {
+        let credit_action = match backend.storage_credit_budget() {
             Some(0) => None,
             Some(_) => Some((CreditMode::Direct, true)),
             None => Some((storage_credits.mode, false)),
@@ -151,7 +151,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 // Only if there is a credit available, skip gas.
                 if storage_credits.balance > 0 {
                     if with_budget {
-                        let consumed = backend.consume_storage_credit_budget(owner);
+                        let consumed = backend.consume_storage_credit_budget();
                         debug_assert!(consumed);
                     }
 

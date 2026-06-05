@@ -26,7 +26,7 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
-    tip1060_storage_credits::{StorageCreditAccount, StorageCreditAccounts},
+    tip1060_storage_credits::{StorageCreditAccount, StorageCreditDeltas},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -317,7 +317,7 @@ impl StablecoinDEX {
 
         // Execute swaps for each hop - intermediate balances are transitory
         let mut amount = amount_in;
-        let mut storage_credits = StorageCreditAccounts::new();
+        let mut storage_credits = StorageCreditDeltas::new();
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
             amount = self.fill_orders_exact_in(
@@ -335,9 +335,7 @@ impl StablecoinDEX {
         }
 
         self.transfer(token_out, sender, amount)?;
-        storage_credits.flush(self.address, |user, credits| {
-            self.dex_storage_credits[user].write(credits)
-        })?;
+        storage_credits.flush(&mut self.dex_storage_credits)?;
 
         Ok(amount)
     }
@@ -364,7 +362,7 @@ impl StablecoinDEX {
 
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
         let mut amount = amount_out;
-        let mut storage_credits = StorageCreditAccounts::new();
+        let mut storage_credits = StorageCreditDeltas::new();
         for (book_key, base_for_quote) in route.iter().rev() {
             amount = self.fill_orders_exact_out(
                 &mut storage_credits,
@@ -385,9 +383,7 @@ impl StablecoinDEX {
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, sender, amount_out)?;
-        storage_credits.flush(self.address, |user, credits| {
-            self.dex_storage_credits[user].write(credits)
-        })?;
+        storage_credits.flush(&mut self.dex_storage_credits)?;
 
         Ok(amount)
     }
@@ -569,11 +565,11 @@ impl StablecoinDEX {
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
-        let storage_credits = charge_credits
-            .then_some(StorageCreditAccount::load(order.maker(), |user| {
-                self.storage_credits(user)
-            })?)
-            .flatten();
+        let storage_credits = if charge_credits {
+            StorageCreditAccount::load(order.maker(), |user| self.storage_credits(user))?
+        } else {
+            None
+        };
 
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
@@ -621,15 +617,11 @@ impl StablecoinDEX {
 
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
-            storage_credits.spend_storage_credits_for_create(
+            storage_credits.spend(
                 order.non_empty_slots(),
-                self.address,
                 |user, credits| self.dex_storage_credits[user].write(credits),
                 || self.orders[order.order_id()].write(order),
-            )?;
-            storage_credits.flush(self.address, |user, credits| {
-                self.dex_storage_credits[user].write(credits)
-            })
+            )
         } else {
             self.orders[order.order_id()].write(order)
         }
@@ -916,7 +908,7 @@ impl StablecoinDEX {
     /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
     fn fill_order(
         &mut self,
-        storage_credits: &mut StorageCreditAccounts,
+        storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         order: &mut Order,
         mut level: TickLevel,
@@ -992,16 +984,12 @@ impl StablecoinDEX {
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
                 self.orders[order.order_id()].delete()?;
-                storage_credits.credit_slots(order.maker(), order.non_empty_slots(), |user| {
-                    self.storage_credits(user)
-                })?;
+                storage_credits.credit_slots(order.maker(), order.non_empty_slots());
             }
         } else {
             // Non-flip filled order: always delete.
             self.orders[order.order_id()].delete()?;
-            storage_credits.credit_slots(order.maker(), order.non_empty_slots(), |user| {
-                self.storage_credits(user)
-            })?;
+            storage_credits.credit_slots(order.maker(), order.non_empty_slots());
         }
 
         // Advance tick if liquidity is exhausted
@@ -1059,7 +1047,7 @@ impl StablecoinDEX {
     /// Fill orders for exact output amount
     fn fill_orders_exact_out(
         &mut self,
-        storage_credits: &mut StorageCreditAccounts,
+        storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         bid: bool,
         mut amount_out: u128,
@@ -1140,7 +1128,7 @@ impl StablecoinDEX {
     /// Fill orders with exact amount in
     fn fill_orders_exact_in(
         &mut self,
-        storage_credits: &mut StorageCreditAccounts,
+        storage_credits: &mut StorageCreditDeltas,
         book_key: B256,
         bid: bool,
         mut amount_in: u128,
@@ -1343,8 +1331,7 @@ impl StablecoinDEX {
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
             self.orders[order.order_id()].delete()?;
-            storage_credits.credit_slots(order.non_empty_slots());
-            storage_credits.flush(self.address, |user, credits| {
+            storage_credits.add(order.non_empty_slots(), |user, credits| {
                 self.dex_storage_credits[user].write(credits)
             })?;
         } else {

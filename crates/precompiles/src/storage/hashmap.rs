@@ -31,7 +31,7 @@ pub struct HashMapStorageProvider {
     counter_sload: u64,
     counter_sstore: u64,
     snapshots: Vec<Snapshot>,
-    storage_credit_budgets: HashMap<Address, u64>,
+    storage_credit_budget: Option<u64>,
 
     /// Emitted events keyed by contract address.
     pub events: HashMap<Address, Vec<LogData>>,
@@ -75,7 +75,7 @@ impl HashMapStorageProvider {
             is_static: false,
             counter_sload: 0,
             counter_sstore: 0,
-            storage_credit_budgets: HashMap::new(),
+            storage_credit_budget: None,
         }
     }
 
@@ -93,9 +93,8 @@ impl HashMapStorageProvider {
 
     fn should_consume_storage_credit_budget(&self, owner: Address) -> bool {
         if self
-            .storage_credit_budgets
-            .get(&owner)
-            .is_none_or(|remaining| *remaining > 0)
+            .storage_credit_budget
+            .is_none_or(|remaining| remaining == 0)
         {
             return false;
         }
@@ -164,7 +163,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
                 .is_zero()
             && !value.is_zero()
             && self.should_consume_storage_credit_budget(address)
-            && let Some(remaining) = self.storage_credit_budgets.get_mut(&address)
+            && let Some(remaining) = &mut self.storage_credit_budget
         {
             *remaining -= 1;
         }
@@ -248,19 +247,15 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
-    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
-        self.storage_credit_budgets.get(&owner).copied()
+    fn storage_credit_budget(&self) -> Option<u64> {
+        self.storage_credit_budget
     }
 
     fn set_storage_credit_budget(
         &mut self,
-        owner: Address,
         budget: Option<u64>,
     ) -> Result<Option<u64>, TempoPrecompileError> {
-        Ok(match budget {
-            Some(budget) => self.storage_credit_budgets.insert(owner, budget),
-            None => self.storage_credit_budgets.remove(&owner),
-        })
+        Ok(std::mem::replace(&mut self.storage_credit_budget, budget))
     }
 
     fn checkpoint(&mut self) -> JournalCheckpoint {

@@ -107,17 +107,13 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
-    /// Returns the active scoped direct TIP-1060 budget for `owner`, if any.
-    fn storage_credit_budget(&self, _owner: Address) -> Option<u64> {
+    /// Returns the active scoped direct TIP-1060 budget, if any.
+    fn storage_credit_budget(&self) -> Option<u64> {
         None
     }
 
-    /// Sets the scoped direct TIP-1060 budget for `owner`, returning the previous budget.
-    fn set_storage_credit_budget(
-        &mut self,
-        _owner: Address,
-        _budget: Option<u64>,
-    ) -> Result<Option<u64>> {
+    /// Sets the scoped direct TIP-1060 budget, returning the previous budget.
+    fn set_storage_credit_budget(&mut self, _budget: Option<u64>) -> Result<Option<u64>> {
         Ok(None)
     }
 
