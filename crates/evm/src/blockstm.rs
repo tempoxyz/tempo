@@ -462,7 +462,7 @@ fn action_replay_state<DB: Database>(
         state.insert(sender, account);
     }
     for (key, change) in replay_state.changes.drain() {
-        if change.write_kind.is_none() && commit_reads {
+        if change.write_kind.is_none() && !commit_reads {
             continue;
         }
 
