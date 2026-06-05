@@ -21,6 +21,7 @@ const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
 const E2E_FEATURE_DEFAULT_FEATURES = "bal"
+const E2E_FEATURE_DEFAULT_ARGS = ["--builder.enable-blockstm-tip20-transfers"]
 const E2E_NONCE_WHEEL_BLOAT_MIB = 32768
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
@@ -885,7 +886,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = (parse-cli-args $side_args)
+    let default_side_args = if $run_type == "feature" { $ctx.feature_default_args } else { [] }
+    let extra_args = (dedup-args $default_side_args (parse-cli-args $side_args))
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
@@ -1521,6 +1523,7 @@ def "main e2e" [
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
         feature_args: $feature_args
+        feature_default_args: $E2E_FEATURE_DEFAULT_ARGS
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
