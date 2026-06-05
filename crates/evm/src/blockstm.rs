@@ -38,12 +38,35 @@ pub struct Tip20TransferBlockstmTx<'tx> {
 }
 
 /// Precomputed TIP-20 transfer result plus semantic precompile storage actions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tip20TransferActionReplay {
     pub result: ExecutionResult<TempoHaltReason>,
     pub actions: Vec<EvmAction>,
     pub validator_fee: U256,
     pub state: EvmState,
+}
+
+#[doc(hidden)]
+pub trait Tip20ActionReplayStateDb: Database {
+    type Inner: Database;
+
+    fn action_replay_state_mut(&mut self) -> &mut State<Self::Inner>;
+}
+
+impl<DB: Database> Tip20ActionReplayStateDb for State<DB> {
+    type Inner = DB;
+
+    fn action_replay_state_mut(&mut self) -> &mut State<Self::Inner> {
+        self
+    }
+}
+
+impl<DB: Database> Tip20ActionReplayStateDb for &mut State<DB> {
+    type Inner = DB;
+
+    fn action_replay_state_mut(&mut self) -> &mut State<Self::Inner> {
+        self
+    }
 }
 
 /// Reason the BlockSTM TIP-20 transfer path cannot be used.
@@ -213,10 +236,10 @@ where
     }
 }
 
-impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
+impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
 where
-    DB: Database,
-    I: Inspector<TempoContext<&'a mut State<DB>>>,
+    DB: Tip20ActionReplayStateDb + StateDB,
+    I: Inspector<TempoContext<DB>>,
 {
     /// Commits one precomputed TIP-20 transfer by replaying recorded precompile storage actions.
     ///
@@ -264,7 +287,7 @@ where
             })?;
         let applied = match action_replay_state(
             &tx_env,
-            self.inner.evm.db_mut(),
+            self.inner.evm.db_mut().action_replay_state_mut(),
             actions.as_slice(),
             replay_state,
             state,

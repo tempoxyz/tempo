@@ -7,9 +7,10 @@
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
 use alloy_evm::{
-    Evm, EvmEnv, EvmFactory,
+    Evm, EvmEnv, EvmFactory, FromRecoveredTx,
     block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
+    revm::inspector::NoOpInspector,
 };
 use alloy_primitives::{
     Address, B256, Bytes, TxKind, U256,
@@ -54,7 +55,8 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{
-    TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoEvmConfig, TempoEvmFactory,
+    TempoTxEnv, Tip20ActionReplayState, Tip20TransferActionReplay,
 };
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -126,6 +128,13 @@ struct RewardBenchWorkload {
 struct ExecutionStats {
     txs: u64,
     gas_used: u64,
+}
+
+#[derive(Clone)]
+struct ActionReplayBatch {
+    transactions: Vec<Recovered<TempoTxEnvelope>>,
+    tx_envs: Vec<TempoTxEnv>,
+    replays: Vec<Tip20TransferActionReplay>,
 }
 
 #[derive(Clone, Debug)]
@@ -838,6 +847,52 @@ fn workload() -> Workload {
     }
 }
 
+fn bench_execution_ctx(tx_count_hint: usize) -> TempoBlockExecutionCtx<'static> {
+    TempoBlockExecutionCtx {
+        inner: EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: Some(B256::ZERO),
+            ommers: &[],
+            withdrawals: None,
+            extra_data: Bytes::new(),
+            tx_count_hint: Some(tx_count_hint),
+            slot_number: None,
+        },
+        general_gas_limit: 10_000_000_000,
+        shared_gas_limit: 0,
+        validator_set: None,
+        consensus_context: None,
+        subblock_fee_recipients: Default::default(),
+    }
+}
+
+fn bench_executor<'a, DB>(
+    config: &'a TempoEvmConfig,
+    db: DB,
+    tx_count_hint: usize,
+    block_timestamp: u64,
+    hardfork: TempoHardfork,
+    record_actions: bool,
+) -> TempoBlockExecutor<'a, DB, NoOpInspector>
+where
+    DB: StateDB,
+{
+    let evm = TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
+    let evm = if record_actions {
+        evm.with_actions()
+    } else {
+        evm
+    };
+    let mut executor = config.create_executor(evm, bench_execution_ctx(tx_count_hint));
+    executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply pre-execution changes");
+    if record_actions {
+        let _ = executor.evm_mut().take_actions();
+    }
+    executor
+}
+
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -848,29 +903,7 @@ fn execute_txs<DB>(
 where
     DB: StateDB,
 {
-    let evm: TempoEvm<_, _> =
-        TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
-    let ctx = TempoBlockExecutionCtx {
-        inner: EthBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: Some(B256::ZERO),
-            ommers: &[],
-            withdrawals: None,
-            extra_data: Bytes::new(),
-            tx_count_hint: Some(txs.len()),
-            slot_number: None,
-        },
-        general_gas_limit: 10_000_000_000,
-        shared_gas_limit: 0,
-        validator_set: None,
-        consensus_context: None,
-        subblock_fee_recipients: Default::default(),
-    };
-
-    let mut executor = config.create_executor(evm, ctx);
-    executor
-        .apply_pre_execution_changes()
-        .expect("failed to apply pre-execution changes");
+    let mut executor = bench_executor(config, db, txs.len(), block_timestamp, hardfork, false);
 
     let mut stats = ExecutionStats::default();
     for tx in txs {
@@ -891,6 +924,98 @@ where
             .saturating_add(executor.commit_transaction(output).tx_gas_used());
         stats.txs += 1;
     }
+    stats
+}
+
+fn collect_action_replays<DB>(
+    config: &TempoEvmConfig,
+    db: DB,
+    txs: &[Recovered<TempoTxEnvelope>],
+    block_timestamp: u64,
+    hardfork: TempoHardfork,
+) -> ActionReplayBatch
+where
+    DB: StateDB,
+{
+    let mut executor = bench_executor(config, db, txs.len(), block_timestamp, hardfork, true);
+    let mut batch = ActionReplayBatch {
+        transactions: txs.to_vec(),
+        tx_envs: Vec::with_capacity(txs.len()),
+        replays: Vec::with_capacity(txs.len()),
+    };
+
+    for tx in txs {
+        assert!(
+            tx.inner().is_aa(),
+            "TIP20 action replay bench expects Tempo AA transactions"
+        );
+
+        let tx_env = TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer());
+        let _ = executor.evm_mut().take_actions();
+        let output = executor
+            .execute_transaction_without_commit((tx_env.clone(), tx))
+            .expect("TIP20 action replay precomputation failed");
+        assert!(
+            output.result().result.is_success(),
+            "TIP20 action replay precomputation reverted: {:?}",
+            output.result().result
+        );
+
+        let actions = executor
+            .evm_mut()
+            .take_actions()
+            .filter(|actions| !actions.is_empty())
+            .expect("TIP20 action replay precomputation produced no actions");
+        let mut state = output.result().state.clone();
+        state.clear();
+
+        batch.tx_envs.push(tx_env);
+        batch.replays.push(Tip20TransferActionReplay {
+            result: output.result().result.clone(),
+            actions,
+            validator_fee: output.validator_fee(),
+            state,
+        });
+    }
+
+    batch
+}
+
+fn replay_action_replays(
+    mut executor: TempoBlockExecutor<'_, FixedCacheDb, NoOpInspector>,
+    batch: ActionReplayBatch,
+) -> ExecutionStats {
+    let ActionReplayBatch {
+        transactions,
+        tx_envs,
+        replays,
+    } = batch;
+    let mut replay_state = Tip20ActionReplayState::default();
+    let mut stats = ExecutionStats::default();
+
+    for (idx, ((tx_env, replay), tx)) in tx_envs
+        .into_iter()
+        .zip(replays)
+        .zip(transactions.iter())
+        .enumerate()
+    {
+        let committed = executor
+            .execute_tip20_transfer_action_replay_tx(
+                (tx_env, tx),
+                replay,
+                &mut replay_state,
+                idx,
+                |result| {
+                    stats.gas_used = stats.gas_used.saturating_add(result.block_gas_used());
+                    true
+                },
+                |_| {},
+            )
+            .expect("TIP20 action replay failed");
+        assert!(committed, "TIP20 action replay unexpectedly skipped commit");
+        stats.txs += 1;
+    }
+
     stats
 }
 
@@ -977,5 +1102,66 @@ fn tip20_execution(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, tip20_execution);
+fn tip20_action_replay(c: &mut Criterion) {
+    let workload = workload();
+    let hardfork_cases = hardfork_bench_cases();
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+
+    for &(label, hardfork) in &hardfork_cases {
+        let fixture = setup_fixed_cache_state(
+            &workload.participants,
+            workload.block_timestamp,
+            None,
+            hardfork,
+        );
+        let batch = collect_action_replays(
+            &config,
+            fixture.prewarm_state_db(),
+            &workload.transactions,
+            workload.block_timestamp,
+            hardfork,
+        );
+
+        let stats = replay_action_replays(
+            bench_executor(
+                &config,
+                fixture.prewarm_state_db(),
+                batch.replays.len(),
+                workload.block_timestamp,
+                hardfork,
+                false,
+            ),
+            batch.clone(),
+        );
+        assert_eq!(stats.txs, batch.replays.len() as u64);
+
+        let mut group = c.benchmark_group(format!("{label}/tip20_action_replay"));
+        group.throughput(Throughput::Elements(batch.replays.len() as u64));
+        group.bench_function("txgen_tip20_action_replay", |b| {
+            b.iter_batched(
+                || {
+                    (
+                        bench_executor(
+                            &config,
+                            fixture.state_db(),
+                            batch.replays.len(),
+                            workload.block_timestamp,
+                            hardfork,
+                            false,
+                        ),
+                        batch.clone(),
+                    )
+                },
+                |(executor, batch)| {
+                    let stats = replay_action_replays(executor, batch);
+                    black_box(stats.gas_used);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+        group.finish();
+    }
+}
+
+criterion_group!(benches, tip20_execution, tip20_action_replay);
 criterion_main!(benches);
