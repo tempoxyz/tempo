@@ -485,6 +485,14 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
 
+      - name: Normalize Tracy capture offset
+        if: env.BENCH_TRACY != 'off'
+        run: |
+          if [[ "$BENCH_DURATION" =~ ^[0-9]+$ ]] && [[ "$BENCH_TRACY_OFFSET" =~ ^[0-9]+$ ]] && [ "$BENCH_DURATION" -le "$BENCH_TRACY_OFFSET" ]; then
+            echo "::notice::tracy-offset ($BENCH_TRACY_OFFSET) is >= duration ($BENCH_DURATION); starting tracy-capture immediately"
+            echo "BENCH_TRACY_OFFSET=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
