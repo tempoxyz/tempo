@@ -21,9 +21,9 @@ use crate::{
     prewarming::{BestTransactionsPrewarming, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
-use alloy_eip7928::{bal::Bal, compute_block_access_list_hash};
+use alloy_eip7928::bal::Bal;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -1443,8 +1443,6 @@ where
         );
 
         let block = Arc::new(block);
-        let block_access_list: Option<Bytes> =
-            block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
@@ -1550,10 +1548,12 @@ where
                 }
 
                 drop(state_root_task_hook);
-                let bal = bal_state.take_built_alloy_bal().unwrap();
-                let bal_hash = compute_block_access_list_hash(&bal);
+                let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+                let mut encoded = Vec::new();
+                bal.encode(&mut encoded);
+                let bal_hash = keccak256(&encoded);
 
-                let _ = bal_tx.send((bal.into(), bal_hash));
+                let _ = bal_tx.send((encoded.into(), bal_hash));
             });
 
         BalTaskHandle {
@@ -1565,7 +1565,7 @@ where
 
 struct BalTaskHandle {
     msg_tx: mpsc::Sender<BalMessage>,
-    bal_rx: oneshot::Receiver<(Bal, B256)>,
+    bal_rx: oneshot::Receiver<(Bytes, B256)>,
 }
 
 impl BalTaskHandle {
@@ -1580,7 +1580,7 @@ impl BalTaskHandle {
         let _ = self.msg_tx.send(BalMessage::BumpIndex);
     }
 
-    fn into_bal_rx(self) -> oneshot::Receiver<(Bal, B256)> {
+    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
         self.bal_rx
     }
 }
