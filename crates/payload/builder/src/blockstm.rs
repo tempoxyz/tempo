@@ -419,6 +419,7 @@ where
             result: result.result,
             actions,
             validator_fee: evm.validator_fee(),
+            validator_fee_credit: evm.validator_fee_credit(),
         }))
     })
 }

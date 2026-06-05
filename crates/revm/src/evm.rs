@@ -11,8 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::evm::EvmActions;
-use tempo_precompiles::tip_fee_manager::CollectedFeeCredit;
+use tempo_precompiles::{storage::evm::EvmActions, tip_fee_manager::CollectedFeeCredit};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;

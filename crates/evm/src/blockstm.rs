@@ -21,6 +21,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
     storage::evm::EvmAction,
+    tip_fee_manager::CollectedFeeCredit,
     tip20::{RewardFlag, UserState},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::TEMPO_EXPIRING_NONCE_KEY};
@@ -43,6 +44,7 @@ pub struct Tip20TransferActionReplay {
     pub result: ExecutionResult<TempoHaltReason>,
     pub actions: Vec<EvmAction>,
     pub validator_fee: U256,
+    pub validator_fee_credit: Option<CollectedFeeCredit>,
 }
 
 /// Reason the BlockSTM TIP-20 transfer path cannot be used.
@@ -234,6 +236,7 @@ where
             result,
             actions,
             validator_fee,
+            validator_fee_credit,
         } = replay;
         let actions = ActionBufferRecycleGuard::new(actions, recycle_actions);
 
@@ -273,6 +276,7 @@ where
             self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
+            validator_fee_credit,
         );
         if !should_commit(&result) {
             return Ok(false);

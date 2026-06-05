@@ -176,6 +176,7 @@ impl TempoTxResult {
         is_payment: bool,
         block_gas_used: u64,
         validator_fee: U256,
+        validator_fee_credit: Option<CollectedFeeCredit>,
     ) -> Self {
         Self {
             inner: EthTxResult {
@@ -188,7 +189,7 @@ impl TempoTxResult {
             tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
             block_gas_used,
             validator_fee,
-            validator_fee_credit: None,
+            validator_fee_credit,
         }
     }
 
