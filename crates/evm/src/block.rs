@@ -45,7 +45,7 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
-use tracing::{debug, trace};
+use tracing::{info, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -314,7 +314,7 @@ where
         self.inner.evm.db_mut().commit(state);
         self.pending_collected_fee_credits.clear();
 
-        debug!(
+        info!(
             target: "evm",
             pending_credits,
             unique_increments,

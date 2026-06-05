@@ -73,7 +73,9 @@ use tempo_evm::{
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidatorValidationShape, marshal_persist_estimate,
 };
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -733,6 +735,11 @@ where
                     };
                     let mut stop_reason = None;
                     let action_recycler = planner.action_recycler();
+                    let tx_gas_limit = pool_tx.gas_limit();
+                    let available_non_shared_gas_before =
+                        non_shared_gas_limit.saturating_sub(cumulative_gas_used);
+                    let available_general_gas_before =
+                        general_gas_limit.saturating_sub(non_payment_gas_used);
 
                     let execution_result = executor.execute_tip20_transfer_action_replay_tx(
                         (*tx_env, pool_tx.transaction.inner()),
@@ -740,15 +747,50 @@ where
                         &mut action_replay_state,
                         candidate_count,
                         |result| {
-                            if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit
+                            let block_gas_used = result.block_gas_used();
+                            if tx_gas_limit > available_non_shared_gas_before
+                                && block_gas_used <= available_non_shared_gas_before
                             {
+                                info!(
+                                    target: "payload_builder",
+                                    transaction_index = candidate_count,
+                                    tx_hash = ?pool_tx.hash(),
+                                    tx_gas_limit,
+                                    block_gas_used,
+                                    available_non_shared_gas = available_non_shared_gas_before,
+                                    cumulative_gas_used,
+                                    non_shared_gas_limit,
+                                    "BlockSTM TIP-20 transaction fits by executed gas but not by tx gas limit"
+                                );
+                            }
+                            if cumulative_gas_used + block_gas_used > non_shared_gas_limit {
+                                info!(
+                                    target: "payload_builder",
+                                    transaction_index = candidate_count,
+                                    tx_hash = ?pool_tx.hash(),
+                                    tx_gas_limit,
+                                    block_gas_used,
+                                    available_non_shared_gas = available_non_shared_gas_before,
+                                    cumulative_gas_used,
+                                    non_shared_gas_limit,
+                                    "rejecting BlockSTM TIP-20 transaction at non-shared gas limit"
+                                );
                                 stop_reason = Some(BlockBuildStopReason::GasLimit);
                                 return false;
                             }
-                            if !is_payment
-                                && non_payment_gas_used + result.block_gas_used()
-                                    > general_gas_limit
+                            if !is_payment && non_payment_gas_used + block_gas_used > general_gas_limit
                             {
+                                info!(
+                                    target: "payload_builder",
+                                    transaction_index = candidate_count,
+                                    tx_hash = ?pool_tx.hash(),
+                                    tx_gas_limit,
+                                    block_gas_used,
+                                    available_general_gas = available_general_gas_before,
+                                    non_payment_gas_used,
+                                    general_gas_limit,
+                                    "rejecting BlockSTM TIP-20 transaction at general gas limit"
+                                );
                                 stop_reason = Some(BlockBuildStopReason::GasLimit);
                                 return false;
                             }
@@ -757,10 +799,10 @@ where
                                 return false;
                             }
 
-                            cumulative_gas_used += result.block_gas_used();
+                            cumulative_gas_used += block_gas_used;
                             cumulative_state_gas_used += result.state_gas_used();
                             if !is_payment {
-                                non_payment_gas_used += result.block_gas_used();
+                                non_payment_gas_used += block_gas_used;
                             }
                             total_fees += result.validator_fee();
                             planner.on_state_update(StateAwareBestTransactionsUpdate::from_result(
@@ -892,6 +934,10 @@ where
                         receipt_count = executor.receipts().len().saturating_sub(receipt_start),
                         scheduled_count,
                         stop_reason = blockstm_stop_reason.as_str(),
+                        gas_used = cumulative_gas_used,
+                        non_shared_gas_limit,
+                        remaining_non_shared_gas =
+                            non_shared_gas_limit.saturating_sub(cumulative_gas_used),
                         ?blockstm_elapsed,
                         "completed BlockSTM TIP-20 fast path"
                     );
@@ -1313,6 +1359,12 @@ where
 
         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
             let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
+            info!(
+                target: "payload_builder",
+                block_access_list_len = bal.len(),
+                block_access_list_hash = ?bal_hash,
+                "received finalized block access list"
+            );
             (Some(bal), Some(bal_hash))
         } else {
             (None, None)
@@ -1471,6 +1523,8 @@ where
             gas_limit = block.gas_limit(),
             gas_used,
             cumulative_state_gas_used,
+            block_access_list_len = block_access_list.as_ref().map_or(0, |bal| bal.len()),
+            block_access_list_hash = ?block_access_list_hash,
             extra_data = %block.extra_data(),
             subblocks_count,
             payment_transactions,
@@ -1588,12 +1642,34 @@ where
             .spawn_blocking_named("builder-state-hook-task", || {
                 let mut bal_state =
                     reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+                let mut state_messages = 0usize;
+                let mut bump_messages = 0usize;
+                let mut fee_manager_state_messages = 0usize;
+                let mut last_fee_manager_storage_slots = 0usize;
+                let mut nonce_manager_state_messages = 0usize;
+                let mut last_nonce_manager_storage_slots = 0usize;
                 for msg in task_rx {
                     match msg {
                         BalMessage::BumpIndex => {
+                            bump_messages += 1;
                             bal_state.bump_bal_index();
                         }
                         BalMessage::State(state) => {
+                            state_messages += 1;
+                            if let Some(account) = state.get(&TIP_FEE_MANAGER_ADDRESS) {
+                                let storage_slots = account.storage.len();
+                                if storage_slots > 0 {
+                                    fee_manager_state_messages += 1;
+                                    last_fee_manager_storage_slots = storage_slots;
+                                }
+                            }
+                            if let Some(account) = state.get(&NONCE_PRECOMPILE_ADDRESS) {
+                                let storage_slots = account.storage.len();
+                                if storage_slots > 0 {
+                                    nonce_manager_state_messages += 1;
+                                    last_nonce_manager_storage_slots = storage_slots;
+                                }
+                            }
                             bal_state.commit(&state);
 
                             state_root_task_hook.on_state(state);
@@ -1606,6 +1682,18 @@ where
                 let mut encoded = Vec::new();
                 bal.encode(&mut encoded);
                 let bal_hash = keccak256(&encoded);
+                info!(
+                    target: "payload_builder",
+                    state_messages,
+                    bump_messages,
+                    fee_manager_state_messages,
+                    last_fee_manager_storage_slots,
+                    nonce_manager_state_messages,
+                    last_nonce_manager_storage_slots,
+                    block_access_list_len = encoded.len(),
+                    block_access_list_hash = ?bal_hash,
+                    "BAL task finalized block access list"
+                );
 
                 let _ = bal_tx.send((encoded.into(), bal_hash));
             });
