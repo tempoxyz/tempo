@@ -182,7 +182,8 @@ impl Consensus<Block> for TempoConsensus {
         let expected_system_tx_count = if self
             .inner
             .chain_spec()
-            .is_t4_active_at_timestamp(block.header().timestamp())
+            .tempo_hardfork_at(block.header().timestamp())
+            .is_t4()
         {
             0
         } else {
