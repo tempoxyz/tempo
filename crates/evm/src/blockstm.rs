@@ -45,6 +45,7 @@ pub struct Tip20TransferActionReplay {
     pub actions: Vec<EvmAction>,
     pub validator_fee: U256,
     pub validator_fee_credit: Option<CollectedFeeCredit>,
+    pub state: EvmState,
 }
 
 /// Reason the BlockSTM TIP-20 transfer path cannot be used.
@@ -242,6 +243,7 @@ where
             actions,
             validator_fee,
             validator_fee_credit,
+            state,
         } = replay;
         let actions = ActionBufferRecycleGuard::new(actions, recycle_actions);
         replay_state.reset_tx_changes();
@@ -270,6 +272,7 @@ where
             self.inner.evm.db_mut(),
             actions.as_slice(),
             replay_state,
+            state,
             cfg.spec,
             commit_reads,
         ) {
@@ -404,6 +407,7 @@ fn action_replay_state<DB: Database>(
     db: &mut State<DB>,
     actions: &[EvmAction],
     replay_state: &mut Tip20ActionReplayState,
+    mut state: EvmState,
     spec: TempoHardfork,
     commit_reads: bool,
 ) -> Result<AppliedActionReplay, Tip20TransferBlockstmExecutionError> {
@@ -494,7 +498,6 @@ fn action_replay_state<DB: Database>(
         }
     }
 
-    let mut state = EvmState::default();
     if commit_reads {
         let sender = tx.caller();
         let account = action_account_info(db, sender)?;
