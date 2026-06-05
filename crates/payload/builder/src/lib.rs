@@ -87,7 +87,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
+    SkippingBestTransactions, StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -749,6 +749,36 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let excluded_pool_transaction_hashes =
+            (!attributes.excluded_pool_transaction_hashes().is_empty()).then(|| {
+                Arc::new(
+                    attributes
+                        .excluded_pool_transaction_hashes()
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<_>>(),
+                )
+            });
+        let excluded_pool_transaction_skips = Arc::new(AtomicU64::new(0));
+        let best_txs: Box<dyn BestTransactions<Item = _>> =
+            if let Some(excluded_hashes) = excluded_pool_transaction_hashes.clone() {
+                let skipped = excluded_pool_transaction_skips.clone();
+                let metrics = self.metrics.clone();
+                Box::new(SkippingBestTransactions::new(
+                    best_txs,
+                    move |tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>| {
+                        if excluded_hashes.contains(tx.hash()) {
+                            skipped.fetch_add(1, Ordering::Relaxed);
+                            metrics.inc_pool_tx_skipped("parent_block_tx");
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                ))
+            } else {
+                Box::new(best_txs)
+            };
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let prewarming_config = PrewarmingStateProviderConfig::new(
@@ -772,7 +802,7 @@ where
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
-            Box::new(best_txs)
+            best_txs
         });
         self.metrics
             .pool_fetch_duration_seconds
@@ -782,17 +812,9 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
-        let mut excluded_pool_transaction_skips = 0u64;
+        let mut late_excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut logged_proposal_context_pool_poll = false;
-        let excluded_pool_transaction_hashes =
-            (!attributes.excluded_pool_transaction_hashes().is_empty()).then(|| {
-                attributes
-                    .excluded_pool_transaction_hashes()
-                    .iter()
-                    .copied()
-                    .collect::<HashSet<_>>()
-            });
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -960,7 +982,7 @@ where
                 .as_ref()
                 .is_some_and(|hashes| hashes.contains(pool_tx.hash()))
             {
-                excluded_pool_transaction_skips += 1;
+                late_excluded_pool_transaction_skips += 1;
                 self.metrics.inc_pool_tx_skipped("parent_block_tx");
                 continue;
             }
@@ -1440,6 +1462,9 @@ where
         } else {
             pool_transactions_included as f64 / pool_transactions_yielded as f64
         };
+        let excluded_pool_transaction_skips = excluded_pool_transaction_skips
+            .load(Ordering::Relaxed)
+            + late_excluded_pool_transaction_skips;
         self.metrics
             .pool_transactions_yielded
             .record(pool_transactions_yielded as f64);

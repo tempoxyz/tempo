@@ -18,6 +18,58 @@ use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
+/// A [`BestTransactions`] wrapper that skips selected transactions without marking them invalid.
+///
+/// This differs from Reth's `BestTransactionFilter`, which calls `mark_invalid` for filtered
+/// transactions and therefore suppresses descendants. Use this when the skipped transaction is
+/// already applied to the parent state and descendants may still be valid for the next block.
+pub struct SkippingBestTransactions<I, P> {
+    inner: I,
+    should_skip: P,
+}
+
+impl<I, P> SkippingBestTransactions<I, P> {
+    /// Creates a new iterator that drops items for which `should_skip` returns true.
+    pub const fn new(inner: I, should_skip: P) -> Self {
+        Self { inner, should_skip }
+    }
+}
+
+impl<I, P> Iterator for SkippingBestTransactions<I, P>
+where
+    I: BestTransactions<Item = BestTransaction>,
+    P: FnMut(&BestTransaction) -> bool,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tx = self.inner.next()?;
+            if !(self.should_skip)(&tx) {
+                return Some(tx);
+            }
+        }
+    }
+}
+
+impl<I, P> BestTransactions for SkippingBestTransactions<I, P>
+where
+    I: BestTransactions<Item = BestTransaction>,
+    P: FnMut(&BestTransaction) -> bool + Send,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
 pub struct MergeBestTransactions {
@@ -228,7 +280,10 @@ mod tests {
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -318,6 +373,31 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TempoHardfork::T1.base_fee(),
         )
+    }
+
+    #[test]
+    fn test_skipping_best_transactions_does_not_invalidate_descendants() {
+        let sender = Address::random();
+        let parent = protocol_tx_for_sender(sender, 0, 10);
+        let child = protocol_tx_for_sender(sender, 1, 9);
+        let parent_hash = *parent.hash();
+        let skipped = Arc::new(AtomicU64::new(0));
+        let skipped_count = skipped.clone();
+        let mut best = SkippingBestTransactions::new(
+            protocol_best_transactions(vec![parent, child.clone()]),
+            move |tx: &BestTransaction| {
+                if *tx.hash() == parent_hash {
+                    skipped_count.fetch_add(1, Ordering::Relaxed);
+                    true
+                } else {
+                    false
+                }
+            },
+        );
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*child.hash()));
+        assert!(best.next().is_none());
+        assert_eq!(skipped.load(Ordering::Relaxed), 1);
     }
 
     #[test]
