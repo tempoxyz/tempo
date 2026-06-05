@@ -613,7 +613,7 @@ def stop-tracy-capture [] {
     print "  Stopping tracy-capture..."
     let capture_pids = (ps | where name =~ "tracy-capture" | get pid)
     for pid in $capture_pids {
-        kill -s 2 $pid
+        sudo kill -s 2 $pid
     }
     mut wait_tracy = 0
     while $wait_tracy < 30 {
@@ -624,7 +624,7 @@ def stop-tracy-capture [] {
     if $wait_tracy >= 30 {
         print "  Warning: tracy-capture did not exit, sending SIGKILL"
         for pid in (ps | where name =~ "tracy-capture" | get pid) {
-            kill -s 9 $pid
+            sudo kill -s 9 $pid
         }
     }
 }
@@ -950,7 +950,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let tracy_env_prefix = if $ctx.tracy == "on" {
         "TRACY_NO_SYS_TRACE=1 "
     } else if $ctx.tracy == "full" {
-        "TRACY_SAMPLING_HZ=1 "
+        $"TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) "
     } else { "" }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
@@ -981,12 +981,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and $ctx.tracy != "off" {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
+        let capture_cmd = $"sudo env PATH=($env.PATH) tracy-capture -f -o ($tracy_output) ($seconds_flag)"
         if $ctx.tracy_offset > 0 {
             print $"  Tracy-capture will start in ($ctx.tracy_offset)s($limit_msg)..."
-            job spawn { sleep ($"($ctx.tracy_offset)sec" | into duration); sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+            job spawn { sleep ($"($ctx.tracy_offset)sec" | into duration); sh -c $capture_cmd }
         } else {
             print $"  Starting tracy-capture($limit_msg)..."
-            job spawn { sh -c $"tracy-capture -f -o ($tracy_output) ($seconds_flag)" }
+            job spawn { sh -c $capture_cmd }
             sleep 500ms
         }
         $tracy_capture_started = true
@@ -1195,6 +1196,7 @@ def "main e2e" [
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, on, full
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
+    --tracy-sampling-hz: int = 1                        # Tracy CPU sampling frequency for full mode
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
@@ -1224,6 +1226,10 @@ def "main e2e" [
     txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    if $tracy_sampling_hz <= 0 {
+        print "Error: --tracy-sampling-hz must be a positive integer"
         exit 1
     }
     if $run_pairs <= 0 {
@@ -1502,6 +1508,7 @@ def "main e2e" [
         samply_args: $samply_args_list
         tracy: $tracy
         tracy_filter: $tracy_filter
+        tracy_sampling_hz: $tracy_sampling_hz
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
