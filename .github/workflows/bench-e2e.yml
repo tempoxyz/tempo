@@ -310,6 +310,8 @@ on:
     secrets:
       DEREK_BENCH_TOKEN:
         required: false
+      DEREK_TOKEN:
+        required: false
       TEMPO_TELEMETRY_URL:
         required: false
       GRAFANA_TEMPO:
@@ -889,12 +891,56 @@ jobs:
             echo "url=${VALSCOPE_REPORTS_BASE_URL%/}/${BENCHMARK_ID}/" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Generate metric scatter plots
+        id: charts
+        if: success()
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        run: |
+          uv run --with matplotlib python .github/scripts/bench-e2e-charts.py \
+            --results-dir "$BENCH_RESULTS_DIR" \
+            --output-dir "$BENCH_RESULTS_DIR/charts" \
+            --baseline-name "$BENCH_BASELINE_NAME" \
+            --feature-name "$BENCH_FEATURE_NAME"
+
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
           path: bench-results/
+
+      - name: Push charts
+        id: push-charts
+        if: success() && hashFiles('bench-results/*/charts/*.png') != ''
+        run: |
+          RUN_ID=${{ github.run_id }}
+          if [ -n "${BENCH_PR:-}" ]; then
+            CHART_DIR="pr/${BENCH_PR}/${RUN_ID}/e2e"
+          else
+            CHART_DIR="e2e/${RUN_ID}"
+          fi
+          CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
+
+          TMP_DIR=$(mktemp -d)
+          if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+            true
+          else
+            git init "${TMP_DIR}"
+            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+          fi
+
+          mkdir -p "${TMP_DIR}/${CHART_DIR}"
+          cp "${{ steps.results-dir.outputs.path }}"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
+          git -C "${TMP_DIR}" add "${CHART_DIR}"
+          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+            commit -m "bench e2e charts for run ${RUN_ID}"
+          git -C "${TMP_DIR}" push origin HEAD:main
+          echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
+          rm -rf "${TMP_DIR}"
 
       - name: Post results to PR
         if: success()
@@ -1037,8 +1083,24 @@ jobs:
               }
             }
 
+            let chartsSection = '';
+            const chartSha = '${{ steps.push-charts.outputs.sha }}';
+            const chartPath = '${{ steps.push-charts.outputs.path }}';
+            if (chartSha && chartPath) {
+              const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${chartSha}/${chartPath}`;
+              const charts = [
+                { file: 'builder_latency_scatter.png', label: 'Builder Latency Scatter' },
+              ];
+              chartsSection = '\n\n### Builder Latency Scatter Plot\n\n';
+              for (const chart of charts) {
+                chartsSection += `<details><summary>${chart.label}</summary>\n\n`;
+                chartsSection += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
+                chartsSection += `</details>\n\n`;
+              }
+            }
+
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${chartsSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {
