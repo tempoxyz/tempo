@@ -350,9 +350,7 @@ where
             return None;
         }
 
-        let Some((height, digest)) = self.latest_observed_finalized_tip else {
-            return None;
-        };
+        let (height, digest) = self.latest_observed_finalized_tip?;
         self.prepare_forkchoice_update(
             Span::current(),
             HeadOrFinalized::Finalized,
