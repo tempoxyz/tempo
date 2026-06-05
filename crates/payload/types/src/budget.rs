@@ -13,8 +13,6 @@ const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
 /// Fixed-point scale for validation workload multipliers.
 const VALIDATION_LATENCY_WORKLOAD_SCALE: u128 = 1_000_000;
-/// Minimum share of recent P90 validation time to reserve for builder pacing.
-const VALIDATION_LATENCY_P90_FLOOR_SCALE: u128 = 900_000;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
 
@@ -149,25 +147,6 @@ fn percentile_from_counts<T: Copy + Ord>(
     None
 }
 
-fn p50_p90_from_counts<T: Copy + Ord>(counts: &BTreeMap<T, usize>, len: usize) -> Option<(T, T)> {
-    let p50_target = percentile_rank(len, 1, 2)?;
-    let p90_target = percentile_rank(len, 9, 10)?;
-    let mut seen = 0;
-    let mut p50 = None;
-    for (value, count) in counts {
-        seen += *count;
-        if p50.is_none() && seen >= p50_target {
-            p50 = Some(*value);
-        }
-        if seen >= p90_target {
-            return Some((p50.unwrap_or(*value), *value));
-        }
-    }
-
-    debug_assert!(false, "validation latency sample index out of sync");
-    None
-}
-
 fn scale_above_baseline(current: u128, baseline: u128) -> Option<u128> {
     if current == 0 {
         return Some(VALIDATION_LATENCY_WORKLOAD_SCALE);
@@ -229,11 +208,12 @@ impl ValidationLatencyEstimate {
 
 /// Tracks recent local execution-layer block validation latency.
 ///
-/// The validation latency estimate uses recent successful proposal validations as an absolute
-/// floor, then scales that floor up when the current workload exceeds the recent
-/// P90 gas or transaction count. This avoids combining independent per-unit
-/// rates from different workloads while still reserving validator headroom when
-/// the builder grows beyond the workloads that produced the feedback.
+/// The validation latency estimate uses the recent P90 successful proposal
+/// validation as an absolute floor, then scales that floor up when the current
+/// workload exceeds the recent P90 gas or transaction count. This avoids
+/// combining independent per-unit rates from different workloads while still
+/// reserving validator headroom when the builder grows beyond the workloads
+/// that produced the feedback.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
@@ -316,10 +296,9 @@ impl ValidationLatencyEstimator {
     /// that case.
     pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
-        let (p50_elapsed, p90_elapsed) = p50_p90_from_counts(&self.elapsed_counts, sample_count)?;
-        let p90_floor = scale_duration(p90_elapsed, VALIDATION_LATENCY_P90_FLOOR_SCALE);
+        let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
         Some(ValidationLatencyEstimate {
-            elapsed: p50_elapsed.max(p90_floor),
+            elapsed: p90_elapsed,
             p90_gas_used: percentile_from_counts(&self.gas_used_counts, sample_count, 9, 10)
                 .unwrap_or_default(),
             p90_transaction_count: percentile_from_counts(
@@ -368,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_latency_estimate_uses_tail_discounted_recent_elapsed() {
+    fn validation_latency_estimate_uses_recent_p90_elapsed() {
         let mut estimator = ValidationLatencyEstimator::default();
         let sample_workload = ValidationLatencyWorkload::new(100, 0);
         let current_workload = ValidationLatencyWorkload::new(100, 0);
@@ -379,7 +358,7 @@ mod tests {
             estimator
                 .estimate()
                 .and_then(|estimate| estimate.estimate(current_workload)),
-            Some(Duration::from_nanos(36))
+            Some(Duration::from_nanos(40))
         );
 
         estimator = ValidationLatencyEstimator::default();
@@ -399,7 +378,7 @@ mod tests {
             estimator
                 .estimate()
                 .and_then(|estimate| estimate.estimate(ValidationLatencyWorkload::new(1, 0))),
-            Some(Duration::from_nanos(54))
+            Some(Duration::from_nanos(59))
         );
     }
 
