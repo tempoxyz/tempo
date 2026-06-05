@@ -111,6 +111,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
     /// Wall-clock time spent in the BlockSTM TIP-20 transfer fast path.
     pub(crate) blockstm_tip20_duration_seconds: Histogram,
+    /// Wall-clock time spent waiting for the next BlockSTM TIP-20 planner result.
+    pub(crate) blockstm_tip20_planner_next_wait_duration_seconds: Histogram,
     /// Number of transactions attempted through the BlockSTM TIP-20 transfer fast path.
     pub(crate) blockstm_tip20_transaction_count: Histogram,
 }
