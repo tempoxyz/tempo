@@ -176,41 +176,6 @@ fn wait_for_late_proposal_context(
     }
 }
 
-fn poll_late_proposal_context(
-    ctx: &mut TempoBlockExecutionCtx<'_>,
-    control: &PayloadBuildControl,
-    should_cancel: &dyn Fn() -> bool,
-    wait_elapsed: &mut Duration,
-) -> Result<Option<ProposalContextWait>, PayloadBuilderError> {
-    if ctx.consensus_context.is_some() {
-        return Ok(Some(ProposalContextWait::Attached));
-    }
-
-    let wait_start = Instant::now();
-    match control
-        .wait_for_proposal_context_timeout_while(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL, should_cancel)
-    {
-        Ok(Some(proposal_context)) => {
-            *wait_elapsed += wait_start.elapsed();
-            ctx.inner.extra_data = proposal_context.extra_data().clone();
-            ctx.consensus_context = Some(proposal_context.consensus_context());
-            Ok(Some(ProposalContextWait::Attached))
-        }
-        Ok(None) => {
-            *wait_elapsed += wait_start.elapsed();
-            Ok(None)
-        }
-        Err(_) if control.is_cancelled() || should_cancel() => {
-            *wait_elapsed += wait_start.elapsed();
-            Ok(Some(ProposalContextWait::Cancelled))
-        }
-        Err(error) => {
-            *wait_elapsed += wait_start.elapsed();
-            Err(PayloadBuilderError::other(error))
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -507,56 +472,74 @@ where
             None
         };
         #[cfg(feature = "bal")]
-        let mut speculative_bal_overlay = None;
+        let build_state_provider =
+            |speculative_bal_overlay: Option<bal_overlay::SharedBalOverlay>| -> Result<
+                (
+                    reth_storage_api::StateProviderBox,
+                    Option<bal_overlay::SharedBalOverlay>,
+                ),
+                PayloadBuilderError,
+            > {
+                if let Some(speculative_parent) = attributes.speculative_parent() {
+                    if speculative_parent.parent_hash() != parent_header.hash() {
+                        return Err(PayloadBuilderError::other(
+                            ProviderError::StateForHashNotFound(parent_header.hash()),
+                        ));
+                    }
+
+                    let base_provider = self
+                        .provider
+                        .state_by_block_hash(speculative_parent.base_parent_hash())?;
+                    let base_provider = if let Some(execution_cache) = &execution_cache {
+                        Box::new(CachedStateProvider::new(
+                            base_provider,
+                            execution_cache.cache().clone(),
+                            None,
+                        )) as reth_storage_api::StateProviderBox
+                    } else {
+                        base_provider
+                    };
+                    let parent_header = speculative_parent.parent_header();
+                    let overlay = if let Some(overlay) = speculative_bal_overlay {
+                        overlay
+                    } else {
+                        bal_overlay::SharedBalOverlay::new(
+                            base_provider.as_ref(),
+                            parent_header.as_ref(),
+                            speculative_parent.block_access_list(),
+                        )?
+                    };
+                    let state_provider =
+                        Box::new(bal_overlay::BalOverlayStateProvider::from_shared(
+                            base_provider,
+                            parent_header,
+                            overlay.clone(),
+                        )) as reth_storage_api::StateProviderBox;
+                    let state_provider = if let Some(cache) = &builder_local_cache {
+                        Box::new(CachedStateProvider::new_with_mode(
+                            state_provider,
+                            cache.cache().clone(),
+                            CacheFillMode::FillOnMiss,
+                            Some(self.cache_metrics.clone()),
+                            None,
+                        )) as reth_storage_api::StateProviderBox
+                    } else {
+                        state_provider
+                    };
+
+                    Ok((state_provider, Some(overlay)))
+                } else {
+                    Ok((
+                        self.provider.state_by_block_hash(parent_header.hash())?,
+                        None,
+                    ))
+                }
+            };
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         #[cfg(feature = "bal")]
-        let mut state_provider = if let Some(speculative_parent) = attributes.speculative_parent() {
-            if speculative_parent.parent_hash() != parent_header.hash() {
-                return Err(PayloadBuilderError::other(
-                    ProviderError::StateForHashNotFound(parent_header.hash()),
-                ));
-            }
-
-            let base_provider = self
-                .provider
-                .state_by_block_hash(speculative_parent.base_parent_hash())?;
-            let base_provider = if let Some(execution_cache) = &execution_cache {
-                Box::new(CachedStateProvider::new(
-                    base_provider,
-                    execution_cache.cache().clone(),
-                    None,
-                )) as reth_storage_api::StateProviderBox
-            } else {
-                base_provider
-            };
-            let parent_header = speculative_parent.parent_header();
-            let overlay = bal_overlay::SharedBalOverlay::new(
-                base_provider.as_ref(),
-                parent_header.as_ref(),
-                speculative_parent.block_access_list(),
-            )?;
-            speculative_bal_overlay = Some(overlay.clone());
-            let state_provider = Box::new(bal_overlay::BalOverlayStateProvider::from_shared(
-                base_provider,
-                parent_header,
-                overlay,
-            )) as reth_storage_api::StateProviderBox;
-            if let Some(cache) = &builder_local_cache {
-                Box::new(CachedStateProvider::new_with_mode(
-                    state_provider,
-                    cache.cache().clone(),
-                    CacheFillMode::FillOnMiss,
-                    Some(self.cache_metrics.clone()),
-                    None,
-                )) as reth_storage_api::StateProviderBox
-            } else {
-                state_provider
-            }
-        } else {
-            self.provider.state_by_block_hash(parent_header.hash())?
-        };
+        let (mut state_provider, speculative_bal_overlay) = build_state_provider(None)?;
         #[cfg(not(feature = "bal"))]
         let mut state_provider = {
             if attributes.speculative_parent().is_some() {
@@ -784,15 +767,15 @@ where
         let prewarming_config = PrewarmingStateProviderConfig::new(
             self.provider.clone(),
             prewarm_parent_hash,
-            execution_cache,
+            execution_cache.clone(),
             prewarm_cache_fill_on_miss,
             executor.evm().evm_env(),
         );
         #[cfg(feature = "bal")]
         let prewarming_config = prewarming_config.with_speculative_parent(
-            builder_local_cache,
+            builder_local_cache.clone(),
             attributes.speculative_parent().cloned(),
-            speculative_bal_overlay,
+            speculative_bal_overlay.clone(),
         );
 
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
@@ -814,7 +797,6 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut late_excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
-        let mut logged_proposal_context_pool_poll = false;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -896,32 +878,20 @@ where
                     && is_budgeted_build
                     && build_once_with_shared_trie;
                 if can_wait_for_pool {
-                    match payload_build_control.as_ref() {
-                        Some(control) if !control.proposal_timing_attached() => {
-                            if !logged_proposal_context_pool_poll {
-                                debug!(
-                                    target: "payload_builder",
-                                    id = %payload_id,
-                                    "polling for proposal context while waiting for more pool transactions"
-                                );
-                                logged_proposal_context_pool_poll = true;
-                            }
-                            match poll_late_proposal_context(
-                                &mut ctx,
-                                control,
-                                &|| cancel.is_cancelled(),
-                                &mut proposal_context_wait_elapsed,
-                            )? {
-                                Some(ProposalContextWait::Attached) => {}
-                                Some(ProposalContextWait::Cancelled) => {
-                                    return Ok(BuildOutcome::Cancelled);
-                                }
-                                None => {}
-                            }
-                            check_cancel!();
-                            continue;
-                        }
-                        _ => {}
+                    if payload_build_control
+                        .as_ref()
+                        .is_some_and(|control| !control.proposal_timing_attached())
+                    {
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            build_reason,
+                            parent_hash = %parent_header.hash(),
+                            parent_number = parent_header.number(),
+                            payload_number,
+                            "stopping pool transaction execution before waiting for proposal context"
+                        );
+                        break BlockBuildStopReason::TxPoolEmpty;
                     }
                     std::thread::sleep(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL);
                     normal_transaction_fill_idle_elapsed += PROPOSAL_CONTEXT_POOL_POLL_INTERVAL;
@@ -1249,10 +1219,6 @@ where
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let finish_provider = InstrumentedFinishProvider {
-            inner: &*state_provider,
-            metrics: self.metrics.clone(),
-        };
 
         check_cancel!();
 
@@ -1268,31 +1234,85 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        if attributes.consensus_context().is_none()
-            && ctx.consensus_context.is_none()
-            && let Some(control) = attributes.payload_build_control()
-        {
-            debug!(
-                target: "payload_builder",
-                id = %payload_id,
-                "waiting for proposal context before finalizing speculative payload"
-            );
-            match wait_for_late_proposal_context(
-                &mut ctx,
-                control,
-                &|| cancel.is_cancelled(),
-                &mut proposal_context_wait_elapsed,
-            )? {
-                ProposalContextWait::Attached => {}
-                ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
-            }
-        }
-        check_cancel!();
-
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
         check_cancel!();
+
+        let block_access_list = db.take_built_alloy_bal();
+        let block_access_list_hash = block_access_list
+            .as_ref()
+            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+        let bundle_state = db.take_bundle();
+        drop(db);
+
+        let needs_late_proposal_context = attributes.consensus_context().is_none()
+            && ctx.consensus_context.is_none()
+            && attributes.payload_build_control().is_some();
+
+        let finish_state_provider = if needs_late_proposal_context {
+            drop(state_provider);
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                build_reason,
+                parent_hash = %parent_header.hash(),
+                parent_number = parent_header.number(),
+                payload_number,
+                "released payload-builder state provider before waiting for proposal context"
+            );
+
+            if let Some(control) = attributes.payload_build_control() {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    "waiting for proposal context before finalizing speculative payload"
+                );
+                match wait_for_late_proposal_context(
+                    &mut ctx,
+                    control,
+                    &|| cancel.is_cancelled(),
+                    &mut proposal_context_wait_elapsed,
+                )? {
+                    ProposalContextWait::Attached => {}
+                    ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
+                }
+            }
+            check_cancel!();
+
+            #[cfg(feature = "bal")]
+            let (mut reopened_state_provider, _) =
+                build_state_provider(speculative_bal_overlay.clone())?;
+            #[cfg(not(feature = "bal"))]
+            let mut reopened_state_provider = {
+                if attributes.speculative_parent().is_some() {
+                    return Err(PayloadBuilderError::other(
+                        ProviderError::UnsupportedProvider,
+                    ));
+                }
+                self.provider.state_by_block_hash(parent_header.hash())?
+            };
+            if !cache_wrapped_under_bal && let Some(execution_cache) = &execution_cache {
+                reopened_state_provider = Box::new(CachedStateProvider::new(
+                    reopened_state_provider,
+                    execution_cache.cache().clone(),
+                    Some(self.cache_metrics.clone()),
+                ));
+            }
+            if self.state_provider_metrics {
+                reopened_state_provider = Box::new(InstrumentedStateProvider::new(
+                    reopened_state_provider,
+                    "builder",
+                ));
+            }
+            reopened_state_provider
+        } else {
+            state_provider
+        };
+        let finish_provider = InstrumentedFinishProvider {
+            inner: &*finish_state_provider,
+            metrics: self.metrics.clone(),
+        };
 
         let hashed_state = if let Some(hashed_state_rx) = trie_handle
             .as_mut()
@@ -1303,12 +1323,12 @@ where
                 CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
                 CancelableRecv::Disconnected => {
                     check_cancel!();
-                    finish_provider.hashed_post_state(&db.bundle_state)
+                    finish_provider.hashed_post_state(&bundle_state)
                 }
             }
         } else {
             check_cancel!();
-            finish_provider.hashed_post_state(&db.bundle_state)
+            finish_provider.hashed_post_state(&bundle_state)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
@@ -1359,11 +1379,6 @@ where
 
         check_cancel!();
 
-        let block_access_list = db.take_built_alloy_bal();
-        let block_access_list_hash = block_access_list
-            .as_ref()
-            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
-
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
@@ -1389,7 +1404,7 @@ where
                 &parent_header,
                 transactions,
                 &execution_result,
-                &db.bundle_state,
+                &bundle_state,
                 &finish_provider,
                 state_root,
                 block_access_list_hash,
@@ -1567,7 +1582,7 @@ where
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
-            state: db.take_bundle(),
+            state: bundle_state,
         };
 
         let built_executed_block = BuiltPayloadExecutedBlock {
@@ -1596,7 +1611,6 @@ where
             rlp_length,
         );
 
-        drop(db);
         if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
