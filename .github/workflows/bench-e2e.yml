@@ -90,6 +90,7 @@ on:
           - "Off"
           - Samply
           - Tracy
+          - Tracy Full
           - Both
       otlp:
         description: Export OTLP traces and logs.
@@ -369,7 +370,7 @@ jobs:
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
+      BENCH_TRACY: ${{ inputs.profiling == 'Tracy Full' && 'full' || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy)) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
@@ -570,6 +571,43 @@ jobs:
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
           command -v bench
+
+      - name: Install tracy-capture
+        if: env.BENCH_TRACY != 'off'
+        run: |
+          if command -v tracy-capture &>/dev/null; then
+            command -v tracy-capture
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            rm -rf /tmp/tracy /tmp/tracy-capture-build
+            git clone --depth 1 https://github.com/wolfpld/tracy /tmp/tracy
+            if cmake -S /tmp/tracy/capture -B /tmp/tracy-capture-build -DCMAKE_BUILD_TYPE=Release; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to configure tracy-capture"
+              exit 1
+            fi
+            sleep 5
+          done
+          cmake --build /tmp/tracy-capture-build --parallel
+
+          tracy_capture="$(find /tmp/tracy-capture-build -type f -name tracy-capture -perm -111 | head -n 1)"
+          if [ -z "$tracy_capture" ]; then
+            echo "::error::failed to build tracy-capture"
+            exit 1
+          fi
+
+          sudo install "$tracy_capture" /usr/local/bin/tracy-capture
+          command -v tracy-capture
+
+      - name: Configure Tracy full sampling
+        if: env.BENCH_TRACY == 'full'
+        run: |
+          sudo sysctl kernel.perf_event_paranoid=1
+          sudo sysctl kernel.kptr_restrict=0
 
       - name: Resolve PR head branch
         id: pr-info
