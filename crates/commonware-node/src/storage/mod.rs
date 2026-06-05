@@ -235,3 +235,30 @@ where
         .await
         .wrap_err_with(|| format!("failed reading finalization certificate at height {height}"))
 }
+
+/// Reads the latest finalization certificate stored by height.
+pub async fn read_latest_finalization<TContext>(
+    context: &TContext,
+) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+
+    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
+        .await
+        .wrap_err("failed to open finalizations-by-height archive")?;
+
+    let Some(height) = archive.last_index() else {
+        return Ok(None);
+    };
+
+    let finalization = archive
+        .get(Identifier::Index(height))
+        .await
+        .wrap_err_with(|| {
+            format!("failed reading latest finalization certificate at height {height}")
+        })?;
+
+    Ok(finalization.map(|finalization| (height, finalization)))
+}

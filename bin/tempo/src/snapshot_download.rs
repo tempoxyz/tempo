@@ -4,7 +4,6 @@ use std::{
     time::Instant,
 };
 
-use alloy_primitives::hex;
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, eyre};
 use reth_cli_commands::download::DownloadCommand;
@@ -14,7 +13,7 @@ use tempo_telemetry_util::display_duration;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
-const FINALIZATION_FILE: &str = "bootstrap/finalization.cert";
+const BOOTSTRAP_FINALIZATION_FILE: &str = "bootstrap/finalization.cert";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -71,7 +70,7 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
             .unwrap_or_else(|| datadir.join("consensus"));
 
         let consensus_manifest = load_consensus_manifest(manifest_url, manifest_path).await?;
-        write_finalization(&consensus_dir, &consensus_manifest)?;
+        write_bootstrap_finalization(&consensus_dir, &consensus_manifest)?;
 
         Ok(())
     })
@@ -114,29 +113,27 @@ async fn load_consensus_manifest(
     Ok(consensus_manifest)
 }
 
-fn write_finalization(
+fn write_bootstrap_finalization(
     consensus_dir: &Path,
     consensus_manifest: &TempoConsensusManifest,
 ) -> eyre::Result<()> {
-    let bytes = hex::decode(&consensus_manifest.finalization)
-        .wrap_err("failed to decode consensus finalization")?;
-
-    let path = consensus_dir.join(FINALIZATION_FILE);
+    let path = consensus_dir.join(BOOTSTRAP_FINALIZATION_FILE);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("failed to create finalization dir {parent:?}"))?;
     }
 
-    fs::write(&path, bytes)
+    fs::write(&path, consensus_manifest.finalization.as_ref())
         .wrap_err_with(|| format!("failed to write finalization certificate to {path:?}"))?;
 
-    eprintln!("persisted consensus finalization: {path:?}");
+    eprintln!("persisted consensus bootstrap finalization: {path:?}");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{B256, Bytes};
 
     #[test]
     fn args_parses_mixed_reth_and_tempo_flags() {
@@ -169,7 +166,9 @@ mod tests {
             "timestamp": 0,
             "components": {},
             "consensus": {
-                "finalization": "aabbcc"
+                "height": 42,
+                "digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "finalization": "0xaabbcc"
             }
         }"#;
 
@@ -178,19 +177,18 @@ mod tests {
         let manifest =
             futures::executor::block_on(load_consensus_manifest(None, Some(path))).unwrap();
 
-        assert_eq!(
-            manifest,
-            TempoConsensusManifest {
-                finalization: "aabbcc".to_string(),
-            }
-        );
+        assert_eq!(manifest.height, 42);
+        assert_eq!(manifest.digest, B256::with_last_byte(0x2a));
+        assert_eq!(manifest.finalization, Bytes::from(vec![0xaa, 0xbb, 0xcc]));
     }
 
     #[test]
-    fn write_finalization_decodes_raw_bytes() {
+    fn write_finalization_writes_raw_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let tempo_consensus = TempoConsensusManifest {
-            finalization: "000102ff".to_string(),
+            height: 42,
+            digest: B256::with_last_byte(0x2a),
+            finalization: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
         };
 
         write_finalization(dir.path(), &tempo_consensus).unwrap();
