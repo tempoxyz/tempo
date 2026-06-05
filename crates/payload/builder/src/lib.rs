@@ -682,6 +682,12 @@ where
                     };
                     let mut stop_reason = None;
                     let action_recycler = planner.action_recycler();
+                    let tx_gas_limit = pool_tx.gas_limit();
+                    let available_non_shared_gas_before =
+                        non_shared_gas_limit.saturating_sub(cumulative_gas_used);
+                    if tx_gas_limit > available_non_shared_gas_before {
+                        break BlockBuildStopReason::GasLimit;
+                    }
 
                     let execution_result = executor.execute_tip20_transfer_action_replay_tx(
                         (*tx_env, pool_tx.transaction.inner()),
