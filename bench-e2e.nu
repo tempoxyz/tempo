@@ -21,7 +21,10 @@ const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
 const E2E_FEATURE_DEFAULT_FEATURES = "bal"
-const E2E_FEATURE_DEFAULT_ARGS = ["--builder.enable-blockstm-tip20-transfers"]
+const E2E_FEATURE_DEFAULT_ARGS = [
+    "--builder.enable-blockstm-tip20-transfers"
+    "--consensus.max-message-size-bytes" "16777216"
+]
 const E2E_NONCE_WHEEL_BLOAT_MIB = 32768
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
