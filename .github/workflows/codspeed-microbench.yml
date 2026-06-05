@@ -23,7 +23,7 @@ on:
         default: "tip20_execution"
         type: string
       filters:
-        description: "Optional benchmark name filter passed to cargo codspeed run"
+        description: "Optional benchmark name filter passed to cargo codspeed run; default includes TIP-20 execution, rewards, and action replay"
         required: false
         default: "tip20_"
         type: string
@@ -65,6 +65,8 @@ jobs:
         env:
           INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
           INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
+          # Keep the default broad enough to include all TIP-20 groups in
+          # tip20_execution: pure execution, rewards, and action replay.
           INPUT_FILTERS: ${{ inputs.filters || 'tip20_' }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
