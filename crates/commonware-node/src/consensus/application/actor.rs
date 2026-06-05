@@ -897,17 +897,17 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
-        if let Some(duration) = validation_duration {
-            if let Ok(mut estimator) = self.validation_latency_estimator.lock() {
-                estimator.observe(
-                    block.height().get(),
-                    ValidationLatencyWorkload::new(
-                        block.block().gas_used(),
-                        block.block().body().transaction_count(),
-                    ),
-                    duration,
-                );
-            }
+        if let Some(duration) = validation_duration
+            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
+        {
+            estimator.observe(
+                block.height().get(),
+                ValidationLatencyWorkload::new(
+                    block.block().gas_used(),
+                    block.block().body().transaction_count(),
+                ),
+                duration,
+            );
         }
         let is_good = validation_duration.is_some();
 
