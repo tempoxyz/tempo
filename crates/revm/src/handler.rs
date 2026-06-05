@@ -787,6 +787,753 @@ where
     }
 }
 
+impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    /// @dev Resolves the transaction fee token and loads the fee payer's balance.
+    ///
+    /// Important properties:
+    /// - Assumes `validate_env` already validated the fee-payer signature, so `fee_payer()`
+    ///   can only fail if that invariant is broken.
+    /// - Resolves the effective fee token from the transaction, stored user preference, inferred
+    ///   call target, or default token through `TempoStateAccess::get_fee_token`.
+    /// - Stores the resolved token in `evm.fee_token` for later fee reimbursement.
+    /// - Always rejects non-TIP-20 addresses before reading token balances, because
+    ///   `get_token_balance` relies on the TIP-20 address prefix.
+    /// - Performs the USD-denomination check only when the transaction can spend fee balance or
+    ///   when it is a subblock transaction, preserving the existing free-transaction behavior.
+    /// - Loads and returns the fee payer's current token balance. No fee is deducted here.
+    ///
+    /// @return The resolved fee payer, fee token, and loaded fee-token balance.
+    fn resolve_fee_token_and_load_balance(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(Address, Address, U256), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let (fee_payer, fee_token) = {
+            let ctx = &mut evm.inner.ctx;
+            let fee_payer = ctx.tx.fee_payer().expect("pre-validated in `validate_env`");
+            let fee_token = ctx
+                .journaled_state
+                .get_fee_token(&ctx.tx, fee_payer, ctx.cfg.spec)
+                .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+            (fee_payer, fee_token)
+        };
+
+        evm.fee_token = Some(fee_token);
+
+        // Protocol-level guard: `get_token_balance` assumes the TIP-20 prefix is valid.
+        if !fee_token.is_tip20() {
+            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
+        }
+
+        let account_balance = {
+            let ctx = &mut evm.inner.ctx;
+
+            // Free non-subblock transactions skip the USD metadata read, but any fee-bearing
+            // transaction or subblock transaction must pay with a USD-denominated TIP-20.
+            if !ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction() {
+                ctx.journaled_state
+                    .ensure_tip20_usd(ctx.cfg.spec, fee_token)?;
+            }
+
+            get_token_balance(&mut ctx.journaled_state, fee_token, fee_payer)?
+        };
+
+        Ok((fee_payer, fee_token, account_balance))
+    }
+
+    /// @dev Validates replay protection and applies the pre-execution nonce mutation.
+    ///
+    /// Important properties:
+    /// - Runs upstream account nonce/code validation, including the EIP-3607 code check.
+    /// - Skips the protocol nonce comparison for non-zero Tempo nonce keys, matching the existing
+    ///   2D/expiring-nonce semantics.
+    /// - Touches the caller account exactly as the original pre-execution flow did.
+    /// - Adds new-account gas to `init_gas` for CREATE transactions that use a non-protocol nonce
+    ///   and whose caller account nonce is zero, then repeats the relevant gas-limit checks.
+    /// - Handles expiring nonce transactions by checking and marking the replay hash in
+    ///   `NonceManager`. T1B+ uses the sender-scoped transaction identifier; earlier forks keep
+    ///   the historical `tx_hash` behavior.
+    /// - Handles 2D nonce transactions by comparing against `NonceManager` state when nonce checks
+    ///   are enabled, then incrementing the 2D nonce.
+    /// - Handles protocol-nonce CALL transactions by bumping the caller nonce here. Protocol-nonce
+    ///   CREATE transactions are bumped later by `make_create_frame`.
+    ///
+    /// Ordering:
+    /// - Must run before fee collection so subblock fee-payment failures can still commit the nonce
+    ///   mutation path already performed by validation.
+    fn validate_and_apply_nonce(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        init_gas: &mut InitialAndFloorGas,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let block = &evm.inner.ctx.block;
+        let tx = &evm.inner.ctx.tx;
+        let cfg = &evm.inner.ctx.cfg;
+        let journal = &mut evm.inner.ctx.journaled_state;
+
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        let nonce_key = tx
+            .tempo_tx_env
+            .as_ref()
+            .map(|aa| aa.nonce_key)
+            .unwrap_or_default();
+        let spec = cfg.spec();
+
+        pre_execution::validate_account_nonce_and_code(
+            &caller_account.account().info,
+            tx.nonce(),
+            cfg.is_eip3607_disabled(),
+            cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
+        )?;
+
+        caller_account.touch();
+
+        // CREATE with a non-protocol nonce can create the caller account, so its new-account gas
+        // must be added after loading the real caller state.
+        if !nonce_key.is_zero()
+            && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
+            && caller_account.nonce() == 0
+        {
+            init_gas.initial_regular_gas += cfg.gas_params.get(GasId::new_account_cost());
+            init_gas.initial_state_gas += cfg.gas_params.new_account_state_gas();
+
+            if tx.gas_limit() < init_gas.initial_total_gas() {
+                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                    gas_limit: tx.gas_limit(),
+                    initial_gas: init_gas.initial_total_gas(),
+                }
+                .into());
+            }
+
+            if cfg.is_amsterdam_eip8037_enabled()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+            {
+                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+                    gas_floor: init_gas.initial_regular_gas(),
+                    gas_limit: cfg.tx_gas_limit_cap(),
+                }
+                .into());
+            }
+        }
+
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+            let tempo_tx_env = tx
+                .tempo_tx_env
+                .as_ref()
+                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
+
+            if tx.nonce() != 0 {
+                return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
+            }
+
+            // Pre-T1B used tx_hash. T1B+ uses the sender-scoped identifier so fee-payer
+            // signatures cannot replay the same user transaction under a different sponsor.
+            let replay_hash = if spec.is_t1b() {
+                tx.unique_tx_identifier()
+                    .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
+            } else {
+                tempo_tx_env.tx_hash
+            };
+            let valid_before = tempo_tx_env
+                .valid_before
+                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
+            let block_timestamp = block.timestamp().saturating_to::<u64>();
+
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                let mut nonce_manager = NonceManager::new();
+
+                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                    let ptr = nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .read()
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+
+                    nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .write(next)
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                    Some(ptr)
+                } else {
+                    None
+                };
+
+                nonce_manager
+                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        TempoPrecompileError::NonceError(
+                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+                        ) => {
+                            let max_allowed =
+                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                            if valid_before <= block_timestamp {
+                                TempoInvalidTransaction::NonceManagerError(format!(
+                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                                ))
+                                .into()
+                            } else {
+                                TempoInvalidTransaction::NonceManagerError(format!(
+                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                                ))
+                                .into()
+                            }
+                        }
+                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                    })?;
+
+                if let Some(prev_ptr) = prev_ptr {
+                    nonce_manager
+                        .expiring_nonce_ring_ptr
+                        .write(prev_ptr)
+                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                }
+
+                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+            })?;
+        } else if !nonce_key.is_zero() {
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                let mut nonce_manager = NonceManager::new();
+
+                if !cfg.is_nonce_check_disabled() {
+                    let tx_nonce = tx.nonce();
+                    let state = nonce_manager
+                        .get_nonce(getNonceCall {
+                            account: tx.caller(),
+                            nonceKey: nonce_key,
+                        })
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => {
+                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
+                            }
+                        })?;
+
+                    match tx_nonce.cmp(&state) {
+                        Ordering::Greater => {
+                            return Err(InvalidTransaction::NonceTooHigh {
+                                tx: tx_nonce,
+                                state,
+                            }
+                            .into());
+                        }
+                        Ordering::Less => {
+                            return Err(InvalidTransaction::NonceTooLow {
+                                tx: tx_nonce,
+                                state,
+                            }
+                            .into());
+                        }
+                        Ordering::Equal => {}
+                    }
+                }
+
+                nonce_manager
+                    .increment_nonce(tx.caller(), nonce_key)
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                    })?;
+
+                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+            })?;
+        } else if tx.kind().is_call() {
+            // Protocol nonce for CREATE is bumped by `make_create_frame`.
+            caller_account.bump_nonce();
+        }
+
+        Ok(())
+    }
+
+    /// @dev Computes the maximum token amount that must be collected before execution.
+    ///
+    /// Important properties:
+    /// - Pure calculation over the current transaction, block, config, and loaded fee-token balance.
+    /// - Uses `calculate_caller_fee` to preserve upstream fee arithmetic.
+    /// - Uses `max(account_balance, new_balance) - new_balance` to preserve behavior when balance
+    ///   checks are disabled and the calculated post-fee balance exceeds the loaded balance.
+    ///
+    /// @return The fee-token amount to pass to `collectFeePreTx`.
+    fn calculate_gas_balance_spending(
+        &self,
+        evm: &TempoEvm<DB, I>,
+        account_balance: U256,
+    ) -> Result<U256, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = &evm.inner.ctx;
+        let new_balance = calculate_caller_fee(account_balance, &ctx.tx, &ctx.block, &ctx.cfg)?;
+
+        // Avoid underflow when balance checks are disabled and the calculated post-fee balance is
+        // larger than the loaded account balance.
+        Ok(core::cmp::max(account_balance, new_balance) - new_balance)
+    }
+
+    /// @dev Validates keychain state and sets the transient transaction key when needed.
+    ///
+    /// Important properties:
+    /// - Does nothing for non-AA transactions and AA transactions without a keychain signature.
+    /// - Verifies the keychain signature's `user_address` matches `tx.caller`, preserving the
+    ///   invariant established by signer recovery.
+    /// - Resolves the acting access key from `override_key_id` for simulations or from the
+    ///   keychain signature for real transactions.
+    /// - Detects same-transaction authorize-and-use, where the access key is not yet stored. In
+    ///   that path, fee-limit enforcement uses the inline authorization limits because
+    ///   `collectFeePreTx` cannot consult a transaction key that has not been registered yet.
+    /// - For existing keys, validates the acting key against `AccountKeychain`, checks admin
+    ///   authority for delegated key authorizations, and writes the transient transaction key used
+    ///   by TIP-20 fee collection and later execution.
+    /// - Caches the loaded key expiry on the EVM for transaction-pool validation context.
+    ///
+    /// Ordering:
+    /// - Must run after gas balance spending is known and before `collectFeePreTx`.
+    ///
+    /// @return The loaded transaction access key, if any, and whether this is same-tx auth+use.
+    fn validate_keychain_and_set_transaction_key_pre_fee(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        fee_payer: Address,
+        fee_token: Address,
+        gas_balance_spending: U256,
+    ) -> Result<(Option<LoadedTxAccessKey>, bool), EVMError<DB::Error, TempoInvalidTransaction>>
+    {
+        let mut same_tx_key_authorization_use = false;
+
+        let loaded_key = {
+            let block = &evm.inner.ctx.block;
+            let tx = &evm.inner.ctx.tx;
+            let cfg = &evm.inner.ctx.cfg;
+            let journal = &mut evm.inner.ctx.journaled_state;
+            let spec = cfg.spec();
+
+            let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() else {
+                return Ok((None, same_tx_key_authorization_use));
+            };
+            let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() else {
+                return Ok((None, same_tx_key_authorization_use));
+            };
+
+            let user_address = &keychain_sig.user_address;
+            if *user_address != tx.caller {
+                return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
+                    user_address: *user_address,
+                    caller: tx.caller,
+                }
+                .into());
+            }
+
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                override_key_id
+            } else {
+                keychain_sig
+                    .key_id(&tempo_tx_env.signature_hash)
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+            };
+
+            let key_auth = tempo_tx_env.key_authorization.as_ref();
+            same_tx_key_authorization_use =
+                key_auth.is_some_and(|key_auth| access_key_addr == key_auth.key_id);
+
+            if same_tx_key_authorization_use {
+                let key_auth = key_auth.expect("same-tx auth/use requires inline authorization");
+
+                // The key is not in storage yet, so enforce same-tx fee limits from the inline
+                // authorization. Existing-key fee limits are enforced by `collectFeePreTx`.
+                if !gas_balance_spending.is_zero()
+                    && fee_payer == tx.caller
+                    && let Some(limits) = key_auth.limits.as_ref()
+                {
+                    let remaining = limits
+                        .iter()
+                        .rev()
+                        .find(|limit| limit.token == fee_token)
+                        .map(|limit| limit.limit)
+                        .unwrap_or_default();
+
+                    if gas_balance_spending > remaining {
+                        return Err(
+                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
+                        );
+                    }
+                }
+
+                None
+            } else {
+                let loaded_key = StorageCtx::enter_precompile(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    |mut keychain: AccountKeychain| {
+                        let tx_sig_type = keychain_sig.signature.signature_type().into();
+                        let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
+
+                        let key = keychain
+                            .validate_keychain_authorization(
+                                *user_address,
+                                access_key_addr,
+                                block.timestamp().to::<u64>(),
+                                sig_type,
+                            )
+                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: format!("{e:?}"),
+                            })?;
+
+                        if key_auth.is_some() && !key.is_admin {
+                            return Err(
+                                TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
+                            );
+                        }
+
+                        // TIP-20 reads this transient key during fee collection and execution.
+                        keychain
+                            .set_transaction_key(access_key_addr)
+                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
+                            key_id: access_key_addr,
+                            key,
+                        })
+                    },
+                )?;
+
+                Some(loaded_key)
+            }
+        };
+
+        if let Some(loaded_key) = loaded_key.as_ref() {
+            evm.key_expiry = Some(loaded_key.key.expiry);
+        }
+
+        Ok((loaded_key, same_tx_key_authorization_use))
+    }
+
+    /// @dev Performs the T6 state-aware admin signer proof for key authorizations.
+    ///
+    /// Important properties:
+    /// - Stateless T6 signer/account checks run in `validate_env`; this phase only proves that a
+    ///   non-root authorization signer is the same active transaction key loaded from state.
+    /// - Requires the loaded transaction key to match the recovered authorization signer and
+    ///   signature type.
+    /// - Requires that loaded key to be an admin key, otherwise the authorization is rejected as
+    ///   not signed by the root/admin authority.
+    ///
+    /// Ordering:
+    /// - Runs after `validate_keychain_and_set_transaction_key_pre_fee`, because it depends on the
+    ///   loaded keychain state.
+    fn validate_t6_key_authorization_signer(
+        &self,
+        evm: &TempoEvm<DB, I>,
+        loaded_tx_access_key: Option<&LoadedTxAccessKey>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = &evm.inner.ctx;
+
+        if ctx.cfg.spec.is_t6()
+            && let Some(tempo_tx_env) = ctx.tx.tempo_tx_env.as_ref()
+            && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+        {
+            let auth_signer = key_auth
+                .recover_signer()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+
+            if auth_signer != ctx.tx.caller {
+                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
+                let signer_is_admin = match loaded_tx_access_key {
+                    Some(loaded_key)
+                        if loaded_key.key_id == auth_signer
+                            && (loaded_key.key.signature_type as u8) == key_auth_sig_type =>
+                    {
+                        loaded_key.key.is_admin
+                    }
+                    Some(_) | None => {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "admin-signed key authorization must be signed by transaction key"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
+                };
+
+                if !signer_is_admin {
+                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected: ctx.tx.caller,
+                        actual: auth_signer,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// @dev Collects the upfront transaction fee through `TipFeeManager::collect_fee_pre_tx`.
+    ///
+    /// Important properties:
+    /// - No-ops when `gas_balance_spending` is zero.
+    /// - Runs the precompile behind a journal checkpoint. On error, the checkpoint is reverted so
+    ///   failed fee collection does not leak partial precompile state.
+    /// - Maps precompile errors into transaction validation errors with the same behavior as the
+    ///   previous inline implementation, including AMM liquidity, TIP-20 balance, paused-token,
+    ///   fatal, and fallback errors.
+    /// - Commits the checkpoint and records `evm.collected_fee` only after successful collection.
+    ///
+    /// Ordering:
+    /// - Must run after nonce/keychain pre-fee validation and before inline key authorization.
+    fn collect_fee_pre_tx(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        fee_payer: Address,
+        fee_token: Address,
+        gas_balance_spending: U256,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        if gas_balance_spending.is_zero() {
+            return Ok(());
+        }
+
+        let skip_liquidity_check = evm.skip_liquidity_check;
+        let ctx = &mut evm.inner.ctx;
+        let checkpoint = ctx.journaled_state.checkpoint();
+        let result = StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                TipFeeManager::new().collect_fee_pre_tx(
+                    fee_payer,
+                    fee_token,
+                    gas_balance_spending,
+                    ctx.block.beneficiary(),
+                    skip_liquidity_check,
+                )
+            },
+        );
+
+        if let Err(err) = result {
+            ctx.journaled_state.checkpoint_revert(checkpoint);
+            return Err(match err {
+                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+                    FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
+                    }
+                    .into()
+                }
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                    InsufficientBalance { available, .. },
+                )) => FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: gas_balance_spending,
+                    balance: available,
+                }
+                .into(),
+                TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                    TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                }
+                TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                _ => FeePaymentError::Other(err.to_string()).into(),
+            });
+        }
+
+        ctx.journaled_state.checkpoint_commit();
+        evm.collected_fee = gas_balance_spending;
+
+        Ok(())
+    }
+
+    /// @dev Applies an inline `KeyAuthorization` after fee collection succeeds.
+    ///
+    /// Important properties:
+    /// - Does nothing when the transaction has no inline key authorization.
+    /// - Applies the keychain precompile write in the validation/pre-execution phase. This write is
+    ///   intentionally outside the later user-call batch checkpoint, so same-transaction
+    ///   authorize-and-use persists even if scoped-call prevalidation or user execution fails.
+    /// - Preserves the fork-specific gas behavior: T1/T1A meter the keychain precompile call,
+    ///   T1B+ runs it with unlimited gas because intrinsic gas already accounts for it, and pre-T1
+    ///   keeps historical behavior.
+    /// - Updates `init_gas` exactly as before when T1/T1A metering succeeds or runs out of gas.
+    /// - Caches inline authorization expiry on the EVM for transaction-pool validation context.
+    /// - For same-transaction authorize-and-use, sets the newly registered key as the transient
+    ///   transaction key and debits the already-collected fee from its spending limit.
+    ///
+    /// Ordering:
+    /// - Must run after successful fee collection. Same-tx fee-limit prechecks happen earlier in
+    ///   `validate_keychain_and_set_transaction_key_pre_fee`.
+    fn apply_inline_key_authorization(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        init_gas: &mut InitialAndFloorGas,
+        fee_payer: Address,
+        fee_token: Address,
+        same_tx_key_authorization_use: bool,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let collected_fee = evm.collected_fee;
+        let block = &evm.inner.ctx.block;
+        let tx = &evm.inner.ctx.tx;
+        let cfg = &evm.inner.ctx.cfg;
+        let journal = &mut evm.inner.ctx.journaled_state;
+
+        let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() else {
+            return Ok(());
+        };
+        let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() else {
+            return Ok(());
+        };
+
+        // Inline authorization is a pre-execution write. It intentionally survives later
+        // user-call checkpoint reverts, including same-transaction authorize-and-use batches.
+        let spec = cfg.spec();
+        let keychain_checkpoint = if spec.is_t1() {
+            Some(journal.checkpoint())
+        } else {
+            None
+        };
+        let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
+        let internals = EvmInternals::new(journal, block, cfg, tx);
+        let gas_limit = if spec.is_t1() && !spec.is_t1b() {
+            tx.gas_limit() - init_gas.initial_total_gas()
+        } else {
+            u64::MAX
+        };
+        let gas_params = if spec.is_t1() {
+            static TABLE: OnceLock<GasParams> = OnceLock::new();
+            TABLE
+                .get_or_init(|| {
+                    let mut table = [0u64; 256];
+                    table[GasId::sstore_set_without_load_cost().as_usize()] =
+                        cfg.gas_params.get(GasId::sstore_set_without_load_cost());
+                    table[GasId::warm_storage_read_cost().as_usize()] =
+                        cfg.gas_params.get(GasId::warm_storage_read_cost());
+                    GasParams::new(Arc::new(table))
+                })
+                .clone()
+        } else {
+            cfg.gas_params.clone()
+        };
+
+        let mut provider = EvmPrecompileStorageProvider::new(
+            internals,
+            gas_limit,
+            0,
+            cfg.spec,
+            amsterdam_eip8037_enabled,
+            false,
+            gas_params,
+        );
+
+        let out_of_gas = StorageCtx::enter(&mut provider, || {
+            let mut keychain = AccountKeychain::default();
+            let access_key_addr = key_auth.key_id;
+
+            let signature_type = match key_auth.key_type {
+                SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
+                SignatureType::P256 => PrecompileSignatureType::P256,
+                SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+            };
+
+            let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
+            let enforce_limits = key_auth.limits.is_some();
+            let precompile_limits: Vec<TokenLimit> = key_auth
+                .limits
+                .as_ref()
+                .map(|limits| {
+                    limits
+                        .iter()
+                        .map(|limit| TokenLimit {
+                            token: limit.token,
+                            amount: limit.limit,
+                            period: limit.period,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let allow_any_calls = key_auth.allowed_calls.is_none();
+            let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
+
+            let config = KeyRestrictions {
+                expiry,
+                enforceLimits: enforce_limits,
+                limits: precompile_limits,
+                allowAnyCalls: allow_any_calls,
+                allowedCalls: precompile_allowed_calls,
+            };
+
+            let result = if key_auth.is_admin() {
+                keychain.authorize_admin_key(
+                    tx.caller,
+                    access_key_addr,
+                    signature_type,
+                    key_auth.witness(),
+                )
+            } else {
+                keychain.authorize_key(
+                    tx.caller,
+                    access_key_addr,
+                    signature_type,
+                    config,
+                    key_auth.witness(),
+                )
+            };
+
+            match result {
+                Ok(_) => Ok(false),
+                Err(TempoPrecompileError::OutOfGas) => Ok(true),
+                Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
+                Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
+                    reason: err.to_string(),
+                }
+                .into()),
+            }
+        })?;
+
+        let gas_used = provider.gas_used();
+        drop(provider);
+
+        if let Some(expiry) = key_auth.expiry {
+            evm.key_expiry = Some(expiry.get());
+        }
+
+        if let Some(keychain_checkpoint) = keychain_checkpoint {
+            if spec.is_t1b() {
+                journal.checkpoint_commit();
+            } else if out_of_gas {
+                init_gas.initial_regular_gas = u64::MAX;
+                journal.checkpoint_revert(keychain_checkpoint);
+            } else {
+                init_gas.initial_regular_gas += gas_used;
+                journal.checkpoint_commit();
+            };
+        }
+
+        if same_tx_key_authorization_use {
+            StorageCtx::enter_precompile(
+                journal,
+                block,
+                cfg,
+                tx,
+                |mut keychain: AccountKeychain| {
+                    keychain
+                        .set_transaction_key(key_auth.key_id)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                    if collected_fee.is_zero() {
+                        return Ok(());
+                    }
+
+                    keychain
+                        .authorize_transfer(fee_payer, fee_token, collected_fee)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => FeePaymentError::Other(err.to_string()).into(),
+                        })
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
 impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
@@ -905,631 +1652,39 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
-        let block = &evm.inner.ctx.block;
-        let tx = &evm.inner.ctx.tx;
-        let cfg = &evm.inner.ctx.cfg;
-        let journal = &mut evm.inner.ctx.journaled_state;
+        // 1. Resolve the fee payer/token and load the payer's fee-token balance.
+        let (fee_payer, fee_token, account_balance) =
+            self.resolve_fee_token_and_load_balance(evm)?;
 
-        let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        // 2. Validate replay protection and apply the nonce mutation before fee collection.
+        self.validate_and_apply_nonce(evm, init_gas)?;
 
-        evm.fee_token = Some(fee_token);
+        // 3. Compute the upfront fee-token amount that must be collected.
+        let gas_balance_spending = self.calculate_gas_balance_spending(evm, account_balance)?;
 
-        // Always validate TIP20 prefix to prevent panics in get_token_balance.
-        // This is a protocol-level check since validators could bypass initial validation.
-        if !fee_token.is_tip20() {
-            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
-        }
+        // 4. Validate keychain state and set the transaction key needed for fee collection.
+        let (loaded_tx_access_key, same_tx_key_authorization_use) = self
+            .validate_keychain_and_set_transaction_key_pre_fee(
+                evm,
+                fee_payer,
+                fee_token,
+                gas_balance_spending,
+            )?;
 
-        // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
-        // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
-        }
+        // 5. For T6 delegated key authorizations, prove the sidecar signer is an active admin key.
+        self.validate_t6_key_authorization_signer(evm, loaded_tx_access_key.as_ref())?;
 
-        // Load the fee payer balance
-        let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
+        // 6. Collect the maximum upfront fee, reverting only the fee precompile state on failure.
+        self.collect_fee_pre_tx(evm, fee_payer, fee_token, gas_balance_spending)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
-        let nonce_key = tx
-            .tempo_tx_env
-            .as_ref()
-            .map(|aa| aa.nonce_key)
-            .unwrap_or_default();
-
-        let spec = cfg.spec();
-
-        // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
-        let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
-
-        // Validate account nonce and code (EIP-3607) using upstream helper
-        pre_execution::validate_account_nonce_and_code(
-            &caller_account.account().info,
-            tx.nonce(),
-            cfg.is_eip3607_disabled(),
-            // skip nonce check if 2D nonce or expiring nonce is used
-            cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
+        // 7. Apply inline key authorization after fee collection has succeeded.
+        self.apply_inline_key_authorization(
+            evm,
+            init_gas,
+            fee_payer,
+            fee_token,
+            same_tx_key_authorization_use,
         )?;
-
-        // modify account nonce and touch the account.
-        caller_account.touch();
-
-        // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
-        // This case would create a new account for caller.
-        // We only check first call of the transaction because CREATE is only allowed
-        // to appear as the first call in the batch (validated in `validate_calls`)
-        if !nonce_key.is_zero()
-            && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
-            && caller_account.nonce() == 0
-        {
-            init_gas.initial_regular_gas += cfg.gas_params.get(GasId::new_account_cost());
-            init_gas.initial_state_gas += cfg.gas_params.new_account_state_gas();
-
-            // do the gas limit check again (include state gas for T4+).
-            if tx.gas_limit() < init_gas.initial_total_gas() {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit: tx.gas_limit(),
-                    initial_gas: init_gas.initial_total_gas(),
-                }
-                .into());
-            }
-
-            // Validate that regular gas does not exceed the cap.
-            if cfg.is_amsterdam_eip8037_enabled()
-                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
-            {
-                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: init_gas.initial_regular_gas(),
-                    gas_limit: cfg.tx_gas_limit_cap(),
-                }
-                .into());
-            }
-        }
-
-        if is_expiring_nonce {
-            // Expiring nonce transaction replay protection:
-            // - Pre-T1B: use tx_hash for backwards-compatible behavior.
-            // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
-            //   to prevent replay via different fee payer signatures.
-            let tempo_tx_env = tx
-                .tempo_tx_env
-                .as_ref()
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
-
-            // Expiring nonce txs must have nonce == 0
-            if tx.nonce() != 0 {
-                return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
-            }
-
-            let replay_hash = if spec.is_t1b() {
-                tx.unique_tx_identifier()
-                    .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
-            } else {
-                tempo_tx_env.tx_hash
-            };
-            let valid_before = tempo_tx_env
-                .valid_before
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
-
-            let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
-                } else {
-                    None
-                };
-
-                nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
-                            }
-                        }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
-
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-            })?;
-        } else if !nonce_key.is_zero() {
-            // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
-                if !cfg.is_nonce_check_disabled() {
-                    let tx_nonce = tx.nonce();
-                    let state = nonce_manager
-                        .get_nonce(getNonceCall {
-                            account: tx.caller(),
-                            nonceKey: nonce_key,
-                        })
-                        .map_err(|err| match err {
-                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                            err => {
-                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
-                            }
-                        })?;
-
-                    match tx_nonce.cmp(&state) {
-                        Ordering::Greater => {
-                            return Err(InvalidTransaction::NonceTooHigh {
-                                tx: tx_nonce,
-                                state,
-                            }
-                            .into());
-                        }
-                        Ordering::Less => {
-                            return Err(InvalidTransaction::NonceTooLow {
-                                tx: tx_nonce,
-                                state,
-                            }
-                            .into());
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Always increment nonce for AA transactions with non-zero nonce keys.
-                nonce_manager
-                    .increment_nonce(tx.caller(), nonce_key)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-            })?;
-        } else {
-            // Protocol nonce (nonce_key == 0)
-            // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
-            // This applies uniformly to both standard and AA transactions - we only bump here
-            // for CALLs, letting make_create_frame handle the nonce for CREATE operations.
-            if tx.kind().is_call() {
-                caller_account.bump_nonce();
-            }
-        }
-
-        // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
-        // doing max to avoid underflow as new_balance can be more than account
-        // balance if `cfg.is_balance_check_disabled()` is true.
-        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
-
-        // Note: Signature verification happens during recover_signer() before entering the pool
-        // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
-
-        // For Keychain signatures, validate the acting access key before fee collection when it
-        // already exists. Same-tx auth+use is the exception: that key is registered only after fees
-        // are collected, so fee-limit validation uses the inline authorization payload instead.
-        let mut loaded_tx_access_key = None;
-        let mut same_tx_key_authorization_use = false;
-        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
-        {
-            // The user_address is the root account this transaction is being executed for.
-            // This should match tx.caller (which comes from recover_signer on the outer signature).
-            let user_address = &keychain_sig.user_address;
-
-            // Sanity check: user_address should match tx.caller
-            if *user_address != tx.caller {
-                return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
-                    user_address: *user_address,
-                    caller: tx.caller,
-                }
-                .into());
-            }
-
-            // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                override_key_id
-            } else {
-                keychain_sig
-                    .key_id(&tempo_tx_env.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-            };
-
-            let key_auth = tempo_tx_env.key_authorization.as_ref();
-            // Classify whether this keychain-signed tx is using the same access key that the
-            // inline authorization registers.
-            same_tx_key_authorization_use =
-                key_auth.is_some_and(|key_auth| access_key_addr == key_auth.key_id);
-
-            if same_tx_key_authorization_use {
-                let key_auth = key_auth.expect("same-tx auth/use requires inline authorization");
-
-                // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
-                // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
-                // because `transaction_key` is intentionally not set until after authorization.
-                if !gas_balance_spending.is_zero()
-                    && fee_payer == tx.caller
-                    && let Some(limits) = key_auth.limits.as_ref()
-                {
-                    let remaining = limits
-                        .iter()
-                        .rev()
-                        .find(|limit| limit.token == fee_token)
-                        .map(|limit| limit.limit)
-                        .unwrap_or_default();
-
-                    if gas_balance_spending > remaining {
-                        return Err(
-                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
-                        );
-                    }
-                }
-            } else {
-                // Existing-key path:
-                // - ordinary keychain txs must validate the acting access key before fees are paid
-                // - T6 delegated key authorizations also validate the acting key here, then reuse
-                //   the loaded admin/signature-type facts below when the sidecar signer is the same key
-                let loaded_key = StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    |mut keychain: AccountKeychain| {
-                        // Extract the signature type from the inner signature to validate it matches
-                        // the key_type stored in the keychain. This prevents using a signature of one
-                        // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
-                        // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig.signature.signature_type().into();
-                        let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
-
-                        let key = keychain
-                            .validate_keychain_authorization(
-                                *user_address,
-                                access_key_addr,
-                                block.timestamp().to::<u64>(),
-                                sig_type,
-                            )
-                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: format!("{e:?}"),
-                            })?;
-
-                        // T6 adds admin delegation: a keychain signer may authorize a different
-                        // child key only if the acting transaction key is itself an active admin key.
-                        if key_auth.is_some() && !key.is_admin {
-                            return Err(
-                                TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
-                            );
-                        }
-
-                        // Set the transaction key in the keychain precompile.
-                        // The TIP20 precompile will read this during fee collection and
-                        // execution to enforce spending limits for existing keys.
-                        keychain
-                            .set_transaction_key(access_key_addr)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
-
-                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
-                            key_id: access_key_addr,
-                            key,
-                        })
-                    },
-                )?;
-
-                evm.key_expiry = Some(loaded_key.key.expiry);
-                loaded_tx_access_key = Some(loaded_key);
-            }
-        }
-
-        // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
-        // proves that a non-root sidecar signer is an active admin key for the caller account.
-        if cfg.spec.is_t6()
-            && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
-        {
-            let auth_signer = key_auth
-                .recover_signer()
-                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-
-            if auth_signer != tx.caller {
-                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
-                let signer_is_admin = match loaded_tx_access_key {
-                    Some(loaded_key)
-                        if loaded_key.key_id == auth_signer
-                            && (loaded_key.key.signature_type as u8) == key_auth_sig_type =>
-                    {
-                        loaded_key.key.is_admin
-                    }
-                    Some(_) | None => {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason:
-                                "admin-signed key authorization must be signed by transaction key"
-                                    .to_string(),
-                        }
-                        .into());
-                    }
-                };
-
-                if !signer_is_admin {
-                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: tx.caller,
-                        actual: auth_signer,
-                    }
-                    .into());
-                }
-            }
-        }
-
-        // Collect fees for the transaction.
-        if !gas_balance_spending.is_zero() {
-            let checkpoint = journal.checkpoint();
-
-            let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
-                    fee_payer,
-                    fee_token,
-                    gas_balance_spending,
-                    block.beneficiary(),
-                    skip_liquidity_check,
-                )
-            });
-
-            if let Err(err) = result {
-                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                journal.checkpoint_revert(checkpoint);
-
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
-
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
-
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
-
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
-            }
-
-            journal.checkpoint_commit();
-            evm.collected_fee = gas_balance_spending;
-        }
-
-        // If the transaction includes a KeyAuthorization, validate and authorize the key
-        // only after fee collection has succeeded. This pre-execution write is deliberately
-        // outside the later user-call batch checkpoint, so same-transaction authorize-and-use
-        // keeps the newly registered key even if scoped-call prevalidation or execution fails.
-        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(key_auth) = &tempo_tx_env.key_authorization
-        {
-            let keychain_checkpoint = if spec.is_t1() {
-                Some(journal.checkpoint())
-            } else {
-                None
-            };
-
-            let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
-            let internals = EvmInternals::new(journal, block, cfg, tx);
-
-            // T1/T1A: Apply gas metering for the keychain precompile call.
-            // Pre-T1 and T1B+: Use unlimited gas.
-            // T1B+ disables gas metering here because gas is already accounted for
-            // in intrinsic gas via `calculate_key_authorization_gas`. Running with
-            // unlimited gas also eliminates the OOG path that caused the CREATE
-            // nonce replay vulnerability (protocol nonce not bumped on OOG).
-            let gas_limit = if spec.is_t1() && !spec.is_t1b() {
-                tx.gas_limit() - init_gas.initial_total_gas()
-            } else {
-                u64::MAX
-            };
-
-            // Create gas_params with only sstore increase for key authorization
-            let gas_params = if spec.is_t1() {
-                static TABLE: OnceLock<GasParams> = OnceLock::new();
-                // only enabled SSTORE and warm storage read gas params for T1 fork in keychain.
-                TABLE
-                    .get_or_init(|| {
-                        let mut table = [0u64; 256];
-                        table[GasId::sstore_set_without_load_cost().as_usize()] =
-                            cfg.gas_params.get(GasId::sstore_set_without_load_cost());
-                        table[GasId::warm_storage_read_cost().as_usize()] =
-                            cfg.gas_params.get(GasId::warm_storage_read_cost());
-                        GasParams::new(Arc::new(table))
-                    })
-                    .clone()
-            } else {
-                cfg.gas_params.clone()
-            };
-
-            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
-            let mut provider = EvmPrecompileStorageProvider::new(
-                internals,
-                gas_limit,
-                0,
-                cfg.spec,
-                amsterdam_eip8037_enabled,
-                false,
-                gas_params,
-            );
-
-            // The core logic of setting up thread-local storage is here.
-            let out_of_gas = StorageCtx::enter(&mut provider, || {
-                let mut keychain = AccountKeychain::default();
-                let access_key_addr = key_auth.key_id;
-
-                // Convert signature type to precompile SignatureType enum
-                // Use the key_type field which specifies the type of key being authorized
-                let signature_type = match key_auth.key_type {
-                    SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
-                    SignatureType::P256 => PrecompileSignatureType::P256,
-                    SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
-                };
-
-                // Handle expiry: None means never expires (store as u64::MAX)
-                let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
-
-                // Handle limits: None means unlimited spending (enforce_limits=false)
-                // Some([]) means no spending allowed (enforce_limits=true)
-                // Some([...]) means specific limits (enforce_limits=true)
-                let enforce_limits = key_auth.limits.is_some();
-                let precompile_limits: Vec<TokenLimit> = key_auth
-                    .limits
-                    .as_ref()
-                    .map(|limits| {
-                        limits
-                            .iter()
-                            .map(|limit| TokenLimit {
-                                token: limit.token,
-                                amount: limit.limit,
-                                period: limit.period,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let allow_any_calls = key_auth.allowed_calls.is_none();
-                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
-
-                let config = KeyRestrictions {
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
-                    allowAnyCalls: allow_any_calls,
-                    allowedCalls: precompile_allowed_calls,
-                };
-
-                // Call precompile to authorize the key (same phase as nonce increment).
-                let result = if key_auth.is_admin() {
-                    keychain.authorize_admin_key(
-                        tx.caller,
-                        access_key_addr,
-                        signature_type,
-                        key_auth.witness(),
-                    )
-                } else {
-                    keychain.authorize_key(
-                        tx.caller,
-                        access_key_addr,
-                        signature_type,
-                        config,
-                        key_auth.witness(),
-                    )
-                };
-
-                match result {
-                    // all is good, we can do execution.
-                    Ok(_) => Ok(false),
-                    // on out of gas we are skipping execution but not invalidating the transaction.
-                    Err(TempoPrecompileError::OutOfGas) => Ok(true),
-                    Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-                    Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
-                        reason: err.to_string(),
-                    }
-                    .into()),
-                }
-            })?;
-
-            let gas_used = provider.gas_used();
-            drop(provider);
-
-            // Cache inline key authorization expiry.
-            if let Some(expiry) = key_auth.expiry {
-                evm.key_expiry = Some(expiry.get());
-            }
-
-            // activated only on T1/T1A fork.
-            // T1B+: Skip adding precompile gas to initial_gas since it is already
-            // accounted for in intrinsic gas. The precompile runs with unlimited gas
-            // on T1B+ so out_of_gas is never true.
-            if let Some(keychain_checkpoint) = keychain_checkpoint {
-                if spec.is_t1b() {
-                    journal.checkpoint_commit();
-                } else if out_of_gas {
-                    init_gas.initial_regular_gas = u64::MAX;
-                    journal.checkpoint_revert(keychain_checkpoint);
-                } else {
-                    init_gas.initial_regular_gas += gas_used;
-                    journal.checkpoint_commit();
-                };
-            }
-
-            // If this is a same tx auth+use, set the transient key_id to the newly authorized
-            // key and decrement the fee from its spending limit. Admin delegation must keep the
-            // actual signer as the transaction key.
-            if same_tx_key_authorization_use {
-                StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    |mut keychain: AccountKeychain| {
-                        keychain
-                            .set_transaction_key(key_auth.key_id)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
-
-                        if evm.collected_fee.is_zero() {
-                            return Ok(());
-                        }
-
-                        keychain
-                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
-                            .map_err(|err| match err {
-                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                err => FeePaymentError::Other(err.to_string()).into(),
-                            })
-                    },
-                )?;
-            }
-        }
 
         Ok(())
     }
