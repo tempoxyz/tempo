@@ -388,7 +388,7 @@ where
             candidate.recovered.is_payment_v1();
         }
 
-        let result = match evm.transact_raw(candidate.tx_env.clone()) {
+        let mut result = match evm.transact_raw(candidate.tx_env.clone()) {
             Ok(result) => result,
             Err(err) => {
                 trace!(
@@ -415,10 +415,13 @@ where
             .filter(|actions| !actions.is_empty())
             .ok_or(Tip20TransferBlockstmFallback::MissingActions)?;
 
+        result.state.clear();
+
         Ok(Ok(Tip20TransferActionReplay {
             result: result.result,
             actions,
             validator_fee: evm.validator_fee(),
+            state: result.state,
         }))
     })
 }
