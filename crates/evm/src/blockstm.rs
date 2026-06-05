@@ -135,13 +135,13 @@ pub struct Tip20ActionReplayState {
 }
 
 impl Tip20ActionReplayState {
-    fn has_write(&self, key: StorageKey) -> bool {
-        self.writes.contains_key(&key)
+    fn has_write(&self, key: &StorageKey) -> bool {
+        self.writes.contains_key(key)
     }
 
-    fn has_store(&self, key: StorageKey) -> bool {
+    fn has_store(&self, key: &StorageKey) -> bool {
         self.writes
-            .get(&key)
+            .get(key)
             .is_some_and(|kind| *kind == WriteKind::Store)
     }
 
@@ -391,21 +391,21 @@ fn action_replay_state<DB: Database>(
         match *action {
             EvmAction::Sload(address, slot) => {
                 let key = StorageKey { address, slot };
-                if replay_state.has_store(key) {
+                if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
                 let _ = action_current_value(db, &mut replay_state.changes, key)?;
             }
             EvmAction::Sstore(address, slot, value) => {
                 let key = StorageKey { address, slot };
-                if replay_state.has_write(key) {
+                if replay_state.has_write(&key) {
                     return Err(action_conflict());
                 }
                 action_write_value(db, &mut replay_state.changes, key, value, WriteKind::Store)?;
             }
             EvmAction::Sinc(address, slot, delta) => {
                 let key = StorageKey { address, slot };
-                if replay_state.has_store(key) {
+                if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
                 let value = action_current_value(db, &mut replay_state.changes, key)?
@@ -415,7 +415,7 @@ fn action_replay_state<DB: Database>(
             }
             EvmAction::Tip20BalanceSinc(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
-                if replay_state.has_store(key) {
+                if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
@@ -429,7 +429,7 @@ fn action_replay_state<DB: Database>(
             }
             EvmAction::Tip20BalanceSdec(address, slot, delta, flag) => {
                 let key = StorageKey { address, slot };
-                if replay_state.has_store(key) {
+                if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
@@ -482,22 +482,21 @@ fn action_current_value<DB: StateDB>(
     changes: &mut HashMap<StorageKey, SlotChange>,
     key: StorageKey,
 ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
-    if let Some(change) = changes.get(&key) {
-        return Ok(change.current);
-    }
+    let entry = match changes.entry(key) {
+        Entry::Vacant(e) => e,
+        Entry::Occupied(e) => return Ok(e.get().current),
+    };
 
     let value = db
         .storage(key.address, key.slot)
         .map_err(BlockExecutionError::other)
         .map_err(Tip20TransferBlockstmExecutionError::Database)?;
-    changes.insert(
-        key,
-        SlotChange {
-            original: value,
-            current: value,
-            write_kind: None,
-        },
-    );
+
+    entry.insert(SlotChange {
+        original: value,
+        current: value,
+        write_kind: None,
+    });
     Ok(value)
 }
 
