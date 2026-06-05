@@ -38,7 +38,7 @@ pub struct Tip20TransferBlockstmTx<'tx> {
 }
 
 /// Precomputed TIP-20 transfer result plus semantic precompile storage actions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tip20TransferActionReplay {
     pub result: ExecutionResult<TempoHaltReason>,
     pub actions: Vec<EvmAction>,
