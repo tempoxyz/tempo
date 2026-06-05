@@ -149,7 +149,7 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let pool = executor.prewarming_pool();
+        let pool = executor.payload_builder_prewarming_pool();
         let prewarming_threads = pool.current_num_threads();
         let initial_lookahead = prewarming_threads * 2;
         #[cfg(feature = "bal")]
@@ -1104,7 +1104,7 @@ mod tests {
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let txs = (0..executor.payload_builder_prewarming_pool().current_num_threads() * 2 + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances = executor.payload_builder_prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn prewarming_does_not_use_shared_worker_state_slot() {
         let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
+        let pool = executor.payload_builder_prewarming_pool();
         pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
 
         let sender = Address::random();
