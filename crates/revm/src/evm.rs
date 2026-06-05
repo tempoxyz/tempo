@@ -383,13 +383,13 @@ mod tests {
         evm
     }
 
-    /// Creates a T6-enabled EVM with a funded account.
+    /// Creates a T7-enabled EVM with a funded account.
     /// This activates the TIP-1060 SSTORE storage credits hook while keeping the
     /// TIP-1016 state-gas split disabled to match production.
-    fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+    fn create_funded_evm_t7(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
-        cfg.spec = TempoHardfork::T6;
+        cfg.spec = TempoHardfork::T7;
         cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T6, false);
         cfg.enable_amsterdam_eip8037 = false;
 
@@ -2000,7 +2000,7 @@ mod tests {
             append_tip1060_set_mode_call(&mut bytecode, mode);
             bytecode.push(opcode::STOP);
 
-            let mut evm = create_funded_evm_t6(caller);
+            let mut evm = create_funded_evm_t7(caller);
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
@@ -2040,7 +2040,7 @@ mod tests {
     fn test_tip1060_storage_credits_address_exempt_from_tip1000_and_tip1060() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         evm.ctx.db_mut().insert_account_info(
             caller,
             AccountInfo {
@@ -2106,7 +2106,7 @@ mod tests {
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x63);
 
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         evm.ctx.db_mut().insert_account_info(
             contract,
             AccountInfo {
@@ -2182,7 +2182,7 @@ mod tests {
             let caller = key_pair.address;
             let contract = Address::repeat_byte(0x60);
 
-            let mut evm = create_funded_evm_t6(caller);
+            let mut evm = create_funded_evm_t7(caller);
 
             evm.ctx.db_mut().insert_account_info(
                 contract,
@@ -2276,7 +2276,7 @@ mod tests {
             let caller = key_pair.address;
             let contract = Address::repeat_byte(0x61);
 
-            let mut evm = create_funded_evm_t6(caller);
+            let mut evm = create_funded_evm_t7(caller);
 
             evm.ctx.db_mut().insert_account_info(
                 contract,
@@ -2367,7 +2367,7 @@ mod tests {
             }
             bytecode.push(opcode::STOP);
 
-            let mut evm = create_funded_evm_t6(caller);
+            let mut evm = create_funded_evm_t7(caller);
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
@@ -2419,7 +2419,7 @@ mod tests {
         // Account B bytecode: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
         let account_b_bytecode = Bytecode::new_raw(bytes!("600160005500"));
 
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         evm.ctx.db_mut().insert_account_info(
             account_a,
             AccountInfo {
@@ -2474,7 +2474,7 @@ mod tests {
         //   STOP
         let bytecode = Bytecode::new_raw(bytes!("6001600055600060015500"));
 
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         evm.ctx.db_mut().insert_account_info(
             contract,
             AccountInfo {
@@ -2523,7 +2523,7 @@ mod tests {
         // Contract bytecode: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
         let create_bytecode = Bytecode::new_raw(bytes!("600160005500"));
 
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         for contract in [direct_contract, refund_contract] {
             evm.ctx.db_mut().insert_account_info(
                 contract,
@@ -2588,7 +2588,7 @@ mod tests {
         // Contract bytecode: PUSH1 0x00 PUSH1 0x00 SSTORE STOP (clear slot 0).
         let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
 
-        let mut evm = create_funded_evm_t6(caller);
+        let mut evm = create_funded_evm_t7(caller);
         evm.ctx.db_mut().insert_account_info(
             contract,
             AccountInfo {
