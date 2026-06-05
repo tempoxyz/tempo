@@ -112,6 +112,12 @@ impl<T> Slot<T> {
     pub const fn offset(&self) -> Option<usize> {
         self.ctx.packed_offset()
     }
+
+    /// Returns the contract address for this slot.
+    #[inline]
+    pub const fn address(&self) -> Address {
+        self.address
+    }
 }
 
 impl<T> StorageOps for Slot<T> {
@@ -123,6 +129,11 @@ impl<T> StorageOps for Slot<T> {
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
+    }
+
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<U256> {
+        let mut storage = StorageCtx;
+        storage.sinc(self.address, slot, delta)
     }
 }
 

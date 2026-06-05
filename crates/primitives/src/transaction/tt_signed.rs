@@ -1,3 +1,5 @@
+use crate::transaction::envelope::{KEY_AUTHORIZATION_MAX_RLP_LEN, is_tip20_call, is_tip1045_call};
+
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
@@ -40,6 +42,10 @@ pub struct AASigned {
     signature_hash: OnceLock<B256>,
     /// Cached sender-scoped replay hash for the first recovered sender.
     expiring_nonce_hash: OnceLock<(Address, B256)>,
+    /// Cached legacy payment-lane classification.
+    payment_v1: OnceLock<bool>,
+    /// Cached TIP-1045 payment-lane classification.
+    payment_v2: OnceLock<bool>,
 }
 
 impl AASigned {
@@ -55,6 +61,8 @@ impl AASigned {
             hash: value,
             signature_hash: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
+            payment_v1: OnceLock::new(),
+            payment_v2: OnceLock::new(),
         }
     }
 
@@ -67,6 +75,8 @@ impl AASigned {
             hash: OnceLock::new(),
             signature_hash: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
+            payment_v1: OnceLock::new(),
+            payment_v2: OnceLock::new(),
         }
     }
 
@@ -131,6 +141,32 @@ impl AASigned {
         } else {
             unique_tx_identifier_from_signable(&self.tx, sender)
         }
+    }
+
+    /// Returns the legacy payment-lane classification.
+    pub(crate) fn is_payment_v1(&self) -> bool {
+        *self
+            .payment_v1
+            .get_or_init(|| self.tx.calls.iter().all(|call| is_tip20_call(call.to.to())))
+    }
+
+    /// Returns the TIP-1045 payment-lane classification.
+    pub(crate) fn is_payment_v2(&self) -> bool {
+        *self.payment_v2.get_or_init(|| {
+            !self.tx.calls.is_empty()
+                && self.tx.access_list.is_empty()
+                && self.tx.tempo_authorization_list.is_empty()
+                && self
+                    .tx
+                    .key_authorization
+                    .as_ref()
+                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                && self
+                    .tx
+                    .calls
+                    .iter()
+                    .all(|call| is_tip1045_call(call.to.to(), &call.input))
+        })
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both

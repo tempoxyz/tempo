@@ -51,7 +51,7 @@ pub struct TempoPooledTransaction {
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
-    /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
+    /// Cached first replay-table storage slot for expiring nonce transactions.
     expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
@@ -398,11 +398,21 @@ impl TempoPooledTransaction {
             .expect("expiring nonce hash must be precomputed")
     }
 
-    /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
+    /// Returns the transaction's `valid_before` if it is an expiring nonce transaction.
+    fn expiring_nonce_valid_before(&self) -> Option<u64> {
+        let aa_tx = self.inner().as_aa()?;
+        aa_tx.tx().valid_before.map(core::num::NonZeroU64::get)
+    }
+
+    /// Returns the cached first replay-table storage slot for this transaction.
     pub fn expiring_nonce_slot(&self) -> Option<U256> {
         *self.expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
-            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+            let valid_before = self.expiring_nonce_valid_before()?;
+            Some(NonceManager::expiring_nonce_first_cell_slot(
+                hash,
+                valid_before,
+            ))
         })
     }
 
@@ -410,7 +420,7 @@ impl TempoPooledTransaction {
     /// during payment execution after pool validation.
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
-    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
+    /// `user_tokens[fee_payer]`, and the first expiring nonce replay cell are already cached from
     /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
