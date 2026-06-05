@@ -74,6 +74,7 @@ on:
         required: true
         default: "100"
         options:
+          - "0"
           - "1"
           - "10"
           - "100"

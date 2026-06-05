@@ -132,6 +132,19 @@ where
             return Vec::new();
         }
 
+        let all_txs = self.all_transactions();
+        self.evict_invalidated_transactions_from(updates, all_txs.iter())
+    }
+
+    pub(crate) fn evict_invalidated_transactions_from<'a>(
+        &self,
+        updates: &crate::maintain::TempoPoolUpdates,
+        transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> Vec<TxHash> {
+        if !updates.has_invalidation_events() {
+            return Vec::new();
+        }
+
         // Fetch state provider if any check needs on-chain reads:
         // - validator token changes (liquidity check)
         // - blacklist/whitelist (policy check)
@@ -210,8 +223,7 @@ where
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
-        let all_txs = self.all_transactions();
-        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+        for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
                 let keychain_subject = has_keychain_subject_updates
