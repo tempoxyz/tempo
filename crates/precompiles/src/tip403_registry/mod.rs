@@ -12,6 +12,7 @@ pub use slots as tip403_registry_slots;
 
 use crate::{
     StorageCtx,
+    feature_registry::FeatureRegistry,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -26,7 +27,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{features::RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID, hardfork::TempoHardfork};
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -294,7 +295,7 @@ impl TIP403Registry {
     /// Returns `account`'s receive-policy configuration.
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let config = self.receive_policies[account].config.read()?;
-        let (sender_policy_type, token_filter_type) = if self.storage.spec().is_t6() {
+        let (sender_policy_type, token_filter_type) = if self.receive_policy_type_cache_enabled()? {
             (
                 policy_type(config.sender_policy_type)?,
                 policy_type(config.token_filter_type)?,
@@ -314,6 +315,14 @@ impl TIP403Registry {
             tokenFilterType: token_filter_type,
             recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
         })
+    }
+
+    fn receive_policy_type_cache_enabled(&self) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+
+        Ok(FeatureRegistry::new().features_tip()? >= RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID)
     }
 
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
@@ -969,11 +978,14 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::{
-        primitives::{Address, Log},
+        primitives::{Address, Log, U256},
         sol_types::SolEvent,
     };
     use rand_08::Rng;
-    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
+    use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
+    use tempo_contracts::precompiles::{
+        FEATURE_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
@@ -1261,12 +1273,47 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_policy_type_cache_t5_t6_boundary() -> eyre::Result<()> {
-        for (hardfork, expected_sloads) in [(TempoHardfork::T5, 3), (TempoHardfork::T6, 1)] {
+    fn test_receive_policy_type_cache_requires_feature_tip() -> eyre::Result<()> {
+        for (
+            hardfork,
+            active_features_tip,
+            expected_sender_type,
+            expected_token_type,
+            expected_sloads,
+        ) in [
+            (
+                TempoHardfork::T5,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                ITIP403Registry::PolicyType::WHITELIST,
+                3,
+            ),
+            (
+                TempoHardfork::T6,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID - 1,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                ITIP403Registry::PolicyType::WHITELIST,
+                4,
+            ),
+            (
+                TempoHardfork::T6,
+                RECEIVE_POLICY_TYPE_CACHE_FEATURE_ID,
+                ITIP403Registry::PolicyType::WHITELIST,
+                ITIP403Registry::PolicyType::BLACKLIST,
+                2,
+            ),
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             let account = Address::random();
             let admin = Address::random();
             let (sender_policy_id, token_filter_id) = StorageCtx::enter(&mut storage, || {
+                let mut storage = StorageCtx;
+                storage.sstore(
+                    FEATURE_REGISTRY_ADDRESS,
+                    HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT,
+                    U256::from(active_features_tip),
+                )?;
+
                 let mut registry = TIP403Registry::new();
                 let sender_policy_id = registry.create_policy(
                     admin,
@@ -1300,17 +1347,6 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let registry = TIP403Registry::new();
                 let policy = registry.receive_policy(account)?;
-                let (expected_sender_type, expected_token_type) = if hardfork.is_t6() {
-                    (
-                        ITIP403Registry::PolicyType::WHITELIST,
-                        ITIP403Registry::PolicyType::BLACKLIST,
-                    )
-                } else {
-                    (
-                        ITIP403Registry::PolicyType::BLACKLIST,
-                        ITIP403Registry::PolicyType::WHITELIST,
-                    )
-                };
                 assert_eq!(policy.senderPolicyId, sender_policy_id);
                 assert_eq!(policy.senderPolicyType, expected_sender_type);
                 assert_eq!(policy.tokenFilterId, token_filter_id);
