@@ -191,9 +191,9 @@ mod tests {
             finalization: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
         };
 
-        write_finalization(dir.path(), &tempo_consensus).unwrap();
+        write_bootstrap_finalization(dir.path(), &tempo_consensus).unwrap();
 
-        let bytes = fs::read(dir.path().join(FINALIZATION_FILE)).unwrap();
+        let bytes = fs::read(dir.path().join(BOOTSTRAP_FINALIZATION_FILE)).unwrap();
         assert_eq!(bytes, [0x00, 0x01, 0x02, 0xff]);
     }
 }

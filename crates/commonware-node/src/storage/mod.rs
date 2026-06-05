@@ -1,14 +1,14 @@
 //! This module defines consensus archive formats.
 //!
-//! Finalized blocks are stored in a `Hybrid` store which
+//! Finalized blocks are stored in a [`Hybrid`] store which
 //! merges a prunable archive (holding the most recently finalized blocks) with
 //! a lookup into the execution layer (used for blocks below the prunable
 //! retention window).
 //!
 //! Older deployments stored finalized blocks in an immutable archive. To
 //! preserve the ability to roll back to one of those releases, the
-//! `legacy` module is opened on every restart and every newly
-//! finalized block is dual-written to it from `Hybrid`. The
+//! [`legacy`] module is opened on every restart and every newly
+//! finalized block is dual-written to it from [`Hybrid`]. The
 //! legacy archive is read-only from this binary's perspective; it
 //! exists purely so the previous binary can still serve traffic if an
 //! operator rolls back. The whole legacy code path is slated for
