@@ -610,6 +610,7 @@ where
                 let mut candidate_count = 0usize;
                 let receipt_start = executor.receipts().len();
                 let mut action_replay_state = Tip20ActionReplayState::default();
+                let mut blockstm_planner_next_wait_elapsed = Duration::ZERO;
                 let blockstm_stop_reason = loop {
                     check_cancel!();
 
@@ -627,7 +628,11 @@ where
                         }
                     }
 
-                    let (pool_tx, tx_env, replay) = match planner.next() {
+                    let planner_next_start = Instant::now();
+                    let planner_next = planner.next();
+                    blockstm_planner_next_wait_elapsed += planner_next_start.elapsed();
+
+                    let (pool_tx, tx_env, replay) = match planner_next {
                         blockstm::PlannerNext::Planned(Ok(blockstm::PlannedTransfer::Valid {
                             tx,
                             tx_env,
@@ -821,6 +826,9 @@ where
                 let blockstm_elapsed = blockstm_start.elapsed();
                 let scheduled_count = planner.scheduled_count();
                 pool_transactions_yielded += scheduled_count as u64;
+                self.metrics
+                    .blockstm_tip20_planner_next_wait_duration_seconds
+                    .record(blockstm_planner_next_wait_elapsed);
 
                 if candidate_count == 0 {
                     info!(
