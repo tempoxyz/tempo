@@ -86,6 +86,8 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
     function setUp() public override {
         super.setUp();
 
+        _requirePrecompile("AddressRegistry", ADDRESS_REGISTRY);
+
         targetContract(address(this));
 
         _setupInvariantBase();

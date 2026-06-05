@@ -52,7 +52,6 @@ contract TempoTest is Tempo, Test {
     function setUp() public virtual {
         _requirePrecompile("AccountKeychain", KEYCHAIN);
         _requirePrecompile("TIP403Registry", TIP403_REGISTRY);
-        _requirePrecompile("AddressRegistry", ADDRESS_REGISTRY);
         _requirePrecompile("TIP20Factory", TIP20_FACTORY);
         _requirePrecompile("pathUSD", PATH_USD);
         _requirePrecompile("StablecoinDEX", STABLE_DEX);
