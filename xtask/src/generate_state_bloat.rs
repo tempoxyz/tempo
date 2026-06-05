@@ -23,7 +23,11 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tempo_precompiles::tip20::tip20_slots;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
+    nonce::{EXPIRING_NONCE_BUCKET_CAPACITY, EXPIRING_NONCE_BUCKET_COUNT},
+    tip20::tip20_slots,
+};
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -34,6 +38,12 @@ const VERSION: u16 = 1;
 
 /// Default chunk size: 256k entries per chunk (~16 MiB memory)
 const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Binary dump bytes per `(slot, value)` storage pair.
+const STORAGE_ENTRY_SIZE: u64 = 64;
+
+/// Storage layout slot for `NonceManager::expiring_nonce_cells`.
+const EXPIRING_NONCE_CELLS_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
 
 /// Generate state bloat file
 #[derive(Debug, clap::Args)]
@@ -63,6 +73,10 @@ pub(crate) struct GenerateStateBloat {
     #[arg(long, default_value = "1000000")]
     balance: u64,
 
+    /// Also append a nonce-precompile block with every expiring nonce time-wheel cell non-zero.
+    #[arg(long, alias = "nonce-wheel-bloat")]
+    prefill_expiring_nonce_wheel: bool,
+
     /// Number of addresses to derive using proper BIP32 (signable).
     /// Remaining addresses use fast keccak-based derivation (not signable).
     #[arg(long, default_value = "10000")]
@@ -81,6 +95,7 @@ impl GenerateStateBloat {
             token: tokens,
             out,
             balance,
+            prefill_expiring_nonce_wheel,
             signable_count,
             chunk_size,
         } = self;
@@ -126,6 +141,15 @@ impl GenerateStateBloat {
         println!("  Estimated file size: {estimated_size_mib:.2} MiB");
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
+        if prefill_expiring_nonce_wheel {
+            let nonce_cells = expiring_nonce_wheel_cell_count();
+            let nonce_size_mib = (nonce_cells * STORAGE_ENTRY_SIZE) as f64 / (1024.0 * 1024.0);
+            println!(
+                "  Expiring nonce wheel prefill: enabled ({nonce_cells} cells, +{nonce_size_mib:.2} MiB)"
+            );
+        } else {
+            println!("  Expiring nonce wheel prefill: disabled");
+        }
 
         // Step 1: Derive parent key
         let parent_key = derive_parent_key(&mnemonic)?;
@@ -216,6 +240,10 @@ impl GenerateStateBloat {
             is_first_chunk = false;
         }
 
+        if prefill_expiring_nonce_wheel {
+            write_expiring_nonce_wheel_bloat(&mut writer, chunk_size)?;
+        }
+
         writer.flush()?;
         pb.finish_with_message("done");
 
@@ -273,6 +301,86 @@ fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
     // Base slot as big-endian 32 bytes
     buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
     U256::from_be_bytes(keccak256(buf).0)
+}
+
+/// Compute a Solidity mapping slot for a `uint32` key.
+fn compute_u32_mapping_slot(key: u32, base_slot: U256) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[28..32].copy_from_slice(&key.to_be_bytes());
+    buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
+    U256::from_be_bytes(keccak256(buf).0)
+}
+
+fn expiring_nonce_wheel_cell_count() -> u64 {
+    u64::from(EXPIRING_NONCE_BUCKET_COUNT) * u64::from(EXPIRING_NONCE_BUCKET_CAPACITY)
+}
+
+fn expiring_nonce_cell_slot(cell_id: u32) -> U256 {
+    compute_u32_mapping_slot(cell_id, EXPIRING_NONCE_CELLS_SLOT)
+}
+
+fn expiring_nonce_bloat_cell_word(cell_id: u32) -> U256 {
+    let bucket = cell_id / EXPIRING_NONCE_BUCKET_CAPACITY;
+    let valid_before = u64::from(bucket + EXPIRING_NONCE_BUCKET_COUNT);
+    let fingerprint = U256::from(cell_id) + U256::from(1);
+    (U256::from(valid_before) << 192) | fingerprint
+}
+
+fn write_expiring_nonce_wheel_bloat(
+    writer: &mut impl Write,
+    chunk_size: usize,
+) -> eyre::Result<()> {
+    write_expiring_nonce_wheel_bloat_entries(writer, chunk_size, expiring_nonce_wheel_cell_count())
+}
+
+fn write_expiring_nonce_wheel_bloat_entries(
+    writer: &mut impl Write,
+    chunk_size: usize,
+    total_cells: u64,
+) -> eyre::Result<()> {
+    let num_chunks = total_cells.div_ceil(chunk_size as u64);
+    println!("\nWriting expiring nonce wheel bloat: {total_cells} cells ({num_chunks} chunks)...");
+
+    let pb = ProgressBar::new(total_cells);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.magenta/blue} {pos}/{len} ({per_sec}) ({eta})")
+            .expect("valid template"),
+    );
+
+    let mut chunk_buf = Vec::with_capacity(chunk_size * STORAGE_ENTRY_SIZE as usize);
+    let mut start = 0u64;
+
+    while start < total_cells {
+        let end = (start + chunk_size as u64).min(total_cells);
+        let chunk_len = (end - start) as usize;
+
+        write_header(writer, NONCE_PRECOMPILE_ADDRESS, chunk_len as u64)?;
+
+        let entries: Vec<([u8; 32], [u8; 32])> = (start..end)
+            .into_par_iter()
+            .map(|cell| {
+                let cell_id = cell as u32;
+                (
+                    expiring_nonce_cell_slot(cell_id).to_be_bytes::<32>(),
+                    expiring_nonce_bloat_cell_word(cell_id).to_be_bytes::<32>(),
+                )
+            })
+            .collect();
+
+        chunk_buf.clear();
+        for (slot, value) in entries {
+            chunk_buf.extend_from_slice(&slot);
+            chunk_buf.extend_from_slice(&value);
+        }
+        writer.write_all(&chunk_buf)?;
+
+        pb.inc(chunk_len as u64);
+        start = end;
+    }
+
+    pb.finish_with_message("done");
+    Ok(())
 }
 
 /// Write a block header to the output.
@@ -361,5 +469,62 @@ mod tests {
         let slot = U256::ZERO.to_be_bytes::<32>();
         let value = U256::from(1).to_be_bytes::<32>();
         assert_eq!(slot.len() + value.len(), 64);
+    }
+
+    #[test]
+    fn test_expiring_nonce_cell_slot_matches_nonce_manager_layout() {
+        use tempo_precompiles::nonce::NonceManager;
+
+        for cell_id in [
+            0,
+            1,
+            EXPIRING_NONCE_BUCKET_CAPACITY - 1,
+            EXPIRING_NONCE_BUCKET_CAPACITY,
+            EXPIRING_NONCE_BUCKET_CAPACITY * EXPIRING_NONCE_BUCKET_COUNT - 1,
+        ] {
+            assert_eq!(
+                expiring_nonce_cell_slot(cell_id),
+                NonceManager::expiring_nonce_cell_slot(cell_id)
+            );
+        }
+    }
+
+    #[test]
+    fn test_expiring_nonce_bloat_cell_word_is_non_zero_and_bucket_shaped() {
+        let cell_id = EXPIRING_NONCE_BUCKET_CAPACITY * 7 + 42;
+        let word = expiring_nonce_bloat_cell_word(cell_id);
+        assert!(!word.is_zero());
+        assert_eq!(word >> 192, U256::from(7 + EXPIRING_NONCE_BUCKET_COUNT));
+    }
+
+    #[test]
+    fn test_write_expiring_nonce_wheel_bloat_entries() {
+        let mut buf = Vec::new();
+        write_expiring_nonce_wheel_bloat_entries(&mut buf, 2, 3).unwrap();
+
+        assert_eq!(&buf[..8], MAGIC);
+        assert_eq!(&buf[12..32], NONCE_PRECOMPILE_ADDRESS.as_slice());
+        assert_eq!(
+            u64::from_be_bytes(buf[32..40].try_into().unwrap()),
+            2,
+            "first block should contain the first two cells"
+        );
+
+        let first_slot = U256::from_be_bytes::<32>(buf[40..72].try_into().unwrap());
+        let first_value = U256::from_be_bytes::<32>(buf[72..104].try_into().unwrap());
+        assert_eq!(first_slot, expiring_nonce_cell_slot(0));
+        assert_eq!(first_value, expiring_nonce_bloat_cell_word(0));
+
+        let second_header = 40 + 2 * 64;
+        assert_eq!(&buf[second_header..second_header + 8], MAGIC);
+        assert_eq!(
+            u64::from_be_bytes(
+                buf[second_header + 32..second_header + 40]
+                    .try_into()
+                    .unwrap()
+            ),
+            1,
+            "second block should contain the remaining cell"
+        );
     }
 }

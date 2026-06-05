@@ -74,6 +74,13 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
+    /// Enable the experimental BlockSTM fast path for direct TIP-20 transfers in the payload builder.
+    #[arg(
+        long = "builder.enable-blockstm-tip20-transfers",
+        default_value_t = false
+    )]
+    pub builder_enable_blockstm_tip20_transfers: bool,
+
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
@@ -93,6 +100,7 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
+            builder_enable_blockstm_tip20_transfers: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -112,6 +120,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            enable_blockstm_tip20_transfers: self.builder_enable_blockstm_tip20_transfers,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -538,6 +547,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Enable the experimental BlockSTM fast path for direct TIP-20 transfers.
+    pub enable_blockstm_tip20_transfers: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
@@ -548,6 +559,7 @@ impl Default for TempoPayloadBuilderBuilder {
         Self {
             state_provider_metrics: false,
             enable_prewarming: false,
+            enable_blockstm_tip20_transfers: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -575,6 +587,7 @@ where
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
+                enable_blockstm_tip20_transfers: self.enable_blockstm_tip20_transfers,
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))

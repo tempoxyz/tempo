@@ -9,6 +9,13 @@ use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+#[cfg(feature = "engine")]
+mod blockstm;
+#[cfg(feature = "engine")]
+pub use blockstm::{
+    Tip20ActionReplayState, Tip20TransferActionReplay, Tip20TransferBlockstmExecutionError,
+    Tip20TransferBlockstmFallback, Tip20TransferBlockstmTx, validate_tip20_transfer_blockstm_tx,
+};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
@@ -41,7 +48,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess,
+    TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
     gas_params::SSTORE_SET_COST,
 };
 

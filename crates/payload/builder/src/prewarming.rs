@@ -25,7 +25,7 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -152,8 +152,9 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
                     }
-                    BestTransactionsCommand::Stop => {
+                    BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
+                        drop(drain_rx);
                         return;
                     }
                 }
@@ -231,7 +232,12 @@ impl BestTransactionsPrewarming {
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.commands_tx.send(BestTransactionsCommand::Stop);
+        // Move buffered transaction cleanup to the prewarm coordinator instead of this builder thread.
+        let (_drain_tx, replacement_rx) = mpsc::channel();
+        let drain_rx = core::mem::replace(&mut self.transactions_rx, replacement_rx);
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::Stop { drain_rx });
     }
 }
 
@@ -285,7 +291,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
-struct PrewarmingExecutionContext<Provider> {
+pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     cache: Option<SavedCache>,
@@ -293,11 +299,37 @@ struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
 }
 
+impl<Provider> PrewarmingExecutionContext<Provider> {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn evm_for_ctx(&self) -> PrewarmEvmState {
+    pub(crate) fn new(
+        provider: Provider,
+        cache: Option<SavedCache>,
+        parent_hash: B256,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            provider,
+            parent_hash,
+            cache,
+            evm_env,
+            stop,
+        }
+    }
+
+    pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
         let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -323,15 +355,7 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        Some(TempoEvm::new(state_provider, evm_env).with_actions())
     }
 }
 
@@ -547,6 +571,7 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
         return;
     };
 
+    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
     add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
 }
 
@@ -576,7 +601,10 @@ enum BestTransactionsCommand {
     },
     NoUpdates,
     SkipBlobs(bool),
-    Stop,
+    Stop {
+        /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
+        drain_rx: Receiver<Option<BestTransaction>>,
+    },
 }
 
 /// Invalid transaction encountered during execution.

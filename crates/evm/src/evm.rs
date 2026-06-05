@@ -17,6 +17,8 @@ use reth_revm::{
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
+#[cfg(feature = "engine")]
+use tempo_precompiles::storage::evm::{EvmAction, EvmActions};
 use tempo_precompiles::tip_fee_manager::CollectedFeeCredit;
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
@@ -65,6 +67,8 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
+    #[cfg(feature = "engine")]
+    actions: EvmActions,
     inspect: bool,
 }
 
@@ -80,9 +84,26 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
-            inspect: false,
+        #[cfg(feature = "engine")]
+        {
+            let actions = EvmActions::default();
+            Self {
+                inner: tempo_revm::TempoEvm::new_with_actions(
+                    ctx,
+                    NoOpInspector {},
+                    actions.clone(),
+                ),
+                actions,
+                inspect: false,
+            }
+        }
+
+        #[cfg(not(feature = "engine"))]
+        {
+            Self {
+                inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
+                inspect: false,
+            }
         }
     }
 }
@@ -132,6 +153,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
+            #[cfg(feature = "engine")]
+            actions: self.actions,
             inspect: true,
         }
     }
@@ -146,6 +169,25 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.inner.ctx.tx = tx.into_tx_env();
         let mut handler = TempoEvmHandler::new();
         handler.validate_transaction(&mut self.inner)
+    }
+
+    /// Enables recording of precompile storage actions.
+    #[cfg(feature = "engine")]
+    pub fn with_actions(self) -> Self {
+        self.actions.enable();
+        self
+    }
+
+    /// Drains recorded precompile storage actions, if recording is enabled.
+    #[cfg(feature = "engine")]
+    pub fn take_actions(&mut self) -> Option<Vec<EvmAction>> {
+        self.actions.take()
+    }
+
+    /// Replaces the precompile storage action buffer, if recording is enabled.
+    #[cfg(feature = "engine")]
+    pub fn replace_actions(&mut self, actions: Vec<EvmAction>) -> Option<Vec<EvmAction>> {
+        self.actions.replace(actions)
     }
 }
 

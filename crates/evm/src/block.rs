@@ -19,6 +19,8 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_evm::block::StateDB;
+#[cfg(feature = "engine")]
+use reth_revm::context::result::ExecutionResult;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
@@ -165,6 +167,31 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
+    #[cfg(feature = "engine")]
+    pub(crate) fn new_precomputed(
+        tx: &TempoTxEnvelope,
+        result: ExecutionResult<TempoHaltReason>,
+        state: EvmState,
+        next_section: BlockSection,
+        is_payment: bool,
+        block_gas_used: u64,
+        validator_fee: U256,
+    ) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: ResultAndState::new(result, state),
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section,
+            is_payment,
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
+            block_gas_used,
+            validator_fee,
+            validator_fee_credit: None,
+        }
+    }
+
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
@@ -1914,8 +1941,8 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
-                hook_calls_clone.lock().unwrap().push(state.clone());
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
             })));
 
         let addr = Address::with_last_byte(0xff);
@@ -1963,8 +1990,8 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
-                hook_calls_clone.lock().unwrap().push(state.clone());
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
             })));
 
         executor.deploy_precompile_at_boundary(addr).unwrap();

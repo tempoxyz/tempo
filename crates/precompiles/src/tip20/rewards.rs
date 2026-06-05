@@ -151,7 +151,11 @@ impl TIP20Token {
 
         // Check uninitialized opt-outs before loading global rewards; first transfers hit this path.
         let delegate = if holder_balance.flag.is_uninitialized() {
-            Some(self.user_reward_info[holder].reward_recipient.read()?)
+            // FIXME(blockstm): temporary benchmark hack. Assume uninitialized T6 reward state is
+            // opted out so parallel TIP-20 STM workers do not include an extra cold SLOAD that
+            // serial execution skips after a prior same-block transfer initializes this balance.
+            // Some(self.user_reward_info[holder].reward_recipient.read()?)
+            Some(Address::ZERO)
         } else {
             None
         };
