@@ -206,6 +206,16 @@ impl NonceManager {
         Self::expiring_nonce_cell_slot(cell_id)
     }
 
+    /// Returns the replay-table storage slot touched at `probe` on an expiring nonce path.
+    pub fn expiring_nonce_probe_cell_slot(
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        probe: usize,
+    ) -> U256 {
+        let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, probe);
+        Self::expiring_nonce_cell_slot(cell_id)
+    }
+
     /// Returns the storage slot for a raw replay-table cell id.
     pub fn expiring_nonce_cell_slot(cell_id: u32) -> U256 {
         Self::new().expiring_nonce_cells[cell_id].slot()
@@ -236,7 +246,7 @@ impl NonceManager {
         (home, step)
     }
 
-    fn expiring_nonce_fingerprint(expiring_nonce_hash: B256) -> U256 {
+    pub fn expiring_nonce_fingerprint(expiring_nonce_hash: B256) -> U256 {
         U256::from_be_bytes(
             Self::expiring_nonce_domain_hash(
                 EXPIRING_NONCE_FINGERPRINT_DOMAIN,
@@ -253,11 +263,11 @@ impl NonceManager {
         keccak256(input)
     }
 
-    fn pack_expiring_nonce_cell(valid_before: u64, fingerprint: U256) -> U256 {
+    pub fn pack_expiring_nonce_cell(valid_before: u64, fingerprint: U256) -> U256 {
         (U256::from(valid_before) << 192) | (fingerprint & EXPIRING_NONCE_FINGERPRINT_MASK)
     }
 
-    fn unpack_expiring_nonce_cell(word: U256) -> (u64, U256) {
+    pub fn unpack_expiring_nonce_cell(word: U256) -> (u64, U256) {
         let valid_before_word: U256 = word >> 192usize;
         (
             valid_before_word.saturating_to::<u64>(),
