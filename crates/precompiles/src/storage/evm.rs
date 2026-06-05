@@ -153,7 +153,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         &mut self,
         address: Address,
         key: U256,
-        action: Option<EvmAction>,
+        record_action: bool,
     ) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
@@ -173,8 +173,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             value = val.present_value;
             is_cold = val.is_cold;
         };
-        if let Some(action) = action {
-            self.record_action(action);
+        if record_action {
+            self.record_action(EvmAction::Sload(address, key, value));
         }
 
         if !self.spec.is_t4() {
@@ -292,7 +292,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
     ) -> Result<U256, TempoPrecompileError> {
         let value = self
-            .sload_inner(address, key, None)?
+            .sload_inner(address, key, false)?
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.sstore_inner(
@@ -313,7 +313,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
         let state =
-            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+            UserState::decode_storage_word(self.sload_inner(address, key, false)?, self.spec)?
                 .incremented(delta, flag)?;
         let value = state.encode_storage_word(self.spec)?;
         self.sstore_inner(
@@ -334,7 +334,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         flag: RewardFlag,
     ) -> Result<UserState, TempoPrecompileError> {
         let state =
-            UserState::decode_storage_word(self.sload_inner(address, key, None)?, self.spec)?
+            UserState::decode_storage_word(self.sload_inner(address, key, false)?, self.spec)?
                 .decremented(delta, flag)?;
         let value = state.encode_storage_word(self.spec)?;
         self.sstore_inner(
@@ -377,7 +377,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.sload_inner(address, key, Some(EvmAction::Sload(address, key)))
+        self.sload_inner(address, key, true)
     }
 
     #[inline]
@@ -490,7 +490,7 @@ impl EvmPrecompileStorageProvider<'_> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvmAction {
-    Sload(Address, U256),
+    Sload(Address, U256, U256),
     Sstore(Address, U256, U256),
     Sinc(Address, U256, U256),
     Tip20BalanceSinc(Address, U256, U256, RewardFlag),

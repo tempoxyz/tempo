@@ -450,7 +450,7 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         if let Some(actions) = &self.actions {
-            actions.record(EvmAction::Sload(address, key));
+            actions.record(EvmAction::Sload(address, key, value));
         }
 
         Ok(value)

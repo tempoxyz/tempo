@@ -13,7 +13,7 @@ use reth_evm::{
 };
 use reth_primitives_traits::Recovered;
 use reth_revm::{
-    Inspector, State,
+    Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
@@ -415,12 +415,12 @@ fn action_replay_state<DB: Database>(
 
     for action in actions {
         match *action {
-            EvmAction::Sload(address, slot) => {
+            EvmAction::Sload(address, slot, value) => {
                 let key = StorageKey { address, slot };
                 if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
-                let _ = action_current_value(db, &mut replay_state.tx_changes, key)?;
+                let _ = action_current_value(db, &mut replay_state.tx_changes, key, Some(value))?;
             }
             EvmAction::Sstore(address, slot, value) => {
                 let key = StorageKey { address, slot };
@@ -440,7 +440,8 @@ fn action_replay_state<DB: Database>(
                 if replay_state.has_store(&key) {
                     return Err(action_conflict());
                 }
-                let value = action_current_value(db, &mut replay_state.tx_changes, key)?
+
+                let value = action_current_value(db, &mut replay_state.tx_changes, key, None)?
                     .checked_add(delta)
                     .ok_or_else(balance_overflow)?;
                 action_write_value(
@@ -457,7 +458,7 @@ fn action_replay_state<DB: Database>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut replay_state.tx_changes, key)?,
+                    action_current_value(db, &mut replay_state.tx_changes, key, None)?,
                     spec,
                     delta,
                     flag,
@@ -477,7 +478,7 @@ fn action_replay_state<DB: Database>(
                     return Err(action_conflict());
                 }
                 let value = action_tip20_balance_value(
-                    action_current_value(db, &mut replay_state.tx_changes, key)?,
+                    action_current_value(db, &mut replay_state.tx_changes, key, None)?,
                     spec,
                     delta,
                     flag,
@@ -502,7 +503,7 @@ fn action_replay_state<DB: Database>(
         state.insert(sender, account);
     }
 
-    for (key, change) in replay_state.changes.iter() {
+    for (key, change) in replay_state.tx_changes.iter() {
         if change.write_kind.is_none() && !commit_reads {
             continue;
         }
@@ -524,13 +525,33 @@ fn action_replay_state<DB: Database>(
     Ok(AppliedActionReplay { state })
 }
 
-fn action_current_value<DB: StateDB>(
-    db: &mut DB,
+fn action_current_value<DB: Database>(
+    db: &mut State<DB>,
     changes: &mut HashMap<StorageKey, SlotChange>,
     key: StorageKey,
+    sload_value: Option<U256>,
 ) -> Result<U256, Tip20TransferBlockstmExecutionError> {
     let entry = match changes.entry(key) {
-        Entry::Vacant(e) => e,
+        Entry::Vacant(e) => {
+            if let Some(original) = sload_value {
+                let cached_value = db
+                    .cache
+                    .accounts
+                    .get(&key.address)
+                    .and_then(|account| account.account.as_ref())
+                    .and_then(|account| account.storage.get(&key.slot).copied());
+
+                let value = cached_value.unwrap_or(original);
+                e.insert(SlotChange {
+                    original: value,
+                    current: value,
+                    write_kind: None,
+                });
+                return Ok(value);
+            }
+
+            e
+        }
         Entry::Occupied(e) => return Ok(e.get().current),
     };
 
@@ -547,14 +568,14 @@ fn action_current_value<DB: StateDB>(
     Ok(value)
 }
 
-fn action_write_value<DB: StateDB>(
-    db: &mut DB,
+fn action_write_value<DB: Database>(
+    db: &mut State<DB>,
     changes: &mut HashMap<StorageKey, SlotChange>,
     key: StorageKey,
     value: U256,
     kind: WriteKind,
 ) -> Result<(), Tip20TransferBlockstmExecutionError> {
-    let _ = action_current_value(db, changes, key)?;
+    let _ = action_current_value(db, changes, key, None)?;
     let change = changes
         .get_mut(&key)
         .expect("action replay slot change inserted");
