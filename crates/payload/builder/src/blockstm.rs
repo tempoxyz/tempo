@@ -20,7 +20,7 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{
     TempoInvalidTransaction, TempoTxEnv, Tip20TransferActionReplay, Tip20TransferBlockstmFallback,
-    Tip20TransferBlockstmTx, validate_tip20_transfer_blockstm_tx,
+    Tip20TransferBlockstmTx, evm::TempoEvm, validate_tip20_transfer_blockstm_tx,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, storage::evm::EvmAction,
@@ -388,9 +388,12 @@ where
             candidate.recovered.is_payment_v1();
         }
 
+        discard_recorded_actions(evm, sequence, "before_execution", action_buffers_rx);
+
         let mut result = match evm.transact_raw(candidate.tx_env.clone()) {
             Ok(result) => result,
             Err(err) => {
+                discard_recorded_actions(evm, sequence, "execution_error", action_buffers_rx);
                 trace!(
                 target: "payload_builder",
                 ?err,
@@ -401,6 +404,7 @@ where
             }
         };
         if !result.result.is_success() {
+            discard_recorded_actions(evm, sequence, "non_success_result", action_buffers_rx);
             trace!(
                 target: "payload_builder",
                 sequence,
@@ -410,8 +414,7 @@ where
             return Err(Tip20TransferBlockstmFallback::ActionExecutionFailed);
         }
 
-        let actions = evm
-            .replace_actions(reusable_action_buffer(action_buffers_rx))
+        let actions = replace_recorded_actions(evm, action_buffers_rx)
             .filter(|actions| !actions.is_empty())
             .ok_or(Tip20TransferBlockstmFallback::MissingActions)?;
 
@@ -424,6 +427,37 @@ where
             state: result.state,
         }))
     })
+}
+
+fn discard_recorded_actions<DB, I>(
+    evm: &mut TempoEvm<DB, I>,
+    sequence: usize,
+    reason: &'static str,
+    action_buffers_rx: &ActionBufferReceiver<Vec<EvmAction>>,
+) where
+    DB: Database,
+{
+    if let Some(actions) = replace_recorded_actions(evm, action_buffers_rx)
+        && !actions.is_empty()
+    {
+        trace!(
+            target: "payload_builder",
+            sequence,
+            reason,
+            action_count = actions.len(),
+            "Discarding BlockSTM TIP-20 prewarm actions"
+        );
+    }
+}
+
+fn replace_recorded_actions<DB, I>(
+    evm: &mut TempoEvm<DB, I>,
+    action_buffers_rx: &ActionBufferReceiver<Vec<EvmAction>>,
+) -> Option<Vec<EvmAction>>
+where
+    DB: Database,
+{
+    evm.replace_actions(reusable_action_buffer(action_buffers_rx))
 }
 
 fn reusable_action_buffer(
