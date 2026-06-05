@@ -16,6 +16,7 @@
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
+#   BENCH_TRACING_CHROME          – "true" to enable Chrome trace recording (optional)
 #   BENCH_REPLAY_RPC_URL          – RPC URL override for replay extraction (optional)
 set -euxo pipefail
 
@@ -280,6 +281,15 @@ run_single() {
   if [ -n "$extra_args" ]; then
     # shellcheck disable=SC2206
     NODE_ARGS+=($extra_args)
+  fi
+
+  if [ "${BENCH_TRACING_CHROME:-false}" = "true" ] && "$binary" node --help 2>&1 | grep -q -- '--log.tracing-chrome'; then
+    NODE_ARGS+=(
+      --log.tracing-chrome
+      --log.tracing-chrome.file "$output_dir/tracing-chrome-profile.json"
+    )
+  elif [ "${BENCH_TRACING_CHROME:-false}" = "true" ]; then
+    echo "::warning::Chrome trace recording requested, but $binary does not support --log.tracing-chrome; skipping $label trace"
   fi
 
   # Memory limit: 95% of available RAM

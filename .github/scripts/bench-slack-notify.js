@@ -135,6 +135,40 @@ function fmtBlockCount(baselineBlocks, featureBlocks) {
   return `baseline \`${baselineBlocks}\` | feature \`${featureBlocks}\``;
 }
 
+function loadTracingChromeUrls(workDir) {
+  const urls = {};
+  let runs = [];
+  try {
+    runs = fs.readFileSync(path.join(workDir, 'run-order.txt'), 'utf8')
+      .split(/\r?\n/)
+      .map(run => run.trim())
+      .filter(Boolean);
+  } catch {
+    try {
+      runs = fs.readdirSync(workDir)
+        .filter(name => /^(baseline|feature)-/.test(name))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    } catch {}
+  }
+  for (const run of runs) {
+    try {
+      const url = fs.readFileSync(path.join(workDir, run, 'tracing-chrome-profile-url.txt'), 'utf8').trim();
+      if (url) urls[run] = url;
+    } catch {}
+  }
+  return urls;
+}
+
+function chromeTraceLinks(tracingChromeUrls, prefix) {
+  return Object.entries(tracingChromeUrls || {})
+    .filter(([run]) => run.startsWith(`${prefix}-`))
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([run, url]) => {
+      const index = run.slice(prefix.length + 1);
+      return `<${url}|Chrome ${index}>`;
+    });
+}
+
 function buildMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
@@ -407,7 +441,7 @@ function replayRunLabel() {
   return (process.env.BENCH_RUN_LABEL || 'Replay Bench').trim() || 'Replay Bench';
 }
 
-function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo, chain, blocks, warmup, runLabel }) {
+function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo, chain, blocks, warmup, runLabel, tracingChromeUrls }) {
   const { emoji, label } = verdictFromChanges(summary.changes || {});
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const baseline = summary.baseline || {};
@@ -423,11 +457,16 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
   const blockCount = summary.blocks || blocks || '-';
   const warmupCount = summary.warmup_blocks || warmup || '-';
   const runPairs = summary.run_pairs || process.env.BENCH_RUN_PAIRS || '-';
+  const baselineTraces = chromeTraceLinks(tracingChromeUrls, 'baseline');
+  const featureTraces = chromeTraceLinks(tracingChromeUrls, 'feature');
+  const baselineLine = `*Baseline:* ${baselineLink}${baselineTraces.length ? ` | ${baselineTraces.join(' | ')}` : ''}`;
+  const featureLine = `*Feature:* ${featureLink}${featureTraces.length ? ` | ${featureTraces.join(' | ')}` : ''}`;
+
   const sectionText = [
     metaParts.join(' | '),
     '',
-    `*Baseline:* ${baselineLink}`,
-    `*Feature:* ${featureLink}`,
+    baselineLine,
+    featureLine,
     `*Chain:* \`${chain || '-'}\` | *Warmup:* \`${warmupCount}\` | *Blocks:* \`${blockCount}\` | *Run pairs:* \`${runPairs}\``,
   ].join('\n');
 
@@ -542,6 +581,7 @@ async function replaySuccess({ core, context }) {
   const blocks = process.env.BENCH_BLOCKS || '5000';
   const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
   const runLabel = replayRunLabel();
+  const tracingChromeUrls = loadTracingChromeUrls(process.env.BENCH_WORK_DIR);
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
@@ -556,6 +596,7 @@ async function replaySuccess({ core, context }) {
     blocks,
     warmup,
     runLabel,
+    tracingChromeUrls,
   });
   const text = `Tempo ${runLabel.toLowerCase()}: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain}, ${summary.run_pairs ?? process.env.BENCH_RUN_PAIRS ?? '-'} run pairs)`;
 
