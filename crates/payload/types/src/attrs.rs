@@ -1,4 +1,4 @@
-use crate::ValidatorValidationEstimate;
+use crate::ValidationLatencyEstimate;
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -28,13 +28,12 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
-    /// Estimated validator-side execution-layer validation work for a consensus
-    /// payload build.
+    /// Validation latency estimate for a consensus payload build.
     ///
     /// Consensus snapshots this from recent locally validated blocks. `None`
     /// means the builder should use its conservative fallback.
     #[serde(skip)]
-    validator_validation_estimate: Option<ValidatorValidationEstimate>,
+    validation_latency_estimate: Option<ValidationLatencyEstimate>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -84,7 +83,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_budget: None,
-            validator_validation_estimate: None,
+            validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -122,19 +121,18 @@ impl TempoPayloadAttributes {
         self.payload_build_budget
     }
 
-    /// Sets the validator-side execution-layer validation estimate for a
-    /// consensus payload build.
-    pub fn with_validator_validation_estimate(
+    /// Sets the validation latency estimate for a consensus payload build.
+    pub fn with_validation_latency_estimate(
         mut self,
-        estimate: Option<ValidatorValidationEstimate>,
+        estimate: Option<ValidationLatencyEstimate>,
     ) -> Self {
-        self.validator_validation_estimate = estimate;
+        self.validation_latency_estimate = estimate;
         self
     }
 
-    /// Returns the consensus-provided validator-side validation estimate.
-    pub fn validator_validation_estimate(&self) -> Option<ValidatorValidationEstimate> {
-        self.validator_validation_estimate
+    /// Returns the consensus-provided validation latency estimate.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimate
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -169,7 +167,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
-            validator_validation_estimate: None,
+            validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,

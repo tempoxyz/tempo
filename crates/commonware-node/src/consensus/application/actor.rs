@@ -18,7 +18,7 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
@@ -48,8 +48,8 @@ use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidatorValidationEstimate, ValidatorValidationEstimator,
-    ValidatorValidationShape, marshal_persist_estimate, observe_marshal_persist,
+    TempoPayloadAttributes, ValidationLatencyEstimate, ValidationLatencyEstimator,
+    ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -148,7 +148,7 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
-                validator_validation_estimator: Default::default(),
+                validation_latency_estimator: Default::default(),
 
                 metrics,
 
@@ -249,7 +249,7 @@ struct Inner<TState> {
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
-    validator_validation_estimator: Arc<Mutex<ValidatorValidationEstimator>>,
+    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 
@@ -257,20 +257,20 @@ struct Inner<TState> {
 }
 
 impl<TState> Inner<TState> {
-    fn observe_validator_validation(
+    fn observe_validation_latency(
         &self,
         sample_id: u64,
-        shape: ValidatorValidationShape,
+        workload: ValidationLatencyWorkload,
         elapsed: Duration,
     ) {
-        let Ok(mut estimator) = self.validator_validation_estimator.lock() else {
+        let Ok(mut estimator) = self.validation_latency_estimator.lock() else {
             return;
         };
-        estimator.observe(sample_id, shape, elapsed);
+        estimator.observe(sample_id, workload, elapsed);
     }
 
-    fn validator_validation_estimate(&self) -> Option<ValidatorValidationEstimate> {
-        self.validator_validation_estimator
+    fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimator
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate())
@@ -665,15 +665,12 @@ impl Inner<Init> {
             .wrap_err("failed verifying block against execution layer")?;
 
             // FIXME: Parent blocks can be reconstructed from the EL database
-            // without their commonware BAL sidecar. `validator_validation_shape`
-            // calls `Block::encode_size`, which requires BAL bytes when the
-            // header commits to a BAL, so observing here can panic for
-            // BAL-enabled parents. Rely on the normal verify path until parent
-            // retrieval restores missing sidecars.
+            // without their commonware BAL sidecar. Rely on the normal verify
+            // path until parent retrieval restores missing sidecars.
             // if let Some(duration) = verification.validation_duration {
-            //     self.observe_validator_validation(
+            //     self.observe_validation_latency(
             //         parent.height().get(),
-            //         validator_validation_shape(&parent),
+            //         validation_latency_workload(&parent),
             //         duration,
             //     );
             // }
@@ -760,7 +757,7 @@ impl Inner<Init> {
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
-        let validator_validation_estimate = self.validator_validation_estimate();
+        let validation_latency_estimate = self.validation_latency_estimate();
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -775,7 +772,7 @@ impl Inner<Init> {
             },
         )
         .with_payload_build_budget(build_budget)
-        .with_validator_validation_estimate(validator_validation_estimate);
+        .with_validation_latency_estimate(validation_latency_estimate);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
@@ -815,7 +812,7 @@ impl Inner<Init> {
 
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
-        let validator_validation_elapsed = payload.validator_validation_duration();
+        let validation_latency_elapsed = payload.validation_latency_duration();
         let execution_block_rlp_size_bytes = payload.execution_block_rlp_size_bytes();
         let consensus_block_size_bytes = payload.consensus_block_size_bytes();
         let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
@@ -826,13 +823,13 @@ impl Inner<Init> {
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)
-            .saturating_sub(validator_validation_elapsed)
+            .saturating_sub(validation_latency_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
-            validator_validation_time = %display_duration(validator_validation_elapsed),
+            validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_bytes,
@@ -951,9 +948,9 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = verification.validation_duration {
-            self.observe_validator_validation(
+            self.observe_validation_latency(
                 block.height().get(),
-                validator_validation_shape(&block),
+                validation_latency_workload(&block),
                 duration,
             );
         }
@@ -1005,7 +1002,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
-            validator_validation_estimator: self.validator_validation_estimator,
+            validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
         };
 
@@ -1025,9 +1022,8 @@ struct Init {
     executor: crate::executor::Mailbox,
 }
 
-fn validator_validation_shape(block: &Block) -> ValidatorValidationShape {
-    ValidatorValidationShape::new(
-        block.encode_size(),
+fn validation_latency_workload(block: &Block) -> ValidationLatencyWorkload {
+    ValidationLatencyWorkload::new(
         block.block().gas_used(),
         block.block().body().transaction_count(),
     )

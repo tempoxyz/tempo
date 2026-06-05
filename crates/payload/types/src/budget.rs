@@ -9,8 +9,10 @@ use tracing::debug;
 const RATE_DECAY: u64 = 8;
 /// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
 const MIN_SAMPLE_BYTES: usize = 128 * 1024;
-/// Number of recent successful EL validation timings to retain for the P90 estimate.
-const VALIDATOR_VALIDATION_SAMPLE_WINDOW: usize = 64;
+/// Number of recent successful EL validation timings to retain.
+const VALIDATION_LATENCY_SAMPLE_WINDOW: usize = 64;
+/// Fixed-point scale for validation workload multipliers.
+const VALIDATION_LATENCY_WORKLOAD_SCALE: u128 = 1_000_000;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
 
@@ -79,132 +81,251 @@ impl MarshalPersistEstimator {
     }
 }
 
-/// Current or observed block shape used to estimate validator validation cost.
+/// Gas and transaction count used to estimate validation latency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ValidatorValidationShape {
-    block_size_bytes: usize,
+pub struct ValidationLatencyWorkload {
     gas_used: u64,
     transaction_count: usize,
 }
 
-impl ValidatorValidationShape {
-    /// Creates a validation shape from encoded size, gas, and transaction count.
-    pub fn new(block_size_bytes: usize, gas_used: u64, transaction_count: usize) -> Self {
+impl ValidationLatencyWorkload {
+    /// Creates a validation workload from gas and transaction count.
+    pub fn new(gas_used: u64, transaction_count: usize) -> Self {
         Self {
-            block_size_bytes,
             gas_used,
             transaction_count,
         }
     }
-
-    /// Returns the encoded block size in bytes.
-    pub fn block_size_bytes(self) -> usize {
-        self.block_size_bytes
-    }
-
-    /// Returns gas used by the block.
-    pub fn gas_used(self) -> u64 {
-        self.gas_used
-    }
-
-    /// Returns the number of transactions in the block.
-    pub fn transaction_count(self) -> usize {
-        self.transaction_count
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ValidatorValidationSample {
+struct ValidationLatencySample {
+    workload: ValidationLatencyWorkload,
     elapsed: Duration,
 }
 
-fn p90_duration(durations: impl Iterator<Item = Duration>) -> Option<Duration> {
-    let mut sorted = durations.collect::<Vec<_>>();
-    if sorted.is_empty() {
+fn insert_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
+    *counts.entry(value).or_default() += 1;
+}
+
+fn remove_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
+    let count = counts
+        .get_mut(&value)
+        .expect("validation latency sample index out of sync");
+    *count -= 1;
+    if *count == 0 {
+        counts.remove(&value);
+    }
+}
+
+fn percentile_rank(len: usize, numerator: usize, denominator: usize) -> Option<usize> {
+    debug_assert!(numerator > 0);
+    debug_assert!(denominator > 0);
+    debug_assert!(numerator <= denominator);
+
+    if len == 0 {
         return None;
     }
-
-    sorted.sort_unstable();
-    let index = ((sorted.len() * 9).div_ceil(10)).saturating_sub(1);
-    Some(sorted[index])
+    Some((len * numerator).div_ceil(denominator))
 }
 
-/// Point-in-time validation cost estimate from recent proposal validation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ValidatorValidationEstimate {
-    p90_elapsed: Duration,
-}
-
-impl ValidatorValidationEstimate {
-    /// Estimates validator-side validation time for the supplied block shape.
-    ///
-    /// Recent e2e payloads are built from the same saturated workload, so the
-    /// absolute local proposal-validation P90 is a better budget input than the
-    /// max of independent per-byte, per-gas, and per-transaction P90 rates. The
-    /// caller still passes shape for API symmetry and observability, but the
-    /// estimate intentionally does not scale down or up by shape.
-    pub fn estimate(self, _shape: ValidatorValidationShape) -> Option<Duration> {
-        (self.p90_elapsed > Duration::ZERO).then_some(self.p90_elapsed)
-    }
-}
-
-/// Tracks recent local execution-layer block validation durations.
-///
-/// The estimate intentionally uses the absolute P90 of recent successful
-/// proposal validations. This still reclaims budget from faster validator replay
-/// paths while reserving more headroom for tail validation costs than a
-/// median-like estimate. It avoids inflating current-block validation via the max
-/// of independent per-unit rates from differently shaped historical blocks.
-#[derive(Clone, Debug)]
-pub struct ValidatorValidationEstimator {
-    samples: BTreeMap<u64, ValidatorValidationSample>,
-}
-
-impl Default for ValidatorValidationEstimator {
-    fn default() -> Self {
-        Self {
-            samples: BTreeMap::new(),
+fn percentile_from_counts<T: Copy + Ord>(
+    counts: &BTreeMap<T, usize>,
+    len: usize,
+    numerator: usize,
+    denominator: usize,
+) -> Option<T> {
+    let target = percentile_rank(len, numerator, denominator)?;
+    let mut seen = 0;
+    for (value, count) in counts {
+        seen += *count;
+        if seen >= target {
+            return Some(*value);
         }
     }
+    debug_assert!(false, "validation latency sample index out of sync");
+    None
 }
 
-impl ValidatorValidationEstimator {
+fn scale_above_baseline(current: u128, baseline: u128) -> Option<u128> {
+    if current == 0 {
+        return Some(VALIDATION_LATENCY_WORKLOAD_SCALE);
+    }
+    if baseline == 0 {
+        return None;
+    }
+    if current <= baseline {
+        return Some(VALIDATION_LATENCY_WORKLOAD_SCALE);
+    }
+
+    Some(current.saturating_mul(VALIDATION_LATENCY_WORKLOAD_SCALE) / baseline)
+}
+
+fn scale_duration(elapsed: Duration, scale: u128) -> Duration {
+    let nanos = elapsed
+        .as_nanos()
+        .saturating_mul(scale)
+        .saturating_add(VALIDATION_LATENCY_WORKLOAD_SCALE.saturating_sub(1))
+        / VALIDATION_LATENCY_WORKLOAD_SCALE;
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+}
+
+/// Point-in-time validation latency estimate from recent proposal validation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ValidationLatencyEstimate {
+    elapsed: Duration,
+    p90_gas_used: u64,
+    p90_transaction_count: usize,
+}
+
+impl ValidationLatencyEstimate {
+    /// Estimates validation latency for the supplied workload.
+    ///
+    /// Recent elapsed validation feedback is the floor so faster replay feedback
+    /// still reclaims budget without shrinking smaller current blocks. If the
+    /// current block carries more gas or transactions than the recent P90 workload,
+    /// the estimate scales up by that excess. Encoded bytes are intentionally
+    /// not used here because BAL sidecar bytes are charged through marshal
+    /// persistence, not execution-layer validation work.
+    pub fn estimate(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        if self.elapsed == Duration::ZERO {
+            return None;
+        }
+
+        let scale = [
+            scale_above_baseline(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
+            scale_above_baseline(
+                workload.transaction_count as u128,
+                self.p90_transaction_count as u128,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .max()?;
+        Some(scale_duration(self.elapsed, scale))
+    }
+}
+
+/// Tracks recent local execution-layer block validation latency.
+///
+/// The validation latency estimate uses the recent P90 successful proposal
+/// validation as an absolute floor, then scales that floor up when the current
+/// workload exceeds the recent P90 gas or transaction count. This avoids
+/// combining independent per-unit rates from different workloads while still
+/// reserving validator headroom when the builder grows beyond the workloads
+/// that produced the feedback.
+#[derive(Clone, Debug, Default)]
+pub struct ValidationLatencyEstimator {
+    /// Samples are kept in id order for retention; count maps are keyed by
+    /// observed values so estimate snapshots can read percentiles without
+    /// sorting.
+    sample_window: Vec<(u64, ValidationLatencySample)>,
+    elapsed_counts: BTreeMap<Duration, usize>,
+    gas_used_counts: BTreeMap<u64, usize>,
+    transaction_count_counts: BTreeMap<usize, usize>,
+}
+
+impl ValidationLatencyEstimator {
+    fn insert_sample_counts(&mut self, sample: ValidationLatencySample) {
+        insert_count(&mut self.elapsed_counts, sample.elapsed);
+        insert_count(&mut self.gas_used_counts, sample.workload.gas_used);
+        insert_count(
+            &mut self.transaction_count_counts,
+            sample.workload.transaction_count,
+        );
+    }
+
+    fn remove_sample_counts(&mut self, sample: ValidationLatencySample) {
+        remove_count(&mut self.elapsed_counts, sample.elapsed);
+        remove_count(&mut self.gas_used_counts, sample.workload.gas_used);
+        remove_count(
+            &mut self.transaction_count_counts,
+            sample.workload.transaction_count,
+        );
+    }
+
+    fn insert_sample(&mut self, sample_id: u64, sample: ValidationLatencySample) {
+        let insert_index = match self
+            .sample_window
+            .binary_search_by_key(&sample_id, |(id, _)| *id)
+        {
+            Ok(index) => {
+                let (_, replaced) = self.sample_window.remove(index);
+                self.remove_sample_counts(replaced);
+                index
+            }
+            Err(index) => index,
+        };
+
+        self.insert_sample_counts(sample);
+        self.sample_window.insert(insert_index, (sample_id, sample));
+        while self.sample_window.len() > VALIDATION_LATENCY_SAMPLE_WINDOW {
+            let (_, evicted) = self.sample_window.remove(0);
+            self.remove_sample_counts(evicted);
+        }
+    }
+
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(&mut self, sample_id: u64, shape: ValidatorValidationShape, elapsed: Duration) {
+    pub fn observe(
+        &mut self,
+        sample_id: u64,
+        workload: ValidationLatencyWorkload,
+        elapsed: Duration,
+    ) {
         if elapsed == Duration::ZERO {
             return;
         }
 
-        self.samples
-            .insert(sample_id, ValidatorValidationSample { elapsed });
-        while self.samples.len() > VALIDATOR_VALIDATION_SAMPLE_WINDOW {
-            self.samples.pop_first();
-        }
+        let sample = ValidationLatencySample { workload, elapsed };
+        self.insert_sample(sample_id, sample);
 
         debug!(
             sample_id,
-            shape = ?shape,
+            workload = ?workload,
             elapsed = ?elapsed,
-            estimated_p90 = ?self.estimate(),
-            samples = self.samples.len(),
-            "updated validator validation estimate"
+            estimate = ?self.estimate(),
+            samples = self.sample_window.len(),
+            "updated validation latency estimate"
         );
     }
 
-    /// Returns the current P90 estimate for execution-layer block validation work.
+    /// Returns the current estimate for execution-layer block validation work.
     ///
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
     /// that case.
-    pub fn estimate(&self) -> Option<ValidatorValidationEstimate> {
-        p90_duration(self.samples.values().map(|sample| sample.elapsed))
-            .map(|p90_elapsed| ValidatorValidationEstimate { p90_elapsed })
+    pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
+        let sample_count = self.sample_window.len();
+        let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
+        Some(ValidationLatencyEstimate {
+            elapsed: p90_elapsed,
+            p90_gas_used: percentile_from_counts(&self.gas_used_counts, sample_count, 9, 10)
+                .unwrap_or_default(),
+            p90_transaction_count: percentile_from_counts(
+                &self.transaction_count_counts,
+                sample_count,
+                9,
+                10,
+            )
+            .unwrap_or_default(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn estimate_with_sample(
+        sample_workload: ValidationLatencyWorkload,
+        current_workload: ValidationLatencyWorkload,
+    ) -> Option<Duration> {
+        let mut estimator = ValidationLatencyEstimator::default();
+        estimator.observe(1, sample_workload, Duration::from_millis(100));
+        estimator
+            .estimate()
+            .and_then(|estimate| estimate.estimate(current_workload))
+    }
 
     #[test]
     fn observes_large_blocks_and_ignores_tiny_samples() {
@@ -226,78 +347,93 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_uses_recent_p90() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        let sample_shape = ValidatorValidationShape::new(0, 100, 0);
-        let current_shape = ValidatorValidationShape::new(0, 100, 0);
+    fn validation_latency_estimate_uses_recent_p90_elapsed() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        let sample_workload = ValidationLatencyWorkload::new(100, 0);
+        let current_workload = ValidationLatencyWorkload::new(100, 0);
         for (sample_id, elapsed) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
-            estimator.observe(sample_id, sample_shape, Duration::from_nanos(elapsed));
+            estimator.observe(sample_id, sample_workload, Duration::from_nanos(elapsed));
         }
         assert_eq!(
             estimator
                 .estimate()
-                .and_then(|estimate| estimate.estimate(current_shape)),
+                .and_then(|estimate| estimate.estimate(current_workload)),
             Some(Duration::from_nanos(40))
         );
 
-        estimator = ValidatorValidationEstimator::default();
-        for elapsed in 1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64 {
+        estimator = ValidationLatencyEstimator::default();
+        for elapsed in 1..=VALIDATION_LATENCY_SAMPLE_WINDOW as u64 {
             estimator.observe(
                 elapsed,
-                ValidatorValidationShape::new(0, 1, 0),
+                ValidationLatencyWorkload::new(1, 0),
                 Duration::from_nanos(elapsed),
             );
         }
         estimator.observe(
             10_000,
-            ValidatorValidationShape::new(0, 1, 0),
+            ValidationLatencyWorkload::new(1, 0),
             Duration::from_nanos(10_000),
         );
         assert_eq!(
             estimator
                 .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 1, 0))),
+                .and_then(|estimate| estimate.estimate(ValidationLatencyWorkload::new(1, 0))),
             Some(Duration::from_nanos(59))
         );
     }
 
     #[test]
-    fn validator_validation_estimate_uses_absolute_recent_validation_time() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            1,
-            ValidatorValidationShape::new(0, 1_000, 0),
-            Duration::from_millis(100),
-        );
+    fn validation_latency_estimate_replaces_existing_sample_id() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        let workload = ValidationLatencyWorkload::new(100, 0);
+
+        estimator.observe(1, workload, Duration::from_millis(100));
+        estimator.observe(1, workload, Duration::from_millis(200));
 
         assert_eq!(
             estimator
                 .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 400, 0))),
+                .and_then(|estimate| estimate.estimate(workload)),
+            Some(Duration::from_millis(200))
+        );
+    }
+
+    #[test]
+    fn validation_latency_estimate_does_not_scale_down() {
+        assert_eq!(
+            estimate_with_sample(
+                ValidationLatencyWorkload::new(1_000, 10),
+                ValidationLatencyWorkload::new(400, 4)
+            ),
             Some(Duration::from_millis(100))
         );
     }
 
     #[test]
-    fn validator_validation_estimate_replaces_duplicate_sample_ids() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            10,
-            ValidatorValidationShape::new(0, 1, 0),
-            Duration::from_nanos(100),
-        );
-        estimator.observe(
-            10,
-            ValidatorValidationShape::new(0, 1, 0),
-            Duration::from_nanos(200),
-        );
+    fn validation_latency_estimate_scales_up_by_gas_or_transactions() {
+        let sample = ValidationLatencyWorkload::new(1_000, 10);
 
-        assert_eq!(estimator.samples.len(), 1);
         assert_eq!(
-            estimator
-                .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 1, 0))),
-            Some(Duration::from_nanos(200))
+            estimate_with_sample(sample, ValidationLatencyWorkload::new(1_500, 10)),
+            Some(Duration::from_millis(150))
+        );
+        assert_eq!(
+            estimate_with_sample(sample, ValidationLatencyWorkload::new(1_000, 15)),
+            Some(Duration::from_millis(150))
+        );
+    }
+
+    #[test]
+    fn validation_latency_estimate_requires_non_empty_workload_feedback() {
+        let empty = ValidationLatencyWorkload::new(0, 0);
+
+        assert_eq!(
+            estimate_with_sample(empty, ValidationLatencyWorkload::new(0, 0)),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            estimate_with_sample(empty, ValidationLatencyWorkload::new(1_000, 10)),
+            None
         );
     }
 }

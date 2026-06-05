@@ -71,7 +71,7 @@ use tempo_evm::{
     Tip20TransferBlockstmExecutionError, Tip20TransferBlockstmFallback, evm::TempoEvm,
 };
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidatorValidationShape, marshal_persist_estimate,
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -579,7 +579,7 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
-        let validator_validation = attributes.validator_validation_estimate();
+        let validation_latency = attributes.validation_latency_estimate();
         let mut blockstm_completed_stop_reason = None;
         if self.enable_blockstm_tip20_transfers {
             if !subblocks.is_empty() {
@@ -635,8 +635,7 @@ where
 
                     if let Some(build_budget) = payload_build_budget {
                         let elapsed = start.elapsed();
-                        let validator_validation_shape = ValidatorValidationShape::new(
-                            block_size_used,
+                        let current_workload = ValidationLatencyWorkload::new(
                             cumulative_gas_used,
                             pool_transactions_included as usize,
                         );
@@ -644,29 +643,21 @@ where
                             elapsed,
                             Duration::ZERO,
                             build_time_multiplier,
-                            build_budget,
                             marshal_persist,
-                            validator_validation,
-                            validator_validation_shape,
+                            block_size_used,
+                            validation_latency,
+                            current_workload,
                         );
-                        if budget_decision.exhausted() {
-                            let estimated_marshal_persist =
-                                marshal_persist.estimate(block_size_used);
-                            let estimated_validator_validation = validator_validation
-                                .and_then(|estimate| estimate.estimate(validator_validation_shape));
-                            self.metrics.record_build_budget_decision(budget_decision);
+                        if budget_decision.total_reserved >= build_budget {
                             info!(
                                 target: "payload_builder",
                                 ?elapsed,
                                 ?build_budget,
                                 predicted_builder_work = ?budget_decision.predicted_builder_work,
                                 predicted_validator_work = ?budget_decision.predicted_validator_work,
-                                validator_validation_source =
-                                    budget_decision.validator_validation_source.as_str(),
                                 total_reserved = ?budget_decision.total_reserved,
-                                ?estimated_marshal_persist,
-                                ?estimated_validator_validation,
-                                ?validator_validation_shape,
+                                marshal_persist = ?budget_decision.marshal_persist,
+                                ?current_workload,
                                 gas_used = cumulative_gas_used,
                                 transactions = pool_transactions_included,
                                 block_size_used,
@@ -921,8 +912,7 @@ where
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
-                let validator_validation_shape = ValidatorValidationShape::new(
-                    block_size_used,
+                let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
@@ -930,16 +920,12 @@ where
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
-                    build_budget,
                     marshal_persist,
-                    validator_validation,
-                    validator_validation_shape,
+                    block_size_used,
+                    validation_latency,
+                    current_workload,
                 );
-                if budget_decision.exhausted() {
-                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
-                    let estimated_validator_validation = validator_validation
-                        .and_then(|estimate| estimate.estimate(validator_validation_shape));
-                    self.metrics.record_build_budget_decision(budget_decision);
+                if budget_decision.total_reserved >= build_budget {
                     info!(
                         target: "payload_builder",
                         ?elapsed,
@@ -947,12 +933,9 @@ where
                         ?build_budget,
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
-                        validator_validation_source =
-                            budget_decision.validator_validation_source.as_str(),
                         total_reserved = ?budget_decision.total_reserved,
-                        ?estimated_marshal_persist,
-                        ?estimated_validator_validation,
-                        ?validator_validation_shape,
+                        marshal_persist = ?budget_decision.marshal_persist,
+                        ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
                         block_size_used,
@@ -1450,13 +1433,10 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
-        let final_validation_shape =
-            ValidatorValidationShape::new(recorded_block_size_bytes, gas_used, total_transactions);
-        let (validator_validation_duration, validator_validation_source) = validator_validation
-            .and_then(|estimate| estimate.estimate(final_validation_shape))
-            .map_or((validation_work_duration, "fallback"), |duration| {
-                (duration, "feedback")
-            });
+        let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
+        let validation_latency_duration = validation_latency
+            .and_then(|estimate| estimate.estimate(final_workload))
+            .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -1488,8 +1468,7 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
-            ?validator_validation_duration,
-            validator_validation_source,
+            ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
@@ -1520,7 +1499,7 @@ where
             block_access_list,
             Some(executed_block),
             validation_work_duration,
-            validator_validation_duration,
+            validation_latency_duration,
             rlp_length,
             recorded_block_size_bytes,
         );
