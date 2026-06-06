@@ -2976,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -2992,7 +2992,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3006,7 +3006,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3027,7 +3027,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3057,7 +3057,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -3091,7 +3091,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -3100,7 +3100,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3112,7 +3112,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3125,7 +3125,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -3151,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3161,7 +3161,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3181,7 +3181,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "axum",
  "bytes",
@@ -3217,7 +3217,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3241,7 +3241,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "chacha20poly1305",
  "commonware-codec",
@@ -3260,7 +3260,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+source = "git+https://github.com/mattsse/monorepo?branch=mattsse%2Fmarshal-broadcast-instrumentation#9653d45575589955aa516bd9e9ad4fd78dfb5b0a"
 dependencies = [
  "bytes",
  "cfg-if",

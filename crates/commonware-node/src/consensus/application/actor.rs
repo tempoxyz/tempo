@@ -35,7 +35,7 @@ use prometheus_client::metrics::counter::Counter;
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
-    StreamExt as _, TryFutureExt as _,
+    StreamExt as _,
     channel::{mpsc, oneshot},
     future::try_join,
 };
@@ -245,7 +245,22 @@ impl Inner<Init> {
             Plan::Propose { round } => (round, Recipients::All),
             Plan::Forward { round, recipients } => (round, recipients),
         };
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?digest,
+            ?recipients,
+            "tempo_application_broadcast_start"
+        );
+        let start = Instant::now();
         self.marshal.forward(round, digest, recipients).await;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?digest,
+            elapsed = ?start.elapsed(),
+            "tempo_application_broadcast_done"
+        );
     }
 
     #[instrument(
@@ -397,18 +412,53 @@ impl Inner<Init> {
                 };
 
                 let digest = block.digest();
+                let height = block.height();
+                info!(
+                    target: "tempo_marshal_path",
+                    ?round,
+                    ?digest,
+                    %height,
+                    has_new_block = proposal_return.is_some(),
+                    "tempo_propose_block_ready"
+                );
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
+                    info!(
+                        target: "tempo_marshal_path",
+                        ?round,
+                        ?digest,
+                        %height,
+                        "tempo_propose_marshal_proposed_start"
+                    );
                     if !self.marshal.proposed(round, block).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
-                    observe_marshal_persist(
-                        proposal_return.block_size_bytes,
-                        persist_start.elapsed(),
+                    let persist_elapsed = persist_start.elapsed();
+                    info!(
+                        target: "tempo_marshal_path",
+                        ?round,
+                        ?digest,
+                        %height,
+                        elapsed = ?persist_elapsed,
+                        "tempo_propose_marshal_proposed_done"
                     );
+                    observe_marshal_persist(proposal_return.block_size_bytes, persist_elapsed);
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
+                    info!(
+                        target: "tempo_marshal_path",
+                        ?round,
+                        ?digest,
+                        return_time = ?proposal_return.time,
+                        "tempo_propose_return_delay_start"
+                    );
                     context.sleep_until(proposal_return.time).await;
+                    info!(
+                        target: "tempo_marshal_path",
+                        ?round,
+                        ?digest,
+                        "tempo_propose_return_delay_done"
+                    );
                 }
 
                 eyre::Ok(digest)
@@ -435,6 +485,12 @@ impl Inner<Init> {
             proposal.digest = %proposal_digest,
             "constructed proposal",
         );
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            proposal.digest = %proposal_digest,
+            "tempo_propose_digest_returning_to_simplex"
+        );
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
@@ -442,6 +498,12 @@ impl Inner<Init> {
                 channel was already closed"
             )
         })?;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            proposal.digest = %proposal_digest,
+            "tempo_propose_digest_returned_to_simplex"
+        );
 
         Ok(())
     }
@@ -813,13 +875,44 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<bool> {
-        let block_request = self
-            .marshal
-            .subscribe_by_digest(None, payload)
-            .await
-            .map_err(|_| {
+        let verify_start = Instant::now();
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            ?parent_view,
+            ?parent_digest,
+            ?proposer,
+            "tempo_verify_start"
+        );
+
+        let subscribe_start = Instant::now();
+        let block_rx = self.marshal.subscribe_by_digest(None, payload).await;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            elapsed = ?subscribe_start.elapsed(),
+            "tempo_verify_block_subscription_registered"
+        );
+
+        let block_wait_start = Instant::now();
+        let payload_for_wait = payload;
+        let block_request = async move {
+            let block = block_rx.await.map_err(|_| {
                 eyre!("marshal actor dropped channel before the block-to-verified was sent")
-            });
+            })?;
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?payload_for_wait,
+                block.height = %block.height(),
+                block.digest = %block.digest(),
+                elapsed = ?block_wait_start.elapsed(),
+                "tempo_verify_block_subscription_resolved"
+            );
+            Ok::<_, eyre::Report>(block)
+        };
 
         let (block, parent) = try_join(
             block_request,
@@ -833,6 +926,15 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed getting required blocks")?;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            block.height = %block.height(),
+            parent.height = %parent.height(),
+            elapsed = ?verify_start.elapsed(),
+            "tempo_verify_required_blocks_ready"
+        );
 
         // Can only repropose at the end of an epoch.
         //
@@ -841,16 +943,44 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?payload,
+                "tempo_verify_reproposal_detected"
+            );
             let epoch_info = self
                 .epoch_strategy
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
+                let verified_persist_start = Instant::now();
+                info!(
+                    target: "tempo_marshal_path",
+                    ?round,
+                    ?payload,
+                    block.height = %block.height(),
+                    "tempo_verify_reproposal_marshal_verified_start"
+                );
                 if !self.marshal.verified(round, block).await {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
+                info!(
+                    target: "tempo_marshal_path",
+                    ?round,
+                    ?payload,
+                    elapsed = ?verified_persist_start.elapsed(),
+                    total_elapsed = ?verify_start.elapsed(),
+                    "tempo_verify_reproposal_done"
+                );
                 return Ok(true);
             } else {
+                info!(
+                    target: "tempo_marshal_path",
+                    ?round,
+                    ?payload,
+                    "tempo_verify_reproposal_rejected"
+                );
                 return Ok(false);
             }
         }
@@ -865,6 +995,13 @@ impl Inner<Init> {
         )
         .await
         {
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?payload,
+                %reason,
+                "tempo_verify_header_failed"
+            );
             warn!(%reason, "header could not be verified; failing block");
             return Ok(false);
         }
@@ -883,6 +1020,15 @@ impl Inner<Init> {
             );
         }
 
+        let execution_verify_start = Instant::now();
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            block.height = %block.height(),
+            parent.digest = %parent_digest,
+            "tempo_verify_execution_start"
+        );
         let validation_duration = verify_block(
             context,
             round.epoch(),
@@ -897,6 +1043,15 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            is_valid = validation_duration.is_some(),
+            validation_duration = ?validation_duration,
+            elapsed = ?execution_verify_start.elapsed(),
+            "tempo_verify_execution_done"
+        );
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
@@ -916,17 +1071,50 @@ impl Inner<Init> {
 
         if is_good {
             // Persist the block in the marshal actor and execution layer.
+            let verified_persist_start = Instant::now();
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?block_digest,
+                %block_height,
+                "tempo_verify_marshal_verified_start"
+            );
             if !self.marshal.verified(round, block).await {
                 bail!("marshal actor refused to persist verified block");
             }
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?block_digest,
+                %block_height,
+                elapsed = ?verified_persist_start.elapsed(),
+                "tempo_verify_marshal_verified_done"
+            );
 
             // FIXME: move this into the certification step?
+            let canonicalize_start = Instant::now();
             self.state
                 .executor
                 .canonicalize_head(block_height, block_digest)
                 .await
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
+            info!(
+                target: "tempo_marshal_path",
+                ?round,
+                ?block_digest,
+                %block_height,
+                elapsed = ?canonicalize_start.elapsed(),
+                "tempo_verify_canonicalize_verified_head_done"
+            );
         }
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?payload,
+            is_good,
+            elapsed = ?verify_start.elapsed(),
+            "tempo_verify_done"
+        );
         Ok(is_good)
     }
 }
@@ -1166,6 +1354,14 @@ async fn get_parent(
     parent_view: View,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
+    let start = Instant::now();
+    info!(
+        target: "tempo_marshal_path",
+        ?round,
+        ?parent_digest,
+        ?parent_view,
+        "tempo_get_parent_start"
+    );
     if let Some(parent) = execution_node
         .provider
         .find_block_by_hash(parent_digest.0, BlockSource::Any)
@@ -1174,13 +1370,53 @@ async fn get_parent(
         })?
     {
         // EL database reads do not include commonware sidecars.
-        Ok(Block::from_execution_block_unchecked(parent.seal(), None))
+        let parent = Block::from_execution_block_unchecked(parent.seal(), None);
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?parent_digest,
+            ?parent_view,
+            parent.height = %parent.height(),
+            elapsed = ?start.elapsed(),
+            "tempo_get_parent_el_hit"
+        );
+        Ok(parent)
     } else {
-        marshal
-            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        let parent_round = Round::new(round.epoch(), parent_view);
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?parent_round,
+            ?parent_digest,
+            "tempo_get_parent_marshal_subscribe_start"
+        );
+        let subscribe_start = Instant::now();
+        let parent_rx = marshal
+            .subscribe_by_digest(Some(parent_round), parent_digest)
+            .await;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?parent_round,
+            ?parent_digest,
+            elapsed = ?subscribe_start.elapsed(),
+            "tempo_get_parent_marshal_subscribe_registered"
+        );
+        let wait_start = Instant::now();
+        let parent = parent_rx
             .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?;
+        info!(
+            target: "tempo_marshal_path",
+            ?round,
+            ?parent_round,
+            ?parent_digest,
+            parent.height = %parent.height(),
+            elapsed = ?wait_start.elapsed(),
+            total_elapsed = ?start.elapsed(),
+            "tempo_get_parent_marshal_subscribe_resolved"
+        );
+        Ok(parent)
     }
 }
 
