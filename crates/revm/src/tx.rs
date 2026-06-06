@@ -170,14 +170,14 @@ impl TempoTxEnv {
     ///
     /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
     pub fn is_discounted_payment(&self) -> bool {
+        if self.gas_limit > SSTORE_SET_COST {
+            return false;
+        }
+
         if self
             .access_list()
             .is_some_and(|mut list| list.next().is_some())
         {
-            return false;
-        }
-
-        if self.gas_limit > SSTORE_SET_COST {
             return false;
         }
 
