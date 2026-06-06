@@ -44,7 +44,6 @@ alloy-sol-types.workspace = true
 
 metrics.workspace = true
 tracing.workspace = true
-crossbeam-channel.workspace = true
 tokio.workspace = true
 
 [features]

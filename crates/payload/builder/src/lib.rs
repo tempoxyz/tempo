@@ -8,7 +8,6 @@ mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
-use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -60,6 +59,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc::Sender,
     },
     time::{Duration, Instant},
 };
@@ -1156,7 +1156,7 @@ where
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+            std::sync::mpsc::channel::<(BuilderTx, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
