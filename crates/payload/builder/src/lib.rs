@@ -558,6 +558,7 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let tx_gas_limit_cap = executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX);
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -618,10 +619,7 @@ where
             };
             pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+            let max_regular_gas_used = core::cmp::min(pool_tx.gas_limit(), tx_gas_limit_cap);
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
