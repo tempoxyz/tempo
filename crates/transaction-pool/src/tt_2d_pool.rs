@@ -614,11 +614,18 @@ impl AA2dPool {
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.expiring_nonce_eviction_order.clone()
+            self.expiring_nonce_eviction_order
+                .iter()
+                .filter(|tx| has_base_fee_priority(tx.priority()))
+                .cloned()
+                .collect()
         } else {
             self.expiring_nonce_txs
                 .values()
-                .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
+                .filter_map(|tx| {
+                    let tx = ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee);
+                    has_base_fee_priority(tx.priority()).then_some(tx)
+                })
                 .collect()
         };
         let independent = self
@@ -631,7 +638,8 @@ impl AA2dPool {
                     .aa_transaction_id()
                     .expect("Independent transaction must have AA transaction ID");
                 let tx = self.by_id.get(&id)?;
-                Some(tx.inner.clone_into_pending(base_fee))
+                let tx = tx.inner.clone_into_pending(base_fee);
+                has_base_fee_priority(&tx.priority).then_some(tx)
             })
             .collect();
 
@@ -1997,12 +2005,12 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
-                    if process && can_pay_base_fee(&tx, self.base_fee) {
+                    if process && has_base_fee_priority(&tx.priority) {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
-                    if process {
+                    if process && has_base_fee_priority(&tx.priority) {
                         // Only mark as independent if no ancestor is already tracked
                         if !self.by_id.contains_key(&AA2dTransactionId::new(
                             id.seq_id,
@@ -2046,8 +2054,10 @@ impl BestAA2dTransactions {
                     }
                     // Advance transaction that just got unlocked, if any.
                     if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
-                        self.independent
-                            .insert(unlocked.clone_into_pending(self.base_fee));
+                        let unlocked = unlocked.clone_into_pending(self.base_fee);
+                        if has_base_fee_priority(&unlocked.priority) {
+                            self.independent.insert(unlocked);
+                        }
                     }
                     best
                 }
@@ -2068,6 +2078,10 @@ impl BestAA2dTransactions {
 
 fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
     tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
+}
+
+fn has_base_fee_priority(priority: &Priority<u64>) -> bool {
+    matches!(priority, Priority::Value(_))
 }
 
 impl Iterator for BestAA2dTransactions {
