@@ -577,7 +577,7 @@ where
                     current_workload,
                 );
                 if budget_decision.total_reserved >= build_budget {
-                    debug!(
+                    trace!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
