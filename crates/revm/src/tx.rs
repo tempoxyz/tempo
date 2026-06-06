@@ -419,14 +419,17 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                fee_token: None,
-                is_system_tx: tx.is_system_tx(),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                fee_payer: None,
-                tempo_tx_env: None, // Non-AA transaction
-            },
+            tx @ TempoTxEnvelope::Legacy(inner) => {
+                let is_system_tx = tx.is_system_tx();
+                Self {
+                    inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                    fee_token: None,
+                    is_system_tx,
+                    unique_tx_identifier: (!is_system_tx).then(|| tx.unique_tx_identifier(sender)),
+                    fee_payer: None,
+                    tempo_tx_env: None, // Non-AA transaction
+                }
+            }
             TempoTxEnvelope::Eip2930(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
@@ -473,6 +476,7 @@ mod tests {
         TempoTxEnvelope,
         transaction::{
             Call, calc_gas_balance_spending,
+            envelope::TEMPO_SYSTEM_TX_SIGNATURE,
             tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
             tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
@@ -643,6 +647,26 @@ mod tests {
             tx_env.channel_open_context_hash(),
             Some(encoded_payload_context)
         );
+    }
+
+    #[test]
+    fn test_system_tx_env_skips_channel_context_hash() {
+        let caller = Address::repeat_byte(0xAA);
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+
+        let tx_env = super::TempoTxEnv::from_recovered_tx(&envelope, caller);
+
+        assert!(tx_env.is_system_tx);
+        assert_eq!(tx_env.channel_open_context_hash(), None);
     }
 
     #[test]
