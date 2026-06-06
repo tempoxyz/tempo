@@ -26,7 +26,7 @@ use std::{
     },
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
@@ -120,6 +120,8 @@ pub struct AA2dPool {
     queued_count: usize,
     /// Used to broadcast new pending transactions to active [`BestAA2dTransactions`] iterators.
     new_transaction_notifier: broadcast::Sender<AA2dStoredTransaction>,
+    /// Monotonic counter incremented when a pending transaction is broadcast.
+    new_transaction_generation: Arc<AtomicU64>,
 }
 
 impl Default for AA2dPool {
@@ -151,13 +153,21 @@ impl AA2dPool {
             pending_count: 0,
             queued_count: 0,
             new_transaction_notifier,
+            new_transaction_generation: Default::default(),
+        }
+    }
+
+    fn send_new_pending(&self, tx: AA2dStoredTransaction) {
+        if self.new_transaction_notifier.send(tx).is_ok() {
+            self.new_transaction_generation
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
     fn notify_new_pending(&self, tx: &AA2dStoredTransaction) {
         if self.new_transaction_notifier.receiver_count() > 0 {
-            let _ = self.new_transaction_notifier.send(tx.clone());
+            self.send_new_pending(tx.clone());
         }
     }
 
@@ -462,7 +472,7 @@ impl AA2dPool {
 
         // Notify active BestAA2dTransactions iterators about the new pending transaction
         if let Some(pending_tx) = pending_tx_update {
-            let _ = self.new_transaction_notifier.send(pending_tx);
+            self.send_new_pending(pending_tx);
         }
 
         // Expiring nonce transactions are always immediately pending
@@ -646,6 +656,10 @@ impl AA2dPool {
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            new_transaction_generation: Arc::clone(&self.new_transaction_generation),
+            observed_new_transaction_generation: self
+                .new_transaction_generation
+                .load(Ordering::Relaxed),
             last_priority: None,
             base_fee,
         }
@@ -1906,6 +1920,10 @@ pub(crate) struct BestAA2dTransactions {
     invalid: HashSet<AASequenceId>,
     /// Live feed of new pending transactions arriving after this iterator was created.
     new_transaction_receiver: Option<broadcast::Receiver<AA2dStoredTransaction>>,
+    /// Pool-side generation counter for the live feed.
+    new_transaction_generation: Arc<AtomicU64>,
+    /// Last generation this iterator fully drained from the live feed.
+    observed_new_transaction_generation: u64,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u64>>,
     /// Base fee used to filter and prioritize this block-building snapshot.
@@ -1990,6 +2008,11 @@ impl BestAA2dTransactions {
 
     /// Drains new pending transactions from the broadcast channel and inserts them.
     fn add_new_transactions(&mut self) {
+        let current_generation = self.new_transaction_generation.load(Ordering::Relaxed);
+        if self.observed_new_transaction_generation == current_generation {
+            return;
+        }
+
         for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
             if let Some(incoming) = self.try_recv() {
                 let (tx, process) = match incoming {
@@ -2021,6 +2044,7 @@ impl BestAA2dTransactions {
                     );
                 }
             } else {
+                self.observed_new_transaction_generation = current_generation;
                 break;
             }
         }
