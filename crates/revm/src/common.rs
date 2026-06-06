@@ -425,38 +425,56 @@ where
     }
 
     // No-op methods are unimplemented in read-only context.
+    #[cold]
+    #[inline(never)]
     fn chain_id(&self) -> u64 {
         unreachable!("'chain_id' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn timestamp(&self) -> U256 {
         unreachable!("'timestamp' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn beneficiary(&self) -> Address {
         unreachable!("'beneficiary' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn block_number(&self) -> u64 {
         unreachable!("'block_number' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
         unreachable!("'tload' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn gas_used(&self) -> u64 {
         unreachable!("'gas_used' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn state_gas_used(&self) -> u64 {
         unreachable!("'state_gas_used' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn gas_refunded(&self) -> i64 {
         unreachable!("'gas_refunded' not implemented in read-only context yet")
     }
 
+    #[cold]
+    #[inline(never)]
     fn reservoir(&self) -> u64 {
         unreachable!("'reservoir' not implemented in read-only context yet")
     }
@@ -486,14 +504,20 @@ where
         unreachable!("'refund_gas' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint(&mut self) -> revm::context::journaled_state::JournalCheckpoint {
         unreachable!("'checkpoint' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint_commit(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
         unreachable!("'checkpoint_commit' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint_revert(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
