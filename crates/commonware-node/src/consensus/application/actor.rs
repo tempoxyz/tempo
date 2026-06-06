@@ -413,11 +413,16 @@ impl Inner<Init> {
 
                 let digest = block.digest();
                 let height = block.height();
+                let block_size_bytes = proposal_return
+                    .as_ref()
+                    .map(|proposal_return| proposal_return.block_size_bytes)
+                    .unwrap_or_else(|| block.encode_size());
                 info!(
                     target: "tempo_marshal_path",
                     ?round,
                     ?digest,
                     %height,
+                    block_size_bytes,
                     has_new_block = proposal_return.is_some(),
                     "tempo_propose_block_ready"
                 );
@@ -428,6 +433,7 @@ impl Inner<Init> {
                         ?round,
                         ?digest,
                         %height,
+                        block_size_bytes = proposal_return.block_size_bytes,
                         "tempo_propose_marshal_proposed_start"
                     );
                     if !self.marshal.proposed(round, block).await {
@@ -439,6 +445,7 @@ impl Inner<Init> {
                         ?round,
                         ?digest,
                         %height,
+                        block_size_bytes = proposal_return.block_size_bytes,
                         elapsed = ?persist_elapsed,
                         "tempo_propose_marshal_proposed_done"
                     );
@@ -449,6 +456,7 @@ impl Inner<Init> {
                         target: "tempo_marshal_path",
                         ?round,
                         ?digest,
+                        block_size_bytes = proposal_return.block_size_bytes,
                         return_time = ?proposal_return.time,
                         "tempo_propose_return_delay_start"
                     );
@@ -457,6 +465,7 @@ impl Inner<Init> {
                         target: "tempo_marshal_path",
                         ?round,
                         ?digest,
+                        block_size_bytes = proposal_return.block_size_bytes,
                         "tempo_propose_return_delay_done"
                     );
                 }
@@ -902,12 +911,14 @@ impl Inner<Init> {
             let block = block_rx.await.map_err(|_| {
                 eyre!("marshal actor dropped channel before the block-to-verified was sent")
             })?;
+            let block_size_bytes = block.encode_size();
             info!(
                 target: "tempo_marshal_path",
                 ?round,
                 ?payload_for_wait,
                 block.height = %block.height(),
                 block.digest = %block.digest(),
+                block_size_bytes,
                 elapsed = ?block_wait_start.elapsed(),
                 "tempo_verify_block_subscription_resolved"
             );
@@ -926,12 +937,14 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed getting required blocks")?;
+        let block_size_bytes = block.encode_size();
         info!(
             target: "tempo_marshal_path",
             ?round,
             ?payload,
             block.height = %block.height(),
             parent.height = %parent.height(),
+            block_size_bytes,
             elapsed = ?verify_start.elapsed(),
             "tempo_verify_required_blocks_ready"
         );
@@ -960,6 +973,7 @@ impl Inner<Init> {
                     ?round,
                     ?payload,
                     block.height = %block.height(),
+                    block_size_bytes,
                     "tempo_verify_reproposal_marshal_verified_start"
                 );
                 if !self.marshal.verified(round, block).await {
@@ -969,6 +983,7 @@ impl Inner<Init> {
                     target: "tempo_marshal_path",
                     ?round,
                     ?payload,
+                    block_size_bytes,
                     elapsed = ?verified_persist_start.elapsed(),
                     total_elapsed = ?verify_start.elapsed(),
                     "tempo_verify_reproposal_done"
@@ -1027,6 +1042,7 @@ impl Inner<Init> {
             ?payload,
             block.height = %block.height(),
             parent.digest = %parent_digest,
+            block_size_bytes,
             "tempo_verify_execution_start"
         );
         let validation_duration = verify_block(
@@ -1049,6 +1065,7 @@ impl Inner<Init> {
             ?payload,
             is_valid = validation_duration.is_some(),
             validation_duration = ?validation_duration,
+            block_size_bytes,
             elapsed = ?execution_verify_start.elapsed(),
             "tempo_verify_execution_done"
         );
@@ -1077,6 +1094,7 @@ impl Inner<Init> {
                 ?round,
                 ?block_digest,
                 %block_height,
+                block_size_bytes,
                 "tempo_verify_marshal_verified_start"
             );
             if !self.marshal.verified(round, block).await {
@@ -1087,6 +1105,7 @@ impl Inner<Init> {
                 ?round,
                 ?block_digest,
                 %block_height,
+                block_size_bytes,
                 elapsed = ?verified_persist_start.elapsed(),
                 "tempo_verify_marshal_verified_done"
             );
