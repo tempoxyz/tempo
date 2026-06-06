@@ -25,18 +25,22 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
 
     #[inline]
     fn find(&self, key: &K) -> Option<*const H> {
-        self.entries
-            .iter()
-            .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_ref() as *const H)
+        for (candidate, boxed) in &self.entries {
+            if candidate == key {
+                return Some(boxed.as_ref() as *const H);
+            }
+        }
+        None
     }
 
     #[inline]
     fn find_mut(&mut self, key: &K) -> Option<*mut H> {
-        self.entries
-            .iter_mut()
-            .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_mut() as *mut H)
+        for (candidate, boxed) in &mut self.entries {
+            if candidate == key {
+                return Some(boxed.as_mut() as *mut H);
+            }
+        }
+        None
     }
 
     #[inline]
