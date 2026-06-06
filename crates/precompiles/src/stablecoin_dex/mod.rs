@@ -77,16 +77,22 @@ impl StablecoinDEX {
     }
 
     /// Returns the user's DEX balance for `token`.
+    #[cold]
+    #[inline(never)]
     pub fn balance_of(&self, user: Address, token: Address) -> Result<u128> {
         self.balances[user][token].read()
     }
 
     /// Returns the minimum representable scaled price (`MIN_PRICE`).
+    #[cold]
+    #[inline(never)]
     pub fn min_price(&self) -> u32 {
         MIN_PRICE
     }
 
     /// Returns the maximum representable scaled price (`MAX_PRICE`).
+    #[cold]
+    #[inline(never)]
     pub fn max_price(&self) -> u32 {
         MAX_PRICE
     }
@@ -104,6 +110,8 @@ impl StablecoinDEX {
     /// # Errors
     /// - `OrderDoesNotExist` — order has a zero maker (already filled/deleted) or has not yet
     ///   been assigned (ID ≥ next order ID)
+    #[cold]
+    #[inline(never)]
     pub fn get_order(&self, order_id: u128) -> Result<Order> {
         let order = self.orders[order_id].read()?;
 
@@ -370,6 +378,8 @@ impl StablecoinDEX {
     ///
     /// # Errors
     /// - `InvalidBaseToken` — `base` address does not resolve to a valid [`TIP20Token`]
+    #[cold]
+    #[inline(never)]
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
@@ -381,11 +391,15 @@ impl StablecoinDEX {
     }
 
     /// Returns the [`Orderbook`] for a given pair key.
+    #[cold]
+    #[inline(never)]
     pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
         self.books[pair_key].read()
     }
 
     /// Returns all registered orderbook keys.
+    #[cold]
+    #[inline(never)]
     pub fn get_book_keys(&self) -> Result<Vec<B256>> {
         self.book_keys.read()
     }
@@ -394,6 +408,8 @@ impl StablecoinDEX {
     ///
     /// # Errors
     /// - `InvalidTick` — tick is not aligned to [`TICK_SPACING`] (T2+ only)
+    #[cold]
+    #[inline(never)]
     pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
         if self.storage.spec().is_t2() {
             orderbook::validate_tick_spacing(tick)?;
@@ -407,6 +423,8 @@ impl StablecoinDEX {
     /// # Errors
     /// - `TickOutOfBounds` — price is outside the `[MIN_PRICE, MAX_PRICE]` range
     /// - `InvalidTick` — resulting tick is not aligned to [`TICK_SPACING`] (T2+ only)
+    #[cold]
+    #[inline(never)]
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
         let tick = orderbook::price_to_tick(price)?;
 
