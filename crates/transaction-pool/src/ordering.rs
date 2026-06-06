@@ -3,6 +3,18 @@
 use reth_transaction_pool::{PoolTransaction, Priority, TransactionOrdering};
 use std::marker::PhantomData;
 
+/// Computes Tempo's compact effective-tip priority for a pool transaction.
+#[inline]
+pub(crate) fn tempo_tip_priority<T>(transaction: &T, base_fee: u64) -> Priority<u64>
+where
+    T: PoolTransaction + ?Sized,
+{
+    transaction
+        .effective_tip_per_gas(base_fee)
+        .map(|priority| priority.try_into().unwrap_or(u64::MAX))
+        .into()
+}
+
 /// Orders transactions by effective coinbase tip using a compact priority value.
 #[derive(Debug)]
 pub struct TempoTipOrdering<T>(PhantomData<T>);
@@ -19,10 +31,7 @@ where
         transaction: &Self::Transaction,
         base_fee: u64,
     ) -> Priority<Self::PriorityValue> {
-        transaction
-            .effective_tip_per_gas(base_fee)
-            .map(|priority| priority.try_into().unwrap_or(u64::MAX))
-            .into()
+        tempo_tip_priority(transaction, base_fee)
     }
 }
 
