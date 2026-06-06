@@ -192,16 +192,17 @@ impl ValidationLatencyEstimate {
             return None;
         }
 
-        let scale = [
-            scale_above_baseline(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
-            scale_above_baseline(
-                workload.transaction_count as u128,
-                self.p90_transaction_count as u128,
-            ),
-        ]
-        .into_iter()
-        .flatten()
-        .max()?;
+        let gas_scale =
+            scale_above_baseline(u128::from(workload.gas_used), u128::from(self.p90_gas_used));
+        let transaction_scale = scale_above_baseline(
+            workload.transaction_count as u128,
+            self.p90_transaction_count as u128,
+        );
+        let scale = match (gas_scale, transaction_scale) {
+            (Some(gas), Some(transactions)) => gas.max(transactions),
+            (Some(scale), None) | (None, Some(scale)) => scale,
+            (None, None) => return None,
+        };
         Some(scale_duration(self.elapsed, scale))
     }
 }
