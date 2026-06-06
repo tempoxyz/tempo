@@ -282,6 +282,17 @@ run_single() {
     NODE_ARGS+=($extra_args)
   fi
 
+  if [ "${BENCH_TRACING_CHROME:-false}" = "true" ]; then
+    if "$binary" node --log.tracing-chrome --log.tracing-chrome.file "$output_dir/tracing-chrome-profile.json" --help >/dev/null 2>&1; then
+      NODE_ARGS+=(
+        --log.tracing-chrome
+        --log.tracing-chrome.file "$output_dir/tracing-chrome-profile.json"
+      )
+    else
+      echo "Chrome trace recording requested, but ${label} binary rejected --log.tracing-chrome; skipping"
+    fi
+  fi
+
   # Memory limit: 95% of available RAM
   local total_mem_kb
   total_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
