@@ -462,26 +462,38 @@ where
     }
 
     // Write operations are not supported in read-only context
+    #[cold]
+    #[inline(never)]
     fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
         unreachable!("'sstore' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
         unreachable!("'set_code' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn emit_event(&mut self, _: Address, _: LogData) -> TempoResult<()> {
         unreachable!("'emit_event' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn tstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
         unreachable!("'tstore' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn deduct_gas(&mut self, _: u64) -> TempoResult<()> {
         unreachable!("'deduct_gas' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn refund_gas(&mut self, _: i64) {
         unreachable!("'refund_gas' not supported in read-only context")
     }
