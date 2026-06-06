@@ -1242,9 +1242,13 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        self.expiring_nonce_eviction_order.remove(
-            &ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee),
+        let eviction_order_key = ExpiringNonceEvictionOrderKey::new(
+            TempoTipOrdering::default()
+                .priority(&pending_tx.transaction.transaction, self.base_fee),
+            pending_tx.submission_id,
         );
+        self.expiring_nonce_eviction_order
+            .remove(&eviction_order_key);
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
