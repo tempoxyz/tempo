@@ -590,17 +590,14 @@ where
 
     loop {
         tokio::select! {
-            // Track new transactions for expiry (valid_before and key expiry)
-            tx_event = new_txs.recv() => {
-                let Some(tx_event) = tx_event else {
+            biased;
+
+            // Process all maintenance operations on new block commit or reorg
+            chain_event = chain_events.next() => {
+                let Some(event) = chain_event else {
                     break;
                 };
 
-                state.track(&tx_event.transaction.transaction);
-            }
-
-            // Process all maintenance operations on new block commit or reorg
-            Some(event) = chain_events.next() => {
                 let new = match event {
                     CanonStateNotification::Reorg { old: _, new } => {
                         // Repopulate AMM liquidity cache from the new canonical chain
@@ -948,6 +945,15 @@ where
 
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
+            }
+
+            // Track new transactions for expiry (valid_before and key expiry)
+            tx_event = new_txs.recv() => {
+                let Some(tx_event) = tx_event else {
+                    break;
+                };
+
+                state.track(&tx_event.transaction.transaction);
             }
         }
     }
