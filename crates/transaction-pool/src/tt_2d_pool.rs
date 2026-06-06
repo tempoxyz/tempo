@@ -587,7 +587,9 @@ impl AA2dPool {
         &self,
         transactions: &mut AllPoolTransactions<TempoPooledTransaction>,
     ) {
-        transactions.pending.reserve(self.pending_count);
+        transactions
+            .pending
+            .reserve(self.pending_count + self.expiring_nonce_txs.len());
         transactions.queued.reserve(self.queued_count);
 
         for tx in self.by_id.values() {
