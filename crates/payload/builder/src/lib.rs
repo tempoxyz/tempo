@@ -1018,7 +1018,13 @@ where
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp)
-            .then(|| execution_result.requests.clone());
+            .then(|| {
+                if execution_result.requests.is_empty() {
+                    Default::default()
+                } else {
+                    execution_result.requests.clone()
+                }
+            });
 
         let rlp_length = block.rlp_length();
 
