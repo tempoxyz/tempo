@@ -39,8 +39,10 @@ impl TIP20Call {
 
         if ITIP20Calls::valid_selector(selector) {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
-        } else {
+        } else if IRolesAuthCalls::valid_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
+        } else {
+            ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
         }
     }
 }
