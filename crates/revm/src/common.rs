@@ -259,6 +259,8 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Checks if a fee token is paused.
+    #[cold]
+    #[inline(never)]
     fn is_fee_token_paused(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
     where
         Self: Sized,
@@ -270,6 +272,8 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Checks if the fee payer can transfer the fee token to the fee manager.
+    #[cold]
+    #[inline(never)]
     fn can_fee_payer_transfer(
         &mut self,
         fee_token: Address,
