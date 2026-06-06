@@ -41,22 +41,18 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
 
     #[inline]
     fn insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
+        let index = self.entries.len();
         self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_ref() as *const H
+        // SAFETY: `index` was the old length, so one push made it in-bounds.
+        unsafe { self.entries.get_unchecked(index).1.as_ref() as *const H }
     }
 
     #[inline]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
+        let index = self.entries.len();
         self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last_mut()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_mut() as *mut H
+        // SAFETY: `index` was the old length, so one push made it in-bounds.
+        unsafe { self.entries.get_unchecked_mut(index).1.as_mut() as *mut H }
     }
 
     #[inline]
