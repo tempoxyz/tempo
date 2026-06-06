@@ -908,11 +908,12 @@ where
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
+        let spec = cfg.spec;
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
+            .get_fee_token(tx, fee_payer, spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -926,7 +927,7 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+            journal.ensure_tip20_usd(spec, fee_token)?;
         }
 
         // Load the fee payer balance
@@ -940,8 +941,6 @@ where
             .as_ref()
             .map(|aa| aa.nonce_key)
             .unwrap_or_default();
-
-        let spec = cfg.spec();
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
@@ -1546,7 +1545,8 @@ where
         let mut effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
-        if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
+        let spec = context.cfg.spec;
+        if spec.is_t6() && tx.is_discounted_payment() {
             // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
             // component remains payable.
             // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
