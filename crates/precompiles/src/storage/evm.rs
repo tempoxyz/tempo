@@ -3,9 +3,7 @@ use alloy_evm::{Database, EvmInternals};
 use revm::{
     context::{
         Block, CfgEnv, JournalTr,
-        journaled_state::{
-            account::JournaledAccountTr, JournalCheckpoint, JournalLoadError,
-        },
+        journaled_state::{JournalCheckpoint, JournalLoadError, account::JournaledAccountTr},
     },
     context_interface::cfg::{GasParams, gas},
     interpreter::gas::GasTracker,
@@ -380,6 +378,7 @@ where
     J: JournalTr<Database: Database> + std::fmt::Debug,
 {
     /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         journal: &'a mut J,
         block_env: &'a dyn Block,
@@ -790,9 +789,7 @@ fn db_error(error: impl std::fmt::Display) -> TempoPrecompileError {
 }
 
 #[inline]
-fn journal_load_error<E: std::fmt::Display>(
-    error: JournalLoadError<E>,
-) -> TempoPrecompileError {
+fn journal_load_error<E: std::fmt::Display>(error: JournalLoadError<E>) -> TempoPrecompileError {
     match error {
         JournalLoadError::DBError(error) => db_error(error),
         JournalLoadError::ColdLoadSkipped => TempoPrecompileError::OutOfGas,
