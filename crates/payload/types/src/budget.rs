@@ -76,6 +76,10 @@ impl MarshalPersistEstimator {
 
     /// Estimates marshal persistence time for an encoded block size.
     pub fn estimate(self, block_size_bytes: usize) -> Duration {
+        if self.ns_per_byte == 0 || block_size_bytes == 0 {
+            return Duration::ZERO;
+        }
+
         let nanos = u128::from(self.ns_per_byte).saturating_mul(block_size_bytes as u128);
         Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
     }
