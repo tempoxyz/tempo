@@ -425,6 +425,8 @@ impl StablecoinDEX {
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
     /// - `InvalidCurrency` — both tokens must be USD-denominated (validated via [`TIP20Factory`]).
     /// - `PairAlreadyExists` — an orderbook for this pair is already initialized
+    #[cold]
+    #[inline(never)]
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token
         if !TIP20Factory::new().is_tip20(base)? {
