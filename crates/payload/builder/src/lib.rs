@@ -558,6 +558,7 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let trace_successful_pool_txs = tracing::enabled!(Level::TRACE);
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -732,7 +733,9 @@ where
                     return Err(PayloadBuilderError::evm(err));
                 }
             };
-            trace!("Transaction executed");
+            if trace_successful_pool_txs {
+                trace!("Transaction executed");
+            }
             executor.evm_mut().db_mut().bump_bal_index();
 
             pool_transactions_included += 1;
