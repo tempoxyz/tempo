@@ -2,7 +2,6 @@
 use crate::{
     metrics::AA2dPoolMetrics, ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
 };
-use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
@@ -1997,7 +1996,7 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
-                    if process && can_pay_base_fee(&tx, self.base_fee) {
+                    if process && can_pay_base_fee(&tx) {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
@@ -2040,7 +2039,7 @@ impl BestAA2dTransactions {
                     if self.invalid.contains(&id.seq_id) {
                         continue;
                     }
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                    if !can_pay_base_fee(&best) {
                         self.invalid.insert(id.seq_id);
                         continue;
                     }
@@ -2052,7 +2051,7 @@ impl BestAA2dTransactions {
                     best
                 }
                 PoppedAA2dTransaction::Expiring(best) => {
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                    if !can_pay_base_fee(&best) {
                         continue;
                     }
                     best
@@ -2066,8 +2065,8 @@ impl BestAA2dTransactions {
     }
 }
 
-fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
-    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
+fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>) -> bool {
+    matches!(tx.priority, Priority::Value(_))
 }
 
 impl Iterator for BestAA2dTransactions {
