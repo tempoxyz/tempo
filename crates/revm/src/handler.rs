@@ -58,8 +58,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -309,6 +309,29 @@ fn translate_allowed_calls_for_precompile(
                 .collect(),
         })
         .collect()
+}
+
+#[cold]
+#[inline(never)]
+fn apply_tempo_aa_auth_list<JOURNAL, ERROR>(
+    chain_id: u64,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    auth_list: &[RecoveredTempoAuthorization],
+    journal: &mut JOURNAL,
+) -> Result<u64, ERROR>
+where
+    JOURNAL: JournalTr,
+    ERROR: From<InvalidTransaction> + From<<JOURNAL::Database as Database>::Error>,
+{
+    Ok(apply_auth_list::<JOURNAL, ERROR>(
+        chain_id,
+        auth_list
+            .iter()
+            // T0 hardfork: skip keychain signatures in auth list processing.
+            .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+        journal,
+    )?
+    .0)
 }
 
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
@@ -869,16 +892,12 @@ where
         let refunded_accounts = if has_aa_auth_list {
             let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
 
-            apply_auth_list::<_, Self::Error>(
+            apply_tempo_aa_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
-                tempo_tx_env
-                    .tempo_authorization_list
-                    .iter()
-                    // T0 hardfork: skip keychain signatures in auth list processing
-                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                spec,
+                &tempo_tx_env.tempo_authorization_list,
                 &mut ctx.journaled_state,
             )?
-            .0
         } else {
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
