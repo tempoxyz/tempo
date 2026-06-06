@@ -221,7 +221,16 @@ where
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
-        let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
+        let fee_balance_cache_capacity = updates
+            .fee_balance_changes
+            .values()
+            .map(|accounts| accounts.len())
+            .sum();
+        let mut fee_balance_cache: HashMap<(Address, Address), U256> =
+            HashMap::with_capacity_and_hasher(
+                fee_balance_cache_capacity,
+                Default::default(),
+            );
 
         for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
