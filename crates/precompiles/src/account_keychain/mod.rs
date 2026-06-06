@@ -39,7 +39,8 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
-#[inline]
+#[cold]
+#[inline(never)]
 pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     matches!(
         selector,
@@ -559,6 +560,8 @@ impl AccountKeychain {
     }
 
     /// Root/admin-only create-or-replace updates for one or more target call scopes.
+    #[cold]
+    #[inline(never)]
     pub fn set_allowed_calls(
         &mut self,
         msg_sender: Address,
@@ -593,6 +596,8 @@ impl AccountKeychain {
     }
 
     /// Root/admin-only removal of one target call scope.
+    #[cold]
+    #[inline(never)]
     pub fn remove_allowed_calls(
         &mut self,
         msg_sender: Address,
@@ -872,6 +877,8 @@ impl AccountKeychain {
     /// with no targets so reads can distinguish scoped deny-all from unrestricted mode. This is
     /// the only place where an empty top-level list means deny-all; below the key level, empty
     /// child sets mean "no further restriction".
+    #[cold]
+    #[inline(never)]
     fn replace_allowed_calls(
         &mut self,
         account_key: B256,
@@ -907,6 +914,8 @@ impl AccountKeychain {
     }
 
     /// Deletes every persisted target scope under an account key.
+    #[cold]
+    #[inline(never)]
     fn clear_all_target_scopes(&mut self, account_key: B256) -> Result<()> {
         let targets = self.key_scopes[account_key].targets.read()?;
         for target in targets {
@@ -917,6 +926,8 @@ impl AccountKeychain {
     }
 
     /// Deletes one target scope and all nested selector/recipient rows beneath it.
+    #[cold]
+    #[inline(never)]
     fn remove_target_scope(&mut self, account_key: B256, target: Address) -> Result<()> {
         if !self.key_scopes[account_key].targets.remove(&target)? {
             return Ok(());
@@ -926,6 +937,8 @@ impl AccountKeychain {
     }
 
     /// Clears every selector scope stored under one target.
+    #[cold]
+    #[inline(never)]
     fn clear_target_selectors(&mut self, account_key: B256, target: Address) -> Result<()> {
         let selectors = self.key_scopes[account_key].target_scopes[target]
             .selectors
@@ -942,6 +955,8 @@ impl AccountKeychain {
     }
 
     /// Creates or replaces one target scope, including all nested selector rules.
+    #[cold]
+    #[inline(never)]
     fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
         let target = scope.target;
 
@@ -987,6 +1002,8 @@ impl AccountKeychain {
     }
 
     /// Validates a list of [`CallScope`]s.
+    #[cold]
+    #[inline(never)]
     fn validate_call_scopes(&self, scopes: &[CallScope]) -> Result<()> {
         let mut seen_targets = HashSet::new();
         for scope in scopes {
@@ -1003,6 +1020,8 @@ impl AccountKeychain {
     }
 
     /// Validates a single [`CallScope`].
+    #[cold]
+    #[inline(never)]
     fn validate_call_scope(&self, scope: &CallScope) -> Result<()> {
         // The public API uses the absence of a target to block it, so persisting address(0) as a
         // real target is always confusing and serves no useful purpose.
@@ -1022,6 +1041,8 @@ impl AccountKeychain {
     /// `recipients = []` is an explicit allow-all sentinel at the selector level. To deny a
     /// selector entirely, omit it from `selectorRules` or remove the target scope instead of
     /// leaving behind an empty child set via incremental mutation.
+    #[cold]
+    #[inline(never)]
     fn validate_selector_rules(&self, target: Address, rules: &[SelectorRule]) -> Result<()> {
         let mut cached_is_tip20: Option<bool> = None;
         let mut is_tip20 = || -> Result<bool> {
