@@ -262,6 +262,8 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 ///
 /// NOTE: in AA batches, non-refundable state-gas charges that are known upfront, are already
 /// included in `initial_state_gas`, so this only refunds per-step execution state gas on failure.
+#[cold]
+#[inline(never)]
 fn normalize_failed_batch_result_gas(
     frame_result: &mut FrameResult,
     final_gas_limit: u64,
