@@ -1,18 +1,20 @@
 use alloy_primitives::map::HashMap;
+use smallvec::SmallVec;
 use std::{cell::RefCell, hash::Hash};
 
 const CACHE_THRESHOLD: usize = 100;
+const LINEAR_INLINE_CAPACITY: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct LinearCache<K, H> {
-    entries: Vec<(K, Box<H>)>,
+    entries: SmallVec<[(K, Box<H>); LINEAR_INLINE_CAPACITY]>,
 }
 
 impl<K, H> Default for LinearCache<K, H> {
     #[inline]
     fn default() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: SmallVec::new(),
         }
     }
 }
