@@ -433,9 +433,10 @@ pub(crate) fn dispatch_call<T>(
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
     let storage = StorageCtx::default();
+    let spec = storage.spec();
 
     if calldata.len() < 4 {
-        if storage.spec().is_t1() {
+        if spec.is_t1() {
             return Ok(storage.revert_output(Bytes::new()));
         } else {
             return Ok(storage.halt_output(PrecompileHalt::Other(
@@ -447,7 +448,7 @@ pub(crate) fn dispatch_call<T>(
     let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
     if hardforks
         .iter()
-        .any(|schedule| schedule.rejects(selector, storage.spec()))
+        .any(|schedule| schedule.rejects(selector, spec))
     {
         return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
             selector,
