@@ -127,10 +127,10 @@ impl BestTransactionsPrewarming {
                 });
             };
 
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            // Fill one initial prewarm per worker. Further lookahead is driven
+            // by worker completions, which keeps the queue moving without a
+            // startup burst competing with the payload fill loop.
+            for _ in 0..pool.current_num_threads() {
                 advance(&mut ctx);
             }
 
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances = executor.prewarming_pool().current_num_threads();
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
