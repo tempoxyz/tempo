@@ -210,20 +210,20 @@ impl TempoTxEnvelope {
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),
+            Self::Legacy(tx) => is_tip1045_tx_kind(&tx.tx().to, &tx.tx().input),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_tip1045_tx_kind(&tx.to, &tx.input)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_tip1045_tx_kind(&tx.to, &tx.input)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input)
+                    && is_tip1045_address(&tx.to, &tx.input)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -237,7 +237,7 @@ impl TempoTxEnvelope {
                     && tx
                         .calls
                         .iter()
-                        .all(|call| is_tip1045_call(call.to.to(), &call.input))
+                        .all(|call| is_tip1045_tx_kind(&call.to, &call.input))
             }
         }
     }
@@ -495,21 +495,32 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
     to.is_some_and(|to| to.is_tip20())
 }
 
-/// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
+/// Returns `true` if the transaction kind is a call in the TIP-1045 payment lane allow-list.
 #[inline]
-fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
-    match to {
-        // TIP20 call + payment calldata constraints
-        Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
-        // TIP20ChannelReserve call + payment calldata constraints
-        Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
-            ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
-                input,
-                |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
-            )
-        }
-        _ => false,
+fn is_tip1045_tx_kind(kind: &TxKind, input: &[u8]) -> bool {
+    let TxKind::Call(to) = kind else {
+        return false;
+    };
+    is_tip1045_address(to, input)
+}
+
+/// Returns `true` if the call target is in the TIP-1045 payment lane allow-list.
+#[inline]
+fn is_tip1045_address(to: &Address, input: &[u8]) -> bool {
+    // TIP20 call + payment calldata constraints
+    if to.is_tip20() {
+        return ITIP20::ITIP20Calls::is_payment(input);
     }
+
+    // TIP20ChannelReserve call + payment calldata constraints
+    if *to == TIP20_CHANNEL_RESERVE_ADDRESS {
+        return ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
+            input,
+            |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
+        );
+    }
+
+    false
 }
 
 #[cfg(feature = "rpc")]
