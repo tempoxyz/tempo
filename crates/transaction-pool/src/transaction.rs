@@ -45,6 +45,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
+    /// Cached transaction gas limit for hot payload-builder capacity checks.
+    gas_limit: u64,
     /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
@@ -87,9 +89,9 @@ impl TempoPooledTransaction {
                 .then(|| tx.expiring_nonce_hash(sender))
         });
         let value = transaction.value();
-        let cost =
-            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
-                .saturating_add(value);
+        let gas_limit = transaction.gas_limit();
+        let cost = calc_gas_balance_spending(gas_limit, transaction.max_fee_per_gas())
+            .saturating_add(value);
         let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
@@ -99,6 +101,7 @@ impl TempoPooledTransaction {
                 transaction,
             },
             fee_token_cost,
+            gas_limit,
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
@@ -767,7 +770,7 @@ impl alloy_consensus::Transaction for TempoPooledTransaction {
     }
 
     fn gas_limit(&self) -> u64 {
-        self.inner.gas_limit()
+        self.gas_limit
     }
 
     fn gas_price(&self) -> Option<u128> {
