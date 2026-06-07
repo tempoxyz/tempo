@@ -28,7 +28,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -1019,7 +1019,10 @@ impl TIP20Token {
     }
 
     pub fn check_not_paused(&self) -> Result<()> {
-        if self.paused()? {
+        if !StorageCtx
+            .sload(self.address, tip20_slots::PAUSED)?
+            .is_zero()
+        {
             return Err(TIP20Error::contract_paused().into());
         }
         Ok(())
