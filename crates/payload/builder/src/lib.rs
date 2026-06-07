@@ -505,7 +505,7 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_task = self.spawn_roots_task();
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -737,10 +737,10 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
-            let _ = roots_tx.send((
+            let _ = roots_task.send(
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
-            ));
+            );
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -813,10 +813,10 @@ where
                 executor.evm_mut().db_mut().bump_bal_index();
 
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
+                let _ = roots_task.send(
                     BuilderTx::Owned(Box::new(tx)),
                     executor.receipts().last().unwrap().clone(),
-                ));
+                );
             }
 
             self.metrics
@@ -851,10 +851,10 @@ where
                 .map_err(PayloadBuilderError::evm)?;
             executor.evm_mut().db_mut().bump_bal_index();
 
-            let _ = roots_tx.send((
+            let _ = roots_task.send(
                 BuilderTx::Owned(Box::new(system_tx)),
                 executor.receipts().last().unwrap().clone(),
-            ));
+            );
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -879,9 +879,6 @@ where
         check_cancel!();
 
         let builder_finish_start = Instant::now();
-
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
@@ -950,9 +947,8 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) =
+            roots_task.finish().map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1148,55 +1144,8 @@ where
         }
     }
 
-    #[expect(clippy::type_complexity)]
-    fn spawn_roots_task(
-        &self,
-    ) -> (
-        Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
-    ) {
-        let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
-        let (result_tx, result_rx) = oneshot::channel();
-
-        self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
-
-                let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
-
-                let mut buf = Vec::new();
-
-                for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
-                    buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    transactions.push(tx);
-                    senders.push(sender);
-
-                    let receipt = receipt.with_bloom_ref();
-
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
-                }
-                let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send((
-                    transactions_root,
-                    receipts_root,
-                    receipts_bloom,
-                    transactions,
-                    senders,
-                ));
-            });
-
-        (transactions_tx, result_rx)
+    fn spawn_roots_task(&self) -> BuilderRootsTask {
+        BuilderRootsTask::new(self.executor.clone())
     }
 }
 
@@ -1288,6 +1237,105 @@ impl BuilderTx {
             Self::Owned(tx) => tx.into_parts(),
         }
     }
+}
+
+type BuilderRootsItem = (BuilderTx, TempoReceipt);
+type BuilderRootsResult = (B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>);
+
+struct BuilderRootsTask {
+    executor: TaskExecutor,
+    transactions_tx: Option<Sender<BuilderRootsItem>>,
+    result_rx: Option<oneshot::Receiver<BuilderRootsResult>>,
+}
+
+impl BuilderRootsTask {
+    fn new(executor: TaskExecutor) -> Self {
+        Self {
+            executor,
+            transactions_tx: None,
+            result_rx: None,
+        }
+    }
+
+    fn send(
+        &mut self,
+        tx: BuilderTx,
+        receipt: TempoReceipt,
+    ) -> Result<(), crossbeam_channel::SendError<BuilderRootsItem>> {
+        self.ensure_started();
+        self.transactions_tx
+            .as_ref()
+            .expect("roots task is started before send")
+            .send((tx, receipt))
+    }
+
+    fn finish(mut self) -> Result<BuilderRootsResult, oneshot::error::RecvError> {
+        let Some(result_rx) = self.result_rx.take() else {
+            return Ok(empty_builder_roots());
+        };
+
+        drop(self.transactions_tx.take());
+        result_rx.blocking_recv()
+    }
+
+    fn ensure_started(&mut self) {
+        if self.transactions_tx.is_some() {
+            return;
+        }
+
+        let (transactions_tx, transactions_rx) = crossbeam_channel::unbounded::<BuilderRootsItem>();
+        let (result_tx, result_rx) = oneshot::channel();
+
+        self.executor
+            .spawn_blocking_named("builder-roots-task", || {
+                let mut transactions = Vec::new();
+                let mut senders = Vec::new();
+
+                let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
+                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+                let mut receipts_bloom = Bloom::ZERO;
+
+                let mut buf = Vec::new();
+
+                for (tx, receipt) in transactions_rx.into_iter() {
+                    let (tx, sender) = tx.into_parts();
+                    buf.clear();
+                    tx.encode_2718(&mut buf);
+                    transactions_root.push_next(&buf);
+                    transactions.push(tx);
+                    senders.push(sender);
+
+                    let receipt = receipt.with_bloom_ref();
+
+                    buf.clear();
+                    receipt.encode_2718(&mut buf);
+                    receipts_root.push_next(&buf);
+                    receipts_bloom |= receipt.bloom();
+                }
+                let transactions_root = transactions_root.finalize();
+                let receipts_root = receipts_root.finalize();
+                let _ = result_tx.send((
+                    transactions_root,
+                    receipts_root,
+                    receipts_bloom,
+                    transactions,
+                    senders,
+                ));
+            });
+
+        self.transactions_tx = Some(transactions_tx);
+        self.result_rx = Some(result_rx);
+    }
+}
+
+fn empty_builder_roots() -> BuilderRootsResult {
+    (
+        OrderedTrieRootEncodedBuilder::new().finalize(),
+        OrderedTrieRootEncodedBuilder::new().finalize(),
+        Bloom::ZERO,
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 #[cfg(test)]
