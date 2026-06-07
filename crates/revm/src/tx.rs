@@ -8,9 +8,7 @@ use revm::context::{
     Transaction, TxEnv,
     either::Either,
     result::InvalidTransaction,
-    transaction::{
-        AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
-    },
+    transaction::{AccessList, AccessListItem, RecoveredAuthorization, SignedAuthorization},
 };
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
@@ -370,19 +368,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
-                // Convert Tempo authorization list to RecoveredAuthorization upfront
-                authorization_list: tempo_authorization_list
-                    .iter()
-                    .map(|auth| {
-                        let authority = auth
-                            .recover_authority()
-                            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
-                        Either::Right(RecoveredAuthorization::new_unchecked(
-                            auth.inner().clone(),
-                            authority,
-                        ))
-                    })
-                    .collect(),
+                // AA auths are validated and applied from `tempo_tx_env` below.
+                authorization_list: Vec::new(),
                 ..Default::default()
             },
             fee_token: *fee_token,

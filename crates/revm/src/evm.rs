@@ -1028,6 +1028,7 @@ mod tests {
 
         // Verify transaction has AA auth list
         assert!(tx_env.tempo_tx_env.is_some(),);
+        assert!(tx_env.inner.authorization_list.is_empty());
         let tempo_env = tx_env.tempo_tx_env.as_ref().unwrap();
         assert_eq!(tempo_env.tempo_authorization_list.len(), 1);
         assert_eq!(tempo_env.aa_calls.len(), 2);
