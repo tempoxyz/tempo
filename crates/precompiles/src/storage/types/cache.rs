@@ -25,8 +25,11 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
 
     #[inline]
     fn find(&self, key: &K) -> Option<*const H> {
+        // Storage handlers are commonly reused immediately after insertion
+        // within one precompile call, so check the newest entries first.
         self.entries
             .iter()
+            .rev()
             .find(|(candidate, _)| candidate == key)
             .map(|(_, boxed)| boxed.as_ref() as *const H)
     }
@@ -35,6 +38,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
     fn find_mut(&mut self, key: &K) -> Option<*mut H> {
         self.entries
             .iter_mut()
+            .rev()
             .find(|(candidate, _)| candidate == key)
             .map(|(_, boxed)| boxed.as_mut() as *mut H)
     }
