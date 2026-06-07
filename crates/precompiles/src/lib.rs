@@ -341,6 +341,13 @@ pub(crate) fn charge_input_cost(
     None
 }
 
+/// Returns the 4-byte function selector after the caller has checked `calldata.len() >= 4`.
+#[inline]
+pub(crate) fn calldata_selector(calldata: &[u8]) -> [u8; 4] {
+    debug_assert!(calldata.len() >= 4);
+    [calldata[0], calldata[1], calldata[2], calldata[3]]
+}
+
 /// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
 ///
 /// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
@@ -444,7 +451,7 @@ pub(crate) fn dispatch_call<T>(
         }
     }
 
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+    let selector = calldata_selector(calldata);
     if hardforks
         .iter()
         .any(|schedule| schedule.rejects(selector, storage.spec()))

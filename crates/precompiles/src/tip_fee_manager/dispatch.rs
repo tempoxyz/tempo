@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`TipFeeManager`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
+    Precompile, calldata_selector, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
@@ -22,7 +22,7 @@ enum TipFeeManagerCall {
 impl TipFeeManagerCall {
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
-        let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+        let selector = calldata_selector(calldata);
 
         if IFeeManagerCalls::valid_selector(selector) {
             IFeeManagerCalls::abi_decode(calldata).map(Self::FeeManager)
