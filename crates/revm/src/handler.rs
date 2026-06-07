@@ -19,7 +19,7 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
-        pre_execution::{self, apply_auth_list, calculate_caller_fee},
+        pre_execution::{self, apply_auth_list},
         precompile_output_to_interpreter_result, validation,
     },
     inspector::{Inspector, InspectorHandler},
@@ -108,6 +108,43 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+
+#[inline]
+fn calculate_caller_fee_with_max_spending(
+    balance: U256,
+    tx: impl Transaction,
+    block: impl Block,
+    cfg: impl Cfg,
+    max_balance_spending: U256,
+) -> Result<U256, InvalidTransaction> {
+    if cfg.is_fee_charge_disabled() {
+        return Ok(balance);
+    }
+
+    let basefee = block.basefee() as u128;
+    let blob_price = block.blob_gasprice().unwrap_or_default();
+    let is_balance_check_disabled = cfg.is_balance_check_disabled();
+
+    if !is_balance_check_disabled && max_balance_spending > balance {
+        return Err(InvalidTransaction::LackOfFundForMaxFee {
+            fee: Box::new(max_balance_spending),
+            balance: Box::new(balance),
+        });
+    }
+
+    let effective_balance_spending = tx
+        .effective_balance_spending(basefee, blob_price)
+        .expect("effective balance is always smaller than max balance so it can't overflow");
+
+    let gas_balance_spending = effective_balance_spending - tx.value();
+    let mut new_balance = balance.saturating_sub(gas_balance_spending);
+
+    if is_balance_check_disabled {
+        new_balance = new_balance.max(tx.value());
+    }
+
+    Ok(new_balance)
+}
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -925,7 +962,8 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        let max_balance_spending = tx.max_balance_spending()?;
+        if !max_balance_spending.is_zero() || tx.is_subblock_transaction() {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 
@@ -1129,7 +1167,13 @@ where
         }
 
         // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        let new_balance = calculate_caller_fee_with_max_spending(
+            account_balance,
+            tx,
+            block,
+            cfg,
+            max_balance_spending,
+        )?;
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
