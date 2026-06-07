@@ -88,6 +88,26 @@ impl NonceManager {
         }
 
         let current = self.nonces[account][nonce_key].read()?;
+        self.increment_nonce_from_current(account, nonce_key, current)
+    }
+
+    /// Increments the 2D nonce using an already-read current value.
+    ///
+    /// This is used by protocol validation paths that have just checked the stored nonce and can
+    /// avoid rereading the same storage slot before writing the incremented value.
+    ///
+    /// # Errors
+    /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
+    /// - `NonceOverflow` — `current` is `u64::MAX` and cannot be incremented
+    pub fn increment_nonce_from_current(
+        &mut self,
+        account: Address,
+        nonce_key: U256,
+        current: u64,
+    ) -> Result<u64> {
+        if nonce_key == 0 {
+            return Err(NonceError::invalid_nonce_key().into());
+        }
 
         let new_nonce = current
             .checked_add(1)
@@ -254,6 +274,34 @@ mod tests {
                     newNonce: 2,
                 },
             ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_increment_nonce_from_current() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let account = address!("0x1111111111111111111111111111111111111111");
+            let nonce_key = U256::from(5);
+
+            let new_nonce = mgr.increment_nonce_from_current(account, nonce_key, 41)?;
+            assert_eq!(new_nonce, 42);
+            assert_eq!(
+                mgr.get_nonce(INonce::getNonceCall {
+                    account,
+                    nonceKey: nonce_key,
+                })?,
+                42
+            );
+            mgr.assert_emitted_events(vec![INonce::NonceIncremented {
+                account,
+                nonceKey: nonce_key,
+                newNonce: 42,
+            }]);
 
             Ok(())
         })

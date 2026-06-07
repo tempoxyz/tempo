@@ -1075,7 +1075,7 @@ where
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
-                if !cfg.is_nonce_check_disabled() {
+                let checked_nonce = if !cfg.is_nonce_check_disabled() {
                     let tx_nonce = tx.nonce();
                     let state = nonce_manager
                         .get_nonce(getNonceCall {
@@ -1106,15 +1106,22 @@ where
                         }
                         _ => {}
                     }
-                }
+                    Some(state)
+                } else {
+                    None
+                };
 
                 // Always increment nonce for AA transactions with non-zero nonce keys.
-                nonce_manager
-                    .increment_nonce(tx.caller(), nonce_key)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
+                let increment_result = if let Some(current) = checked_nonce {
+                    nonce_manager.increment_nonce_from_current(tx.caller(), nonce_key, current)
+                } else {
+                    nonce_manager.increment_nonce(tx.caller(), nonce_key)
+                };
+
+                increment_result.map_err(|err| match err {
+                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                    err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                })?;
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
