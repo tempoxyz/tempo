@@ -81,6 +81,8 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const MAX_ROOTS_TRANSACTION_CAPACITY_HINT: u64 = 65_536;
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -123,6 +125,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Successful payload transaction count used to seed roots-worker vectors.
+    roots_transaction_capacity: Arc<AtomicU64>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -176,6 +180,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            roots_transaction_capacity: Default::default(),
         }
     }
 
@@ -505,7 +510,11 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let roots_transaction_capacity =
+            self.roots_transaction_capacity
+                .load(Ordering::Relaxed)
+                .min(MAX_ROOTS_TRANSACTION_CAPACITY_HINT) as usize;
+        let (roots_tx, roots_rx) = self.spawn_roots_task(roots_transaction_capacity);
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -984,6 +993,10 @@ where
             .record(payload_finalization_elapsed);
 
         let total_transactions = block.transaction_count();
+        self.roots_transaction_capacity.store(
+            (total_transactions as u64).min(MAX_ROOTS_TRANSACTION_CAPACITY_HINT),
+            Ordering::Relaxed,
+        );
         self.metrics
             .total_transactions
             .record(total_transactions as f64);
@@ -1151,6 +1164,7 @@ where
     #[expect(clippy::type_complexity)]
     fn spawn_roots_task(
         &self,
+        transaction_capacity: usize,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
@@ -1160,9 +1174,9 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+            .spawn_blocking_named("builder-roots-task", move || {
+                let mut transactions = Vec::with_capacity(transaction_capacity);
+                let mut senders = Vec::with_capacity(transaction_capacity);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
