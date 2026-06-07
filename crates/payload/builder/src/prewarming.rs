@@ -192,7 +192,7 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches = storage_touches_for_transaction(
+                let touches = storage_touches_for_tip20_transfer_transaction(
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
@@ -442,7 +442,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
     )
 }
 
-fn storage_touches_for_transaction(
+fn storage_touches_for_tip20_transfer_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
     expiring_nonce_offset: Option<usize>,
@@ -460,10 +460,8 @@ fn storage_touches_for_transaction(
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
-        }
+    for (kind, input) in tx.transaction.inner().calls() {
+        add_tip20_call_touches(&mut touches, sender, kind, input);
     }
 
     add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
