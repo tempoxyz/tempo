@@ -4,10 +4,7 @@ use crate::{
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloy::primitives::{Address, B256, U256, keccak256, uint};
 use tempo_precompiles_macros::Storable;
 
 /// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
@@ -82,8 +79,16 @@ impl PoolKey {
     /// Generates a unique pool ID by hashing the token pair addresses.
     /// Uses keccak256 to create a deterministic identifier for this pool.
     pub fn get_id(&self) -> B256 {
-        keccak256((self.user_token, self.validator_token).abi_encode())
+        pool_id(self.user_token, self.validator_token)
     }
+}
+
+#[inline]
+fn pool_id(user_token: Address, validator_token: Address) -> B256 {
+    let mut encoded = [0u8; 64];
+    encoded[12..32].copy_from_slice(user_token.as_slice());
+    encoded[44..64].copy_from_slice(validator_token.as_slice());
+    keccak256(encoded)
 }
 
 /// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token` for fee collection.
@@ -105,7 +110,7 @@ impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
     /// order-dependent: `(A, B)` produces a different ID than `(B, A)`.
     pub fn pool_id(&self, user_token: Address, validator_token: Address) -> B256 {
-        PoolKey::new(user_token, validator_token).get_id()
+        pool_id(user_token, validator_token)
     }
 
     /// Returns the [`Pool`] reserves for the given user/validator token pair.
@@ -626,6 +631,7 @@ impl TipFeeManager {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::Address;
+    use alloy::sol_types::SolValue;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
@@ -668,6 +674,16 @@ mod tests {
         let liquidity = sqrt(user_amount * validator_amount);
         amm.total_supply[pool_id].write(liquidity)?;
         Ok(pool_id)
+    }
+
+    #[test]
+    fn test_pool_id_matches_abi_encoding() {
+        let user_token = Address::repeat_byte(0x11);
+        let validator_token = Address::repeat_byte(0x22);
+        let expected = keccak256((user_token, validator_token).abi_encode());
+
+        assert_eq!(pool_id(user_token, validator_token), expected);
+        assert_eq!(PoolKey::new(user_token, validator_token).get_id(), expected);
     }
 
     #[test]
