@@ -1253,6 +1253,12 @@ where
             }
         }
 
+        let existing_access_key_pays_fee = loaded_tx_access_key.is_some() && fee_payer == tx.caller;
+        evm.enforce_fee_spending_limit = existing_access_key_pays_fee;
+        evm.restore_fee_spending_limit = (existing_access_key_pays_fee
+            || same_tx_key_authorization_use)
+            && fee_payer == tx.caller;
+
         // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
         // proves that a non-root sidecar signer is an active admin key for the caller account.
         if cfg.spec.is_t6()
@@ -1265,7 +1271,7 @@ where
 
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
-                let signer_is_admin = match loaded_tx_access_key {
+                let signer_is_admin = match loaded_tx_access_key.as_ref() {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
                             && (loaded_key.key.signature_type as u8) == key_auth_sig_type =>
@@ -1298,12 +1304,13 @@ where
 
             let skip_liquidity_check = evm.skip_liquidity_check;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                TipFeeManager::new().collect_fee_pre_tx_with_spending_limit(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
                     block.beneficiary(),
                     skip_liquidity_check,
+                    evm.enforce_fee_spending_limit,
                 )
             });
 
@@ -1587,12 +1594,13 @@ where
                     .expect("set in `validate_against_state_and_deduct_caller`");
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
-                    .collect_fee_post_tx(
+                    .collect_fee_post_tx_with_spending_limit(
                         fee_payer,
                         actual_spending,
                         refund_amount,
                         fee_token,
                         beneficiary,
+                        evm.restore_fee_spending_limit,
                     )
                     .map_err(|e| EVMError::Custom(format!("{e:?}")))
             } else {
@@ -1626,6 +1634,8 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
+        evm.enforce_fee_spending_limit = false;
+        evm.restore_fee_spending_limit = false;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

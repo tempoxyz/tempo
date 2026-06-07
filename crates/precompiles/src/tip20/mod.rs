@@ -1271,6 +1271,15 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        self.transfer_fee_pre_tx_with_spending_limit(from, amount, true)
+    }
+
+    pub fn transfer_fee_pre_tx_with_spending_limit(
+        &mut self,
+        from: Address,
+        amount: U256,
+        enforce_spending_limit: bool,
+    ) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
@@ -1286,7 +1295,9 @@ impl TIP20Token {
             .into());
         }
 
-        self.check_and_update_spending_limit(from, amount)?;
+        if enforce_spending_limit {
+            self.check_and_update_spending_limit(from, amount)?;
+        }
 
         // Update rewards for the sender and get their reward recipient
         let from_flag = self.update_rewards(from)?;
@@ -1314,6 +1325,16 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
+        self.transfer_fee_post_tx_with_spending_limit(to, refund, actual_spending, true)
+    }
+
+    pub fn transfer_fee_post_tx_with_spending_limit(
+        &mut self,
+        to: Address,
+        refund: U256,
+        actual_spending: U256,
+        restore_spending_limit: bool,
+    ) -> Result<()> {
         self.emit_event(TIP20Event::transfer(
             to,
             TIP_FEE_MANAGER_ADDRESS,
@@ -1325,7 +1346,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        if self.storage.spec().is_t1c() {
+        if restore_spending_limit && self.storage.spec().is_t1c() {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
