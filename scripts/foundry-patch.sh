@@ -109,6 +109,12 @@ done <<< "$PATCHES"
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
+# Foundry's lockfile can still contain packages sourced from old
+# tempoxyz/tempo git revisions after the Cargo.toml patches above are written.
+# `cargo metadata` may fail before it can rewrite those entries if an old Tempo
+# revision carries incompatible transitive constraints, so refresh only those
+# stale Tempo packages first. The name@version form keeps the update targeted
+# and unambiguous when the lockfile contains multiple versions of a crate.
 update_stale_tempo_git_packages() {
   local stale_tempo_pkgs
   stale_tempo_pkgs="$(
