@@ -634,15 +634,20 @@ impl AA2dPool {
                 Some(tx.inner.clone_into_pending(base_fee))
             })
             .collect();
+        let regular_pending_count = self
+            .pending_count
+            .saturating_sub(self.expiring_nonce_txs.len());
+        let mut by_id: HashMap<AA2dTransactionId, AA2dStoredTransaction> =
+            HashMap::with_capacity_and_hasher(regular_pending_count, Default::default());
+        for (id, tx) in &self.by_id {
+            if tx.is_pending() {
+                by_id.insert(*id, tx.inner.clone());
+            }
+        }
 
         BestAA2dTransactions {
             independent,
-            by_id: self
-                .by_id
-                .iter()
-                .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+            by_id,
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
