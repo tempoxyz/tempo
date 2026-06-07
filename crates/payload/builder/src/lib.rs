@@ -1171,6 +1171,10 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
+                    if result_tx.is_closed() {
+                        return;
+                    }
+
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1185,6 +1189,10 @@ where
                     receipts_root.push_next(&buf);
                     receipts_bloom |= receipt.bloom();
                 }
+                if result_tx.is_closed() {
+                    return;
+                }
+
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
                 let _ = result_tx.send((
