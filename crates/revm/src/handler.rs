@@ -602,7 +602,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: Arc<[tempo_primitives::transaction::Call]>,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -627,7 +627,7 @@ where
         let mut final_result = None;
 
         if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
+            self.prevalidate_keychain_call_scopes(evm, calls.as_ref(), &mut remaining_gas, reservoir)?
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
@@ -742,7 +742,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: Arc<[tempo_primitives::transaction::Call]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
     }
@@ -772,7 +772,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: Arc<[tempo_primitives::transaction::Call]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
@@ -2152,7 +2152,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     // 6. Per-call costs
     let mut total_tokens = 0u64;
 
-    for call in calls {
+    for call in calls.iter() {
         // 4a. Calldata gas using revm helper
         let tokens = get_tokens_in_calldata_istanbul(&call.input);
         total_tokens += tokens;
@@ -2225,7 +2225,7 @@ where
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
-    for call in calls {
+    for call in calls.iter() {
         if call.to.is_create() && call.input.len() > max_initcode_size {
             return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
         }
