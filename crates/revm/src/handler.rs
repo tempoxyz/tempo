@@ -1025,12 +1025,14 @@ where
                         .read()
                         .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+                    if expiring_nonce_idx != 0 {
+                        let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
 
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .write(next)
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    }
 
                     Some(ptr)
                 } else {
