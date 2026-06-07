@@ -429,7 +429,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
+                        || (gas_used > self.non_payment_gas_left && !self.is_payment(tx))
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
