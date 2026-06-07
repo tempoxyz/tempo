@@ -229,20 +229,32 @@ impl ITIP20::ITIP20Calls {
     /// Approvals and mints remain payment-lane eligible via [`Self::is_payment`] but do not
     /// receive the settlement discount.
     pub fn is_discounted_payment_call(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
-                return false;
-            };
-
-            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
+        fn has_encoded_len<C: SolCall>(input: &[u8]) -> bool {
+            <C::Parameters<'_> as SolType>::ENCODED_SIZE
+                .is_some_and(|encoded_size| input.len() == 4 + encoded_size)
         }
 
-        is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
+        let Some(selector) = input.first_chunk::<4>() else {
+            return false;
+        };
+
+        match *selector {
+            ITIP20::transferCall::SELECTOR => has_encoded_len::<ITIP20::transferCall>(input),
+            ITIP20::transferWithMemoCall::SELECTOR => {
+                has_encoded_len::<ITIP20::transferWithMemoCall>(input)
+            }
+            ITIP20::transferFromCall::SELECTOR => {
+                has_encoded_len::<ITIP20::transferFromCall>(input)
+            }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                has_encoded_len::<ITIP20::transferFromWithMemoCall>(input)
+            }
+            ITIP20::burnCall::SELECTOR => has_encoded_len::<ITIP20::burnCall>(input),
+            ITIP20::burnWithMemoCall::SELECTOR => {
+                has_encoded_len::<ITIP20::burnWithMemoCall>(input)
+            }
+            _ => false,
+        }
     }
 
     /// Returns addresses whose balance slots are accessed by this call.
