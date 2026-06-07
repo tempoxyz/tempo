@@ -346,14 +346,14 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             tempo_authorization_list,
         } = tx;
 
-        // Extract to/value/input from calls (use first call or defaults)
-        let (to, value, input) = if let Some(first_call) = calls.first() {
-            (first_call.to, first_call.value, first_call.input.clone())
+        // Extract to/value from calls (use first call or defaults). AA execution reads calldata
+        // from `aa_calls`, so keep the generic TxEnv calldata empty to avoid duplicating it.
+        let (to, value) = if let Some(first_call) = calls.first() {
+            (first_call.to, first_call.value)
         } else {
             (
                 alloy_primitives::TxKind::Create,
                 alloy_primitives::U256::ZERO,
-                alloy_primitives::Bytes::new(),
             )
         };
 
@@ -365,7 +365,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 gas_price: *max_fee_per_gas,
                 kind: to,
                 value,
-                data: input,
+                data: alloy_primitives::Bytes::new(),
                 nonce: *nonce, // AA: nonce maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
@@ -602,6 +602,33 @@ mod tests {
             Some(regular_signed.expiring_nonce_hash(caller)),
             "non-expiring AA channel opens must use encode_for_signing||sender"
         );
+    }
+
+    #[test]
+    fn test_from_recovered_aa_tx_keeps_inner_calldata_empty() {
+        let caller = Address::repeat_byte(0xAA);
+        let input = Bytes::from_static(&[0x12, 0x34, 0x56, 0x78]);
+        let tx = tempo_primitives::transaction::TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce: 0,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::from(7),
+                input: input.clone(),
+            }],
+            ..Default::default()
+        };
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed, caller);
+
+        assert!(tx_env.inner.data.is_empty());
+        let (kind, first_input) = tx_env.first_call().expect("AA call");
+        assert_eq!(*kind, TxKind::Call(Address::repeat_byte(0x42)));
+        assert_eq!(first_input, input.as_ref());
     }
 
     #[test]
