@@ -397,6 +397,7 @@ where
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
+        is_payment: bool,
     ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
@@ -429,7 +430,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -538,19 +539,20 @@ where
         } else {
             inner.result.result.tx_gas_used()
         };
+        let is_payment = self.is_payment(recovered.tx());
 
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_tx(recovered.tx(), block_gas_used, is_payment)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
@@ -1169,7 +1171,8 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let is_payment = executor.is_payment(&tx);
+        let result = executor.validate_tx(&tx, 21000, is_payment);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1211,7 +1214,8 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let is_payment = executor.is_payment(&subblock_tx);
+        let result = executor.validate_tx(&subblock_tx, 21000, is_payment);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1226,7 +1230,8 @@ mod tests {
             })
             .build(&mut db2, &chainspec);
 
-        let result = executor2.validate_tx(&subblock_tx, 21000);
+        let is_payment = executor2.is_payment(&subblock_tx);
+        let result = executor2.validate_tx(&subblock_tx, 21000, is_payment);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1256,7 +1261,8 @@ mod tests {
 
         // Try to submit a tx for proposer1 (already processed)
         let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let is_payment = executor.is_payment(&subblock_tx);
+        let result = executor.validate_tx(&subblock_tx, 21000, is_payment);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1278,7 +1284,8 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let is_payment = executor.is_payment(&tx);
+        let result = executor.validate_tx(&tx, 21000, is_payment);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
