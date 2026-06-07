@@ -63,34 +63,6 @@ impl BlockAccessListError {
 #[derive(Clone, Debug)]
 pub(crate) struct Block(Arc<BlockInner>);
 
-/// Inner block data shared by cheap [`Block`] clones.
-#[derive(Debug)]
-struct BlockInner {
-    /// The execution-layer block.
-    execution_block: SealedBlock<tempo_primitives::Block>,
-    /// Cached execution-layer RLP size when it is already known by the caller.
-    execution_block_encoded_size: OnceLock<usize>,
-    /// Optional block access list. Only provided if the network supports BALs.
-    #[cfg(feature = "bal")]
-    block_access_list: Option<Bytes>,
-}
-
-impl Clone for BlockInner {
-    fn clone(&self) -> Self {
-        let execution_block_encoded_size = OnceLock::new();
-        if let Some(size) = self.execution_block_encoded_size.get() {
-            let _ = execution_block_encoded_size.set(*size);
-        }
-
-        Self {
-            execution_block: self.execution_block.clone(),
-            execution_block_encoded_size,
-            #[cfg(feature = "bal")]
-            block_access_list: self.block_access_list.clone(),
-        }
-    }
-}
-
 impl Block {
     /// Creates a block from an execution-layer block and optional BAL.
     pub(crate) fn from_execution_block(
@@ -359,25 +331,6 @@ impl commonware_consensus::Block for Block {
     }
 }
 
-fn validate_block_access_list_hash(
-    expected: Option<B256>,
-    block_access_list: Option<&Bytes>,
-) -> Result<(), BlockAccessListError> {
-    match (expected, block_access_list) {
-        (Some(expected), Some(block_access_list)) => {
-            let actual = keccak256(block_access_list.as_ref());
-            if actual == expected {
-                Ok(())
-            } else {
-                Err(BlockAccessListError::HashMismatch { expected, actual })
-            }
-        }
-        (Some(expected), None) => Err(BlockAccessListError::Missing { expected }),
-        (None, Some(_)) => Err(BlockAccessListError::Unexpected),
-        (None, None) => Ok(()),
-    }
-}
-
 impl commonware_consensus::CertifiableBlock for Block {
     type Context = Context<Digest, PublicKey>;
 
@@ -408,6 +361,53 @@ impl commonware_consensus::CertifiableBlock for Block {
                 }
             }
         }
+    }
+}
+
+/// Inner block data shared by cheap [`Block`] clones.
+#[derive(Debug)]
+struct BlockInner {
+    /// The execution-layer block.
+    execution_block: SealedBlock<tempo_primitives::Block>,
+    /// Cached execution-layer RLP size when it is already known by the caller.
+    execution_block_encoded_size: OnceLock<usize>,
+    /// Optional block access list. Only provided if the network supports BALs.
+    #[cfg(feature = "bal")]
+    block_access_list: Option<Bytes>,
+}
+
+impl Clone for BlockInner {
+    fn clone(&self) -> Self {
+        let execution_block_encoded_size = OnceLock::new();
+        if let Some(size) = self.execution_block_encoded_size.get() {
+            let _ = execution_block_encoded_size.set(*size);
+        }
+
+        Self {
+            execution_block: self.execution_block.clone(),
+            execution_block_encoded_size,
+            #[cfg(feature = "bal")]
+            block_access_list: self.block_access_list.clone(),
+        }
+    }
+}
+
+fn validate_block_access_list_hash(
+    expected: Option<B256>,
+    block_access_list: Option<&Bytes>,
+) -> Result<(), BlockAccessListError> {
+    match (expected, block_access_list) {
+        (Some(expected), Some(block_access_list)) => {
+            let actual = keccak256(block_access_list.as_ref());
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(BlockAccessListError::HashMismatch { expected, actual })
+            }
+        }
+        (Some(expected), None) => Err(BlockAccessListError::Missing { expected }),
+        (None, Some(_)) => Err(BlockAccessListError::Unexpected),
+        (None, None) => Ok(()),
     }
 }
 
