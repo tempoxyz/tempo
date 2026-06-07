@@ -259,7 +259,9 @@ impl TempoPooledTransaction {
 
     /// Computes the [`TempoTxEnv`] for this transaction.
     fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+        let mut tx_env = TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender());
+        tx_env.is_payment_v2 = self.is_payment;
+        tx_env
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].

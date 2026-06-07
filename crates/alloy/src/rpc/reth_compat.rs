@@ -139,6 +139,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
+            is_payment_v2: false,
             unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
             tempo_tx_env: if !calls.is_empty()

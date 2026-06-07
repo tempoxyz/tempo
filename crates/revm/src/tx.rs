@@ -81,6 +81,13 @@ pub struct TempoTxEnv {
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
 
+    /// Cached T5+ payment-lane classification from the source envelope.
+    ///
+    /// This may be populated by callers that already classified the source transaction. Synthetic
+    /// transaction environments may leave it false, so callers should only use it as a true
+    /// shortcut and fall back to consensus classification for false.
+    pub is_payment_v2: bool,
+
     /// Sender-scoped transaction identifier used for replay-sensitive features.
     ///
     /// Synthetic transaction environments used by tests and simulations may leave this unset.
@@ -387,6 +394,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
+            is_payment_v2: false,
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
@@ -423,6 +431,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
+                is_payment_v2: false,
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction

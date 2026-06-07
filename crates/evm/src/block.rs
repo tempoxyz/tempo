@@ -507,6 +507,11 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
+        let is_payment = if self.evm().cfg.spec.is_t5() && tx_env.is_payment_v2 {
+            true
+        } else {
+            self.is_payment(recovered.tx())
+        };
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
@@ -550,7 +555,7 @@ where
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
