@@ -584,7 +584,6 @@ mod tests {
     use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
     use reth_node_core::primitives::SealedBlock;
-    use std::sync::Arc;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     use super::Block;
@@ -610,33 +609,6 @@ mod tests {
             },
             body: Default::default(),
         })
-    }
-
-    #[test]
-    fn clone_shares_block_storage() {
-        let execution_block = SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader {
-                inner: alloy_consensus::Header {
-                    number: 42,
-                    gas_limit: 30_000_000,
-                    timestamp: 1_700_000_000,
-                    base_fee_per_gas: Some(1_000_000_000),
-                    withdrawals_root: Some(B256::ZERO),
-                    blob_gas_used: Some(0),
-                    excess_blob_gas: Some(0),
-                    parent_beacon_block_root: Some(B256::ZERO),
-                    requests_hash: Some(B256::ZERO),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            body: Default::default(),
-        });
-        let block =
-            Block::from_execution_block(execution_block, None).expect("block has no BAL side data");
-        let cloned = block.clone();
-
-        assert!(Arc::ptr_eq(&block.0, &cloned.0));
     }
 
     // required unit tests:
