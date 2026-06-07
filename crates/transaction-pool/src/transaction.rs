@@ -17,7 +17,7 @@ use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
-    EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
+    EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction, Priority,
     error::PoolTransactionError,
 };
 use std::{
@@ -353,6 +353,28 @@ impl TempoPooledTransaction {
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
+    }
+
+    /// Returns the compact effective tip priority used by payload transaction selection.
+    #[inline]
+    pub fn selection_priority(&self, base_fee: u64) -> Priority<u64> {
+        let priority = match self.inner.transaction.inner() {
+            TempoTxEnvelope::AA(tx) => {
+                let tx = tx.tx();
+                let max_fee_per_gas = tx.max_fee_per_gas;
+                let base_fee = u128::from(base_fee);
+                if max_fee_per_gas < base_fee {
+                    None
+                } else {
+                    Some((max_fee_per_gas - base_fee).min(tx.max_priority_fee_per_gas))
+                }
+            }
+            _ => self.effective_tip_per_gas(base_fee),
+        };
+
+        priority
+            .map(|priority| priority.try_into().unwrap_or(u64::MAX))
+            .into()
     }
 
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
@@ -860,10 +882,11 @@ impl EthPoolTransaction for TempoPooledTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TxBuilder;
+    use crate::{ordering::TempoTipOrdering, test_utils::TxBuilder};
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_sol_types::SolCall;
+    use reth_transaction_pool::TransactionOrdering;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
@@ -1262,6 +1285,27 @@ mod tests {
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
         assert!(!tx.is_create());
+    }
+
+    #[test]
+    fn test_selection_priority_matches_tip_ordering_for_aa() {
+        let base_fee = 1_000u64;
+        for (max_fee, max_priority_fee) in [
+            (20_000, 1_000),
+            (20_000, 50_000),
+            (500, 1_000),
+            (u128::from(u64::MAX) + 10_000, u128::from(u64::MAX) + 5_000),
+        ] {
+            let tx = TxBuilder::aa(Address::random())
+                .max_fee(max_fee)
+                .max_priority_fee(max_priority_fee)
+                .build();
+
+            assert_eq!(
+                tx.selection_priority(base_fee),
+                TempoTipOrdering::default().priority(&tx, base_fee)
+            );
+        }
     }
 
     #[test]

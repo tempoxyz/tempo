@@ -1,15 +1,11 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
-    tt_2d_pool::BestAA2dTransactions,
-};
+use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
-    error::InvalidPoolTransactionError,
+    BestTransactions, Priority, ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
@@ -50,7 +46,7 @@ impl MergeBestTransactions {
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
             self.next_protocol_pool = self.protocol_pool.next().map(|tx| {
-                let priority = TempoTipOrdering::default().priority(&tx.transaction, self.base_fee);
+                let priority = tx.transaction.selection_priority(self.base_fee);
                 (tx, priority)
             });
         }
