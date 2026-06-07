@@ -76,6 +76,15 @@ impl NonceManager {
         self.nonces[call.account][call.nonceKey].read()
     }
 
+    /// Returns the current nonce for a caller-known non-zero nonce key.
+    ///
+    /// This avoids rebuilding the ABI call wrapper and repeating the key-zero check in protocol
+    /// paths that have already selected the 2D nonce branch.
+    pub fn get_user_nonce(&self, account: Address, nonce_key: U256) -> Result<u64> {
+        debug_assert!(nonce_key != U256::ZERO, "user nonce key must be non-zero");
+        self.nonces[account][nonce_key].read()
+    }
+
     /// Increments the 2D nonce for `account` at `nonce_key` and returns the new value, enabling
     /// concurrent transaction execution. Key `0` is reserved for the protocol nonce.
     ///
@@ -223,6 +232,23 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_user_nonce_reads_nonzero_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let account = address!("0x1111111111111111111111111111111111111111");
+            let nonce_key = U256::from(5);
+            mgr.increment_nonce(account, nonce_key)?;
+
+            let nonce = mgr.get_user_nonce(account, nonce_key)?;
+            assert_eq!(nonce, 1);
+
             Ok(())
         })
     }

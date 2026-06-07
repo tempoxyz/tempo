@@ -44,10 +44,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
@@ -1078,10 +1075,7 @@ where
                 if !cfg.is_nonce_check_disabled() {
                     let tx_nonce = tx.nonce();
                     let state = nonce_manager
-                        .get_nonce(getNonceCall {
-                            account: tx.caller(),
-                            nonceKey: nonce_key,
-                        })
+                        .get_user_nonce(tx.caller(), nonce_key)
                         .map_err(|err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                             err => {
