@@ -380,7 +380,6 @@ impl StorageTouch {
                 seen_slot,
                 ring_offset,
             } => {
-                let _ = db.basic(NONCE_PRECOMPILE_ADDRESS)?;
                 let _ = db.storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
 
                 let ptr = db
