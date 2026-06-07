@@ -98,6 +98,8 @@ pub struct TempoTxResult {
     tx: Option<TempoTxEnvelope>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
+    /// State gas consumed by this transaction.
+    state_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
     ///
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
@@ -113,7 +115,7 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent_final()
+        self.state_gas_used
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
@@ -533,11 +535,13 @@ where
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        let gas = inner.result.result.gas();
         let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
+            gas.block_regular_gas_used()
         } else {
-            inner.result.result.tx_gas_used()
+            gas.tx_gas_used()
         };
+        let state_gas_used = gas.state_gas_spent_final();
 
         let next_section = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
@@ -554,6 +558,7 @@ where
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
+            state_gas_used,
             validator_fee,
         })
     }
@@ -565,6 +570,7 @@ where
             is_payment,
             tx,
             block_gas_used,
+            state_gas_used: _,
             validator_fee: _,
         } = output;
 
@@ -1317,6 +1323,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 21000,
+            state_gas_used: 0,
             validator_fee: U256::ZERO,
         };
 
@@ -1400,6 +1407,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 21000,
+            state_gas_used: 0,
             validator_fee: U256::ZERO,
         };
 
@@ -1440,6 +1448,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 21000,
+            state_gas_used: 0,
             validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output1);
@@ -1464,6 +1473,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 50000,
+            state_gas_used: 0,
             validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output2);
@@ -1527,6 +1537,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 50000,
+            state_gas_used: 0,
             validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output);
@@ -1573,6 +1584,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 200_000,
+            state_gas_used: 100_000,
             validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output);
@@ -1622,6 +1634,7 @@ mod tests {
             is_payment: false,
             tx: None,
             block_gas_used: 200_000,
+            state_gas_used: 100_000,
             validator_fee: U256::ZERO,
         };
         executor.commit_transaction(output);
