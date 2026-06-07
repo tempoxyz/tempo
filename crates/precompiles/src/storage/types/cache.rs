@@ -97,26 +97,18 @@ impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
 
     #[inline]
     fn get_or_insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
-        if let Some(boxed) = self.entries.get(key) {
-            boxed.as_ref() as *const H
-        } else {
-            self.entries
-                .entry(key.clone())
-                .or_insert_with(|| Box::new(f()))
-                .as_ref() as *const H
-        }
+        self.entries
+            .entry(key.clone())
+            .or_insert_with(|| Box::new(f()))
+            .as_ref() as *const H
     }
 
     #[inline]
     fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
-        if let Some(boxed) = self.entries.get_mut(key) {
-            boxed.as_mut() as *mut H
-        } else {
-            self.entries
-                .entry(key.clone())
-                .or_insert_with(|| Box::new(f()))
-                .as_mut() as *mut H
-        }
+        self.entries
+            .entry(key.clone())
+            .or_insert_with(|| Box::new(f()))
+            .as_mut() as *mut H
     }
 }
 
