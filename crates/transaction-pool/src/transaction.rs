@@ -47,6 +47,8 @@ pub struct TempoPooledTransaction {
     fee_token_cost: U256,
     /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
+    /// Cached nonce-check requirement used by the executable pool.
+    requires_nonce_check: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -80,6 +82,13 @@ impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
+        let requires_nonce_check = transaction
+            .as_aa()
+            .map(|tx| {
+                // AA transactions with a custom nonce key are tracked by the 2D pool instead.
+                tx.tx().nonce_key.is_zero()
+            })
+            .unwrap_or(true);
         let sender = transaction.signer();
         let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
             tx.tx()
@@ -100,6 +109,7 @@ impl TempoPooledTransaction {
             },
             fee_token_cost,
             is_payment,
+            requires_nonce_check,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -746,14 +756,7 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn requires_nonce_check(&self) -> bool {
-        self.inner
-            .transaction()
-            .as_aa()
-            .map(|tx| {
-                // for AA transaction with a custom nonce key we can skip the nonce validation
-                tx.tx().nonce_key.is_zero()
-            })
-            .unwrap_or(true)
+        self.requires_nonce_check
     }
 }
 
