@@ -552,6 +552,49 @@ impl TipFeeManager {
         Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
     }
 
+    /// Hot-path route planner for fee collection.
+    ///
+    /// This mirrors [`Self::plan_fee_route`] but skips collecting the pool diagnostics used by
+    /// transaction-pool admission caches.
+    pub(crate) fn plan_fee_route_for_collection(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<Option<FeeRoute>> {
+        if user_token == validator_token {
+            return Ok(Some(FeeRoute::SameToken));
+        }
+
+        let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
+        let amount_out = compute_amount_out(max_amount)?;
+        if amount_out <= U256::from(direct.reserve_validator_token) {
+            return Ok(Some(FeeRoute::Direct));
+        }
+
+        if !self.storage.spec().is_t5() {
+            return Ok(None);
+        }
+
+        let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
+        if mid_token.is_zero() || mid_token == validator_token {
+            return Ok(None);
+        }
+
+        let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
+        if amount_out > U256::from(leg1.reserve_validator_token) {
+            return Ok(None);
+        }
+
+        let amount_out2 = compute_amount_out(amount_out)?;
+        let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
+        if amount_out2 > U256::from(leg2.reserve_validator_token) {
+            return Ok(None);
+        }
+
+        Ok(Some(FeeRoute::TwoHop(mid_token)))
+    }
+
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
     /// Called internally by [`TipFeeManager::collect_fee_post_tx`] during post-tx fee collection.
     ///
