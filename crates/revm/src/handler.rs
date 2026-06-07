@@ -121,7 +121,7 @@ fn calculate_caller_fee_with_max_spending(
         return Ok(balance);
     }
 
-    let basefee = block.basefee() as u128;
+    let basefee = u128::from(block.basefee());
     let blob_price = block.blob_gasprice().unwrap_or_default();
     let is_balance_check_disabled = cfg.is_balance_check_disabled();
 
