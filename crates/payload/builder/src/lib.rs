@@ -81,6 +81,8 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const ZERO_WORK_FILL_IDLE_LIMIT: Duration = Duration::from_millis(64);
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -603,6 +605,11 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    if pool_transactions_yielded == 0
+                        && normal_transaction_fill_idle_elapsed >= ZERO_WORK_FILL_IDLE_LIMIT
+                    {
+                        break BlockBuildStopReason::TxPoolEmpty;
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
