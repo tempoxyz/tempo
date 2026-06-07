@@ -124,7 +124,7 @@ pub struct StateAwareBestTransactions<I> {
     /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    decreased_balances: Option<HashMap<(Address, U256), U256>>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -135,7 +135,7 @@ where
     pub fn new(inner: I) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            decreased_balances: None,
         }
     }
 
@@ -151,10 +151,14 @@ where
                 // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
                 let present_balance = decode_tip20_balance(storage_slot.present_value);
                 let original_balance = decode_tip20_balance(storage_slot.original_value);
+                let key = (address, slot);
                 if present_balance < original_balance {
                     self.decreased_balances
-                        .insert((address, slot), present_balance);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                        .get_or_insert_with(HashMap::default)
+                        .insert(key, present_balance);
+                } else if let Some(decreased_balances) = self.decreased_balances.as_mut()
+                    && let Some(balance) = decreased_balances.get_mut(&key)
+                {
                     *balance = present_balance;
                 }
             }
@@ -169,6 +173,10 @@ where
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let Some(decreased_balances) = self.decreased_balances.as_mut() else {
+            return self.inner.next();
+        };
+
         loop {
             let tx = self.inner.next()?;
 
@@ -177,7 +185,7 @@ where
                 continue;
             };
 
-            if let Some(&balance) = self.decreased_balances.get(&key)
+            if let Some(&balance) = decreased_balances.get(&key)
                 && balance < tx.transaction.fee_token_cost()
             {
                 self.inner.mark_invalid(
