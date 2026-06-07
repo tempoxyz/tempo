@@ -41,22 +41,18 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
 
     #[inline]
     fn insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
-        self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_ref() as *const H
+        let value = Box::new(f());
+        let ptr = value.as_ref() as *const H;
+        self.entries.push((key.clone(), value));
+        ptr
     }
 
     #[inline]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
-        self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last_mut()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_mut() as *mut H
+        let mut value = Box::new(f());
+        let ptr = value.as_mut() as *mut H;
+        self.entries.push((key.clone(), value));
+        ptr
     }
 
     #[inline]
