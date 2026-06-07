@@ -626,8 +626,16 @@ where
 
         let mut final_result = None;
 
-        if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
+        let needs_keychain_scope_validation = evm
+            .ctx()
+            .tx()
+            .tempo_tx_env
+            .as_ref()
+            .is_some_and(|tempo_tx_env| tempo_tx_env.signature.is_keychain());
+
+        if needs_keychain_scope_validation
+            && let Some(mut frame_result) =
+                self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
