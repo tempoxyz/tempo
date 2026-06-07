@@ -21,7 +21,7 @@ where
     ) -> Priority<Self::PriorityValue> {
         transaction
             .effective_tip_per_gas(base_fee)
-            .map(|priority| priority.try_into().unwrap_or(u64::MAX))
+            .map(|priority| priority.min(u64::MAX as u128) as u64)
             .into()
     }
 }
