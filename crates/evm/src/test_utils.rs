@@ -6,8 +6,8 @@ use reth_chainspec::EthChainSpec;
 use reth_evm::block::StateDB;
 use reth_revm::context::BlockEnv;
 use revm::inspector::NoOpInspector;
-use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
-use tempo_revm::TempoBlockEnv;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
+use tempo_revm::{TempoBlockEnv, gas_params::tempo_gas_params_with_amsterdam};
 
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
 use alloy_evm::eth::EthBlockExecutionCtx;
@@ -59,6 +59,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) initial_section: Option<BlockSection>,
     pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     pub(crate) initial_incentive_gas_used: u64,
+    pub(crate) spec: TempoHardfork,
 }
 
 impl Default for TestExecutorBuilder {
@@ -75,6 +76,7 @@ impl Default for TestExecutorBuilder {
             initial_section: None,
             initial_seen_subblocks: Vec::new(),
             initial_incentive_gas_used: 0,
+            spec: TempoHardfork::default(),
         }
     }
 }
@@ -92,6 +94,11 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_general_gas_limit(mut self, limit: u64) -> Self {
         self.general_gas_limit = limit;
+        self
+    }
+
+    pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
+        self.spec = spec;
         self
     }
 
@@ -135,7 +142,10 @@ impl TestExecutorBuilder {
         chainspec: &'a Arc<TempoChainSpec>,
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
         let mut cfg_env = revm::context::CfgEnv::default();
+        cfg_env.spec = self.spec;
         cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+        cfg_env.gas_params =
+            tempo_gas_params_with_amsterdam(self.spec, self.amsterdam_eip8037_enabled);
 
         let evm = TempoEvm::new(
             db,

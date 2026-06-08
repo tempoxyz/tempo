@@ -127,6 +127,41 @@ pub struct StateAwareBestTransactions<I> {
     decreased_balances: HashMap<(Address, U256), U256>,
 }
 
+/// Compact state update used by [`StateAwareBestTransactions`].
+#[derive(Debug, Default)]
+pub struct StateAwareBestTransactionsUpdate {
+    tip20_balances: Vec<StateAwareTip20BalanceUpdate>,
+}
+
+impl StateAwareBestTransactionsUpdate {
+    /// Builds a state-aware iterator update from an executed transaction result.
+    pub fn from_result(result: &TempoTxResult) -> Self {
+        let mut tip20_balances = Vec::new();
+        for (&address, account) in &result.result().state {
+            if !is_tip20_prefix(address) {
+                continue;
+            }
+
+            for (&slot, storage_slot) in &account.storage {
+                tip20_balances.push(StateAwareTip20BalanceUpdate {
+                    key: (address, slot),
+                    original_balance: decode_tip20_balance(storage_slot.original_value),
+                    present_balance: decode_tip20_balance(storage_slot.present_value),
+                });
+            }
+        }
+
+        Self { tip20_balances }
+    }
+}
+
+#[derive(Debug)]
+struct StateAwareTip20BalanceUpdate {
+    key: (Address, U256),
+    original_balance: U256,
+    present_balance: U256,
+}
+
 impl<I> StateAwareBestTransactions<I>
 where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -142,21 +177,19 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
+        self.apply_update(StateAwareBestTransactionsUpdate::from_result(result));
+    }
 
-            for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
-                let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
-                    self.decreased_balances
-                        .insert((address, slot), present_balance);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
-                }
+    /// Applies a compact state update produced from a transaction execution result.
+    pub fn apply_update(&mut self, update: StateAwareBestTransactionsUpdate) {
+        for balance in update.tip20_balances {
+            // Decode packed TIP-20 balances before building the update so metadata
+            // changes cannot hide balance decreases.
+            if balance.present_balance < balance.original_balance {
+                self.decreased_balances
+                    .insert(balance.key, balance.present_balance);
+            } else if let Some(existing) = self.decreased_balances.get_mut(&balance.key) {
+                *existing = balance.present_balance;
             }
         }
     }

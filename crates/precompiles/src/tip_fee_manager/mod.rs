@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageOps},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -18,6 +18,17 @@ pub use tempo_contracts::precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
 use tempo_precompiles_macros::contract;
+
+/// A collected-fee ledger increment produced by post-transaction fee settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectedFeeCredit {
+    /// Fee receiver whose `collected_fees` balance should be incremented.
+    pub recipient: Address,
+    /// Fee receiver token whose `collected_fees` balance should be incremented.
+    pub token: Address,
+    /// Amount credited after any AMM route haircut.
+    pub amount: U256,
+}
 
 /// Fee manager precompile that handles transaction fee collection and distribution.
 ///
@@ -217,15 +228,13 @@ impl TipFeeManager {
 
     /// Finalizes fee collection after transaction execution.
     ///
-    /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
-    /// through the AMM pool if tokens differ, and accumulates fees for the validator. Returns
-    /// the validator-credited amount (post-feeAMM haircut, in the validator's fee token), which
-    /// is used by the payload builder to score blocks by actual proposer revenue.
+    /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`] and executes the fee swap
+    /// through the AMM pool if tokens differ. Returns the ledger increment to apply to
+    /// `collected_fees` after transaction execution.
     ///
     /// # Errors
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
-    /// - `UnderOverflow` — collected-fee accumulator overflows
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -233,12 +242,12 @@ impl TipFeeManager {
         refund_amount: U256,
         fee_token: Address,
         beneficiary: Address,
-    ) -> Result<U256> {
+    ) -> Result<CollectedFeeCredit> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
-        // Execute fee swap and track collected fees
+        // Execute fee swap and report the collected-fee credit.
         let hop_token = self.two_hop_intermediate.t_read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -259,9 +268,16 @@ impl TipFeeManager {
             compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
-        self.increment_collected_fees(beneficiary, validator_token, amount)?;
+        Ok(CollectedFeeCredit {
+            recipient: beneficiary,
+            token: validator_token,
+            amount,
+        })
+    }
 
-        Ok(amount)
+    /// Records a deferred collected-fee ledger increment.
+    pub fn record_collected_fee_credit(&mut self, credit: CollectedFeeCredit) -> Result<()> {
+        self.increment_collected_fees(credit.recipient, credit.token, credit.amount)
     }
 
     /// Increment collected fees for a specific validator and token combination.
@@ -275,12 +291,9 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        let collected_fees = self.collected_fees.at_mut(&validator).at_mut(&token);
+        let slot = collected_fees.slot();
+        collected_fees.sinc(slot, amount)?;
 
         Ok(())
     }
@@ -561,7 +574,10 @@ mod tests {
                 token.address(),
                 validator,
             )?;
-            assert_eq!(credited, actual_used);
+            assert_eq!(credited.recipient, validator);
+            assert_eq!(credited.token, token.address());
+            assert_eq!(credited.amount, actual_used);
+            fee_manager.record_collected_fee_credit(credited)?;
 
             // Verify fees were tracked
             let tracked_amount = fee_manager.collected_fees[validator][token.address()].read()?;
@@ -752,7 +768,10 @@ mod tests {
 
             // Expected output: 800 * 9970 / 10000 = 797
             let expected_fee_amount = (actual_spending * U256::from(9970)) / U256::from(10000);
-            assert_eq!(credited, expected_fee_amount);
+            assert_eq!(credited.recipient, validator);
+            assert_eq!(credited.token, validator_token.address());
+            assert_eq!(credited.amount, expected_fee_amount);
+            fee_manager.record_collected_fee_credit(credited)?;
             let collected =
                 fee_manager.collected_fees[validator][validator_token.address()].read()?;
             assert_eq!(collected, expected_fee_amount);
@@ -1213,9 +1232,11 @@ mod tests {
                         fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
                     let one_hop_amount = compute_amount_out(amount_u)?;
                     assert!(
-                        credited < one_hop_amount,
-                        "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
+                        credited.amount < one_hop_amount,
+                        "amount={amount}: two-hop credit ({}) should be less than one-hop credit ({one_hop_amount})",
+                        credited.amount,
                     );
+                    fm.record_collected_fee_credit(credited)?;
 
                     assert_eq!(
                         fm.collected_fees[validator][t.validator].read()?,
@@ -1280,7 +1301,8 @@ mod tests {
             );
 
             // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
-            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+            let credited = fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+            fm.record_collected_fee_credit(credited)?;
 
             let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
             let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
@@ -1334,7 +1356,9 @@ mod tests {
                 let amount = U256::from(1_000);
                 fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
                 assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                let credited =
+                    fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.record_collected_fee_credit(credited)?;
                 // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
                 assert_eq!(
                     fm.two_hop_intermediate.t_read()?,
@@ -1361,7 +1385,9 @@ mod tests {
                     fm.two_hop_intermediate.t_read()?.is_zero(),
                     "tx2: pre_tx took direct route, must not set intermediate",
                 );
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                let credited =
+                    fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.record_collected_fee_credit(credited)?;
 
                 // tx2 settled via direct pool: validator received single-hop fee.
                 let out_single: U256 = compute_amount_out(amount)?;
