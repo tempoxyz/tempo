@@ -208,6 +208,7 @@ impl TempoTxEnvelope {
     /// and enshrined at the consensus level at the T5 hardfork.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    #[inline]
     pub fn is_payment_v2(&self) -> bool {
         match self {
             Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),

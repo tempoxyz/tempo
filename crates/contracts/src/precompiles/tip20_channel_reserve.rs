@@ -238,6 +238,7 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
     /// - Dynamic calls also require valid `signature` encoding.
     ///
     /// [TIP-20 channel reserve payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    #[inline]
     pub fn is_payment_with_valid_signature(
         input: &[u8],
         validate_signature: impl Fn(&[u8]) -> bool,

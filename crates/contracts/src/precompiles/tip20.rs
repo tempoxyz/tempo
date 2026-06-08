@@ -204,6 +204,7 @@ impl ITIP20::ITIP20Calls {
     /// - Only selector and exact ABI-encoded length match, no decoding (better performance).
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    #[inline]
     pub fn is_payment(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
             let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
