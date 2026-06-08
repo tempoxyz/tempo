@@ -81,17 +81,6 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
-/// Returns true if a subblock has any expired transactions for the given timestamp.
-fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
-    subblock.transactions.iter().any(|tx| {
-        tx.as_aa().is_some_and(|tx| {
-            tx.tx()
-                .valid_before
-                .is_some_and(|valid| valid.get() <= timestamp)
-        })
-    })
-}
-
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -432,7 +421,7 @@ where
             // We pre-validate all of the subblocks on top of parent state in subblocks service
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
-            if has_expired_transactions(subblock, attributes.timestamp) {
+            if subblock.has_expired_transactions(attributes.timestamp) {
                 self.metrics.inc_subblocks_expired();
                 return false;
             }
@@ -1435,19 +1424,19 @@ mod tests {
     }
 
     #[test]
-    fn test_has_expired_transactions_boundary() {
+    fn test_recovered_subblock_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
         let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
-        assert!(has_expired_transactions(&subblock, 1000));
+        assert!(subblock.has_expired_transactions(1000));
 
         // valid_before < timestamp → expired
-        assert!(has_expired_transactions(&subblock, 1001));
+        assert!(subblock.has_expired_transactions(1001));
 
         // valid_before > timestamp → NOT expired
-        assert!(!has_expired_transactions(&subblock, 999));
+        assert!(!subblock.has_expired_transactions(999));
 
         // No valid_before → NOT expired
         let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
-        assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
+        assert!(!subblock_no_expiry.has_expired_transactions(1000));
     }
 }
