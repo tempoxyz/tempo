@@ -76,6 +76,7 @@ impl TIP20Token {
     /// This function calculates the rewards earned by a holder based on their balance and the
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
+    #[inline]
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
         let flag = if self.storage.spec().is_t6() {
             self.update_rewards_t6(holder, false)?
@@ -90,6 +91,7 @@ impl TIP20Token {
     }
 
     /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
+    #[inline]
     fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
         let flag = if self.storage.spec().is_t6() {
             self.update_rewards_t6(holder, true)?
@@ -141,6 +143,7 @@ impl TIP20Token {
         Ok(RewardFlag::from_delegate(cached_delegate))
     }
 
+    #[inline]
     fn update_rewards_t6(
         &mut self,
         holder: Address,
