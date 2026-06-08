@@ -709,19 +709,24 @@ impl Inner<Init> {
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate());
-        let attrs = TempoPayloadAttributes::new(
-            Some(proposer_public_key),
-            timestamp,
-            timestamp_millis_part,
-            extra_data,
-            consensus_context,
-            move || {
-                self.subblocks
-                    .as_ref()
-                    .and_then(|s| s.get_subblocks(parent_hash).ok())
-                    .unwrap_or_default()
-            },
-        )
+        let attrs = match self.subblocks.clone() {
+            Some(subblocks) => TempoPayloadAttributes::new(
+                Some(proposer_public_key),
+                timestamp,
+                timestamp_millis_part,
+                extra_data,
+                consensus_context,
+                move || subblocks.get_subblocks(parent_hash).unwrap_or_default(),
+            ),
+            None => TempoPayloadAttributes::new(
+                Some(proposer_public_key),
+                timestamp,
+                timestamp_millis_part,
+                extra_data,
+                consensus_context,
+                Vec::new,
+            ),
+        }
         .with_payload_build_budget(build_budget)
         .with_validation_latency_estimate(validation_latency_estimate);
 
