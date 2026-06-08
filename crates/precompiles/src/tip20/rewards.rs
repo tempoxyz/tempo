@@ -489,6 +489,60 @@ mod tests {
     }
 
     #[test]
+    fn test_tip1075_t6_noops_and_claims_legacy_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+        let amount = U256::from(1000);
+        let reward_amount = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            // Pre-T6: opt in and distribute rewards, but do not checkpoint Alice yet.
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+            assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
+
+            StorageCtx.set_spec(TempoHardfork::T6);
+            token.paused.write(true)?;
+
+            // T6+: setRewardRecipient is a no-op, even while paused.
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            assert_eq!(
+                token.user_reward_info[alice].read()?.reward_recipient,
+                alice
+            );
+
+            // T6+: distributeReward is a no-op, even for an otherwise invalid zero amount.
+            let rpt = token.get_global_reward_per_token()?;
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
+            assert_eq!(token.get_global_reward_per_token()?, rpt);
+
+            // T6+: claimRewards checkpoints legacy accruals without opting in claimed tokens.
+            token.paused.write(false)?;
+            let claimed = token.claim_rewards(alice)?;
+            assert_eq!(claimed, reward_amount);
+            assert_eq!(token.get_balance(alice)?, amount + reward_amount);
+            assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
+            assert_eq!(token.get_global_reward_per_token()?, rpt);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_get_pending_rewards() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
