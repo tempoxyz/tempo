@@ -66,7 +66,7 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
-    /// Buffer for recording storage actions.
+    /// Recorded storage actions.
     #[cfg(feature = "engine")]
     actions: StorageActions,
     inspect: bool,

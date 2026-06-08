@@ -46,11 +46,7 @@ impl StorageActions {
 
     /// Replaces recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take(&self) -> Option<Vec<StorageAction>> {
-        if !self.enabled.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        Some(std::mem::take(&mut *self.actions.borrow_mut()))
+        self.replace(Vec::new())
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.

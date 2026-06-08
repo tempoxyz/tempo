@@ -52,7 +52,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
-    /// Buffer for recording storage actions.
+    /// Recorded storage actions.
     pub(crate) actions: StorageActions,
 }
 
