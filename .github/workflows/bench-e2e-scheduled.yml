@@ -155,7 +155,7 @@ jobs:
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
       duration: "600"
-      tps: "20000"
+      tps: "50000"
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
       clickhouse-run: feature-1
