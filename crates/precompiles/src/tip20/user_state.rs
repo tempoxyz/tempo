@@ -9,13 +9,10 @@
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps},
+    storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageOps},
     tip20::U128_MAX,
 };
-use alloy::{
-    primitives::{Address, U256},
-    sol_types::PanicKind,
-};
+use alloy::primitives::{Address, U256};
 use tempo_precompiles_macros::Storable;
 
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
@@ -55,7 +52,7 @@ impl RewardFlag {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UserState {
     pub(super) amount: u128,
-    /// (T6+) Canonical reward opt-in status for initialized balances.
+    /// Canonical reward opt-in status for initialized balances. Disabled until further notice.
     pub(super) flag: RewardFlag,
 }
 
@@ -86,9 +83,11 @@ impl From<UserState> for PackedUserState {
 }
 
 impl UserState {
-    pub(super) fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
-        let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
-        Ok(Self { amount, flag })
+    pub(super) fn new(amount: U256, _flag: RewardFlag) -> Result<Self> {
+        Ok(Self {
+            amount: u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?,
+            flag: RewardFlag::Uninitialized,
+        })
     }
 
     pub fn amount(&self) -> U256 {
@@ -134,34 +133,17 @@ impl Storable for UserState {
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "`UserState` is only loadable as a full slot");
 
-        if !StorageCtx.spec().is_t6() {
-            let amount = u128::try_from(storage.load(slot)?)
-                .map_err(|_| TempoPrecompileError::under_overflow())?;
-            return Ok(Self {
-                amount,
-                flag: RewardFlag::Uninitialized,
-            });
-        }
-
-        match PackedUserState::load(storage, slot, ctx) {
-            Ok(value) => Ok(value.into()),
-            Err(TempoPrecompileError::Panic(PanicKind::EnumConversionError)) => {
-                Err(TempoPrecompileError::Fatal(
-                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
-                ))
-            }
-            Err(err) => Err(err),
-        }
+        let amount = u128::try_from(storage.load(slot)?)
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        Ok(Self {
+            amount,
+            flag: RewardFlag::Uninitialized,
+        })
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "`UserState` is only storable as a full slot");
-
-        if !StorageCtx.spec().is_t6() {
-            return storage.store(slot, U256::from(self.amount));
-        }
-
-        PackedUserState::from(*self).store(storage, slot, ctx)
+        storage.store(slot, U256::from(self.amount))
     }
 }
 
@@ -178,7 +160,7 @@ pub fn decode_tip20_balance(slot_value: U256) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Handler, hashmap::HashMapStorageProvider};
+    use crate::storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
@@ -204,24 +186,22 @@ mod tests {
     }
 
     #[test]
-    fn t6_user_state_load_fails_fatally_on_invalid_reward_flag() {
+    fn t6_user_state_uses_legacy_balance_layout() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let slot = U256::from(42);
         let address = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            Slot::<u128>::new_with_ctx(slot, LayoutCtx::packed(0), address)
-                .write(100)
-                .unwrap();
-            Slot::<u8>::new_with_ctx(slot, LayoutCtx::packed(16), address)
-                .write(3)
+            Slot::<U256>::new(slot, address)
+                .write(U256::from(100))
                 .unwrap();
 
             assert_eq!(
-                Slot::<UserState>::new(slot, address).read().unwrap_err(),
-                TempoPrecompileError::Fatal(
-                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into()
-                )
+                Slot::<UserState>::new(slot, address).read().unwrap(),
+                UserState {
+                    amount: 100,
+                    flag: RewardFlag::Uninitialized,
+                }
             );
         });
     }
