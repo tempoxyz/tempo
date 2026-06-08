@@ -17,7 +17,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     Precompile,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, evm::DirectEvmPrecompileStorageProvider},
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
@@ -340,7 +340,8 @@ impl<'evm> StorageCtx {
     where
         J: JournalTr<Database: Database> + Debug,
     {
-        let mut provider = DirectEvmPrecompileStorageProvider::new_max_gas(journal, block_env, cfg);
+        let mut provider =
+            EvmPrecompileStorageProvider::from_journal_max_gas(journal, block_env, cfg);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
@@ -368,7 +369,7 @@ impl<'evm> StorageCtx {
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
     {
         let (_tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
-        let mut provider = DirectEvmPrecompileStorageProvider::new_with_gas_limit(
+        let mut provider = EvmPrecompileStorageProvider::from_journal_with_gas_limit(
             journal, block, cfg, gas_limit, reservoir,
         );
         let result = Self::enter(&mut provider, f);
