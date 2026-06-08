@@ -91,6 +91,16 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         self
     }
 
+    /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    pub fn take_actions(&self) -> Option<Vec<StorageAction>> {
+        self.actions.take()
+    }
+
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    pub fn replace_actions(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
+        self.actions.replace(actions)
+    }
+
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
@@ -510,44 +520,12 @@ mod tests {
 
     #[test]
     fn test_sstore_sload_actions_recording() -> eyre::Result<()> {
-        // Verify that sstore and sload emit the correct StorageActions in order.
-        let mut evm = TestEvm::default();
-        let addr = Address::random();
-        let key = U256::from(42);
-        let value = U256::from(99);
-
-        let actions = StorageActions::enabled();
-        // Clone shares the same Rc internals, so we can inspect after the provider is consumed.
-        let actions_ref = actions.clone();
-        let mut provider = evm.provider_max_gas().with_actions(actions);
-
-        provider.sstore(addr, key, value)?;
-        let loaded = provider.sload(addr, key)?;
-        assert_eq!(loaded, value);
-
-        let recorded = actions_ref.take().expect("recording should be enabled");
-        assert_eq!(
-            recorded,
-            vec![
-                StorageAction::Sstore(addr, key, value),
-                StorageAction::Sload(addr, key, value),
-            ]
-        );
-
-        // take() drains the buffer; a subsequent call returns an empty vec.
-        assert_eq!(actions_ref.take(), Some(vec![]));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_sstore_sload_actions_recording_ordering() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let addr = Address::random();
 
-        let actions = StorageActions::enabled();
-        let actions_ref = actions.clone();
-        let mut provider = evm.provider_max_gas().with_actions(actions);
+        let mut provider = evm
+            .provider_max_gas()
+            .with_actions(StorageActions::enabled());
 
         let (k1, v1) = (U256::from(1), U256::from(10));
         let (k2, v2) = (U256::from(2), U256::from(20));
@@ -556,19 +534,18 @@ mod tests {
         provider.sstore(addr, k1, v1)?;
         provider.sstore(addr, k2, v2)?;
         let _ = provider.sload(addr, k1)?;
-        provider.sstore(addr, k1, v1_new)?; // overwrite k1
+        provider.sstore(addr, k1, v1_new)?;
         let _ = provider.sload(addr, k2)?;
 
-        let recorded = actions_ref.take().expect("recording should be enabled");
         assert_eq!(
-            recorded,
-            vec![
+            provider.take_actions(),
+            Some(vec![
                 StorageAction::Sstore(addr, k1, v1),
                 StorageAction::Sstore(addr, k2, v2),
-                StorageAction::Sload(addr, k1, v1), // value before overwrite
+                StorageAction::Sload(addr, k1, v1),
                 StorageAction::Sstore(addr, k1, v1_new),
                 StorageAction::Sload(addr, k2, v2),
-            ]
+            ])
         );
 
         Ok(())
@@ -577,17 +554,12 @@ mod tests {
     #[test]
     fn test_sstore_sload_actions_recording_disabled_by_default() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
-        let mut provider = evm.provider_max_gas(); // no .with_actions()
+        let mut provider = evm.provider_max_gas();
         let addr = Address::random();
         provider.sstore(addr, U256::from(1), U256::from(100))?;
         let _ = provider.sload(addr, U256::from(1))?;
-        let disabled = StorageActions::disabled();
-        disabled.record(StorageAction::Sstore(addr, U256::ZERO, U256::ZERO));
-        assert_eq!(
-            disabled.take(),
-            None,
-            "disabled recorder must not accumulate"
-        );
+
+        assert_eq!(provider.take_actions(), None);
 
         Ok(())
     }
