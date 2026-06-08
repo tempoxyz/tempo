@@ -1175,7 +1175,6 @@ where
         }
     }
 
-    #[expect(clippy::type_complexity)]
     fn spawn_roots_task(
         &self,
     ) -> (
