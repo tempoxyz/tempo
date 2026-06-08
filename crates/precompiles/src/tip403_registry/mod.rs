@@ -336,6 +336,12 @@ impl TIP403Registry {
             return Ok(None);
         }
 
+        if config.token_filter_id == ALLOW_ALL_POLICY_ID
+            && config.sender_policy_id == ALLOW_ALL_POLICY_ID
+        {
+            return Ok(None);
+        }
+
         let token_filter_data = config.token_filter_data();
         if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
@@ -1284,6 +1290,30 @@ mod tests {
                     recoveryAuthority: recovery,
                 },
             )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_receive_policy_all_allow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let receiver = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), receiver)?,
+                None
+            );
 
             Ok(())
         })
