@@ -26,7 +26,26 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
+    "--rpc.max-connections" "10000"
+    "--txpool.pending-max-count" "200000"
+    "--txpool.basefee-max-count" "200000"
+    "--txpool.queued-max-count" "200000"
+    "--txpool.max-pending-txns" "200000"
+    "--txpool.max-new-txns" "200000"
+    "--txpool.max-batch-size" "200000"
 ]
+
+def merge-e2e-features [...features: string] {
+    $features
+    | each { |f| $f | split row "," }
+    | flatten
+    | each { |f| $f | str trim }
+    | where { |f| $f != "" }
+    | uniq
+    | str join ","
+}
 
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
@@ -188,11 +207,14 @@ def ensure-bloat-space [bloat: int] {
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
+    if $bloat == 0 {
+        return 0
+    }
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
     }
 
-    print "Error: --bloat must be one of: 1, 10, 100"
+    print "Error: --bloat must be one of: 0, 1, 10, 100"
     exit 1
 }
 
@@ -519,6 +541,13 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
+    let signing_key_contents = (open --raw $signing_key | into binary)
+    let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
+    let signing_secret_args = if $signing_key_is_encrypted {
+        ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
+    } else {
+        []
+    }
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
@@ -527,6 +556,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     [
         "--consensus.signing-key" $signing_key
+        ...$signing_secret_args
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
@@ -1043,11 +1073,11 @@ def e2e-run-sides [run_pairs: int] {
     mut sides = []
     if ($run_pairs mod 2) == 0 {
         for _ in 0..<($run_pairs // 2) {
-            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+            $sides = ($sides | append ["feature" "baseline" "baseline" "feature"])
         }
     } else {
         for _ in 0..<$run_pairs {
-            $sides = ($sides | append ["baseline" "feature"])
+            $sides = ($sides | append ["feature" "baseline"])
         }
     }
     $sides
@@ -1063,6 +1093,7 @@ def e2e-write-summary-config [
     duration: int
     benchmark_id: string
     reference_epoch: int
+    summary_warmup_blocks: int
     baseline_hardfork: string
     feature_hardfork: string
     baseline_removed_args: string
@@ -1077,6 +1108,7 @@ def e2e-write-summary-config [
         duration: $duration
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        summary_warmup_blocks: $summary_warmup_blocks
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
         baseline_removed_args: $baseline_removed_args
@@ -1094,7 +1126,8 @@ def e2e-generate-summary [results_dir: string] {
     let config = (open $config_path)
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
-    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+    let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
@@ -1128,16 +1161,19 @@ def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
-    --tps: int = 20000                                  # Target TPS
+    --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
+    --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
+    --max-concurrent-requests: int = 500                # Max concurrent requests
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
-    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --features: string = ""                             # Additional Cargo features appended to the e2e defaults
+    --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
+    --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1176,6 +1212,10 @@ def "main e2e" [
     }
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $summary_warmup_blocks < 0 {
+        print "Error: --summary-warmup-blocks must be non-negative"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1274,7 +1314,8 @@ def "main e2e" [
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
+        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
@@ -1363,26 +1404,30 @@ def "main e2e" [
         git worktree add $regenesis_wt origin/main
     }
 
-    let tbc = (tracy-build-config $features $tracy)
-    let effective_features = $tbc.features
-    let effective_extra_rustflags = $tbc.extra_rustflags
+    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+    let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
+    let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
+    let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
+    let feature_tbc = (tracy-build-config $feature_build_features $tracy)
+    let regenesis_build_features = $global_build_features
+    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
     mut builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
     ]
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
     if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main" })
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
@@ -1497,7 +1542,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

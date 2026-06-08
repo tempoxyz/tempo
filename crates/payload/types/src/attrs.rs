@@ -1,3 +1,4 @@
+use crate::ValidationLatencyEstimate;
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -20,9 +21,19 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Local payload build budget.
+    /// Remaining local proposal budget available to this payload build.
+    ///
+    /// Consensus sets this to the proposal return budget left when it dispatches
+    /// the build. `None` means the build was not requested by consensus, so the
+    /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Validation latency estimate for a consensus payload build.
+    ///
+    /// Consensus snapshots this from recent locally validated blocks. `None`
+    /// means the builder should use its conservative fallback.
+    #[serde(skip)]
+    validation_latency_estimate: Option<ValidationLatencyEstimate>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -72,6 +83,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -90,13 +102,37 @@ impl TempoPayloadAttributes {
         self.proposer_public_key.as_ref()
     }
 
+    /// Sets the remaining local proposal budget for a consensus payload build.
+    ///
+    /// The value should already account for any time spent before the build was
+    /// requested. The builder treats it as a shared budget for leader
+    /// build/persist work and validator replay/persist work.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
         self.payload_build_budget = Some(budget);
         self
     }
 
+    /// Returns the consensus-provided build budget, if this is a paced build.
+    ///
+    /// `None` is intentional for non-consensus builds such as dev or external
+    /// payload requests; those builds are not constrained by the consensus
+    /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+    }
+
+    /// Sets the validation latency estimate for a consensus payload build.
+    pub fn with_validation_latency_estimate(
+        mut self,
+        estimate: Option<ValidationLatencyEstimate>,
+    ) -> Self {
+        self.validation_latency_estimate = estimate;
+        self
+    }
+
+    /// Returns the consensus-provided validation latency estimate.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimate
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -131,6 +167,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
