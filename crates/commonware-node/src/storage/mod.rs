@@ -4,15 +4,6 @@
 //! merges a prunable archive (holding the most recently finalized blocks) with
 //! a lookup into the execution layer (used for blocks below the prunable
 //! retention window).
-//!
-//! Older deployments stored finalized blocks in an immutable archive. To
-//! preserve the ability to roll back to one of those releases, the
-//! [`legacy`] module is opened on every restart and every newly
-//! finalized block is dual-written to it from [`Hybrid`]. The
-//! legacy archive is read-only from this binary's perspective; it
-//! exists purely so the previous binary can still serve traffic if an
-//! operator rolls back. The whole legacy code path is slated for
-//! removal in an upcoming release.
 
 use std::time::Instant;
 
@@ -35,7 +26,6 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
-pub(in crate::storage) mod legacy;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 
@@ -129,21 +119,13 @@ where
 /// Initialize the [`Hybrid`] finalized blocks store backed by a prunable
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
-///
-/// If `with_legacy`, also opens the legacy immutable finalized-blocks archive
-/// for write-through, creating its partitions on disk if they don't yet exist.
-#[instrument(
-    skip_all,
-    fields(partition_prefix, retention_blocks, with_legacy),
-    err(Display)
-)]
+#[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
 pub(crate) async fn init_finalized_blocks<TContext, P>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
     provider: P,
     retention_blocks: u64,
-    with_legacy: bool,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -159,19 +141,8 @@ where
             .await
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
-    let legacy = if with_legacy {
-        Some(
-            legacy::init_legacy_finalized_blocks_archive(context, partition_prefix, page_cache)
-                .await
-                .wrap_err("failed to initialize legacy immutable finalized blocks archive")?,
-        )
-    } else {
-        None
-    };
-
     Ok(Hybrid::new(hybrid::Config {
         prunable,
-        legacy,
         execution_block_provider: provider,
         retention_blocks,
     }))
