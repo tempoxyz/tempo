@@ -16,9 +16,6 @@ use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_R
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
 pub const KEY_AUTHORIZATION_MAX_RLP_LEN: usize = 1024;
 
-/// TIP-1059 discounted-payment gas-limit eligibility threshold.
-pub const DISCOUNTED_PAYMENT_GAS_LIMIT: u64 = 250_000;
-
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
@@ -243,20 +240,6 @@ impl TempoTxEnvelope {
                         .all(|call| is_tip1045_call(call.to.to(), &call.input))
             }
         }
-    }
-
-    /// Returns true if this transaction satisfies the TIP-1059 discounted-payment allow-list.
-    ///
-    /// T6 activation is enforced by the caller. This classifies transaction shape only:
-    /// payment-v2 eligibility, TIP-20 discounted payment calls, and the discounted-payment gas
-    /// limit threshold.
-    pub fn is_discounted_payment(&self) -> bool {
-        self.is_payment_v2()
-            && self.calls().all(|(to, input)| {
-                matches!(to.to(), Some(to) if to.is_tip20())
-                    && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
-            })
-            && self.gas_limit() <= DISCOUNTED_PAYMENT_GAS_LIMIT
     }
 
     /// Returns the proposer of the subblock if this is a subblock transaction.

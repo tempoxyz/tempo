@@ -8,8 +8,8 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::{Address, B256};
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom, TransactionInfo};
+use alloy_primitives::B256;
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom, TransactionTrait};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
@@ -26,8 +26,8 @@ use tempo_chainspec::{
     TempoChainSpec, constants::gas::tempo_t6_discounted_payment_effective_gas_price,
     hardfork::TempoHardforks,
 };
-use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+use tempo_evm::{SSTORE_SET_COST, TempoStateAccess};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::ITIP20};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -65,8 +65,8 @@ use reth_rpc_eth_types::{
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
-    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoAddressExt, TempoPrimitives, TempoReceipt,
+    TempoTxEnvelope, subblock::PartialValidatorKey,
 };
 use tokio::sync::{Mutex, broadcast};
 
@@ -425,30 +425,6 @@ pub struct TempoReceiptConverter {
     chain_spec: Arc<TempoChainSpec>,
 }
 
-fn convert_tempo_transaction(
-    chain_spec: Arc<TempoChainSpec>,
-    tx: TempoTxEnvelope,
-    signer: Address,
-    tx_info: TransactionInfo,
-) -> Result<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, std::convert::Infallible> {
-    let is_discounted_payment = tx_info
-        .block_timestamp
-        .is_some_and(|timestamp| chain_spec.is_t6_active_at_timestamp(timestamp))
-        && tx.is_discounted_payment();
-    let mut transaction = alloy_rpc_types_eth::Transaction::from_transaction(
-        Recovered::new_unchecked(tx, signer),
-        tx_info,
-    );
-
-    if is_discounted_payment {
-        transaction.effective_gas_price = transaction
-            .effective_gas_price
-            .map(tempo_t6_discounted_payment_effective_gas_price);
-    }
-
-    Ok(transaction)
-}
-
 impl TempoReceiptConverter {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
@@ -503,7 +479,14 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
-                if is_t6 && tx.inner().is_discounted_payment() {
+                if is_t6
+                    && tx.is_payment_v2()
+                    && tx.calls().all(|(to, input)| {
+                        matches!(to.to(), Some(to) if to.is_tip20())
+                            && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
+                    })
+                    && tx.gas_limit() <= SSTORE_SET_COST
+                {
                     // Mirror execution settlement: subtract only the base-fee discount and keep
                     // the transaction-derived priority-fee component payable.
                     // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
@@ -548,17 +531,10 @@ where
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, NodeAdapter<N>>) -> eyre::Result<Self::EthApi> {
         let chain_spec = ctx.components.provider.chain_spec();
-        let tx_chain_spec = chain_spec.clone();
         let eth_api = ctx
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
-            .map_converter(|_| {
-                RpcConverter::new(TempoReceiptConverter::new(chain_spec))
-                    .with_rpc_tx_converter(move |tx, signer, tx_info| {
-                        convert_tempo_transaction(tx_chain_spec.clone(), tx, signer, tx_info)
-                    })
-                    .erased()
-            })
+            .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
         Ok(TempoEthApi::new(eth_api, self.validator_key))
