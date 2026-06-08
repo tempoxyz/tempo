@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub mod program;
-pub use program::{Instruction, Op, Program, Type, ValidateError, VarId};
-
 pub const STATUS_OK: i32 = 1;
 pub const STATUS_INVALID_INPUT: i32 = -1;
 pub const STATUS_BUFFER_TOO_SMALL: i32 = -2;
