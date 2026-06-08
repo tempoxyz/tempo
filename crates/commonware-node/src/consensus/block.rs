@@ -241,14 +241,26 @@ impl Read for Block {
             return Err(commonware_codec::Error::EndOfBuffer);
         }
         let execution_block_encoded_size = header.length_with_payload();
-        let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
-        let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
-            &mut bytes.as_ref(),
-        )
-        .map_err(|rlp_err| {
-            commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-        })?;
+        let decode_execution_block = |bytes: &mut &[u8]| {
+            <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(bytes)
+                .map_err(|rlp_err| {
+                    commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+                })
+        };
+
+        let inner = if buf.chunk().len() >= execution_block_encoded_size {
+            let inner = {
+                let mut bytes = &buf.chunk()[..execution_block_encoded_size];
+                decode_execution_block(&mut bytes)?
+            };
+            buf.advance(execution_block_encoded_size);
+            inner
+        } else {
+            let bytes = buf.copy_to_bytes(execution_block_encoded_size);
+            let mut bytes = bytes.as_ref();
+            decode_execution_block(&mut bytes)?
+        };
 
         #[cfg(feature = "bal")]
         let block_access_list = {
