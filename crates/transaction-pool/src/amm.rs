@@ -206,12 +206,13 @@ impl AmmLiquidityCache {
         }
 
         // Process TIP-20 quote token updates: invalidate stale entries.
-        inner.quote_token_cache.retain(|token, _| {
-            execution_outcome
-                .account_state(token)
-                .and_then(|acc| acc.storage.get(&tip20::slots::QUOTE_TOKEN))
-                .is_none()
-        });
+        if !inner.quote_token_cache.is_empty() {
+            for (token, account) in execution_outcome.state().state() {
+                if account.storage.contains_key(&tip20::slots::QUOTE_TOKEN) {
+                    inner.quote_token_cache.remove(token);
+                }
+            }
+        }
     }
 
     /// Processes new blocks and records recent validators and their fee token preferences in the cache.
