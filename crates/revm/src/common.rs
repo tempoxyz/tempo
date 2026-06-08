@@ -17,7 +17,7 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx,
-        evm::{EvmAction, EvmActions},
+        evm::{StorageAction, StorageActions},
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
@@ -113,7 +113,7 @@ pub trait TempoStateAccess<M = ()> {
     fn with_read_only_storage_ctx<R>(
         &mut self,
         spec: TempoHardfork,
-        actions: &EvmActions,
+        actions: &StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
     where
@@ -131,7 +131,7 @@ pub trait TempoStateAccess<M = ()> {
         tx: impl TempoTx,
         fee_payer: Address,
         spec: TempoHardfork,
-        actions: &EvmActions,
+        actions: &StorageActions,
     ) -> TempoResult<Address>
     where
         Self: Sized,
@@ -213,7 +213,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &EvmActions,
+        actions: &StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -232,7 +232,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &EvmActions,
+        actions: &StorageActions,
     ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
     where
         Self: Sized,
@@ -267,7 +267,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &EvmActions,
+        actions: &StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -286,7 +286,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
             let token = TIP20Token::from_address(fee_token)?;
             token.paused()
         })
@@ -302,7 +302,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
             let token = TIP20Token::from_address(fee_token)?;
             if spec.is_t1c() {
                 // Check both the fee payer and the fee manager is authorized
@@ -326,7 +326,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
             // Load the token balance for the given account.
             TIP20Token::from_address(token)?.balances[account].read()
         })
@@ -382,7 +382,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
-    actions: Option<EvmActions>,
+    actions: Option<StorageActions>,
     _marker: PhantomData<M>,
 }
 
@@ -400,7 +400,7 @@ where
         }
     }
 
-    fn with_actions(mut self, actions: EvmActions) -> Self {
+    fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = Some(actions);
         self
     }
@@ -440,7 +440,7 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         if let Some(actions) = &self.actions {
-            actions.record(EvmAction::Sload(address, key, value));
+            actions.record(StorageAction::Sload(address, key, value));
         }
 
         Ok(value)
@@ -569,8 +569,12 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -593,8 +597,12 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let result_token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -614,7 +622,7 @@ mod tests {
             TempoTxEnv::default(),
             caller,
             TempoHardfork::Genesis,
-            &EvmActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(result_token, user_token);
         Ok(())
@@ -637,8 +645,12 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let result_token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
@@ -656,8 +668,12 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let result_token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -690,8 +706,12 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -714,8 +734,12 @@ mod tests {
             ..Default::default()
         };
 
-        let token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
+        let token = db.get_fee_token(
+            tx,
+            caller,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -803,8 +827,11 @@ mod tests {
             let mut db = revm::database::CacheDB::new(EmptyDB::default());
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
-            let is_usd =
-                db.is_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::disabled())?;
+            let is_usd = db.is_tip20_usd(
+                TempoHardfork::Genesis,
+                fee_token,
+                &StorageActions::disabled(),
+            )?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
 
@@ -820,7 +847,11 @@ mod tests {
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
         let err = db
-            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::disabled())
+            .ensure_tip20_usd(
+                TempoHardfork::Genesis,
+                fee_token,
+                &StorageActions::disabled(),
+            )
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,

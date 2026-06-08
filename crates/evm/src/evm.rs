@@ -18,7 +18,7 @@ use reth_revm::{
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 #[cfg(feature = "engine")]
-use tempo_precompiles::storage::evm::{EvmAction, EvmActions};
+use tempo_precompiles::storage::evm::{StorageAction, StorageActions};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -67,7 +67,7 @@ impl EvmFactory for TempoEvmFactory {
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     #[cfg(feature = "engine")]
-    actions: EvmActions,
+    actions: StorageActions,
     inspect: bool,
 }
 
@@ -85,7 +85,7 @@ impl<DB: Database> TempoEvm<DB> {
 
         #[cfg(feature = "engine")]
         {
-            let actions = EvmActions::disabled();
+            let actions = StorageActions::disabled();
             Self {
                 inner: tempo_revm::TempoEvm::new_with_actions(
                     ctx,
@@ -169,22 +169,23 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         handler.validate_transaction(&mut self.inner)
     }
 
-    /// Enables recording of precompile storage actions.
+    /// Enables recording of storage actions.
     #[cfg(feature = "engine")]
     pub fn with_actions(self) -> Self {
         self.actions.enable();
         self
     }
 
-    /// Drains recorded precompile storage actions, if recording is enabled.
+    /// Returns recorded storage actions, if recording is enabled.
     #[cfg(feature = "engine")]
-    pub fn take_actions(&mut self) -> Option<Vec<EvmAction>> {
+    pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
         self.actions.take()
     }
 
-    /// Replaces the precompile storage action buffer, if recording is enabled.
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions,
+    /// if recording is enabled.
     #[cfg(feature = "engine")]
-    pub fn replace_actions(&mut self, actions: Vec<EvmAction>) -> Option<Vec<EvmAction>> {
+    pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.actions.replace(actions)
     }
 }

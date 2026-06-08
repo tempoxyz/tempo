@@ -25,7 +25,7 @@ pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::evm::EvmActions,
+    NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::evm::StorageActions,
 };
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
@@ -335,7 +335,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
                 tx_env,
                 fee_payer,
                 evm_env.cfg_env.spec,
-                &EvmActions::disabled(),
+                &StorageActions::disabled(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
