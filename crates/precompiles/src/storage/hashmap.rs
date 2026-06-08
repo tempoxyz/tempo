@@ -6,7 +6,12 @@ use revm::{
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    STORAGE_CREDITS_ADDRESS,
+    error::TempoPrecompileError,
+    storage::PrecompileStorageProvider,
+    tip1060_storage_credits::{AccountState, TIP1060StorageCredits},
+};
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
 ///
@@ -26,6 +31,7 @@ pub struct HashMapStorageProvider {
     counter_sload: u64,
     counter_sstore: u64,
     snapshots: Vec<Snapshot>,
+    storage_credit_budgets: HashMap<Address, u64>,
 
     /// Emitted events keyed by contract address.
     pub events: HashMap<Address, Vec<LogData>>,
@@ -69,6 +75,7 @@ impl HashMapStorageProvider {
             is_static: false,
             counter_sload: 0,
             counter_sstore: 0,
+            storage_credit_budgets: HashMap::new(),
         }
     }
 
@@ -82,6 +89,28 @@ impl HashMapStorageProvider {
     pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
         self
+    }
+
+    fn should_consume_storage_credit_budget(&self, owner: Address) -> bool {
+        if self
+            .storage_credit_budgets
+            .get(&owner)
+            .is_none_or(|remaining| *remaining > 0)
+        {
+            return false;
+        }
+
+        let key = TIP1060StorageCredits::slot(owner);
+        let word = self
+            .internals
+            .get(&(STORAGE_CREDITS_ADDRESS, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        let Ok(state) = AccountState::from_word(word) else {
+            return false;
+        };
+
+        state.balance > 0
     }
 }
 
@@ -126,6 +155,19 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.counter_sstore += 1;
+        if self.spec.is_t6()
+            && self
+                .internals
+                .get(&(address, key))
+                .copied()
+                .unwrap_or(U256::ZERO)
+                .is_zero()
+            && !value.is_zero()
+            && self.should_consume_storage_credit_budget(address)
+            && let Some(remaining) = self.storage_credit_budgets.get_mut(&address)
+        {
+            *remaining -= 1;
+        }
         self.internals.insert((address, key), value);
         Ok(())
     }
@@ -204,6 +246,21 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
+        self.storage_credit_budgets.get(&owner).copied()
+    }
+
+    fn set_storage_credit_budget(
+        &mut self,
+        owner: Address,
+        budget: Option<u64>,
+    ) -> Result<Option<u64>, TempoPrecompileError> {
+        Ok(match budget {
+            Some(budget) => self.storage_credit_budgets.insert(owner, budget),
+            None => self.storage_credit_budgets.remove(&owner),
+        })
     }
 
     fn checkpoint(&mut self) -> JournalCheckpoint {

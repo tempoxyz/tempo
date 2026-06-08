@@ -26,12 +26,10 @@ pub struct EvmPrecompileStorageProvider<'a> {
     is_static: bool,
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
+    storage_credit_budgets: AddressMap<u64>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
-    // TIP-1060
-    #[allow(dead_code)]
-    pending_refund_eligible_creations: AddressMap<u64>,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -53,9 +51,9 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             tip1060_storage_credits_enabled: true,
+            storage_credit_budgets: AddressMap::default(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
-            pending_refund_eligible_creations: AddressMap::default(),
         }
     }
 
@@ -173,6 +171,21 @@ impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
             key,
             pending.saturating_add(U256::from(1)),
         );
+    }
+
+    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
+        self.storage_credit_budgets.get(&owner).copied()
+    }
+
+    fn consume_storage_credit_budget(&mut self, owner: Address) -> bool {
+        let Some(remaining) = self.storage_credit_budgets.get_mut(&owner) else {
+            return false;
+        };
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        true
     }
 }
 
@@ -437,6 +450,23 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    #[inline]
+    fn storage_credit_budget(&self, owner: Address) -> Option<u64> {
+        self.storage_credit_budgets.get(&owner).copied()
+    }
+
+    #[inline]
+    fn set_storage_credit_budget(
+        &mut self,
+        owner: Address,
+        budget: Option<u64>,
+    ) -> Result<Option<u64>, TempoPrecompileError> {
+        Ok(match budget {
+            Some(budget) => self.storage_credit_budgets.insert(owner, budget),
+            None => self.storage_credit_budgets.remove(&owner),
+        })
     }
 
     #[inline]

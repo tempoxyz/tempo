@@ -43,6 +43,9 @@ impl Precompile for StablecoinDEX {
                 IStablecoinDEXCalls::books(call) => {
                     view(call, |c| self.books(c.pairKey).map(Into::into))
                 }
+                IStablecoinDEXCalls::storageCredits(call) => {
+                    view(call, |c| self.storage_credits(c.user))
+                }
                 IStablecoinDEXCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
                 IStablecoinDEXCalls::createPair(call) => {
                     mutate(call, msg_sender, |_, c| self.create_pair(c.base))
