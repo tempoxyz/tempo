@@ -79,7 +79,7 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+use tracing::{debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -682,10 +682,6 @@ where
                 continue;
             }
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
             let execution_result = executor.execute_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
@@ -713,12 +709,12 @@ where
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        trace!(%error, tx = ?pool_tx.transaction, "skipping nonce too low transaction");
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        trace!(%error, tx = ?pool_tx.transaction, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
