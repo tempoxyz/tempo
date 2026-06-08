@@ -26,6 +26,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
+    /// Recorded storage actions.
     actions: StorageActions,
 }
 
