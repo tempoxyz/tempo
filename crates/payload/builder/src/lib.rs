@@ -443,15 +443,20 @@ where
             true
         });
 
-        let subblock_fee_recipients = subblocks
-            .iter()
-            .map(|subblock| {
-                (
-                    PartialValidatorKey::from_slice(&subblock.validator()[..15]),
-                    subblock.fee_recipient,
-                )
-            })
-            .collect();
+        let subblock_fee_recipients: std::collections::HashMap<PartialValidatorKey, Address> =
+            if subblocks.is_empty() {
+                Default::default()
+            } else {
+                subblocks
+                    .iter()
+                    .map(|subblock| {
+                        (
+                            PartialValidatorKey::from_slice(&subblock.validator()[..15]),
+                            subblock.fee_recipient,
+                        )
+                    })
+                    .collect()
+            };
 
         let next_attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
