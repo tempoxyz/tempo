@@ -12,8 +12,9 @@ use std::fmt::Debug;
 
 use crate::error::TempoPrecompileError;
 
+/// Minimal journal-facing backend used by [`super::EvmPrecompileStorageProvider`].
 pub(super) trait EvmJournalBackend {
-    /// Sets bytecode and returns whether the account was empty before the write.
+    /// Sets account bytecode and returns whether the account was empty before the write.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<bool, TempoPrecompileError>;
 
     /// Loads account info, charges account-access gas after account load but before code load,
@@ -26,6 +27,7 @@ pub(super) trait EvmJournalBackend {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError>;
 
+    /// Loads a storage slot, preserving revm's cold/warm access metadata for gas accounting.
     fn sload(
         &mut self,
         address: Address,
@@ -33,6 +35,7 @@ pub(super) trait EvmJournalBackend {
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, TempoPrecompileError>;
 
+    /// Stores a storage slot and returns revm's storage-write metadata for gas accounting.
     fn sstore(
         &mut self,
         address: Address,
@@ -41,11 +44,22 @@ pub(super) trait EvmJournalBackend {
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError>;
 
+    /// Loads a transient storage slot.
     fn tload(&mut self, address: Address, key: U256) -> U256;
+
+    /// Stores a transient storage slot.
     fn tstore(&mut self, address: Address, key: U256, value: U256);
+
+    /// Appends an EVM log to the current journal.
     fn log(&mut self, log: Log);
+
+    /// Creates a journal checkpoint for later commit or revert.
     fn checkpoint(&mut self) -> JournalCheckpoint;
+
+    /// Commits the most recent journal checkpoint.
     fn checkpoint_commit(&mut self);
+
+    /// Reverts the journal to `checkpoint`.
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
 }
 

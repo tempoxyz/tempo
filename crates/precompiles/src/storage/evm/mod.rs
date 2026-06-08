@@ -34,8 +34,8 @@ impl PrecompileEnv {
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
-/// Uses [`EvmInternals`] for compatibility call sites. The direct hot path uses the same provider
-/// with a raw `&mut J: JournalTr` backend via [`Self::from_journal_max_gas`].
+/// Defaults to [`EvmInternals`], with raw-journal constructors for hot paths that avoid the wrapper
+/// while sharing the same gas accounting and checkpoint logic.
 pub struct EvmPrecompileStorageProvider<'a, B = EvmInternals<'a>> {
     backend: B,
     env: PrecompileEnv,
