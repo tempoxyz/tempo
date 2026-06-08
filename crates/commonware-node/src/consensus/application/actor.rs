@@ -35,7 +35,7 @@ use prometheus_client::metrics::counter::Counter;
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
-    StreamExt as _, TryFutureExt as _,
+    StreamExt as _,
     channel::{mpsc, oneshot},
     future::try_join,
 };
@@ -549,11 +549,10 @@ impl Inner<Init> {
             leader,
         } = args;
 
-        let parent = get_parent(
+        let parent = fetch_block_from_el_or_subscribe(
             &self.execution_node,
-            round,
+            Round::new(round.epoch(), parent_view),
             parent_digest,
-            parent_view,
             &self.marshal,
         )
         .await?;
@@ -813,21 +812,12 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<bool> {
-        let block_request = self
-            .marshal
-            .subscribe_by_digest(None, payload)
-            .await
-            .map_err(|_| {
-                eyre!("marshal actor dropped channel before the block-to-verified was sent")
-            });
-
         let (block, parent) = try_join(
-            block_request,
-            get_parent(
+            fetch_block_from_el_or_subscribe(&self.execution_node, round, payload, &self.marshal),
+            fetch_block_from_el_or_subscribe(
                 &self.execution_node,
-                round,
+                Round::new(round.epoch(), parent_view),
                 parent_digest,
-                parent_view,
                 &self.marshal,
             ),
         )
@@ -1159,29 +1149,31 @@ async fn verify_header(
     Ok(())
 }
 
-async fn get_parent(
+/// Attempts to read a block from the execution layer or fetch it from consensus
+/// p2p.
+#[instrument(skip_all, fields(%round, %digest), err)]
+async fn fetch_block_from_el_or_subscribe(
     execution_node: &TempoFullNode,
     round: Round,
-    parent_digest: Digest,
-    parent_view: View,
+    digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
-    if let Some(parent) = execution_node
+    let block = if let Some(parent) = execution_node
         .provider
-        .find_block_by_hash(parent_digest.0, BlockSource::Any)
-        .wrap_err_with(|| {
-            format!("failed querying execution layer for parent block `{parent_digest}`")
-        })?
+        .find_block_by_hash(digest.0, BlockSource::Any)
+        .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Ok(Block::from_execution_block_unchecked(parent.seal(), None))
+        Block::from_execution_block_unchecked(parent.seal(), None)
     } else {
         marshal
-            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .subscribe_by_digest(Some(round), digest)
             .await
             .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
-    }
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+    };
+    debug!("retrieved block");
+    Ok(block)
 }
 
 #[derive(Clone)]
