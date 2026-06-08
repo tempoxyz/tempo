@@ -22,7 +22,7 @@ use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
-    types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
+    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
@@ -628,8 +628,14 @@ impl Inner<Init> {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height().next()
-            && parent_epoch_info.epoch() == round.epoch()
+        let proposal_height = parent.height().next();
+        let proposal_epoch_info = self
+            .epoch_strategy
+            .containing(proposal_height)
+            .expect("epoch strategy is for all heights");
+
+        let extra_data = if proposal_epoch_info.last() == proposal_height
+            && proposal_epoch_info.epoch() == round.epoch()
         {
             // At epoch boundary: include public ceremony outcome
             let outcome = self
@@ -654,6 +660,8 @@ impl Inner<Init> {
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().into()
+        } else if proposal_epoch_info.phase() == EpochPhase::Early {
+            Bytes::default()
         } else {
             // Regular block: try to include DKG dealer log.
             match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
