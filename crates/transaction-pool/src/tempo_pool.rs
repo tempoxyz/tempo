@@ -101,9 +101,11 @@ where
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
-        self.protocol_pool
-            .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
+        if !promoted.is_empty() {
+            self.protocol_pool
+                .inner()
+                .notify_on_transaction_updates(promoted, Vec::new());
+        }
         mined
     }
 
