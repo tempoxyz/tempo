@@ -8,6 +8,7 @@
 //   BENCH_ACTOR            – GitHub user who triggered the bench
 //   BENCH_JOB_URL          – URL to the Actions job page
 //   BENCH_RUN_LABEL        – Replay Slack title label (for example, Replay Bench)
+//   BENCH_TRACING_CHROME   – 'true' if Chrome trace recording was enabled
 //
 // Usage from actions/github-script:
 //   const notify = require('./.github/scripts/bench-slack-notify.js');
@@ -39,6 +40,28 @@ function loadSlackUsers(repoRoot) {
   } catch {
     return {};
   }
+}
+
+function loadRunProfileUrls(workDir, fileName) {
+  const urls = {};
+  try {
+    for (const run of fs.readdirSync(workDir)) {
+      if (!run.startsWith('baseline-') && !run.startsWith('feature-')) continue;
+      const file = path.join(workDir, run, fileName);
+      if (!fs.existsSync(file)) continue;
+      const url = fs.readFileSync(file, 'utf8').trim();
+      if (url) urls[run] = url;
+    }
+  } catch {
+    return {};
+  }
+  return urls;
+}
+
+function chromeTraceLinks(tracingChromeUrls) {
+  return Object.entries(tracingChromeUrls)
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([run, url]) => `<${url}|${run}>`);
 }
 
 async function postToSlack(token, channel, blocks, text, core, threadTs) {
@@ -481,6 +504,17 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
         ...waitRows.map(row => [cell(row.title), cell(row.baseline), cell(row.feature)]),
       ],
     });
+  }
+
+  if (process.env.BENCH_TRACING_CHROME === 'true') {
+    const tracingChromeUrls = loadRunProfileUrls(process.env.BENCH_WORK_DIR, 'tracing-chrome-profile-url.txt');
+    const links = chromeTraceLinks(tracingChromeUrls);
+    if (links.length > 0) {
+      threadBlocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Chrome Traces*\n${links.join(' | ')}` },
+      });
+    }
   }
 
   return { blocks: blocksPayload, threadBlocks };

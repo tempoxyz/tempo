@@ -239,6 +239,10 @@ on:
         type: string
         required: false
         default: "false"
+      tracing-chrome:
+        type: string
+        required: false
+        default: "false"
       tracy:
         type: string
         required: false
