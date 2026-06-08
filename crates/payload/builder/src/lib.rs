@@ -69,7 +69,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, e
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
-use tempo_precompiles::{storage::evm::StorageActions, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,

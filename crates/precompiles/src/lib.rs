@@ -33,7 +33,7 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, evm::StorageActions},
+    storage::{StorageCtx, actions::StorageActions},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,

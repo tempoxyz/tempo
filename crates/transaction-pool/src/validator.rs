@@ -33,7 +33,7 @@ use tempo_chainspec::{
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
-    storage::evm::StorageActions,
+    storage::StorageActions,
 };
 use tempo_primitives::{
     Block, TempoHeader,
