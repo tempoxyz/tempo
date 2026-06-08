@@ -109,14 +109,14 @@ pub trait TempoStateAccess<M = ()> {
     fn with_read_only_storage_ctx<R>(
         &mut self,
         spec: TempoHardfork,
-        actions: &StorageActions,
+        actions: StorageActions,
         f: impl FnOnce() -> R,
     ) -> R
     where
         Self: Sized,
     {
         StorageCtx::enter(
-            &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions.clone()),
+            &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions),
             f,
         )
     }
@@ -127,7 +127,7 @@ pub trait TempoStateAccess<M = ()> {
         tx: impl TempoTx,
         fee_payer: Address,
         spec: TempoHardfork,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<Address>
     where
         Self: Sized,
@@ -150,7 +150,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Check stored user token preference
-        let user_token = self.with_read_only_storage_ctx(spec, actions, || {
+        let user_token = self.with_read_only_storage_ctx(spec, actions.clone(), || {
             // ensure TIP_FEE_MANAGER_ADDRESS is loaded
             TipFeeManager::new().user_tokens[fee_payer].read()
         })?;
@@ -174,7 +174,7 @@ pub trait TempoStateAccess<M = ()> {
                 }
             ;
 
-            if can_infer_tip20 && self.is_valid_fee_token(spec, to, actions)? {
+            if can_infer_tip20 && self.is_valid_fee_token(spec, to, actions.clone())? {
                 return Ok(to);
             }
         }
@@ -188,7 +188,7 @@ pub trait TempoStateAccess<M = ()> {
             && (!tx.is_aa() || calls.next().is_none())
         {
             if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions)?
+                && self.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
             {
                 return Ok(call.tokenIn);
             } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
@@ -209,7 +209,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -228,7 +228,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
     where
         Self: Sized,
@@ -263,7 +263,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -282,7 +282,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -299,7 +299,7 @@ pub trait TempoStateAccess<M = ()> {
         fee_token: Address,
         fee_payer: Address,
         spec: TempoHardfork,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
@@ -324,7 +324,7 @@ pub trait TempoStateAccess<M = ()> {
         token: Address,
         account: Address,
         spec: TempoHardfork,
-        actions: &StorageActions,
+        actions: StorageActions,
     ) -> TempoResult<U256>
     where
         Self: Sized,
@@ -576,7 +576,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(token, fee_token);
         Ok(())
@@ -604,7 +604,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(result_token, token);
         Ok(())
@@ -625,7 +625,7 @@ mod tests {
             TempoTxEnv::default(),
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(result_token, user_token);
         Ok(())
@@ -652,7 +652,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -675,7 +675,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
@@ -713,7 +713,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
 
@@ -741,7 +741,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
 
@@ -764,7 +764,7 @@ mod tests {
             token_address,
             account,
             TempoHardfork::Genesis,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?;
         assert_eq!(balance, expected_balance);
 
@@ -806,7 +806,7 @@ mod tests {
         assert!(!db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,
-            &StorageActions::disabled()
+            StorageActions::disabled()
         )?);
 
         // Set paused=true
@@ -814,7 +814,7 @@ mod tests {
         assert!(db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,
-            &StorageActions::disabled()
+            StorageActions::disabled()
         )?);
 
         Ok(())
@@ -855,7 +855,7 @@ mod tests {
             let is_usd = db.is_tip20_usd(
                 TempoHardfork::Genesis,
                 fee_token,
-                &StorageActions::disabled(),
+                StorageActions::disabled(),
             )?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
@@ -875,7 +875,7 @@ mod tests {
             .ensure_tip20_usd(
                 TempoHardfork::Genesis,
                 fee_token,
-                &StorageActions::disabled(),
+                StorageActions::disabled(),
             )
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
@@ -945,7 +945,7 @@ mod tests {
             PATH_USD_ADDRESS,
             fee_payer,
             TempoHardfork::T1B,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?);
 
         // Post T1C fails if fee payer not authorized
@@ -953,7 +953,7 @@ mod tests {
             PATH_USD_ADDRESS,
             fee_payer,
             TempoHardfork::T1C,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?);
 
         // Whitelist FeeManager
@@ -978,14 +978,14 @@ mod tests {
             PATH_USD_ADDRESS,
             fee_payer,
             TempoHardfork::T1B,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?);
 
         assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
             PATH_USD_ADDRESS,
             fee_payer,
             TempoHardfork::T1C,
-            &StorageActions::disabled(),
+            StorageActions::disabled(),
         )?);
 
         Ok(())

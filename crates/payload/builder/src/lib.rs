@@ -1315,7 +1315,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
     match ctx.journaled_state.database.with_read_only_storage_ctx(
         ctx.cfg.spec,
-        &StorageActions::disabled(),
+        StorageActions::disabled(),
         || -> Result<Option<Address>, PayloadBuilderError> {
             let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
 

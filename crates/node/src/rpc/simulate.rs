@@ -196,7 +196,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
 
-                let metadata = db.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
+                let metadata = db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
                     let mut metadata = BTreeMap::new();
 
                     for addr in &addresses {

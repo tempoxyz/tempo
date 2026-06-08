@@ -912,7 +912,7 @@ where
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec, &actions)
+            .get_fee_token(tx, fee_payer, cfg.spec, actions.clone())
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -926,7 +926,7 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token, &actions)?;
+            journal.ensure_tip20_usd(cfg.spec, fee_token, actions)?;
         }
 
         // Load the fee payer balance
@@ -2731,7 +2731,7 @@ mod tests {
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
-                &tempo_precompiles::storage::StorageActions::disabled(),
+                tempo_precompiles::storage::StorageActions::disabled(),
             )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
@@ -2751,7 +2751,7 @@ mod tests {
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
-                &tempo_precompiles::storage::StorageActions::disabled(),
+                tempo_precompiles::storage::StorageActions::disabled(),
             )?;
             assert_eq!(user_fee_token, fee_token);
         }
@@ -2762,7 +2762,7 @@ mod tests {
             &ctx.tx,
             user,
             ctx.cfg.spec,
-            &tempo_precompiles::storage::StorageActions::disabled(),
+            tempo_precompiles::storage::StorageActions::disabled(),
         )?;
         assert_eq!(tx_fee_token, fee_token);
 
