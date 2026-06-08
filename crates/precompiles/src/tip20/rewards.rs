@@ -189,7 +189,8 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
-        self.update_rewards(msg_sender)?;
+        // T6+: pay only settled rewards; pending lazy accruals are forfeited.
+        let reward_recipient = self.update_rewards(msg_sender)?;
 
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
@@ -197,7 +198,6 @@ impl TIP20Token {
         let contract_balance = self.get_balance(contract_address)?;
         let max_amount = amount.min(contract_balance);
 
-        let reward_recipient = info.reward_recipient;
         info.reward_balance = amount
             .checked_sub(max_amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -501,12 +501,19 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(alice, amount)
-                .with_mint(admin, reward_amount)
+                .with_mint(admin, reward_amount * U256::from(2))
                 .apply()?;
 
-            // Pre-T6: opt in and distribute rewards, but do not checkpoint Alice yet.
+            // Pre-T6: settle one reward distribution, then leave another lazy/pending.
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+            token.update_rewards(alice)?;
             token.distribute_reward(
                 admin,
                 ITIP20::distributeRewardCall {
@@ -530,7 +537,7 @@ mod tests {
             token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
             assert_eq!(token.get_global_reward_per_token()?, rpt);
 
-            // T6+: claimRewards checkpoints legacy accruals without opting in claimed tokens.
+            // T6+: claimRewards pays settled rewards only and doesn't opt them in.
             token.paused.write(false)?;
             let claimed = token.claim_rewards(alice)?;
             assert_eq!(claimed, reward_amount);
