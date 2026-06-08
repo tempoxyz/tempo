@@ -1,7 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use alloy_primitives::{Address, U256};
@@ -44,7 +43,7 @@ impl StorageActions {
         self.actions.borrow_mut().clear();
     }
 
-    /// Replaces recorded storage actions with an empty buffer, returning the previous actions.
+    /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
     }
