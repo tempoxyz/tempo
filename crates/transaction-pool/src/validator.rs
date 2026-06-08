@@ -555,7 +555,7 @@ where
                         // This is a 2D nonce transaction - validate against 2D nonce
                         state_nonce = match state_provider.with_read_only_storage_ctx(
                             spec,
-                            &EvmActions::default(),
+                            &EvmActions::disabled(),
                             || {
                                 NonceManager::new().get_nonce(INonce::getNonceCall {
                                     account: transaction.transaction().sender(),

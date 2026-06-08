@@ -85,7 +85,7 @@ impl<DB: Database> TempoEvm<DB> {
 
         #[cfg(feature = "engine")]
         {
-            let actions = EvmActions::default();
+            let actions = EvmActions::disabled();
             Self {
                 inner: tempo_revm::TempoEvm::new_with_actions(
                     ctx,

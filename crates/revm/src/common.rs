@@ -286,7 +286,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::default(), || {
+        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
             let token = TIP20Token::from_address(fee_token)?;
             token.paused()
         })
@@ -302,7 +302,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::default(), || {
+        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
             let token = TIP20Token::from_address(fee_token)?;
             if spec.is_t1c() {
                 // Check both the fee payer and the fee manager is authorized
@@ -326,7 +326,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &EvmActions::default(), || {
+        self.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
             // Load the token balance for the given account.
             TIP20Token::from_address(token)?.balances[account].read()
         })
@@ -569,7 +569,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+        let token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -593,7 +594,7 @@ mod tests {
 
         let mut db = EmptyDB::default();
         let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -613,7 +614,7 @@ mod tests {
             TempoTxEnv::default(),
             caller,
             TempoHardfork::Genesis,
-            &EvmActions::default(),
+            &EvmActions::disabled(),
         )?;
         assert_eq!(result_token, user_token);
         Ok(())
@@ -637,7 +638,7 @@ mod tests {
 
         let mut db = EmptyDB::default();
         let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
@@ -656,7 +657,7 @@ mod tests {
 
         let mut db = EmptyDB::default();
         let result_token =
-            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -689,7 +690,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+        let token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -712,7 +714,8 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::default())?;
+        let token =
+            db.get_fee_token(tx, caller, TempoHardfork::Genesis, &EvmActions::disabled())?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -801,7 +804,7 @@ mod tests {
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
             let is_usd =
-                db.is_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::default())?;
+                db.is_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::disabled())?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
 
@@ -817,7 +820,7 @@ mod tests {
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
         let err = db
-            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::default())
+            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token, &EvmActions::disabled())
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,

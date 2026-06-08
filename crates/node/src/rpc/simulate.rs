@@ -207,7 +207,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                 let mut metadata = BTreeMap::new();
                 for addr in &addresses {
                     let result =
-                        db.with_read_only_storage_ctx(spec, &EvmActions::default(), || {
+                        db.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
                             let token = TIP20Token::from_address(*addr)?;
                             Ok::<_, TempoPrecompileError>((
                                 token.name()?,
