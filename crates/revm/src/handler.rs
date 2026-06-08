@@ -505,6 +505,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             StorageActions::disabled(),
             || {
                 let mut keychain = AccountKeychain::new();
+                keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(ctx.tx.caller())?;
 
                 let mut multisig = NativeMultisig::new();
@@ -1143,7 +1144,12 @@ where
                         }
                     }
 
-                    if caller_is_multisig && multisig_signature.is_none() {
+                    let is_keychain_multisig_transaction =
+                        tempo_tx_env.is_some_and(|aa| aa.signature.is_keychain());
+                    if caller_is_multisig
+                        && multisig_signature.is_none()
+                        && !is_keychain_multisig_transaction
+                    {
                         return Err(
                             TempoInvalidTransaction::NativeMultisigRequiresMultisigSignature {
                                 account: tx.caller(),
@@ -5645,7 +5651,9 @@ mod tests {
         use super::*;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
-        use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+        use tempo_precompiles::{
+            ACCOUNT_KEYCHAIN_ADDRESS, account_keychain::getTransactionKeyCall,
+        };
         use tempo_primitives::transaction::{
             KeychainSignature, KeychainVersion, SignatureType,
             key_authorization::{KeyAuthorization, TokenLimit as PrimTokenLimit},
@@ -6447,6 +6455,63 @@ mod tests {
                 ),
                 "Valid authorized key should pass, got: {result:?}"
             );
+        }
+
+        #[test]
+        fn test_t6_registered_multisig_can_use_keychain_signature() {
+            let config = native_multisig_config();
+            let config_id = config.config_id().unwrap();
+            let account = config.account().unwrap();
+            let access_key = Address::repeat_byte(0x44);
+            let (mut evm, h) = make_evm(account, access_key, None, TempoHardfork::T6, None, false);
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut multisig = NativeMultisig::new();
+                multisig.initialize()?;
+                multisig.store_initial_config(account, config_id, &config)?;
+
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_tx_origin(account)?;
+                keychain.set_transaction_key(Address::ZERO)?;
+                keychain.authorize_key(
+                    account,
+                    access_key,
+                    PrecompileSignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token: DEFAULT_FEE_TOKEN,
+                            amount: U256::from(1_000u64),
+                            period: 0,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    None,
+                )?;
+
+                Ok::<_, TempoPrecompileError>(())
+            })
+            .expect("native multisig access-key setup succeeds");
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "registered multisig keychain transaction should pass, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert_eq!(
+                    keychain.get_transaction_key(getTransactionKeyCall {}, account)?,
+                    access_key
+                );
+                Ok::<_, TempoPrecompileError>(())
+            })
+            .expect("transaction key read succeeds");
         }
 
         #[test]
