@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-commonware-node-config.workspace = true
 tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
@@ -33,14 +33,18 @@ alloy = { workspace = true, features = [
   "sol-types",
   "getrandom",
 ] }
+alloy-consensus.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+bytes.workspace = true
 coins-bip32.workspace = true
 clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-storage.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
@@ -49,7 +53,12 @@ itertools.workspace = true
 rand_08.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true
+reth-db.workspace = true
+reth-db-api.workspace = true
+reth-provider.workspace = true
+reth-primitives-traits.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }
+revm.workspace = true
 secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true

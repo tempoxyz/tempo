@@ -14,7 +14,7 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_exhausted, scaled_build_time_multiplier,
+        payload_budget_decision, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -65,7 +65,9 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
+use tempo_payload_types::{
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
@@ -555,26 +557,38 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
+        let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
-                if payload_budget_exhausted(
+                let current_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used,
+                    pool_transactions_included as usize,
+                );
+                let budget_decision = payload_budget_decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
-                    build_budget,
                     marshal_persist,
                     block_size_used,
-                ) {
-                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                    validation_latency,
+                    current_workload,
+                );
+                if budget_decision.total_reserved >= build_budget {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
-                        ?estimated_marshal_persist,
+                        predicted_builder_work = ?budget_decision.predicted_builder_work,
+                        predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        total_reserved = ?budget_decision.total_reserved,
+                        marshal_persist = ?budget_decision.marshal_persist,
+                        ?current_workload,
+                        gas_used = cumulative_gas_used,
+                        transactions = pool_transactions_included,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -1052,6 +1066,10 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+        let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
+        let validation_latency_duration = validation_latency
+            .and_then(|estimate| estimate.estimate(final_workload))
+            .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -1083,6 +1101,7 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
+            ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
@@ -1115,7 +1134,7 @@ where
             block_access_list,
             Some(executed_block),
             validation_work_duration,
-            rlp_length,
+            validation_latency_duration,
         );
 
         drop(db);
@@ -1359,9 +1378,8 @@ mod tests {
         }
         .try_into_recovered()
         .unwrap();
-        let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
     }
 
     #[test]

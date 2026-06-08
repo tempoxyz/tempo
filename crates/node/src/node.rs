@@ -158,7 +158,11 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(
+                BasicPayloadServiceBuilder::new(payload_builder_builder)
+                    // we can disable basic parent state caching because tempo builder always uses execution cache
+                    .with_pre_cache_state(false),
+            )
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }

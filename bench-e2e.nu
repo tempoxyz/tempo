@@ -207,11 +207,14 @@ def ensure-bloat-space [bloat: int] {
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
+    if $bloat == 0 {
+        return 0
+    }
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
     }
 
-    print "Error: --bloat must be one of: 1, 10, 100"
+    print "Error: --bloat must be one of: 0, 1, 10, 100"
     exit 1
 }
 
@@ -1163,7 +1166,7 @@ def "main e2e" [
     --summary-warmup-blocks: int = 5                    # Initial blocks per run excluded from summary metrics
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases

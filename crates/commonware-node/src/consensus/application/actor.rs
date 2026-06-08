@@ -11,14 +11,14 @@
 //! layer calls to complete.
 
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
@@ -41,13 +41,15 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
+use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, marshal_persist_estimate, observe_marshal_persist,
+    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
+    marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -125,6 +127,7 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
+                validation_latency_estimator: Default::default(),
 
                 metrics,
 
@@ -225,6 +228,7 @@ struct Inner<TState> {
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
+    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 
@@ -602,7 +606,7 @@ impl Inner<Init> {
         // (genesis/boundary block) must exist and be finalized, so we can skip
         // it.
         if !is_genesis_parent
-            && !verify_block(
+            && verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
                 &self.epoch_strategy,
@@ -617,6 +621,7 @@ impl Inner<Init> {
             )
             .await
             .wrap_err("failed verifying block against execution layer")?
+            .is_none()
         {
             bail!("the proposal parent block is not valid");
         }
@@ -699,6 +704,11 @@ impl Inner<Init> {
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
+        let validation_latency_estimate = self
+            .validation_latency_estimator
+            .lock()
+            .ok()
+            .and_then(|estimator| estimator.estimate());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -712,7 +722,8 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         )
-        .with_payload_build_budget(build_budget);
+        .with_payload_build_budget(build_budget)
+        .with_validation_latency_estimate(validation_latency_estimate);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
@@ -751,9 +762,18 @@ impl Inner<Init> {
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
-        let payload_validation_elapsed = payload.validation_work_duration();
-        let block_size_bytes = payload.rlp_block_size_bytes();
-        let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
+        let payload_validation_work_elapsed = payload.validation_work_duration();
+        let validation_latency_elapsed = payload.validation_latency_duration();
+        let (block, block_access_list) = payload.into_execution_payload();
+        let execution_block_rlp_size_bytes = block.rlp_length();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_rlp_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let consensus_block_size_bytes = proposal.encode_size();
+        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -761,32 +781,26 @@ impl Inner<Init> {
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validation_latency_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
-            validation_time = %display_duration(payload_validation_elapsed),
+            payload_validation_work = %display_duration(payload_validation_work_elapsed),
+            validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
-            block_size_bytes,
+            execution_block_rlp_size_bytes,
+            consensus_block_size_bytes,
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
-
-        let (block, block_access_list) = payload.into_execution_payload();
-        let proposal = Block::from_execution_block_with_encoded_size(
-            block,
-            block_access_list,
-            block_size_bytes,
-        )
-        .wrap_err("payload builder produced an invalid block access list")?;
 
         Ok((
             proposal,
             Some(ProposalReturn {
                 time: proposal_return_time,
-                block_size_bytes,
+                block_size_bytes: consensus_block_size_bytes,
             }),
         ))
     }
@@ -869,7 +883,7 @@ impl Inner<Init> {
             );
         }
 
-        let is_good = verify_block(
+        let validation_duration = verify_block(
             context,
             round.epoch(),
             &self.epoch_strategy,
@@ -883,6 +897,19 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
+        if let Some(duration) = validation_duration
+            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
+        {
+            estimator.observe(
+                block.height().get(),
+                ValidationLatencyWorkload::new(
+                    block.block().gas_used(),
+                    block.block().body().transaction_count(),
+                ),
+                duration,
+            );
+        }
+        let is_good = validation_duration.is_some();
 
         let block_height = block.height();
         let block_digest = block.digest();
@@ -930,6 +957,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
+            validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
         };
 
@@ -951,9 +979,10 @@ struct Init {
 
 /// Verifies `block` given its `parent` against the execution layer.
 ///
-/// Returns whether the block is valid or not. Returns an error if validation
-/// was not possible, for example if communication with the execution layer
-/// failed.
+/// Returns EL validation duration when validation reached the execution layer
+/// and succeeded, or `None` if the block is invalid. Returns an error if
+/// validation was not possible, for example if communication with the execution
+/// layer failed.
 ///
 /// Reason the reason for why a block was not valid is communicated as a
 /// tracing event.
@@ -977,7 +1006,7 @@ async fn verify_block<TContext: Pacer>(
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
-) -> eyre::Result<bool> {
+) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let epoch_info = epoch_strategy
@@ -985,14 +1014,14 @@ async fn verify_block<TContext: Pacer>(
         .expect("epoch strategy is for all heights");
     if epoch_info.epoch() != epoch {
         info!("block does not belong to this epoch");
-        return Ok(false);
+        return Ok(None);
     }
     if block.parent_hash() != *parent_digest {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
         );
-        return Ok(false);
+        return Ok(None);
     }
 
     // Scheme registration precedes engine creation, so the scheme must exist
@@ -1013,19 +1042,20 @@ async fn verify_block<TContext: Pacer>(
         block_access_list,
         validator_set,
     };
+    let validation_start = Instant::now();
     let payload_status = engine
         .new_payload(execution_data)
         .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(true),
+        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
                 "execution layer returned that the block was invalid"
             );
-            Ok(false)
+            Ok(None)
         }
         PayloadStatusEnum::Accepted => {
             bail!(
