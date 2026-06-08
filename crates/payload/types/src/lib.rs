@@ -41,6 +41,8 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// RLP length of the execution block.
+    execution_block_rlp_length: usize,
     /// Replayable builder work for this payload.
     ///
     /// This excludes proposer-only idle waiting, but includes transaction
@@ -56,6 +58,7 @@ impl TempoBuiltPayload {
         inner: EthBuiltPayload<TempoPrimitives>,
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        execution_block_rlp_length: usize,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
     ) -> Self {
@@ -63,6 +66,7 @@ impl TempoBuiltPayload {
             inner,
             block_access_list,
             executed_block,
+            execution_block_rlp_length,
             validation_work_duration,
             validation_latency_duration,
         }
@@ -84,6 +88,11 @@ impl TempoBuiltPayload {
     /// Returns the time validators are expected to spend validating this payload.
     pub fn validation_latency_duration(&self) -> Duration {
         self.validation_latency_duration
+    }
+
+    /// Returns the RLP length of the execution block.
+    pub fn execution_block_rlp_length(&self) -> usize {
+        self.execution_block_rlp_length
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

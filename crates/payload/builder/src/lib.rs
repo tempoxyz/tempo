@@ -1133,6 +1133,7 @@ where
             eth_payload,
             block_access_list,
             Some(executed_block),
+            rlp_length,
             validation_work_duration,
             validation_latency_duration,
         );
@@ -1379,7 +1380,8 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        let rlp_length = eth.block().rlp_length();
+        TempoBuiltPayload::new(eth, None, None, rlp_length, Duration::ZERO, Duration::ZERO)
     }
 
     #[test]
