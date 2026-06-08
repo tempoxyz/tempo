@@ -15,10 +15,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{
-        Handler, PrecompileStorageProvider, StorageCtx,
-        evm::{StorageAction, StorageActions},
-    },
+    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},

@@ -18,7 +18,7 @@ use reth_revm::{
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 #[cfg(feature = "engine")]
-use tempo_precompiles::storage::evm::{StorageAction, StorageActions};
+use tempo_precompiles::storage::{StorageAction, StorageActions};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,

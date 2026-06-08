@@ -21,9 +21,7 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{
-    error::TempoPrecompileError, storage::evm::StorageActions, tip20::TIP20Token,
-};
+use tempo_precompiles::{error::TempoPrecompileError, storage::StorageActions, tip20::TIP20Token};
 use tempo_primitives::TempoAddressExt;
 
 /// keccak256("Transfer(address,address,uint256)")

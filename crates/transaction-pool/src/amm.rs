@@ -20,7 +20,7 @@ use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::evm::StorageActions,
+    storage::StorageActions,
     tip_fee_manager::{
         TipFeeManager,
         amm::{Pool, compute_amount_out},

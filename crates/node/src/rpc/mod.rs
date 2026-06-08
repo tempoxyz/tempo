@@ -26,9 +26,7 @@ use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::evm::StorageActions,
-};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 

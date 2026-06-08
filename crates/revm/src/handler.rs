@@ -2731,7 +2731,7 @@ mod tests {
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
-                &tempo_precompiles::storage::evm::StorageActions::disabled(),
+                &tempo_precompiles::storage::StorageActions::disabled(),
             )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
@@ -2751,7 +2751,7 @@ mod tests {
                 &ctx.tx,
                 user,
                 ctx.cfg.spec,
-                &tempo_precompiles::storage::evm::StorageActions::disabled(),
+                &tempo_precompiles::storage::StorageActions::disabled(),
             )?;
             assert_eq!(user_fee_token, fee_token);
         }
@@ -2762,7 +2762,7 @@ mod tests {
             &ctx.tx,
             user,
             ctx.cfg.spec,
-            &tempo_precompiles::storage::evm::StorageActions::disabled(),
+            &tempo_precompiles::storage::StorageActions::disabled(),
         )?;
         assert_eq!(tx_fee_token, fee_token);
 
