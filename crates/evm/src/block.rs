@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -568,7 +568,25 @@ where
             validator_fee: _,
         } = output;
 
+        let invalidate_validator_fee_token = self
+            .inner
+            .evm
+            .cached_validator_fee_token_slot()
+            .is_some_and(|slot| {
+                inner
+                    .result
+                    .state
+                    .get(&TIP_FEE_MANAGER_ADDRESS)
+                    .is_some_and(|account| {
+                        account
+                            .changed_storage_slots()
+                            .any(|(changed_slot, _)| *changed_slot == slot)
+                    })
+            });
         let gas_output = self.inner.commit_transaction(inner);
+        if invalidate_validator_fee_token {
+            self.inner.evm.invalidate_validator_fee_token();
+        }
 
         self.section = next_section;
 

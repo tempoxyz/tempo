@@ -121,6 +121,16 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.validator_fee
     }
 
+    /// Returns the cached validator-token storage slot, if one is currently cached.
+    pub fn cached_validator_fee_token_slot(&self) -> Option<alloy_primitives::U256> {
+        self.inner.cached_validator_fee_token_slot()
+    }
+
+    /// Clears the cached validator-token value.
+    pub fn invalidate_validator_fee_token(&self) {
+        self.inner.invalidate_validator_fee_token();
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {

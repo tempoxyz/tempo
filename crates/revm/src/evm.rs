@@ -24,15 +24,23 @@ struct CachedTip20Token {
     token: TIP20Token,
 }
 
+#[derive(Clone, Copy)]
+struct CachedValidatorFeeToken {
+    beneficiary: Address,
+    token: Address,
+}
+
 struct CachedFeeCollectorInner {
     fee_manager: TipFeeManager,
     fee_token: Option<CachedTip20Token>,
+    validator_fee_token: Option<CachedValidatorFeeToken>,
 }
 
-/// Cached generated handles used by internal fee collection.
+/// Cached fee-collection state used by internal fee collection.
 ///
-/// These handles only cache deterministic storage handlers and derived slots. Storage values still
-/// come from the active `StorageCtx` installed for each fee-collection call.
+/// Generated handles cache deterministic storage handlers and derived slots. The resolved
+/// validator fee token is also cached and invalidated when the cached validator-token storage slot
+/// changes.
 pub(crate) struct CachedFeeCollector {
     inner: RefCell<CachedFeeCollectorInner>,
 }
@@ -43,6 +51,7 @@ impl CachedFeeCollector {
             inner: RefCell::new(CachedFeeCollectorInner {
                 fee_manager: TipFeeManager::new(),
                 fee_token: None,
+                validator_fee_token: None,
             }),
         }
     }
@@ -80,6 +89,14 @@ impl CachedFeeCollector {
             beneficiary,
         )
     }
+
+    pub(crate) fn cached_validator_fee_token_slot(&self) -> Option<U256> {
+        self.inner.borrow().cached_validator_fee_token_slot()
+    }
+
+    pub(crate) fn invalidate_validator_fee_token(&self) {
+        self.inner.borrow_mut().validator_fee_token = None;
+    }
 }
 
 impl CachedFeeCollectorInner {
@@ -103,6 +120,27 @@ impl CachedFeeCollectorInner {
             .token)
     }
 
+    fn validator_fee_token(
+        fee_manager: &mut TipFeeManager,
+        cached_validator_fee_token: &mut Option<CachedValidatorFeeToken>,
+        beneficiary: Address,
+    ) -> PrecompileResult<Address> {
+        if let Some(cached) = cached_validator_fee_token.as_ref()
+            && cached.beneficiary == beneficiary
+        {
+            return Ok(cached.token);
+        }
+
+        let token = fee_manager.get_validator_token(beneficiary)?;
+        *cached_validator_fee_token = Some(CachedValidatorFeeToken { beneficiary, token });
+        Ok(token)
+    }
+
+    fn cached_validator_fee_token_slot(&self) -> Option<U256> {
+        self.validator_fee_token
+            .map(|cached| self.fee_manager.validator_token_slot(cached.beneficiary))
+    }
+
     fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -114,15 +152,18 @@ impl CachedFeeCollectorInner {
         let Self {
             fee_manager,
             fee_token: cached_token,
+            validator_fee_token: cached_validator_token,
         } = self;
+        let validator_token =
+            Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
         let token = Self::fee_token_mut(cached_token, fee_token)?;
 
-        fee_manager.collect_fee_pre_tx_with_token(
+        fee_manager.collect_fee_pre_tx_with_token_and_validator_token(
             token,
             fee_payer,
             fee_token,
             max_amount,
-            beneficiary,
+            validator_token,
             skip_liquidity_check,
         )
     }
@@ -138,16 +179,20 @@ impl CachedFeeCollectorInner {
         let Self {
             fee_manager,
             fee_token: cached_token,
+            validator_fee_token: cached_validator_token,
         } = self;
+        let validator_token =
+            Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
         let token = Self::fee_token_mut(cached_token, fee_token)?;
 
-        fee_manager.collect_fee_post_tx_with_token(
+        fee_manager.collect_fee_post_tx_with_token_and_validator_token(
             token,
             fee_payer,
             actual_spending,
             refund_amount,
             fee_token,
             beneficiary,
+            validator_token,
         )
     }
 }
@@ -273,6 +318,16 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.fee_token = None;
         self.key_expiry = None;
+    }
+
+    /// Returns the cached validator-token storage slot, if one is currently cached.
+    pub fn cached_validator_fee_token_slot(&self) -> Option<U256> {
+        self.fee_collector.cached_validator_fee_token_slot()
+    }
+
+    /// Clears the cached validator-token value.
+    pub fn invalidate_validator_fee_token(&self) {
+        self.fee_collector.invalidate_validator_fee_token();
     }
 }
 

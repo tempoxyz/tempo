@@ -74,6 +74,11 @@ impl TipFeeManager {
         }
     }
 
+    /// Returns the storage slot for the validator's preferred fee token.
+    pub fn validator_token_slot(&self, beneficiary: Address) -> U256 {
+        self.validator_tokens[beneficiary].slot()
+    }
+
     /// Sets the caller's preferred fee token as a validator.
     ///
     /// Rejects the call if `sender` is the current block's beneficiary (prevents mid-block
@@ -185,10 +190,28 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
-        debug_assert_eq!(tip20_token.address(), user_token);
-
-        // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
+        self.collect_fee_pre_tx_with_token_and_validator_token(
+            tip20_token,
+            fee_payer,
+            user_token,
+            max_amount,
+            validator_token,
+            skip_liquidity_check,
+        )
+    }
+
+    /// Like [`Self::collect_fee_pre_tx_with_token`], using a resolved validator fee token.
+    pub fn collect_fee_pre_tx_with_token_and_validator_token(
+        &mut self,
+        tip20_token: &mut TIP20Token,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        validator_token: Address,
+        skip_liquidity_check: bool,
+    ) -> Result<Address> {
+        debug_assert_eq!(tip20_token.address(), user_token);
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -281,13 +304,35 @@ impl TipFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> Result<U256> {
+        let validator_token = self.get_validator_token(beneficiary)?;
+        self.collect_fee_post_tx_with_token_and_validator_token(
+            tip20_token,
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            validator_token,
+        )
+    }
+
+    /// Like [`Self::collect_fee_post_tx_with_token`], using a resolved validator fee token.
+    pub fn collect_fee_post_tx_with_token_and_validator_token(
+        &mut self,
+        tip20_token: &mut TIP20Token,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+        validator_token: Address,
+    ) -> Result<U256> {
         debug_assert_eq!(tip20_token.address(), fee_token);
 
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
-        let validator_token = self.get_validator_token(beneficiary)?;
 
         let amount = if fee_token == validator_token {
             actual_spending
