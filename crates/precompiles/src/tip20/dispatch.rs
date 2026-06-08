@@ -37,6 +37,30 @@ impl TIP20Call {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
+        match selector {
+            ITIP20::transferCall::SELECTOR => {
+                return ITIP20::transferCall::abi_decode(calldata)
+                    .map(ITIP20Calls::transfer)
+                    .map(Self::TIP20);
+            }
+            ITIP20::transferFromCall::SELECTOR => {
+                return ITIP20::transferFromCall::abi_decode(calldata)
+                    .map(ITIP20Calls::transferFrom)
+                    .map(Self::TIP20);
+            }
+            ITIP20::transferWithMemoCall::SELECTOR => {
+                return ITIP20::transferWithMemoCall::abi_decode(calldata)
+                    .map(ITIP20Calls::transferWithMemo)
+                    .map(Self::TIP20);
+            }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                return ITIP20::transferFromWithMemoCall::abi_decode(calldata)
+                    .map(ITIP20Calls::transferFromWithMemo)
+                    .map(Self::TIP20);
+            }
+            _ => {}
+        }
+
         if IRolesAuthCalls::valid_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
         } else {
