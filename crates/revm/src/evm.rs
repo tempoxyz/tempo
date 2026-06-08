@@ -11,7 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::evm::EvmActions;
+use tempo_precompiles::storage::evm::StorageActions;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -53,17 +53,17 @@ pub struct TempoEvm<DB: Database, I> {
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
     /// Shared precompile action buffer used when action recording is enabled.
-    pub(crate) actions: EvmActions,
+    pub(crate) actions: StorageActions,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        Self::new_with_actions(ctx, inspector, EvmActions::disabled())
+        Self::new_with_actions(ctx, inspector, StorageActions::disabled())
     }
 
     /// Create a new Tempo EVM with a shared precompile action buffer.
-    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: EvmActions) -> Self {
+    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
         let precompiles =
             tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions.clone());
 
@@ -90,7 +90,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             PrecompilesMap,
             EthFrame<EthInterpreter>,
         >,
-        actions: EvmActions,
+        actions: StorageActions,
     ) -> Self {
         Self {
             inner,

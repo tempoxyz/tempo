@@ -29,7 +29,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
-    actions: EvmActions,
+    actions: StorageActions,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -52,7 +52,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
-            actions: EvmActions::disabled(),
+            actions: StorageActions::disabled(),
         }
     }
 
@@ -87,7 +87,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         )
     }
 
-    pub fn with_actions(mut self, actions: EvmActions) -> Self {
+    /// Sets the storage actions for this provider.
+    pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
         self
     }
@@ -100,8 +101,9 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
+    /// Records a storage action.
     #[inline]
-    fn record_action(&mut self, action: EvmAction) {
+    fn record_action(&mut self, action: StorageAction) {
         self.actions.record(action);
     }
 
@@ -111,7 +113,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         address: Address,
         key: U256,
         value: U256,
-        action: Option<EvmAction>,
+        action: Option<StorageAction>,
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
@@ -176,7 +178,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_cold = val.is_cold;
         };
         if record_action {
-            self.record_action(EvmAction::Sload(address, key, value));
+            self.record_action(StorageAction::Sload(address, key, value));
         }
 
         if !self.spec.is_t4() {
@@ -283,7 +285,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             address,
             key,
             value,
-            Some(EvmAction::Sstore(address, key, value)),
+            Some(StorageAction::Sstore(address, key, value)),
         )
     }
 
@@ -430,18 +432,22 @@ impl EvmPrecompileStorageProvider<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum EvmAction {
+pub enum StorageAction {
+    /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
+    /// Records an SSTORE opcode.
     Sstore(Address, U256, U256),
 }
 
+/// Records the actions performed by the EVM.
 #[derive(Debug, Clone)]
-pub struct EvmActions {
+pub struct StorageActions {
     enabled: Rc<AtomicBool>,
-    actions: Rc<RefCell<Vec<EvmAction>>>,
+    actions: Rc<RefCell<Vec<StorageAction>>>,
 }
 
-impl EvmActions {
+impl StorageActions {
+    /// Returns an [`StorageActions`] instance with actions recording disabled.
     pub fn disabled() -> Self {
         Self {
             enabled: Rc::new(AtomicBool::new(false)),
@@ -449,12 +455,22 @@ impl EvmActions {
         }
     }
 
+    /// Returns an [`StorageActions`] instance with actions recording enabled.
+    pub fn enabled() -> Self {
+        Self {
+            enabled: Rc::new(AtomicBool::new(true)),
+            actions: Rc::default(),
+        }
+    }
+
+    /// Enables actions recording.
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::Relaxed);
         self.actions.borrow_mut().clear();
     }
 
-    pub fn take(&self) -> Option<Vec<EvmAction>> {
+    /// Returns recorded storage actions, if recording is enabled.
+    pub fn take(&self) -> Option<Vec<StorageAction>> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
         }
@@ -462,7 +478,8 @@ impl EvmActions {
         Some(std::mem::take(&mut *self.actions.borrow_mut()))
     }
 
-    pub fn replace(&self, actions: Vec<EvmAction>) -> Option<Vec<EvmAction>> {
+    /// Replaces the recorded actions with the given ones, if recording is enabled.
+    pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
         }
@@ -470,7 +487,8 @@ impl EvmActions {
         Some(std::mem::replace(&mut *self.actions.borrow_mut(), actions))
     }
 
-    pub fn record(&self, action: EvmAction) {
+    /// Records an action if recording is enabled.
+    pub fn record(&self, action: StorageAction) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
@@ -610,8 +628,7 @@ mod tests {
     #[test]
     fn test_records_sload_sstore_actions() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
-        let actions = EvmActions::disabled();
-        actions.enable();
+        let actions = StorageActions::enabled();
         let mut provider = evm.provider_max_gas().with_actions(actions.clone());
 
         let addr = Address::random();
@@ -624,8 +641,8 @@ mod tests {
         assert_eq!(
             actions.take().expect("action recording enabled"),
             vec![
-                EvmAction::Sstore(addr, key, value),
-                EvmAction::Sload(addr, key, value)
+                StorageAction::Sstore(addr, key, value),
+                StorageAction::Sload(addr, key, value)
             ]
         );
         Ok(())

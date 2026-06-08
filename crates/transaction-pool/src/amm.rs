@@ -20,7 +20,7 @@ use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::evm::EvmActions,
+    storage::evm::StorageActions,
     tip_fee_manager::{
         TipFeeManager,
         amm::{Pool, compute_amount_out},
@@ -131,7 +131,7 @@ impl AmmLiquidityCache {
         state_provider
             .with_read_only_storage_ctx(
                 hardfork,
-                &EvmActions::disabled(),
+                &StorageActions::disabled(),
                 || -> TempoResult<bool> {
                     let manager = TipFeeManager::new();
                     for validator_token in missing_in_cache {

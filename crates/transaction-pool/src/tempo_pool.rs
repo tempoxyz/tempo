@@ -34,7 +34,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
-    storage::{Handler, evm::EvmActions},
+    storage::{Handler, evm::StorageActions},
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
@@ -1251,7 +1251,7 @@ pub(crate) fn exceeds_spending_limit(
     provider
         .with_read_only_storage_ctx(
             spec,
-            &EvmActions::disabled(),
+            &StorageActions::disabled(),
             || -> TempoPrecompileResult<bool> {
                 let keychain = AccountKeychain::new();
                 if !keychain.keys[subject.account][subject.key_id]
@@ -1290,7 +1290,7 @@ fn get_sender_policy_ids(
         return Some(cached.clone());
     }
 
-    provider.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
+    provider.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()
@@ -1329,7 +1329,7 @@ fn get_recipient_policy_ids(
     fee_token: Address,
     spec: TempoHardfork,
 ) -> Option<Vec<u64>> {
-    provider.with_read_only_storage_ctx(spec, &EvmActions::disabled(), || {
+    provider.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
         let policy_id = TIP20Token::from_address(fee_token)
             .and_then(|t| t.transfer_policy_id())
             .ok()

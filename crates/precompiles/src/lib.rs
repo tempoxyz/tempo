@@ -33,7 +33,7 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, evm::EvmActions},
+    storage::{StorageCtx, evm::StorageActions},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -134,13 +134,13 @@ pub trait Precompile {
 /// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
 pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
-    tempo_precompiles_with_actions(cfg, EvmActions::disabled())
+    tempo_precompiles_with_actions(cfg, StorageActions::disabled())
 }
 
 /// Returns the full Tempo precompiles for the given config and shared action buffer.
 pub fn tempo_precompiles_with_actions(
     cfg: &CfgEnv<TempoHardfork>,
-    actions: EvmActions,
+    actions: StorageActions,
 ) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
@@ -160,7 +160,7 @@ pub fn tempo_precompiles_with_actions(
 pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
-    actions: EvmActions,
+    actions: StorageActions,
 ) {
     let cfg = cfg.clone();
 
@@ -210,7 +210,7 @@ sol! {
 }
 
 macro_rules! tempo_precompile {
-    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{ tempo_precompile!($id, $cfg, EvmActions::disabled(), |$input| $impl) }};
+    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{ tempo_precompile!($id, $cfg, StorageActions::disabled(), |$input| $impl) }};
     ($id:expr, $cfg:expr, $actions:expr, |$input:ident| $impl:expr) => {{
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
@@ -243,28 +243,40 @@ macro_rules! tempo_precompile {
 
 impl TipFeeManager {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl AddressRegistry {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("AddressRegistry", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl TIP403Registry {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("TIP403Registry", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl TIP20Factory {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("TIP20Factory", cfg, actions, |input| { Self::new() })
     }
 }
@@ -274,7 +286,7 @@ impl TIP20Token {
     pub fn create_precompile(
         address: Address,
         cfg: &CfgEnv<TempoHardfork>,
-        actions: EvmActions,
+        actions: StorageActions,
     ) -> DynPrecompile {
         tempo_precompile!("TIP20Token", cfg, actions, |input| {
             Self::from_address(address).expect("TIP20 prefix already verified")
@@ -284,56 +296,80 @@ impl TIP20Token {
 
 impl StablecoinDEX {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("StablecoinDEX", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl NonceManager {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("NonceManager", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl AccountKeychain {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("AccountKeychain", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl ValidatorConfig {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl SignatureVerifier {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("SignatureVerifier", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl TIP20ChannelReserve {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("TIP20ChannelReserve", cfg, actions, |input| { Self::new() })
     }
 }
 
 impl ReceivePolicyGuard {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>, actions: EvmActions) -> DynPrecompile {
+    pub fn create_precompile(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> DynPrecompile {
         tempo_precompile!("ReceivePolicyGuard", cfg, actions, |input| { Self::new() })
     }
 }
