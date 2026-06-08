@@ -51,7 +51,6 @@ use tempo_precompiles::{
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
-    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -1297,8 +1296,9 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let fee_collector = &evm.fee_collector;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                fee_collector.collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
@@ -1573,20 +1573,19 @@ where
             return Ok(());
         }
 
-        // Create storage provider and fee manager
+        // Enter precompile storage context for fee settlement.
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
+        let fee_collector = &evm.fee_collector;
 
         let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
-
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
                 let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
                 let fee_token = evm
                     .fee_token
                     .expect("set in `validate_against_state_and_deduct_caller`");
                 // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_manager
+                fee_collector
                     .collect_fee_post_tx(
                         fee_payer,
                         actual_spending,
@@ -2439,6 +2438,7 @@ mod tests {
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
+        tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,

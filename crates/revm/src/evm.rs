@@ -1,6 +1,7 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
+use core::{cell::RefCell, fmt};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -11,9 +12,151 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    error::Result as PrecompileResult, tip_fee_manager::TipFeeManager, tip20::TIP20Token,
+};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+struct CachedTip20Token {
+    address: Address,
+    token: TIP20Token,
+}
+
+struct CachedFeeCollectorInner {
+    fee_manager: TipFeeManager,
+    fee_token: Option<CachedTip20Token>,
+}
+
+/// Cached generated handles used by internal fee collection.
+///
+/// These handles only cache deterministic storage handlers and derived slots. Storage values still
+/// come from the active `StorageCtx` installed for each fee-collection call.
+pub(crate) struct CachedFeeCollector {
+    inner: RefCell<CachedFeeCollectorInner>,
+}
+
+impl CachedFeeCollector {
+    fn new() -> Self {
+        Self {
+            inner: RefCell::new(CachedFeeCollectorInner {
+                fee_manager: TipFeeManager::new(),
+                fee_token: None,
+            }),
+        }
+    }
+
+    pub(crate) fn collect_fee_pre_tx(
+        &self,
+        fee_payer: Address,
+        fee_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> PrecompileResult<Address> {
+        self.inner.borrow_mut().collect_fee_pre_tx(
+            fee_payer,
+            fee_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )
+    }
+
+    pub(crate) fn collect_fee_post_tx(
+        &self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> PrecompileResult<U256> {
+        self.inner.borrow_mut().collect_fee_post_tx(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+        )
+    }
+}
+
+impl CachedFeeCollectorInner {
+    fn fee_token_mut(
+        fee_token: &mut Option<CachedTip20Token>,
+        address: Address,
+    ) -> PrecompileResult<&mut TIP20Token> {
+        if fee_token
+            .as_ref()
+            .is_none_or(|cached| cached.address != address)
+        {
+            *fee_token = Some(CachedTip20Token {
+                address,
+                token: TIP20Token::from_address(address)?,
+            });
+        }
+
+        Ok(&mut fee_token
+            .as_mut()
+            .expect("fee token cache initialized above")
+            .token)
+    }
+
+    fn collect_fee_pre_tx(
+        &mut self,
+        fee_payer: Address,
+        fee_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> PrecompileResult<Address> {
+        let Self {
+            fee_manager,
+            fee_token: cached_token,
+        } = self;
+        let token = Self::fee_token_mut(cached_token, fee_token)?;
+
+        fee_manager.collect_fee_pre_tx_with_token(
+            token,
+            fee_payer,
+            fee_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )
+    }
+
+    fn collect_fee_post_tx(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> PrecompileResult<U256> {
+        let Self {
+            fee_manager,
+            fee_token: cached_token,
+        } = self;
+        let token = Self::fee_token_mut(cached_token, fee_token)?;
+
+        fee_manager.collect_fee_post_tx_with_token(
+            token,
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+        )
+    }
+}
+
+impl fmt::Debug for CachedFeeCollector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedFeeCollector").finish_non_exhaustive()
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -38,6 +181,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Cached generated handles for internal fee collection.
+    pub(crate) fee_collector: CachedFeeCollector,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +229,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fee_collector: CachedFeeCollector::new(),
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
