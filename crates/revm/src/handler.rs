@@ -1555,11 +1555,12 @@ where
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-        let refund_amount = tx.effective_balance_spending(
-            context.block.basefee.into(),
-            context.block.blob_gasprice().unwrap_or_default(),
-        )? - tx.value
-            - actual_spending;
+        let prepaid_gas_spending =
+            calc_gas_balance_spending(tx.gas_limit(), tx.effective_gas_price(basefee))
+                .checked_add(tx.value)
+                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?
+                - tx.value;
+        let refund_amount = prepaid_gas_spending - actual_spending;
 
         // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
