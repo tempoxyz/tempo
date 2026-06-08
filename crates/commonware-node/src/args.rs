@@ -306,6 +306,14 @@ pub struct Args {
         default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
     )]
     pub finalized_blocks_retention: u64,
+
+    /// Deprecated compatibility flag. Ignored because the legacy immutable
+    /// finalized blocks archive has been removed.
+    #[arg(
+        long = "consensus.no-legacy-archive",
+        help = "Deprecated: the legacy finalized blocks archive has been removed, so this flag no longer has any effect."
+    )]
+    pub no_legacy_archive: bool,
 }
 
 /// A jiff::SignedDuration that checks that the duration is positive and not zero.
