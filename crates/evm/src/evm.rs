@@ -66,6 +66,7 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
+    /// Buffer for recording storage actions.
     #[cfg(feature = "engine")]
     actions: StorageActions,
     inspect: bool,
@@ -176,14 +177,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self
     }
 
-    /// Returns recorded storage actions, if recording is enabled.
+    /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     #[cfg(feature = "engine")]
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
         self.actions.take()
     }
 
-    /// Replaces the recorded storage actions with the given ones, returning the previous actions,
-    /// if recording is enabled.
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     #[cfg(feature = "engine")]
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.actions.replace(actions)
