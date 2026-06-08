@@ -189,6 +189,10 @@ impl Consensus<Block> for TempoConsensus {
             SYSTEM_TX_COUNT
         };
 
+        if expected_system_tx_count == 0 {
+            return self.inner.validate_block_pre_execution(block);
+        }
+
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
             .get(transactions.len().saturating_sub(expected_system_tx_count)..)
