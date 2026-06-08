@@ -52,7 +52,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
-    /// Shared precompile action buffer used when action recording is enabled.
+    /// Buffer for recording storage actions.
     pub(crate) actions: StorageActions,
 }
 
@@ -62,7 +62,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self::new_with_actions(ctx, inspector, StorageActions::disabled())
     }
 
-    /// Create a new Tempo EVM with a shared precompile action buffer.
+    /// Create a new Tempo EVM with a buffer for recording storage actions.
     pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
         let precompiles =
             tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions.clone());

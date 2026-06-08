@@ -14,7 +14,7 @@ pub enum StorageAction {
     Sstore(Address, U256, U256),
 }
 
-/// Records the actions performed by the EVM.
+/// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub struct StorageActions {
     enabled: Rc<AtomicBool>,
@@ -44,7 +44,7 @@ impl StorageActions {
         self.actions.borrow_mut().clear();
     }
 
-    /// Returns recorded storage actions, if recording is enabled.
+    /// Replaces recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;
@@ -53,7 +53,7 @@ impl StorageActions {
         Some(std::mem::take(&mut *self.actions.borrow_mut()))
     }
 
-    /// Replaces the recorded actions with the given ones, if recording is enabled.
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         if !self.enabled.load(Ordering::Relaxed) {
             return None;

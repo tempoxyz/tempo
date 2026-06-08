@@ -137,7 +137,7 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     tempo_precompiles_with_actions(cfg, StorageActions::disabled())
 }
 
-/// Returns the full Tempo precompiles for the given config and shared action buffer.
+/// Returns the full Tempo precompiles for the given config and storage actions.
 pub fn tempo_precompiles_with_actions(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
