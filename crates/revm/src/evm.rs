@@ -734,8 +734,8 @@ mod tests {
             .gas_limit(1_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, config_id);
-        let owner_signature = PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?)
-            .to_bytes();
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
         let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature {
             account,
             config_id,

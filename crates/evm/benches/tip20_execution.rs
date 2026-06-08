@@ -57,9 +57,10 @@ use tempo_evm::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
 };
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
+    native_multisig::NativeMultisig,
     nonce::NonceManager,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
@@ -69,7 +70,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
-    transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
+    transaction::{
+        Call, InitMultisig, MultisigOwner, MultisigSignature, PrimitiveSignature,
+        TEMPO_EXPIRING_NONCE_KEY, multisig_digest,
+    },
 };
 use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
@@ -91,6 +95,12 @@ struct Workload {
     transactions: Vec<Recovered<TempoTxEnvelope>>,
     participants: Vec<Address>,
     block_timestamp: u64,
+}
+
+struct MultisigComparisonWorkloads {
+    secp256k1: Workload,
+    multisig_1_of_1: Workload,
+    multisig_configs: Vec<(Address, B256, InitMultisig)>,
 }
 
 #[derive(Clone, Copy)]
@@ -339,6 +349,7 @@ fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
+    multisig_configs: &[(Address, B256, InitMultisig)],
     hardfork: TempoHardfork,
 ) -> CacheDB<EmptyDB> {
     // This setup database only materializes the benchmark fixture in memory. The measured
@@ -388,6 +399,13 @@ fn seed_in_memory_cache_db(
 
             TipFeeManager::new().initialize()?;
             NonceManager::new().initialize()?;
+            if !multisig_configs.is_empty() {
+                let mut multisig = NativeMultisig::new();
+                multisig.initialize()?;
+                for (account, config_id, config) in multisig_configs {
+                    multisig.store_initial_config(*account, *config_id, config)?;
+                }
+            }
             Ok::<(), TempoPrecompileError>(())
         },
     )
@@ -402,9 +420,16 @@ fn setup_fixed_cache_state(
     participants: &[Address],
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
+    multisig_configs: &[(Address, B256, InitMultisig)],
     hardfork: TempoHardfork,
 ) -> ExecutionFixture {
-    let seeded = seed_in_memory_cache_db(participants, block_timestamp, reward_seed, hardfork);
+    let seeded = seed_in_memory_cache_db(
+        participants,
+        block_timestamp,
+        reward_seed,
+        multisig_configs,
+        hardfork,
+    );
     let state_cache = seeded.cache;
     let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
 
@@ -434,6 +459,7 @@ fn setup_fixed_cache_state(
 
     for address in [
         ADDRESS_REGISTRY_ADDRESS,
+        NATIVE_MULTISIG_ADDRESS,
         NONCE_PRECOMPILE_ADDRESS,
         SIGNATURE_VERIFIER_ADDRESS,
         TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -583,7 +609,22 @@ fn sign_tip20_transfer(
 }
 
 fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTxEnvelope> {
-    let tx = TempoTransaction {
+    let tx = tip20_call_tx(input);
+    let signature = signer
+        .sign_hash_sync(&tx.signature_hash())
+        .expect("failed to sign generated TIP20 transaction");
+    let signed = AASigned::new_unhashed(
+        tx,
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+
+    TempoTxEnvelope::from(signed)
+        .try_into_recovered()
+        .expect("generated TIP20 benchmark transaction should recover")
+}
+
+fn tip20_call_tx(input: Bytes) -> TempoTransaction {
+    TempoTransaction {
         chain_id: CHAIN_ID,
         fee_token: Some(PATH_USD_ADDRESS),
         max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
@@ -602,18 +643,72 @@ fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTx
         valid_after: None,
         key_authorization: None,
         tempo_authorization_list: Vec::new(),
+    }
+}
+
+fn multisig_1_of_1_config(owner: Address, salt: B256) -> (Address, B256, InitMultisig) {
+    let config = InitMultisig {
+        salt,
+        threshold: 1,
+        owners: vec![MultisigOwner { owner, weight: 1 }],
     };
-    let signature = signer
-        .sign_hash_sync(&tx.signature_hash())
-        .expect("failed to sign generated TIP20 transaction");
+    let config_id = config
+        .config_id()
+        .expect("generated 1-of-1 multisig config should be valid");
+    let account = config
+        .account()
+        .expect("generated 1-of-1 multisig account should derive");
+    (account, config_id, config)
+}
+
+fn sign_multisig_tip20_call(
+    owner: &PrivateKeySigner,
+    account: Address,
+    config_id: B256,
+    input: Bytes,
+) -> Recovered<TempoTxEnvelope> {
+    let tx = tip20_call_tx(input);
+    let digest = multisig_digest(tx.signature_hash(), account, config_id);
+    let owner_signature = PrimitiveSignature::Secp256k1(
+        owner
+            .sign_hash_sync(&digest)
+            .expect("failed to sign generated 1-of-1 multisig transaction"),
+    )
+    .to_bytes();
     let signed = AASigned::new_unhashed(
         tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Multisig(MultisigSignature {
+            account,
+            config_id,
+            signatures: vec![owner_signature],
+            init: None,
+        }),
     );
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
-        .expect("generated TIP20 benchmark transaction should recover")
+        .expect("generated 1-of-1 multisig transaction should recover")
+}
+
+fn sign_multisig_tip20_transfer(
+    owner: &PrivateKeySigner,
+    account: Address,
+    config_id: B256,
+    recipient: Address,
+    amount: U256,
+) -> Recovered<TempoTxEnvelope> {
+    sign_multisig_tip20_call(
+        owner,
+        account,
+        config_id,
+        Bytes::from(
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode(),
+        ),
+    )
 }
 
 fn generated_workload() -> Workload {
@@ -633,6 +728,61 @@ fn generated_workload() -> Workload {
         transactions,
         participants,
         block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
+    }
+}
+
+fn multisig_comparison_workloads() -> MultisigComparisonWorkloads {
+    let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
+    let secp_participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
+    let multisig_configs: Vec<_> = signers
+        .iter()
+        .enumerate()
+        .map(|(idx, signer)| {
+            multisig_1_of_1_config(signer.address(), B256::from(U256::from(idx + 1)))
+        })
+        .collect();
+    let multisig_participants: Vec<_> = multisig_configs
+        .iter()
+        .map(|(account, _, _)| *account)
+        .collect();
+
+    let secp_transactions = (0..DEFAULT_TX_COUNT)
+        .map(|idx| {
+            let signer = &signers[idx % signers.len()];
+            let recipient = secp_participants[(idx.wrapping_mul(17) + 1) % secp_participants.len()];
+            sign_tip20_transfer(signer, recipient, U256::from(idx as u64 + 1))
+        })
+        .collect();
+
+    let multisig_transactions = (0..DEFAULT_TX_COUNT)
+        .map(|idx| {
+            let signer_idx = idx % signers.len();
+            let owner = &signers[signer_idx];
+            let (account, config_id, _) = &multisig_configs[signer_idx];
+            let recipient =
+                multisig_participants[(idx.wrapping_mul(17) + 1) % multisig_participants.len()];
+            sign_multisig_tip20_transfer(
+                owner,
+                *account,
+                *config_id,
+                recipient,
+                U256::from(idx as u64 + 1),
+            )
+        })
+        .collect();
+
+    MultisigComparisonWorkloads {
+        secp256k1: Workload {
+            transactions: secp_transactions,
+            participants: secp_participants,
+            block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
+        },
+        multisig_1_of_1: Workload {
+            transactions: multisig_transactions,
+            participants: multisig_participants,
+            block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
+        },
+        multisig_configs,
     }
 }
 
@@ -904,6 +1054,7 @@ fn tip20_execution(c: &mut Criterion) {
             &workload.participants,
             workload.block_timestamp,
             None,
+            &[],
             hardfork,
         );
         execute_txs(
@@ -942,6 +1093,7 @@ fn tip20_execution(c: &mut Criterion) {
                 &reward_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
                 Some((&reward_workload.delegates, reward_workload.kind)),
+                &[],
                 hardfork,
             );
             execute_txs(
@@ -974,6 +1126,77 @@ fn tip20_execution(c: &mut Criterion) {
             });
             group.finish();
         }
+    }
+
+    let comparison = multisig_comparison_workloads();
+    for &(label, hardfork) in &hardfork_cases {
+        let secp_fixture = setup_fixed_cache_state(
+            &comparison.secp256k1.participants,
+            comparison.secp256k1.block_timestamp,
+            None,
+            &[],
+            hardfork,
+        );
+        execute_txs(
+            &config,
+            secp_fixture.prewarm_state_db(),
+            &comparison.secp256k1.transactions,
+            comparison.secp256k1.block_timestamp,
+            hardfork,
+        );
+
+        let multisig_fixture = setup_fixed_cache_state(
+            &comparison.multisig_1_of_1.participants,
+            comparison.multisig_1_of_1.block_timestamp,
+            None,
+            &comparison.multisig_configs,
+            hardfork,
+        );
+        execute_txs(
+            &config,
+            multisig_fixture.prewarm_state_db(),
+            &comparison.multisig_1_of_1.transactions,
+            comparison.multisig_1_of_1.block_timestamp,
+            hardfork,
+        );
+
+        let mut group = c.benchmark_group(format!("{label}/tip20_multisig_comparison"));
+        group.throughput(Throughput::Elements(
+            comparison.secp256k1.transactions.len() as u64,
+        ));
+        group.bench_function("secp256k1_account", |b| {
+            b.iter_batched(
+                || secp_fixture.state_db(),
+                |db| {
+                    let stats = execute_txs(
+                        &config,
+                        db,
+                        &comparison.secp256k1.transactions,
+                        comparison.secp256k1.block_timestamp,
+                        hardfork,
+                    );
+                    black_box(stats.gas_used);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+        group.bench_function("multisig_1_of_1", |b| {
+            b.iter_batched(
+                || multisig_fixture.state_db(),
+                |db| {
+                    let stats = execute_txs(
+                        &config,
+                        db,
+                        &comparison.multisig_1_of_1.transactions,
+                        comparison.multisig_1_of_1.block_timestamp,
+                        hardfork,
+                    );
+                    black_box(stats.gas_used);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+        group.finish();
     }
 }
 
