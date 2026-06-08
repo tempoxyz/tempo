@@ -1351,6 +1351,12 @@ impl AA2dPool {
             }
         }
 
+        if changes.is_empty() && included_expiring_nonce_hashes.is_empty() {
+            self.state_update_nonce_changes = changes;
+            self.state_update_included_expiring_nonce_hashes = included_expiring_nonce_hashes;
+            return (Vec::new(), Vec::new());
+        }
+
         let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
 
         // Remove included expiring nonce transactions
