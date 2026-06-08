@@ -27,7 +27,6 @@ use reth_evm::{
         DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
-        inspector::JournalExt,
         state::{AccountInfo, Bytecode},
     },
 };
@@ -186,6 +185,10 @@ pub(crate) struct GenesisArgs {
     /// T6 hardfork activation time.
     #[arg(long, default_value = "0")]
     t6_time: u64,
+
+    /// T7 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t7_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -561,6 +564,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t6Time".to_string(), self.t6_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t7Time".to_string(), self.t7_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
