@@ -4,7 +4,10 @@ use crate::{
     ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{
+    Address, U256,
+    map::{HashMap, hash_map},
+};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -148,14 +151,20 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
                 let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
-                    self.decreased_balances
-                        .insert((address, slot), present_balance);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
+
+                match self.decreased_balances.entry((address, slot)) {
+                    hash_map::Entry::Occupied(mut entry) => {
+                        *entry.get_mut() = present_balance;
+                    }
+                    hash_map::Entry::Vacant(entry) => {
+                        // Decode packed TIP-20 balances so metadata changes cannot hide balance
+                        // decreases.
+                        let original_balance = decode_tip20_balance(storage_slot.original_value);
+                        if present_balance < original_balance {
+                            entry.insert(present_balance);
+                        }
+                    }
                 }
             }
         }
