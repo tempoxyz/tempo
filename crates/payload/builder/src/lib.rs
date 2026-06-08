@@ -81,6 +81,10 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+/// No valid externally submitted transaction can fit below the Ethereum
+/// intrinsic transaction gas floor.
+const MIN_POOL_TRANSACTION_GAS: u64 = 21_000;
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -596,6 +600,11 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
+            }
+
+            if non_shared_gas_limit.saturating_sub(cumulative_gas_used) < MIN_POOL_TRANSACTION_GAS
+            {
+                break BlockBuildStopReason::GasLimit;
             }
 
             let Some(pool_tx) = best_txs.next() else {
