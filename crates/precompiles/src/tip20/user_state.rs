@@ -206,36 +206,34 @@ mod tests {
     }
 
     #[test]
-    fn t7_user_state_uses_legacy_balance_layout() {
+    fn t7_user_state_uses_legacy_balance_layout() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         let slot = U256::from(42);
         let address = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            Slot::<U256>::new(slot, address)
-                .write(U256::from(100))
-                .unwrap();
+            Slot::<U256>::new(slot, address).write(U256::from(100))?;
 
             let mut state = Slot::<UserState>::new(slot, address);
             assert_eq!(
-                state.read().unwrap(),
+                state.read()?,
                 UserState {
                     amount: 100,
                     flag: RewardFlag::Uninitialized,
                 }
             );
 
-            state
-                .write(UserState {
-                    amount: 100,
-                    flag: RewardFlag::OptedOut,
-                })
-                .unwrap();
-            assert_eq!(state.read().unwrap().flag, RewardFlag::OptedOut);
+            state.write(UserState {
+                amount: 100,
+                flag: RewardFlag::OptedOut,
+            })?;
+            assert_eq!(state.read()?.flag, RewardFlag::OptedOut);
             assert_eq!(
-                decode_tip20_balance(Slot::<U256>::new(slot, address).read().unwrap()),
+                decode_tip20_balance(Slot::<U256>::new(slot, address).read()?),
                 U256::from(100)
             );
-        });
+
+            Ok(())
+        })
     }
 }
