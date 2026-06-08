@@ -81,13 +81,18 @@ impl TIP20Token {
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
+        let flag = if self.storage.spec().is_t7() {
+            let holder_balance = self.get_balance(holder)?;
+            // T7+: first balance touch checkpoints legacy accruals, then closes rewards.
+            if holder_balance.flag.is_uninitialized() {
+                self.update_rewards_legacy(holder)?;
+            }
             RewardFlag::OptedOut
         } else {
             self.update_rewards_legacy(holder)?
         };
         // RewardFlag output of reward updates MUST be binary (opted-in/out).
-        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
+        // UserState has built-in logic to ensure pre-T7 we always store RewardFlag::Uninitialized.
         debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
 
         Ok(flag)
@@ -745,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_reward_opt_in_and_distribution_are_noops() -> eyre::Result<()> {
+    fn test_t7_reward_opt_in_and_distribution_are_noops() -> eyre::Result<()> {
         let admin = Address::random();
         let alice = Address::random();
         let balance = U256::from(1000);
@@ -774,21 +779,25 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_claim_rewards_preserves_legacy_accrual() -> eyre::Result<()> {
+    fn test_t7_claim_rewards_preserves_legacy_accrual() -> eyre::Result<()> {
         let admin = Address::random();
         let alice = Address::random();
+        let bob = Address::random();
         let balance = U256::from(1000);
-        let rewards = U256::from(100);
+        let rewards = U256::from(200);
+        let share = rewards / U256::from(2);
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(alice, balance)
+                .with_mint(bob, balance)
                 .with_mint(admin, rewards)
                 .apply()?;
 
             set_recipient(&mut token, alice, alice)?;
+            set_recipient(&mut token, bob, bob)?;
             distribute(&mut token, admin, rewards)?;
             Ok(token.address)
         })?;
@@ -797,10 +806,26 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Token::from_address(token_address)?;
-            assert_claims(&mut token, alice, rewards)?;
-            assert_eq!(token.get_balance(alice)?.amount(), balance + rewards);
+            token.transfer(
+                bob,
+                ITIP20::transferCall {
+                    to: alice,
+                    amount: balance,
+                },
+            )?;
+
+            assert_claims(&mut token, alice, share)?;
+            assert_claims(&mut token, bob, share)?;
+            assert_eq!(
+                token.get_balance(alice)?.amount(),
+                balance * U256::from(2) + share
+            );
+            assert_eq!(token.get_balance(bob)?.amount(), share);
             assert_eq!(token.get_balance(token.address)?.amount(), U256::ZERO);
-            assert_eq!(token.get_opted_in_supply()?, balance.to::<u128>());
+            assert_eq!(
+                token.get_opted_in_supply()?,
+                (balance * U256::from(2)).to::<u128>()
+            );
 
             Ok(())
         })
