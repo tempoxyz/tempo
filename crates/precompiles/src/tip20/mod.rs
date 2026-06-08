@@ -948,6 +948,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `InvalidToken` — address does not carry the `0x20C0` TIP-20 prefix
+    #[inline]
     pub fn from_address(address: Address) -> Result<Self> {
         if !address.is_tip20() {
             return Err(TIP20Error::invalid_token().into());
