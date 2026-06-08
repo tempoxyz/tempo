@@ -1,0 +1,25 @@
+name: Conformance Fixtures
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/conformance-fixtures.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "fixtures/**"
+
+jobs:
+  check-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout tempo
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check block conformance fixtures
+        run: cargo test -p tempo-fuzz-harness --release conformance_fixtures -- --nocapture
