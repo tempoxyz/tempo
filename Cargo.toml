@@ -214,7 +214,7 @@ alloy-consensus = { version = "2.0.5", default-features = false }
 alloy-contract = { version = "2.0.5", default-features = false }
 alloy-eip7928 = { version = "0.4.3", default-features = false }
 alloy-eips = { version = "2.0.5", default-features = false }
-alloy-evm = { version = "0.37.0", default-features = false }
+alloy-evm = { version = "0.36.0", default-features = false }
 revm-inspectors = "0.41.1"
 alloy-genesis = { version = "2.0.5", default-features = false }
 alloy-hardforks = "0.4.7"
@@ -399,6 +399,8 @@ vergen-git2 = "9.1.0"
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch.crates-io]
+alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "ba67bb5273c829c6797b3ea32b5bd6431ad388da" }
+
 # Commonware at HEAD after PR #3588 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }

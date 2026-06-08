@@ -904,6 +904,7 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let actions = evm.actions.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -911,7 +912,7 @@ where
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
+            .get_fee_token(tx, fee_payer, cfg.spec, &actions)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -925,7 +926,7 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+            journal.ensure_tip20_usd(cfg.spec, fee_token, &actions)?;
         }
 
         // Load the fee payer balance
@@ -2726,9 +2727,12 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                &tempo_precompiles::storage::evm::EvmActions::default(),
+            )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
@@ -2743,17 +2747,23 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                &tempo_precompiles::storage::evm::EvmActions::default(),
+            )?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            user,
+            ctx.cfg.spec,
+            &tempo_precompiles::storage::evm::EvmActions::default(),
+        )?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

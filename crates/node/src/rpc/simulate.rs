@@ -21,7 +21,7 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{error::TempoPrecompileError, tip20::TIP20Token};
+use tempo_precompiles::{error::TempoPrecompileError, storage::evm::EvmActions, tip20::TIP20Token};
 use tempo_primitives::TempoAddressExt;
 
 /// keccak256("Transfer(address,address,uint256)")
@@ -196,7 +196,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
 
-                let metadata = db.with_read_only_storage_ctx(spec, || {
+                let metadata = db.with_read_only_storage_ctx(spec, &EvmActions::default(), || {
                     let mut metadata = BTreeMap::new();
 
                     for addr in &addresses {
