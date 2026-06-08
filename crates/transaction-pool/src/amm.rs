@@ -131,7 +131,7 @@ impl AmmLiquidityCache {
         state_provider
             .with_read_only_storage_ctx(
                 hardfork,
-                &EvmActions::default(),
+                &EvmActions::disabled(),
                 || -> TempoResult<bool> {
                     let manager = TipFeeManager::new();
                     for validator_token in missing_in_cache {

@@ -52,7 +52,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
-            actions: EvmActions::default(),
+            actions: EvmActions::disabled(),
         }
     }
 
@@ -435,13 +435,20 @@ pub enum EvmAction {
     Sstore(Address, U256, U256),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EvmActions {
     enabled: Rc<AtomicBool>,
     actions: Rc<RefCell<Vec<EvmAction>>>,
 }
 
 impl EvmActions {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: Rc::new(AtomicBool::new(false)),
+            actions: Rc::default(),
+        }
+    }
+
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::Relaxed);
         self.actions.borrow_mut().clear();
@@ -603,7 +610,7 @@ mod tests {
     #[test]
     fn test_records_sload_sstore_actions() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
-        let actions = EvmActions::default();
+        let actions = EvmActions::disabled();
         actions.enable();
         let mut provider = evm.provider_max_gas().with_actions(actions.clone());
 

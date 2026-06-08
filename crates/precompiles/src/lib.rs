@@ -134,7 +134,7 @@ pub trait Precompile {
 /// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
 pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
-    tempo_precompiles_with_actions(cfg, EvmActions::default())
+    tempo_precompiles_with_actions(cfg, EvmActions::disabled())
 }
 
 /// Returns the full Tempo precompiles for the given config and shared action buffer.
@@ -210,7 +210,7 @@ sol! {
 }
 
 macro_rules! tempo_precompile {
-    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{ tempo_precompile!($id, $cfg, EvmActions::default(), |$input| $impl) }};
+    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{ tempo_precompile!($id, $cfg, EvmActions::disabled(), |$input| $impl) }};
     ($id:expr, $cfg:expr, $actions:expr, |$input:ident| $impl:expr) => {{
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
