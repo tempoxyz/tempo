@@ -602,6 +602,10 @@ fn add_expiring_nonce_touches(
     tx: &BestTransaction,
     expiring_nonce_offset: Option<usize>,
 ) {
+    if !tx.transaction.is_expiring_nonce() {
+        return;
+    }
+
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
