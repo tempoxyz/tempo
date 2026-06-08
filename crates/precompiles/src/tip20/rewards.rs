@@ -421,7 +421,7 @@ mod tests {
     use crate::{
         address_registry::{MasterId, UserTag},
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip403_registry::TIP403Registry,
     };
@@ -639,69 +639,57 @@ mod tests {
 
     #[test]
     fn test_get_pending_rewards_with_delegation() -> eyre::Result<()> {
-        for hardfork in [TempoHardfork::T5] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
-            let alice = Address::random();
-            let bob = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+        let alice_balance = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        let token_address = StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            // Alice delegates to bob before reward deprecation.
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+
+            // Alice's pending should be 0 (she delegated to bob).
+            assert_eq!(token.get_pending_rewards(alice)?, 0u128);
+
+            // Bob's pending should be 0 until Alice is checkpointed.
+            assert_eq!(token.get_pending_rewards(bob)?, 0u128);
+
+            Ok::<_, TempoPrecompileError>(token.address)
+        })?;
+
+        for hardfork in [TempoHardfork::T5, TempoHardfork::T7] {
+            let checkpoint = storage.checkpoint();
+            storage.set_spec(hardfork);
 
             StorageCtx::enter(&mut storage, || {
-                let alice_balance = U256::from(1000e18);
-                let reward_amount = U256::from(100e18);
+                let mut token = TIP20Token::from_address(token_address)?;
 
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
-                    .with_mint(alice, alice_balance)
-                    .with_mint(admin, reward_amount)
-                    .apply()?;
-
-                // Alice delegates to bob
-                token.set_reward_recipient(
-                    alice,
-                    ITIP20::setRewardRecipientCall { recipient: bob },
-                )?;
-
-                // Distribute immediate reward
-                token.distribute_reward(
-                    admin,
-                    ITIP20::distributeRewardCall {
-                        amount: reward_amount,
-                    },
-                )?;
-
-                // Alice's pending should be 0 (she delegated to bob)
-                let alice_pending = token.get_pending_rewards(alice)?;
-                assert_eq!(alice_pending, 0u128, "hardfork: {hardfork:?}");
-
-                // Bob's pending should be 0 until update_rewards is called for alice
-                // (We can't iterate all delegators on-chain, so pending calculation is limited
-                // to stored balance + self-delegated accrued rewards)
-                let bob_pending_before_update = token.get_pending_rewards(bob)?;
-                assert_eq!(bob_pending_before_update, 0u128, "hardfork: {hardfork:?}");
-
-                // After calling update_rewards on alice, bob's stored balance is updated
+                // Checkpointing Alice routes her legacy accrual to Bob before and after T7.
                 token.update_rewards(alice)?;
-                let bob_pending_after_update = token.get_pending_rewards(bob)?;
-                assert_eq!(
-                    U256::from(bob_pending_after_update),
-                    reward_amount,
-                    "hardfork: {hardfork:?}"
-                );
+                assert_eq!(U256::from(token.get_pending_rewards(bob)?), reward_amount);
 
                 // Bob is still opted out, but can claim delegated rewards.
-                let claimed = token.claim_rewards(bob)?;
-                assert_eq!(claimed, reward_amount, "hardfork: {hardfork:?}");
-
-                token
-                    .set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
-                assert_eq!(
-                    token.get_pending_rewards(bob)?,
-                    0u128,
-                    "hardfork: {hardfork:?}"
-                );
+                assert_eq!(token.claim_rewards(bob)?, reward_amount);
+                assert_eq!(token.get_pending_rewards(bob)?, 0u128);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
+
+            storage.checkpoint_revert(checkpoint);
         }
 
         Ok(())
