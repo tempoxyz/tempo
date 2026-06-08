@@ -128,6 +128,7 @@ pub trait PrecompileStorageProvider {
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
+    #[inline]
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
         let num_words =
             u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
@@ -145,6 +146,7 @@ pub trait PrecompileStorageProvider {
     /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    #[inline]
     fn recover_signer(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         self.deduct_gas(crate::ECRECOVER_GAS)?;
 

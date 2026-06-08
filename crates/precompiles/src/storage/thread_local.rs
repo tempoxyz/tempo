@@ -243,6 +243,7 @@ impl StorageCtx {
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    #[inline]
     pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
         Self::try_with_storage(|s| s.keccak256(data))
     }
@@ -253,6 +254,7 @@ impl StorageCtx {
     /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    #[inline]
     pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
