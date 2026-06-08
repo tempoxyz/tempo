@@ -140,11 +140,12 @@ fn read_latest_finalization(consensus_dir: &Path) -> eyre::Result<(u64, TempoFin
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
     let runner = commonware_runtime::tokio::Runner::new(runtime_config);
-    let finalization = runner
-        .start(|context| async move {
-            tempo_commonware_node::storage::read_latest_finalization(&context).await
-        })
-        .wrap_err("failed to read finalizations")?;
+    let finalization =
+        runner
+            .start(|context| async move {
+                tempo_commonware_node::read_latest_finalization(&context).await
+            })
+            .wrap_err("failed to read finalizations")?;
 
     finalization.ok_or_eyre("no persisted finalizations")
 }
