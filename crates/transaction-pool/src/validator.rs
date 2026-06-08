@@ -70,6 +70,13 @@ const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 /// Maximum number of recipients per selector rule.
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
+fn current_unix_time_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -137,6 +144,7 @@ where
     fn ensure_pool_time_bounds(
         &self,
         tx: &TempoTransaction,
+        current_time_secs: Option<u64>,
     ) -> Result<(), TempoPoolTransactionError> {
         let tip_timestamp = self.inner.fork_tracker().tip_timestamp();
 
@@ -158,10 +166,7 @@ where
         // Uses wall-clock time to avoid rejecting valid txs when node is lagging.
         if let Some(valid_after) = tx.valid_after {
             let valid_after = valid_after.get();
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let current_time = current_time_secs.unwrap_or_else(current_unix_time_secs);
             let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
             if valid_after > max_allowed {
                 return Err(TempoPoolTransactionError::InvalidValidAfter {
@@ -328,6 +333,7 @@ where
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
+        current_time_secs: Option<u64>,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the current hardfork based on tip timestamp
         let spec = self
@@ -374,7 +380,7 @@ where
 
         // Pool-only time-bound checks: valid_before propagation buffer, valid_after max offset.
         if let Some(tx) = transaction.inner().as_aa()
-            && let Err(err) = self.ensure_pool_time_bounds(tx.tx())
+            && let Err(err) = self.ensure_pool_time_bounds(tx.tx(), current_time_secs)
         {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -593,7 +599,7 @@ where
             }
         };
 
-        self.validate_one(origin, transaction, state_provider)
+        self.validate_one(origin, transaction, state_provider, None)
     }
 
     async fn validate_transactions(
@@ -614,9 +620,11 @@ where
             }
         };
 
+        let current_time_secs = Some(current_unix_time_secs());
+
         transactions
             .into_iter()
-            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
+            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider, current_time_secs))
             .collect()
     }
 
@@ -637,9 +645,11 @@ where
             }
         };
 
+        let current_time_secs = Some(current_unix_time_secs());
+
         transactions
             .into_iter()
-            .map(|tx| self.validate_one(origin, tx, &state_provider))
+            .map(|tx| self.validate_one(origin, tx, &state_provider, current_time_secs))
             .collect()
     }
 
