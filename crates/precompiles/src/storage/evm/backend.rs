@@ -64,13 +64,14 @@ pub(super) trait EvmJournalBackend {
 }
 
 impl EvmJournalBackend for EvmInternals<'_> {
+    #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<bool, TempoPrecompileError> {
         let mut account = self.load_account_mut(address)?;
         let was_empty = account.data.account().info.is_empty();
         account.set_code_and_hash_slow(code);
         Ok(was_empty)
     }
-
+    #[inline]
     fn with_account_info(
         &mut self,
         address: Address,
@@ -84,7 +85,7 @@ impl EvmJournalBackend for EvmInternals<'_> {
         f(&account.data.account().info);
         Ok(())
     }
-
+    #[inline]
     fn sload(
         &mut self,
         address: Address,
@@ -96,7 +97,7 @@ impl EvmJournalBackend for EvmInternals<'_> {
             .sload(key, skip_cold_load)?
             .map(|slot| slot.present_value))
     }
-
+    #[inline]
     fn sstore(
         &mut self,
         address: Address,
@@ -108,27 +109,27 @@ impl EvmJournalBackend for EvmInternals<'_> {
             .load_account_mut(address)?
             .sstore(key, value, skip_cold_load)?)
     }
-
+    #[inline]
     fn tload(&mut self, address: Address, key: U256) -> U256 {
         EvmInternals::tload(self, address, key)
     }
-
+    #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         EvmInternals::tstore(self, address, key, value);
     }
-
+    #[inline]
     fn log(&mut self, log: Log) {
         EvmInternals::log(self, log);
     }
-
+    #[inline]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         EvmInternals::checkpoint(self)
     }
-
+    #[inline]
     fn checkpoint_commit(&mut self) {
         EvmInternals::checkpoint_commit(self);
     }
-
+    #[inline]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         EvmInternals::checkpoint_revert(self, checkpoint);
     }
@@ -138,13 +139,14 @@ impl<J> EvmJournalBackend for &mut J
 where
     J: JournalTr<Database: Database> + Debug,
 {
+    #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<bool, TempoPrecompileError> {
         let mut account = self.load_account_mut(address).map_err(db_error)?;
         let was_empty = account.data.account().info.is_empty();
         account.set_code_and_hash_slow(code);
         Ok(was_empty)
     }
-
+    #[inline]
     fn with_account_info(
         &mut self,
         address: Address,
@@ -160,7 +162,7 @@ where
         f(&account.data.account().info);
         Ok(())
     }
-
+    #[inline]
     fn sload(
         &mut self,
         address: Address,
@@ -172,7 +174,7 @@ where
             .sload(key, skip_cold_load)?
             .map(|slot| slot.present_value))
     }
-
+    #[inline]
     fn sstore(
         &mut self,
         address: Address,
@@ -185,36 +187,38 @@ where
             .map_err(db_error)?
             .sstore(key, value, skip_cold_load)?)
     }
-
+    #[inline]
     fn tload(&mut self, address: Address, key: U256) -> U256 {
         JournalTr::tload(*self, address, key)
     }
-
+    #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         JournalTr::tstore(*self, address, key, value);
     }
-
+    #[inline]
     fn log(&mut self, log: Log) {
         JournalTr::log(*self, log);
     }
-
+    #[inline]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         JournalTr::checkpoint(*self)
     }
-
+    #[inline]
     fn checkpoint_commit(&mut self) {
         JournalTr::checkpoint_commit(*self);
     }
-
+    #[inline]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         JournalTr::checkpoint_revert(*self, checkpoint);
     }
 }
 
+#[inline]
 fn db_error(error: impl std::fmt::Display) -> TempoPrecompileError {
     TempoPrecompileError::Fatal(error.to_string())
 }
 
+#[inline]
 fn journal_load_error<E: std::fmt::Display>(error: JournalLoadError<E>) -> TempoPrecompileError {
     match error {
         JournalLoadError::DBError(error) => db_error(error),
