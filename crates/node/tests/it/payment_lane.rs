@@ -230,7 +230,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                     .from(accounts[j])
                     .to(accounts[j]) // Send to self
                     .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000)
+                    .gas_limit(250_000)
                     .value(U256::ZERO);
 
                 all_futures.push((provider.send_transaction(tx), "non-payment"));
@@ -244,7 +244,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                     .into_transaction_request()
                     .from(caller2)
                     .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000);
+                    .gas_limit(250_000);
 
                 all_futures.push((provider2.send_transaction(tx), "payment"));
             }

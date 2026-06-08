@@ -4,7 +4,7 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-shell-quote [value: any] {
@@ -142,7 +142,7 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
-    if $preset_name != $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET {
+    if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
         return
     }
 
@@ -290,6 +290,7 @@ def txgen-run-preset-pipeline [
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
         | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+    let pr_number = ($env | get --optional BENCH_PR | default "")
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
@@ -312,6 +313,7 @@ def txgen-run-preset-pipeline [
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
         | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
         | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
+        | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
