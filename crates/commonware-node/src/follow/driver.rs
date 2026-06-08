@@ -136,13 +136,13 @@ pub(super) struct Config {
 
 #[derive(Debug)]
 enum Message {
-    Event(Event),
+    Event(Box<Event>),
     Finalized(marshal::Update<Block>),
 }
 
 impl From<Event> for Message {
     fn from(value: Event) -> Self {
-        Self::Event(value)
+        Self::Event(Box::new(value))
     }
 }
 
@@ -223,7 +223,7 @@ where
                     match message {
                         Message::Event(event) => {
                             // Emits an event on error.
-                            let _: Result<_, _> = self.process_event(event).await;
+                            let _: Result<_, _> = self.process_event(*event).await;
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
@@ -242,6 +242,7 @@ where
             .epoch_strategy
             .containing(self.config.last_finalized_height)
             .expect("strategy is valid for all heights and epochs");
+
         let current_execution_epoch = self
             .config
             .epoch_strategy
@@ -256,19 +257,20 @@ where
                 .epoch_strategy
                 .last(previous)
                 .expect("strategy is valid for all heights and epochs");
-            let boundary_block = self
-                .config
-                .marshal
-                .get_block(last_consensus_boundary)
-                .await
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "cannot heal finalization gap; consensus layer is \
-                        ahead of execution layer, but consensus layer does not \
-                        have boundary block at height \
-                        `{last_consensus_boundary}`"
-                    )
-                })?;
+
+            let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
+            else {
+                let consensus_epoch = current_consensus_epoch.epoch();
+                let execution_epoch = current_execution_epoch.epoch();
+                warn!(
+                    "cannot heal finalization gap; consensus layer epoch {consensus_epoch} is ahead \
+                    of execution layer epoch {execution_epoch}, but the consensus layer does not have \
+                    the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
+                    epoch boundaries via the network identity and will continue to try use it to verify finalizations"
+                );
+
+                return Ok(());
+            };
 
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
                 &mut boundary_block.header().extra_data().as_ref(),
@@ -313,7 +315,8 @@ where
             .wrap_err("event contained a malformed finalization certificate")?;
 
         let height = Height::new(certified.block.number());
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
+        let consensus_block =
+            Block::from_execution_block_unchecked(SealedBlock::seal_slow(certified.block), None);
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"
@@ -354,15 +357,16 @@ where
             }
         }
 
-        let can_use_network_identity_fallback = finalization_epoch > self.current_epoch
-            && finalization_epoch.get() >= self.config.network_identity.from_epoch;
+        let can_use_network_identity_fallback =
+            finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
         let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
             None => bail!(
-                "finalization epoch `{finalization_epoch}` behind network identity epoch {}",
-                self.config.network_identity.from_epoch
+                "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`; current epoch `{}`",
+                self.config.network_identity.from_epoch,
+                self.current_epoch
             ),
         };
 

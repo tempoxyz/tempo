@@ -185,6 +185,18 @@ impl ReceivePolicyConfig {
             admin: Address::ZERO,
         }
     }
+
+    fn sender_policy_type(&self) -> Result<PolicyType> {
+        self.sender_policy_type
+            .try_into()
+            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
+    }
+
+    fn token_filter_type(&self) -> Result<PolicyType> {
+        self.token_filter_type
+            .try_into()
+            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
+    }
 }
 
 impl TIP403Registry {
@@ -291,9 +303,9 @@ impl TIP403Registry {
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
-            senderPolicyType: self.receive_policy_type(config.sender_policy_id)?,
+            senderPolicyType: config.sender_policy_type()?,
             tokenFilterId: config.token_filter_id,
-            tokenFilterType: self.receive_policy_type(config.token_filter_id)?,
+            tokenFilterType: config.token_filter_type()?,
             recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
         })
     }
@@ -827,21 +839,6 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::invalid_receive_policy_type().into());
         }
         Ok(data.policy_type)
-    }
-
-    /// Returns the [`PolicyType`] of a receive-policy slot.
-    fn receive_policy_type(&self, policy_id: u64) -> Result<PolicyType> {
-        if self.builtin_authorization(policy_id).is_some() {
-            return (policy_id as u8)
-                .try_into()
-                .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into());
-        }
-
-        let data = self.get_policy_data(policy_id)?;
-        if !data.is_simple() {
-            return Err(TIP403RegistryError::invalid_receive_policy_type().into());
-        }
-        data.policy_type()
     }
 
     // Internal helper functions

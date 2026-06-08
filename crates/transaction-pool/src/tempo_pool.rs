@@ -3,8 +3,9 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -18,11 +19,10 @@ use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
-    BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
-    NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions,
-    TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
-    TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
-    ValidPoolTransaction,
+    BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
+    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
+    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
+    TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
@@ -49,22 +49,26 @@ pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
-        CoinbaseTipOrdering<TempoPooledTransaction>,
+        TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client> {
+impl<Client> TempoTransactionPool<Client>
+where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
-            CoinbaseTipOrdering<TempoPooledTransaction>,
+            TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
-        aa_2d_pool: AA2dPool,
+        mut aa_2d_pool: AA2dPool,
     ) -> Self {
+        aa_2d_pool.set_base_fee(protocol_pool.inner().block_info().pending_basefee);
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
@@ -123,6 +127,19 @@ where
     pub fn evict_invalidated_transactions(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
+    ) -> Vec<TxHash> {
+        if !updates.has_invalidation_events() {
+            return Vec::new();
+        }
+
+        let all_txs = self.all_transactions();
+        self.evict_invalidated_transactions_from(updates, all_txs.iter())
+    }
+
+    pub(crate) fn evict_invalidated_transactions_from<'a>(
+        &self,
+        updates: &crate::maintain::TempoPoolUpdates,
+        transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) -> Vec<TxHash> {
         if !updates.has_invalidation_events() {
             return Vec::new();
@@ -206,8 +223,7 @@ where
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
-        let all_txs = self.all_transactions();
-        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+        for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
                 let keychain_subject = has_keychain_subject_updates
@@ -841,16 +857,25 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self.protocol_pool.inner().best_transactions();
+        let protocol_pool = self.protocol_pool.inner();
+        let base_fee = protocol_pool.block_info().pending_basefee;
+        let left = protocol_pool.best_transactions();
         let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(left, right))
+        Box::new(MergeBestTransactions::new(Box::new(left), right, base_fee))
     }
 
     fn best_transactions_with_attributes(
         &self,
-        _attributes: BestTransactionsAttributes,
+        attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        self.best_transactions()
+        let left = self
+            .protocol_pool
+            .best_transactions_with_attributes(attributes);
+        let right = self
+            .aa_2d_pool
+            .read()
+            .best_transactions_with_base_fee(attributes.basefee);
+        Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
@@ -1194,7 +1219,8 @@ where
     type Block = Block;
 
     fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info)
+        self.protocol_pool.set_block_info(info);
+        self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
@@ -1504,7 +1530,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -1770,7 +1796,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -1929,7 +1955,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2010,7 +2036,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2101,7 +2127,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2188,7 +2214,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
