@@ -55,7 +55,7 @@ serde = [
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
-evm = ["dep:alloy-evm"]
+evm = ["dep:alloy-evm", "tempo-primitives/evm"]
 reth = [
     "std",
     "evm",
