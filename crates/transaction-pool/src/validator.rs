@@ -208,6 +208,18 @@ where
 
         let tx = aa_tx.tx();
 
+        if tx.calls.len() == 1 && tx.access_list.is_empty() && tx.key_authorization.is_none() {
+            let input_size = tx.calls[0].input.len();
+            if input_size > MAX_CALL_INPUT_SIZE {
+                return Err(TempoPoolTransactionError::CallInputTooLarge {
+                    call_index: 0,
+                    size: input_size,
+                    max_allowed: MAX_CALL_INPUT_SIZE,
+                });
+            }
+            return Ok(());
+        }
+
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
