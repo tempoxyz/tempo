@@ -20,6 +20,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
+use std::sync::{Arc, OnceLock};
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -59,14 +60,8 @@ impl BlockAccessListError {
 // XXX: This is a refinement type around a reth [`SealedBlock`]
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Block {
-    /// The execution-layer block.
-    execution_block: SealedBlock<tempo_primitives::Block>,
-    /// Optional block access list. Only provided if the network supports BALs.
-    #[cfg(feature = "bal")]
-    block_access_list: Option<Bytes>,
-}
+#[derive(Clone, Debug)]
+pub(crate) struct Block(Arc<BlockInner>);
 
 impl Block {
     /// Creates a block from an execution-layer block and optional BAL.
@@ -85,6 +80,20 @@ impl Block {
         ))
     }
 
+    /// Creates a block and seeds the cached execution-layer RLP size.
+    pub(crate) fn from_execution_block_with_encoded_size(
+        execution_block: SealedBlock<tempo_primitives::Block>,
+        block_access_list: Option<Bytes>,
+        execution_block_encoded_size: usize,
+    ) -> Result<Self, BlockAccessListError> {
+        let block = Self::from_execution_block(execution_block, block_access_list)?;
+        let _ = block
+            .0
+            .execution_block_encoded_size
+            .set(execution_block_encoded_size);
+        Ok(block)
+    }
+
     /// Creates a block without checking that BAL bytes match the header.
     ///
     /// This is for reconstructing blocks from persisted EL data that does not include
@@ -97,25 +106,27 @@ impl Block {
         #[cfg(not(feature = "bal"))]
         let _ = block_access_list;
 
-        Self {
+        Self(Arc::new(BlockInner {
             execution_block,
+            execution_block_encoded_size: OnceLock::new(),
             #[cfg(feature = "bal")]
             block_access_list,
-        }
+        }))
     }
 
     /// Consumes the block and returns only the execution-layer block.
     pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        self.execution_block
+        self.into_inner_parts().execution_block
     }
 
     /// Consumes the block and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
+        let inner = self.into_inner_parts();
         (
-            self.execution_block,
+            inner.execution_block,
             #[cfg(feature = "bal")]
             {
-                self.block_access_list
+                inner.block_access_list
             },
             #[cfg(not(feature = "bal"))]
             {
@@ -124,36 +135,40 @@ impl Block {
         )
     }
 
+    fn into_inner_parts(self) -> BlockInner {
+        Arc::try_unwrap(self.0).unwrap_or_else(|inner| (*inner).clone())
+    }
+
     /// Returns the (eth) hash of the wrapped block.
     pub(crate) fn block_hash(&self) -> B256 {
-        self.execution_block.hash()
+        self.0.execution_block.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn digest(&self) -> Digest {
-        Digest(self.hash())
+        Digest(self.0.execution_block.hash())
     }
 
     /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn parent_digest(&self) -> Digest {
-        Digest(self.execution_block.parent_hash())
+        Digest(self.0.execution_block.parent_hash())
     }
 
     /// Returns the timestamp of the wrapped block.
     pub(crate) fn timestamp(&self) -> u64 {
-        self.execution_block.timestamp()
+        self.0.execution_block.timestamp()
     }
 
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
-        &self.execution_block
+        &self.0.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]
         {
-            self.block_access_list.as_ref()
+            self.0.block_access_list.as_ref()
         }
         #[cfg(not(feature = "bal"))]
         {
@@ -162,23 +177,41 @@ impl Block {
     }
 }
 
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.execution_block == other.0.execution_block && {
+            #[cfg(feature = "bal")]
+            {
+                self.0.block_access_list == other.0.block_access_list
+            }
+            #[cfg(not(feature = "bal"))]
+            {
+                true
+            }
+        }
+    }
+}
+
+impl Eq for Block {}
+
 impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
 
     fn deref(&self) -> &Self::Target {
-        &self.execution_block
+        &self.0.execution_block
     }
 }
 
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
-        self.execution_block.encode(buf);
+        self.0.execution_block.encode(buf);
         #[cfg(feature = "bal")]
-        if self.execution_block.block_access_list_hash().is_some() {
+        if self.0.execution_block.block_access_list_hash().is_some() {
             // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
             // without the commonware BAL sidecar. Encoding one will panic here, which
             // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
+                .0
                 .block_access_list
                 .as_ref()
                 .expect("BAL bytes must be present when header contains a BAL hash");
@@ -207,7 +240,8 @@ impl Read for Block {
             // have the fidelity for it (outside abusing Error::Wrapped).
             return Err(commonware_codec::Error::EndOfBuffer);
         }
-        let bytes = buf.copy_to_bytes(header.length_with_payload());
+        let execution_block_encoded_size = header.length_with_payload();
+        let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
         // TODO: decode straight to a reth SealedBlock once released:
         // https://github.com/paradigmxyz/reth/pull/18003
@@ -233,28 +267,38 @@ impl Read for Block {
         #[cfg(not(feature = "bal"))]
         let block_access_list = None;
 
-        Self::from_execution_block(inner, block_access_list).map_err(|err| err.codec_error())
+        Self::from_execution_block_with_encoded_size(
+            inner,
+            block_access_list,
+            execution_block_encoded_size,
+        )
+        .map_err(|err| err.codec_error())
     }
 }
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
+        let execution_block_size = *self
+            .0
+            .execution_block_encoded_size
+            .get_or_init(|| self.0.execution_block.length());
+
         #[cfg(feature = "bal")]
         {
-            let mut size = self.execution_block.length();
-            size += if self.execution_block.block_access_list_hash().is_some() {
-                self.block_access_list
-                    .as_ref()
-                    .expect("BAL bytes must be present when header contains a BAL hash")
-                    .encode_size()
-            } else {
-                0
-            };
-            size
+            execution_block_size
+                + if self.0.execution_block.block_access_list_hash().is_some() {
+                    self.0
+                        .block_access_list
+                        .as_ref()
+                        .expect("BAL bytes must be present when header contains a BAL hash")
+                        .encode_size()
+                } else {
+                    0
+                }
         }
         #[cfg(not(feature = "bal"))]
         {
-            self.execution_block.length()
+            execution_block_size
         }
     }
 }
@@ -277,32 +321,13 @@ impl Digestible for Block {
 
 impl Heightable for Block {
     fn height(&self) -> Height {
-        Height::new(self.execution_block.number())
+        Height::new(self.0.execution_block.number())
     }
 }
 
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
-    }
-}
-
-fn validate_block_access_list_hash(
-    expected: Option<B256>,
-    block_access_list: Option<&Bytes>,
-) -> Result<(), BlockAccessListError> {
-    match (expected, block_access_list) {
-        (Some(expected), Some(block_access_list)) => {
-            let actual = keccak256(block_access_list.as_ref());
-            if actual == expected {
-                Ok(())
-            } else {
-                Err(BlockAccessListError::HashMismatch { expected, actual })
-            }
-        }
-        (Some(expected), None) => Err(BlockAccessListError::Missing { expected }),
-        (None, Some(_)) => Err(BlockAccessListError::Unexpected),
-        (None, None) => Ok(()),
     }
 }
 
@@ -336,6 +361,53 @@ impl commonware_consensus::CertifiableBlock for Block {
                 }
             }
         }
+    }
+}
+
+/// Inner block data shared by cheap [`Block`] clones.
+#[derive(Debug)]
+struct BlockInner {
+    /// The execution-layer block.
+    execution_block: SealedBlock<tempo_primitives::Block>,
+    /// Cached execution-layer RLP size when it is already known by the caller.
+    execution_block_encoded_size: OnceLock<usize>,
+    /// Optional block access list. Only provided if the network supports BALs.
+    #[cfg(feature = "bal")]
+    block_access_list: Option<Bytes>,
+}
+
+impl Clone for BlockInner {
+    fn clone(&self) -> Self {
+        let execution_block_encoded_size = OnceLock::new();
+        if let Some(size) = self.execution_block_encoded_size.get() {
+            let _ = execution_block_encoded_size.set(*size);
+        }
+
+        Self {
+            execution_block: self.execution_block.clone(),
+            execution_block_encoded_size,
+            #[cfg(feature = "bal")]
+            block_access_list: self.block_access_list.clone(),
+        }
+    }
+}
+
+fn validate_block_access_list_hash(
+    expected: Option<B256>,
+    block_access_list: Option<&Bytes>,
+) -> Result<(), BlockAccessListError> {
+    match (expected, block_access_list) {
+        (Some(expected), Some(block_access_list)) => {
+            let actual = keccak256(block_access_list.as_ref());
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(BlockAccessListError::HashMismatch { expected, actual })
+            }
+        }
+        (Some(expected), None) => Err(BlockAccessListError::Missing { expected }),
+        (None, Some(_)) => Err(BlockAccessListError::Unexpected),
+        (None, None) => Ok(()),
     }
 }
 

@@ -238,6 +238,14 @@ impl RecoveredSubBlock {
             .map(|(sender, tx)| Recovered::new_unchecked(tx, *sender))
     }
 
+    /// Returns an iterator over `Recovered<TempoTxEnvelope>`
+    pub fn into_recovered_iter(self) -> impl Iterator<Item = Recovered<TempoTxEnvelope>> {
+        self.senders
+            .into_iter()
+            .zip(self.inner.inner.transactions)
+            .map(|(sender, tx)| Recovered::new_unchecked(tx, sender))
+    }
+
     /// Returns the validator that submitted the subblock.
     pub fn validator(&self) -> B256 {
         self.validator
