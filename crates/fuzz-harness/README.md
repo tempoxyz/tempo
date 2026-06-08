@@ -18,10 +18,11 @@ The harness exports exactly three C ABI functions:
 
 `tempo_fuzz_capabilities_v1` returns `tempo_fuzz_types::HarnessCapabilities`, including the hardfork ids supported by this build. The external runner intersects capabilities across loaded harnesses before generating fuzz inputs, so older release branches can avoid newer hardfork-only behavior.
 
-The checked-in conformance fixtures live under `fixtures/block`. The `Conformance Fixtures` GitHub Action runs the full fixture directory with:
+The checked-in conformance fixtures live under `fixtures/block`. The `Conformance Fixtures` GitHub Action first builds the shared object as a smoke test, then runs the full fixture directory through a direct Rust binary:
 
 ```bash
-cargo test -p tempo-fuzz-harness --release conformance_fixtures -- --nocapture
+cargo build -p tempo-fuzz-harness --release --lib
+cargo run -p tempo-fuzz-harness --release --bin conformance-fixtures -- fixtures/block
 ```
 
 Fixture files are binary bincode payloads. `.gitattributes` marks `fixtures/**/*.fixture` as binary so Git does not apply text normalization or textual diffs.

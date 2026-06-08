@@ -21,5 +21,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build fuzz harness shared object
+        run: cargo build -p tempo-fuzz-harness --release --lib
+
       - name: Check block conformance fixtures
-        run: cargo test -p tempo-fuzz-harness --release conformance_fixtures -- --nocapture
+        run: cargo run -p tempo-fuzz-harness --release --bin conformance-fixtures -- fixtures/block
