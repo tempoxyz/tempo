@@ -1,41 +1,46 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
-    error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
+    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
+type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
 pub struct MergeBestTransactions {
-    protocol_pool: BestProtocolTransactions<TxOrdering>,
+    protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    base_fee: u64,
 }
 
 impl MergeBestTransactions {
     /// Creates a new iterator over the given iterators.
     pub(crate) fn new(
-        protocol_pool: BestProtocolTransactions<TxOrdering>,
+        protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
         aa_2d_pool: BestAA2dTransactions,
+        base_fee: u64,
     ) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            base_fee,
         }
     }
 }
@@ -44,7 +49,10 @@ impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
-            self.next_protocol_pool = self.protocol_pool.next_tx_and_priority();
+            self.next_protocol_pool = self.protocol_pool.next().map(|tx| {
+                let priority = TempoTipOrdering::default().priority(&tx.transaction, self.base_fee);
+                (tx, priority)
+            });
         }
         if self.next_aa_2d_pool.is_none() {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
@@ -85,6 +93,23 @@ impl Iterator for MergeBestTransactions {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let buffered = usize::from(self.next_protocol_pool.is_some())
+            + usize::from(self.next_aa_2d_pool.is_some());
+        let (protocol_lower, protocol_upper) = self.protocol_pool.size_hint();
+        let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
+
+        (
+            buffered
+                .saturating_add(protocol_lower)
+                .saturating_add(aa_2d_lower),
+            protocol_upper
+                .zip(aa_2d_upper)
+                .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
+                .and_then(|upper| upper.checked_add(buffered)),
+        )
     }
 }
 
@@ -209,6 +234,7 @@ where
 mod tests {
     use super::*;
     use crate::{
+        ordering::TempoTipOrdering,
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
@@ -252,10 +278,12 @@ mod tests {
         tx_with_nonce_key(U256::from(1), sender, nonce, priority)
     }
 
-    fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
+    fn protocol_best_transactions(
+        txs: Vec<TestTx>,
+    ) -> Box<dyn BestTransactions<Item = BestTransaction>> {
         let pool = Pool::new(
             OkValidator::<TempoPooledTransaction>::default(),
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -268,7 +296,7 @@ mod tests {
             results.iter().all(Result::is_ok),
             "all protocol transactions must be added successfully: {results:?}"
         );
-        pool.inner().best_transactions()
+        Box::new(pool.inner().best_transactions())
     }
 
     fn aa_2d_best_transactions(txs: Vec<TestTx>) -> BestAA2dTransactions {
@@ -285,6 +313,7 @@ mod tests {
                 .or_insert(id.nonce);
         }
 
+        pool.set_base_fee(TempoHardfork::T1.base_fee());
         for tx in txs {
             let id = tx
                 .transaction
@@ -304,6 +333,7 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
+            TempoHardfork::T1.base_fee(),
         )
     }
 
@@ -331,6 +361,36 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash())); // priority 3
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_f.hash())); // priority 1
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_size_hint() {
+        let protocol_sender = Address::random();
+        let protocol_tx_0 = protocol_tx_for_sender(protocol_sender, 0, 10);
+        let protocol_tx_1 = protocol_tx_for_sender(protocol_sender, 1, 9);
+        let aa_2d_tx = aa_2d_tx(0, 8);
+        let mut merged = merged_best_transactions(
+            vec![protocol_tx_0.clone(), protocol_tx_1.clone()],
+            vec![aa_2d_tx.clone()],
+        );
+        merged.no_updates();
+
+        assert_eq!(merged.size_hint(), (0, Some(3)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_0.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(2)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_1.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(1)));
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*aa_2d_tx.hash()));
+        assert_eq!(merged.size_hint(), (0, Some(0)));
     }
 
     #[test]
