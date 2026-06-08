@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn t7_user_state_uses_legacy_balance_layout() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         let slot = U256::from(42);
         let address = Address::random();
 

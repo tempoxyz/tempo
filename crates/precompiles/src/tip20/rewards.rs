@@ -37,7 +37,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t6() {
+        if self.storage.spec().is_t7() {
             return Ok(());
         }
 
@@ -151,7 +151,7 @@ impl TIP20Token {
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
         let hardfork = self.storage.spec();
-        if hardfork.is_t6() {
+        if hardfork.is_t7() {
             return Ok(());
         }
 
@@ -208,10 +208,10 @@ impl TIP20Token {
 
     /// Updates rewards for claim accounting.
     ///
-    /// T6 keeps legacy checkpointing for already-accrued rewards, but claims are treated as
+    /// T7 keeps legacy checkpointing for already-accrued rewards, but claims are treated as
     /// reward-inert balance movement and must not opt the claimed tokens into rewards.
     fn update_rewards_for_claim(&mut self, holder: Address) -> Result<RewardFlag> {
-        if self.storage.spec().is_t6() {
+        if self.storage.spec().is_t7() {
             self.update_rewards_legacy(holder)?;
             Ok(RewardFlag::OptedOut)
         } else {
@@ -790,7 +790,7 @@ mod tests {
             Ok(token.address)
         })?;
 
-        storage.set_spec(TempoHardfork::T6);
+        storage.set_spec(TempoHardfork::T7);
 
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Token::from_address(token_address)?;
