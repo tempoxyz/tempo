@@ -14,7 +14,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{ForkSchedule, TestNodeBuilder, await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -665,7 +665,10 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
 async fn test_tip20_rewards() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::Mainnet)
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
