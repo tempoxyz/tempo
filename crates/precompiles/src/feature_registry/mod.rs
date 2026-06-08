@@ -9,7 +9,7 @@ use crate::{
     validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, B256, U256};
-use tempo_chainspec::epoch::block_to_epoch;
+use tempo_chainspec::{epoch::block_to_epoch, features::protocol_features_digest};
 use tempo_contracts::precompiles::{
     FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry, ValidatorConfigV2Error,
 };
@@ -33,6 +33,8 @@ pub struct FeatureRegistry {
     scheduled_activation_epoch: u64,
     /// Latest feature tip reported as supported by each validator.
     validator_supported_features_tip: Mapping<Address, u64>,
+    /// Digest of each ordered feature registry prefix reported by each validator.
+    validator_supported_features_digest: Mapping<Address, Mapping<u64, B256>>,
 }
 
 impl FeatureRegistry {
@@ -81,9 +83,49 @@ impl FeatureRegistry {
         self.validator_supported_features_tip[validator].read()
     }
 
+    /// Returns the feature registry prefix digest reported by `validator` for `features_tip`.
+    pub fn validator_supported_features_digest(
+        &self,
+        validator: Address,
+        features_tip: u64,
+    ) -> Result<B256> {
+        self.validator_supported_features_digest[validator][features_tip].read()
+    }
+
     pub fn validator_supported_features_tip_by_public_key(&self, public_key: B256) -> Result<u64> {
         let validator = self.validator_address_by_public_key(public_key)?;
         self.validator_supported_features_tip(validator)
+    }
+
+    pub fn next_validator_support_update(
+        &self,
+        public_key: B256,
+        supported_features_tip: u64,
+    ) -> Result<Option<IFeatureRegistry::setSupportedFeaturesTipCall>> {
+        let validator = self.validator_address_by_public_key(public_key)?;
+        if self.validator_supported_features_tip(validator)? < supported_features_tip {
+            return Ok(Some(IFeatureRegistry::setSupportedFeaturesTipCall {
+                publicKey: public_key,
+                featuresTip: supported_features_tip,
+                featuresDigest: protocol_features_digest(supported_features_tip)
+                    .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?,
+            }));
+        }
+
+        for features_tip in 1..=supported_features_tip {
+            let expected_digest = protocol_features_digest(features_tip)
+                .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?;
+            if self.validator_supported_features_digest(validator, features_tip)? != expected_digest
+            {
+                return Ok(Some(IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: features_tip,
+                    featuresDigest: expected_digest,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     fn validator_address_by_public_key(&self, public_key: B256) -> Result<Address> {
@@ -110,7 +152,52 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::supported_features_tip_decreased().into());
         }
 
-        self.validator_supported_features_tip[validator].write(call.featuresTip)
+        let expected_digest = protocol_features_digest(call.featuresTip)
+            .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?;
+        if call.featuresDigest != expected_digest {
+            return Err(FeatureRegistryError::invalid_features_tip().into());
+        }
+
+        if call.featuresTip > previous {
+            self.validator_supported_features_tip[validator].write(call.featuresTip)?;
+        }
+
+        self.validator_supported_features_digest[validator][call.featuresTip]
+            .write(call.featuresDigest)?;
+
+        Ok(())
+    }
+
+    pub fn features_tip_support(
+        &self,
+        features_tip: u64,
+    ) -> Result<IFeatureRegistry::featuresTipSupportReturn> {
+        let expected_digest = protocol_features_digest(features_tip)
+            .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?;
+        let active_validators = ValidatorConfigV2::new().get_active_validators()?;
+        let mut support = 0u64;
+
+        for validator in &active_validators {
+            let reported_tip =
+                self.validator_supported_features_tip[validator.validatorAddress].read()?;
+            let reported_digest = self.validator_supported_features_digest
+                [validator.validatorAddress][features_tip]
+                .read()?;
+            if reported_tip >= features_tip && reported_digest == expected_digest {
+                support += 1;
+            }
+        }
+
+        Ok((
+            U256::from(support),
+            U256::from(required_support_count(active_validators.len() as u64)),
+        )
+            .into())
+    }
+
+    pub fn has_features_tip_quorum(&self, features_tip: u64) -> Result<bool> {
+        let support = self.features_tip_support(features_tip)?;
+        Ok(support.support >= support.required)
     }
 
     pub fn schedule_features_tip(
@@ -195,4 +282,8 @@ impl FeatureRegistry {
 
         Ok(scheduled_features_tip > active_features_tip)
     }
+}
+
+fn required_support_count(active_validator_count: u64) -> u64 {
+    (ACTIVATION_QUORUM_NUMERATOR * active_validator_count).div_ceil(ACTIVATION_QUORUM_DENOMINATOR)
 }

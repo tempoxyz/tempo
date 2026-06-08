@@ -1031,7 +1031,8 @@ mod tests {
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             publicKey: b256_public_key_from_private_key(&proposer_key),
-            featuresTip: 13,
+            featuresTip: 1,
+            featuresDigest: tempo_chainspec::features::protocol_features_digest(1).unwrap(),
         }
         .abi_encode()
         .into();
@@ -1065,7 +1066,8 @@ mod tests {
 
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             publicKey: b256_public_key_from_private_key(&other_key),
-            featuresTip: 13,
+            featuresTip: 1,
+            featuresDigest: tempo_chainspec::features::protocol_features_digest(1).unwrap(),
         }
         .abi_encode()
         .into();
@@ -1093,7 +1095,8 @@ mod tests {
             .build(&mut db, &chainspec);
         let input = IFeatureRegistry::setSupportedFeaturesTipCall {
             publicKey: B256::repeat_byte(0x11),
-            featuresTip: 13,
+            featuresTip: 1,
+            featuresDigest: tempo_chainspec::features::protocol_features_digest(1).unwrap(),
         }
         .abi_encode()
         .into();

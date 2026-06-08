@@ -5,6 +5,8 @@
 
 use core::fmt;
 
+use alloy_primitives::{B256, Keccak256};
+
 /// No protocol feature is active.
 pub const NO_ACTIVE_PROTOCOL_FEATURE_ID: u64 = 0;
 
@@ -17,7 +19,7 @@ pub const HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT: alloy_primitives::U256 =
 pub struct ProtocolFeature {
     /// 1-indexed feature ID. This must match the feature's registry position.
     pub id: u64,
-    /// Canonical dotted feature name used in off-chain metadata and operator tooling.
+    /// Canonical dotted feature name used in support reports, off-chain metadata, and operator tooling.
     pub name: &'static str,
     /// Encoded minimum Tempo version that supports this feature.
     pub minimum_supported_version_key: u64,
@@ -55,6 +57,35 @@ pub fn protocol_feature_by_id(id: u64) -> Option<&'static ProtocolFeature> {
     }
     let index = usize::try_from(id.checked_sub(1)?).ok()?;
     PROTOCOL_FEATURE_REGISTRY.get(index)
+}
+
+/// Returns the digest validators must report when supporting every feature through `features_tip`.
+///
+/// Feature tip `0` means no supported protocol feature flags and has the zero digest. Higher tips
+/// commit to the ordered `(feature_id, name)` prefix of [`PROTOCOL_FEATURE_REGISTRY`].
+pub fn protocol_features_digest(features_tip: u64) -> Option<B256> {
+    if features_tip == NO_ACTIVE_PROTOCOL_FEATURE_ID {
+        return Some(B256::ZERO);
+    }
+
+    let features_len = u64::try_from(PROTOCOL_FEATURE_REGISTRY.len()).ok()?;
+    if features_tip > features_len {
+        return None;
+    }
+
+    let mut hasher = Keccak256::new();
+    for feature in PROTOCOL_FEATURE_REGISTRY
+        .iter()
+        .take(usize::try_from(features_tip).ok()?)
+    {
+        let name = feature.name.as_bytes();
+        let name_len = u64::try_from(name.len()).ok()?;
+        hasher.update(feature.id.to_be_bytes());
+        hasher.update(name_len.to_be_bytes());
+        hasher.update(name);
+    }
+
+    Some(hasher.finalize())
 }
 
 /// Error returned when chain history has activated a feature this binary does not support.
@@ -99,6 +130,7 @@ mod tests {
     fn zero_means_no_active_feature() {
         assert_eq!(NO_ACTIVE_PROTOCOL_FEATURE_ID, 0);
         assert_eq!(protocol_feature_by_id(0), None);
+        assert_eq!(protocol_features_digest(0), Some(B256::ZERO));
         assert!(supports_protocol_feature_id(0));
     }
 
@@ -109,6 +141,17 @@ mod tests {
             assert_eq!(feature.id, expected_id);
             assert_eq!(protocol_feature_by_id(feature.id), Some(feature));
         }
+    }
+
+    #[test]
+    fn feature_digest_commits_to_ordered_feature_names() {
+        let mut hasher = Keccak256::new();
+        hasher.update(1u64.to_be_bytes());
+        hasher.update(25u64.to_be_bytes());
+        hasher.update(b"tip-1063.feature-registry");
+
+        assert_eq!(protocol_features_digest(1), Some(hasher.finalize()));
+        assert_eq!(protocol_features_digest(2), None);
     }
 
     #[test]
