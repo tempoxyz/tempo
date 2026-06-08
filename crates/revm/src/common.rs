@@ -278,11 +278,16 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Checks if a fee token is paused.
-    fn is_fee_token_paused(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
+    fn is_fee_token_paused(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+        actions: &StorageActions,
+    ) -> TempoResult<bool>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, actions, || {
             let token = TIP20Token::from_address(fee_token)?;
             token.paused()
         })
@@ -798,11 +803,19 @@ mod tests {
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
 
         // Default (unpaused) returns false
-        assert!(!db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
+        assert!(!db.is_fee_token_paused(
+            TempoHardfork::Genesis,
+            token_address,
+            &StorageActions::disabled()
+        )?);
 
         // Set paused=true
         db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
-        assert!(db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
+        assert!(db.is_fee_token_paused(
+            TempoHardfork::Genesis,
+            token_address,
+            &StorageActions::disabled()
+        )?);
 
         Ok(())
     }

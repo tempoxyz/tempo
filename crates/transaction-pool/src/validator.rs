@@ -2564,7 +2564,7 @@ mod tests {
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Test that is_fee_token_paused returns true for paused tokens
-        let result = state.is_fee_token_paused(spec, fee_token);
+        let result = state.is_fee_token_paused(spec, fee_token, &StorageActions::disabled());
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -2715,7 +2715,8 @@ mod tests {
         );
 
         // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
-        let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
+        let is_paused =
+            state.is_fee_token_paused(spec, paused_validator_token, &StorageActions::disabled());
         assert!(is_paused.is_ok());
         assert!(
             is_paused.unwrap(),
