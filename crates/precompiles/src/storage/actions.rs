@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -17,7 +17,7 @@ pub enum StorageAction {
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub struct StorageActions {
-    enabled: Rc<AtomicBool>,
+    enabled: Rc<Cell<bool>>,
     actions: Rc<RefCell<Vec<StorageAction>>>,
 }
 
@@ -25,7 +25,7 @@ impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording disabled.
     pub fn disabled() -> Self {
         Self {
-            enabled: Rc::new(AtomicBool::new(false)),
+            enabled: Rc::new(Cell::new(false)),
             actions: Rc::default(),
         }
     }
@@ -33,14 +33,14 @@ impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording enabled.
     pub fn enabled() -> Self {
         Self {
-            enabled: Rc::new(AtomicBool::new(true)),
+            enabled: Rc::new(Cell::new(true)),
             actions: Rc::default(),
         }
     }
 
     /// Enables actions recording.
     pub fn enable(&self) {
-        self.enabled.store(true, Ordering::Relaxed);
+        self.enabled.set(true);
         self.actions.borrow_mut().clear();
     }
 
@@ -51,7 +51,7 @@ impl StorageActions {
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
-        if !self.enabled.load(Ordering::Relaxed) {
+        if !self.enabled.get() {
             return None;
         }
 
@@ -60,7 +60,7 @@ impl StorageActions {
 
     /// Records an action if recording is enabled.
     pub fn record(&self, action: StorageAction) {
-        if !self.enabled.load(Ordering::Relaxed) {
+        if !self.enabled.get() {
             return;
         }
 
