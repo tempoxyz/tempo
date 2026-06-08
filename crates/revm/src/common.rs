@@ -295,11 +295,12 @@ pub trait TempoStateAccess<M = ()> {
         fee_token: Address,
         fee_payer: Address,
         spec: TempoHardfork,
+        actions: &StorageActions,
     ) -> TempoResult<bool>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, actions, || {
             let token = TIP20Token::from_address(fee_token)?;
             if spec.is_t1c() {
                 // Check both the fee payer and the fee manager is authorized
@@ -319,11 +320,12 @@ pub trait TempoStateAccess<M = ()> {
         token: Address,
         account: Address,
         spec: TempoHardfork,
+        actions: &StorageActions,
     ) -> TempoResult<U256>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, &StorageActions::disabled(), || {
+        self.with_read_only_storage_ctx(spec, actions, || {
             // Load the token balance for the given account.
             TIP20Token::from_address(token)?.balances[account].read()
         })
@@ -754,7 +756,12 @@ mod tests {
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage
-        let balance = db.get_token_balance(token_address, account, TempoHardfork::Genesis)?;
+        let balance = db.get_token_balance(
+            token_address,
+            account,
+            TempoHardfork::Genesis,
+            &StorageActions::disabled(),
+        )?;
         assert_eq!(balance, expected_balance);
 
         Ok(())
@@ -916,14 +923,16 @@ mod tests {
         assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
             PATH_USD_ADDRESS,
             fee_payer,
-            TempoHardfork::T1B
+            TempoHardfork::T1B,
+            &StorageActions::disabled(),
         )?);
 
         // Post T1C fails if fee payer not authorized
         assert!(!evm.ctx.journaled_state.can_fee_payer_transfer(
             PATH_USD_ADDRESS,
             fee_payer,
-            TempoHardfork::T1C
+            TempoHardfork::T1C,
+            &StorageActions::disabled(),
         )?);
 
         // Whitelist FeeManager
@@ -947,13 +956,15 @@ mod tests {
         assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
             PATH_USD_ADDRESS,
             fee_payer,
-            TempoHardfork::T1B
+            TempoHardfork::T1B,
+            &StorageActions::disabled(),
         )?);
 
         assert!(evm.ctx.journaled_state.can_fee_payer_transfer(
             PATH_USD_ADDRESS,
             fee_payer,
-            TempoHardfork::T1C
+            TempoHardfork::T1C,
+            &StorageActions::disabled(),
         )?);
 
         Ok(())
