@@ -764,16 +764,22 @@ impl Inner<Init> {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
-        let (block, block_access_list) = payload.into_execution_payload();
-        let execution_block_rlp_size_bytes = block.rlp_length();
-        let proposal = Block::from_execution_block_with_encoded_size(
+        let execution_block_rlp_size_estimate_bytes = payload.execution_block_size_estimate();
+        let (block, block_access_list, execution_block_encoded) =
+            payload.into_consensus_execution_payload();
+        let block_access_list_size_bytes = block_access_list
+            .as_ref()
+            .map_or(0, |block_access_list| block_access_list.encode_size());
+        let proposal = Block::from_execution_block_with_encoded_cache(
             block,
             block_access_list,
-            execution_block_rlp_size_bytes,
+            execution_block_encoded,
         )
         .wrap_err("payload builder produced an invalid block access list")?;
-        let consensus_block_size_bytes = proposal.encode_size();
-        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
+        let consensus_block_size_estimate_bytes =
+            execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
+        let validator_marshal_persist =
+            marshal_persist.estimate(consensus_block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -790,8 +796,8 @@ impl Inner<Init> {
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
-            execution_block_rlp_size_bytes,
-            consensus_block_size_bytes,
+            execution_block_rlp_size_estimate_bytes,
+            consensus_block_size_estimate_bytes,
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
@@ -800,7 +806,7 @@ impl Inner<Init> {
             proposal,
             Some(ProposalReturn {
                 time: proposal_return_time,
-                block_size_bytes: consensus_block_size_bytes,
+                block_size_bytes: consensus_block_size_estimate_bytes,
             }),
         ))
     }

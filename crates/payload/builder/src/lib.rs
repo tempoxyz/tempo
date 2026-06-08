@@ -58,7 +58,7 @@ use reth_transaction_pool::{
 };
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -91,6 +91,13 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
         })
     })
 }
+
+/// Conservative estimate for non-transaction execution block RLP bytes.
+///
+/// Exact block RLP length is computed asynchronously after payload construction, so the builder uses
+/// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
+/// checks and pacing estimates.
+const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -401,13 +408,12 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
-        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
             .withdrawals
             .as_ref()
             .map(|w| w.length())
             .unwrap_or(0)
-            + 1024
+            + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
@@ -517,6 +523,13 @@ where
         self.metrics
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
+
+        if is_osaka && block_size_used > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: block_size_used,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
 
         let base_fee = executor.evm().block().basefee;
         let pool_fetch_start = Instant::now();
@@ -1020,15 +1033,6 @@ where
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
-        let rlp_length = block.rlp_length();
-
-        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
-        }
-
         let pool_transactions_inclusion_ratio = if pool_transactions_yielded == 0 {
             0.0
         } else {
@@ -1064,8 +1068,15 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let estimated_rlp_block_size = block_size_used;
+        if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_rlp_block_size,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
         let recorded_block_size_bytes =
-            rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+            estimated_rlp_block_size + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -1113,6 +1124,12 @@ where
         );
 
         let block = Arc::new(block);
+        let execution_block_encoder = ExecutionBlockEncoder::new(block.clone());
+        let execution_block_encoded = execution_block_encoder.encoded_block();
+        self.executor
+            .spawn_blocking_named("builder-block-rlp-encode", move || {
+                drop(execution_block_encoder);
+            });
         let block_access_list: Option<Bytes> =
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
@@ -1135,6 +1152,8 @@ where
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
+            estimated_rlp_block_size,
+            execution_block_encoded,
         );
 
         drop(db);
@@ -1290,6 +1309,55 @@ impl BuilderTx {
     }
 }
 
+/// Fills the shared encoded execution block cache from a builder background task.
+///
+/// The payload builder creates this after assembling a recovered block, passes a clone of
+/// `encoded_block` into `TempoBuiltPayload`, then moves the encoder into a blocking task. Dropping
+/// the encoder performs the actual block RLP encoding unless another consumer has already filled
+/// the cache.
+#[derive(Debug)]
+struct ExecutionBlockEncoder {
+    block: Arc<RecoveredBlock<tempo_primitives::Block>>,
+    encoded_block: Arc<OnceLock<Bytes>>,
+}
+
+impl ExecutionBlockEncoder {
+    fn new(block: Arc<RecoveredBlock<tempo_primitives::Block>>) -> Self {
+        Self {
+            block,
+            encoded_block: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn encoded_block(&self) -> Arc<OnceLock<Bytes>> {
+        self.encoded_block.clone()
+    }
+
+    fn encode_block(&self) -> &Bytes {
+        self.encoded_block.get_or_init(|| {
+            let block = self.block.sealed_block();
+            let mut encoded = Vec::new();
+            let encode_start = Instant::now();
+            block.encode(&mut encoded);
+            let encode_elapsed = encode_start.elapsed();
+            info!(
+                block_number = block.number(),
+                block_hash = ?block.hash(),
+                encoded_size_bytes = encoded.len(),
+                ?encode_elapsed,
+                "encoded execution block rlp"
+            );
+            encoded.into()
+        })
+    }
+}
+
+impl Drop for ExecutionBlockEncoder {
+    fn drop(&mut self) {
+        let _ = self.encode_block();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1379,7 +1447,15 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(
+            eth,
+            None,
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            NON_TRANSACTION_SIZE_ESTIMATE,
+            Arc::new(OnceLock::new()),
+        )
     }
 
     #[test]
