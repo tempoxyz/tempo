@@ -429,7 +429,12 @@ where
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)
+            .get_token_balance(
+                fee_token,
+                fee_payer,
+                evm_env.cfg_env.spec,
+                &StorageActions::disabled(),
+            )
             .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance

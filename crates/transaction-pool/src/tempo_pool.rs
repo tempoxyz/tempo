@@ -345,8 +345,12 @@ where
                         let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
                             Entry::Occupied(entry) => *entry.get(),
                             Entry::Vacant(entry) => {
-                                let Ok(balance) =
-                                    provider.get_token_balance(fee_token, fee_payer, spec)
+                                let Ok(balance) = provider.get_token_balance(
+                                    fee_token,
+                                    fee_payer,
+                                    spec,
+                                    &StorageActions::disabled(),
+                                )
                                 else {
                                     continue;
                                 };
