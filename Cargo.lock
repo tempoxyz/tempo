@@ -12879,7 +12879,6 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
- "tempo-consensus",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
@@ -13042,25 +13041,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-consensus"
-version = "1.8.1"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-genesis",
- "alloy-primitives",
- "reth-chainspec",
- "reth-consensus",
- "reth-consensus-common",
- "reth-ethereum-consensus",
- "reth-primitives-traits",
- "serde_json",
- "tempo-chainspec",
- "tempo-primitives",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "tempo-contracts"
 version = "1.8.0"
 dependencies = [
@@ -13144,6 +13124,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
@@ -13157,6 +13138,8 @@ dependencies = [
  "rayon",
  "reth-chainspec",
  "reth-consensus",
+ "reth-consensus-common",
+ "reth-ethereum-consensus",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-execution-cache",
@@ -13166,6 +13149,7 @@ dependencies = [
  "reth-storage-api",
  "reth-trie",
  "revm",
+ "serde_json",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-payload-types",
@@ -13269,7 +13253,6 @@ dependencies = [
  "sha2 0.10.9",
  "tempo-alloy",
  "tempo-chainspec",
- "tempo-consensus",
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",

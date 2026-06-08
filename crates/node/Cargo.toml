@@ -20,7 +20,6 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-consensus.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true

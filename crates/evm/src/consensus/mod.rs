@@ -1,8 +1,5 @@
 //! Tempo consensus implementation.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
 mod error;
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};

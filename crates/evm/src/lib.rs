@@ -11,6 +11,7 @@ mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub mod consensus;
 #[cfg(feature = "engine")]
 mod engine;
 #[cfg(feature = "engine")]

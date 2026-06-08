@@ -38,8 +38,7 @@ use reth_transaction_pool::{
     Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
 };
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_consensus::TempoConsensus;
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
