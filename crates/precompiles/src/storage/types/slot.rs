@@ -115,11 +115,13 @@ impl<T> Slot<T> {
 }
 
 impl<T> StorageOps for Slot<T> {
+    #[inline]
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.sload(self.address, slot)
     }
 
+    #[inline]
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
@@ -134,11 +136,13 @@ struct TransientOps {
 }
 
 impl StorageOps for TransientOps {
+    #[inline]
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.tload(self.address, slot)
     }
 
+    #[inline]
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.tstore(self.address, slot, value)
