@@ -72,7 +72,7 @@ impl Args {
         } = self;
 
         fs::create_dir_all(output_dir)
-            .wrap_err_with(|| format!("failed to create output dir: {output_dir:?}"))?;
+            .wrap_err_with(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
         eprintln!("packaging execution layer");
 
@@ -93,10 +93,13 @@ impl Args {
 
         let manifest_path = output_dir.join("manifest.json");
         let manifest = read_manifest(&manifest_path)
-            .wrap_err_with(|| format!("failed reading manifest: {manifest_path:?}"))?;
+            .wrap_err_with(|| format!("failed reading manifest: {}", manifest_path.display()))?;
 
         let consensus_dir = consensus_datadir.unwrap_or_else(|| source_datadir.join("consensus"));
-        eprintln!("embedding latest consensus finalization. consensus dir: {consensus_dir:?}");
+        eprintln!(
+            "reading latest finalization. consensus dir: {}",
+            consensus_dir.display()
+        );
 
         let (height, finalization) = read_latest_finalization(&consensus_dir)
             .wrap_err("failed to read finalization state")?;
@@ -123,7 +126,7 @@ impl Args {
         let manifest_json = serde_json::to_string_pretty(&manifest_json)
             .wrap_err("failed to serialize manifest")?;
         fs::write(&manifest_path, manifest_json)
-            .wrap_err_with(|| format!("failed to write {manifest_path:?}"))?;
+            .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
 
         eprintln!("embedded finalization for height `{height}`, digest `{digest}`");
         Ok(())

@@ -120,13 +120,13 @@ fn write_bootstrap_finalization(
     let path = consensus_dir.join(BOOTSTRAP_FINALIZATION_FILE);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("failed to create finalization dir {parent:?}"))?;
+            .wrap_err_with(|| format!("failed to create dir: {}", parent.display()))?;
     }
 
     fs::write(&path, consensus_manifest.finalization.as_ref())
-        .wrap_err_with(|| format!("failed to write finalization certificate to {path:?}"))?;
+        .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
 
-    eprintln!("persisted consensus bootstrap finalization: {path:?}");
+    eprintln!("persisted bootstrap finalization: {}", path.display());
     Ok(())
 }
 
