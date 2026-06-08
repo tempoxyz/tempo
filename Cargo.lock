@@ -13314,6 +13314,7 @@ dependencies = [
  "reth-tasks",
  "reth-transaction-pool",
  "reth-trie-common",
+ "reth-trie-parallel",
  "tempo-chainspec",
  "tempo-evm",
  "tempo-payload-types",

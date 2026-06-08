@@ -37,7 +37,7 @@ use reth_engine_tree::tree::{
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError, OnStateHook},
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -47,8 +47,11 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
+    State,
+    context::Block,
+    database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
+    state::{Account, EvmState},
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -56,6 +59,7 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie_parallel::state_root_task::{StateHookSender, StateRootHandle, StateRootMessage};
 use std::{
     sync::{
         Arc,
@@ -492,7 +496,7 @@ where
             executor
                 .evm_mut()
                 .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+                .set_state_hook(Some(Box::new(compact_state_root_hook(handle))));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -1220,6 +1224,51 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+fn compact_state_root_hook(handle: &StateRootHandle) -> impl OnStateHook {
+    let sender = StateHookSender::new(handle.updates_tx().clone());
+
+    move |state: &EvmState| {
+        let state = compact_state_update(state);
+        if !state.is_empty() {
+            let _ = sender.send(StateRootMessage::StateUpdate(state));
+        }
+    }
+}
+
+fn compact_state_update(state: &EvmState) -> EvmState {
+    let mut compact = EvmState::default();
+    compact.reserve(state.len());
+
+    for (&address, account) in state {
+        if !account.is_touched() {
+            continue;
+        }
+
+        compact.insert(address, compact_account_update(account));
+    }
+
+    compact
+}
+
+fn compact_account_update(account: &Account) -> Account {
+    let mut compact = Account::default();
+    compact.info = account.info.clone();
+    compact.transaction_id = account.transaction_id;
+    compact.status = account.status;
+
+    let original_info = account.original_info();
+    if original_info != Default::default() {
+        *compact.original_info_mut() = original_info;
+    }
+
+    compact.storage = account
+        .changed_storage_slots()
+        .map(|(&slot, value)| (slot, value.clone()))
+        .collect();
+
+    compact
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
