@@ -222,6 +222,45 @@ mod tests {
     }
 
     #[test]
+    fn payload_budget_feedback_changes_cutoff_threshold() {
+        let workload = ValidationLatencyWorkload::new(100, 1);
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(40));
+        let decision = |validation_latency| {
+            payload_budget_decision(
+                Duration::from_millis(100),
+                Duration::from_millis(10),
+                1_350_000,
+                MarshalPersistEstimator::from_ns_per_byte(1_000),
+                10_000,
+                validation_latency,
+                workload,
+            )
+        };
+
+        let conservative = decision(None);
+        let feedback = decision(validation_latency);
+
+        assert_eq!(
+            conservative.predicted_builder_work,
+            Duration::from_micros(121_500)
+        );
+        assert_eq!(
+            conservative.predicted_validator_work,
+            Duration::from_micros(121_500)
+        );
+        assert_eq!(conservative.marshal_persist, Duration::from_millis(10));
+        assert_eq!(conservative.total_reserved, Duration::from_millis(273));
+
+        assert_eq!(
+            feedback.predicted_builder_work,
+            Duration::from_micros(121_500)
+        );
+        assert_eq!(feedback.predicted_validator_work, Duration::from_millis(40));
+        assert_eq!(feedback.marshal_persist, Duration::from_millis(10));
+        assert_eq!(feedback.total_reserved, Duration::from_micros(191_500));
+    }
+
+    #[test]
     fn payload_budget_caps_scaled_validator_feedback_at_builder_projection() {
         let validation_latency = validation_latency_estimate(
             ValidationLatencyWorkload::new(100, 10),
