@@ -177,13 +177,9 @@ where
     /// Validates that an AA transaction does not exceed the maximum authorization list size.
     fn ensure_authorization_list_size(
         &self,
-        transaction: &TempoPooledTransaction,
+        tx: &TempoTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
-        let Some(aa_tx) = transaction.inner().as_aa() else {
-            return Ok(());
-        };
-
-        let count = aa_tx.tx().tempo_authorization_list.len();
+        let count = tx.tempo_authorization_list.len();
         if count > self.max_tempo_authorizations {
             return Err(TempoPoolTransactionError::TooManyAuthorizations {
                 count,
@@ -200,14 +196,8 @@ where
     /// - Allow peer penalization for sending bad transactions
     fn ensure_aa_field_limits(
         &self,
-        transaction: &TempoPooledTransaction,
+        tx: &TempoTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
-        let Some(aa_tx) = transaction.inner().as_aa() else {
-            return Ok(());
-        };
-
-        let tx = aa_tx.tx();
-
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
@@ -356,30 +346,32 @@ where
             );
         }
 
-        // Validate AA transaction authorization list size (pool-only DoS limit).
-        if let Err(err) = self.ensure_authorization_list_size(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
-        }
+        if let Some(aa_tx) = transaction.inner().as_aa() {
+            let tx = aa_tx.tx();
 
-        // Validate AA transaction field limits (pool-only DoS limits: calls, access list, token limits).
-        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
-        }
+            // Validate AA transaction authorization list size (pool-only DoS limit).
+            if let Err(err) = self.ensure_authorization_list_size(tx) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
 
-        // Pool-only time-bound checks: valid_before propagation buffer, valid_after max offset.
-        if let Some(tx) = transaction.inner().as_aa()
-            && let Err(err) = self.ensure_pool_time_bounds(tx.tx())
-        {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
+            // Validate AA transaction field limits (pool-only DoS limits: calls, access list, token limits).
+            if let Err(err) = self.ensure_aa_field_limits(tx) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
+
+            // Pool-only time-bound checks: valid_before propagation buffer, valid_after max offset.
+            if let Err(err) = self.ensure_pool_time_bounds(tx) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
         }
 
         // Run the unified EVM validation pipeline.
