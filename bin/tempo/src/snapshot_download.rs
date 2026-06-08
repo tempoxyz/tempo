@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
-use eyre::{Context as _, OptionExt, bail, eyre};
+use eyre::{Context as _, OptionExt, bail};
 use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -34,7 +34,7 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
-    let args = Args::from_arg_matches(matches).map_err(|e| eyre!("{e}"))?;
+    let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
     let datadir = matches
         .get_raw("datadir")

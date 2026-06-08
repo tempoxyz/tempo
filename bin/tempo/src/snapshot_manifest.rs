@@ -48,7 +48,7 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
-    let args = Args::from_arg_matches(matches).map_err(|e| eyre::eyre!("{e}"))?;
+    let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
     let source_datadir = matches
         .get_one::<PathBuf>("source_datadir")
