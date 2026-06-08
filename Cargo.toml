@@ -87,9 +87,10 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
-# Include debug info in benchmarks too.
 [profile.bench]
-inherits = "profiling"
+inherits = "maxperf"
+debug = "line-tables-only"
+strip = "none"
 
 [profile.maxperf]
 inherits = "release"
