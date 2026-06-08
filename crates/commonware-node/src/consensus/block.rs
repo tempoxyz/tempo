@@ -278,13 +278,12 @@ impl Read for Block {
         let execution_block_encoded_size = header.length_with_payload();
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
-        // TODO: decode straight to a reth SealedBlock once released:
-        // https://github.com/paradigmxyz/reth/pull/18003
-        // For now relies on `Decodable for alloy_consensus::Block`.
-        let inner: SealedBlock<tempo_primitives::Block> =
-            alloy_rlp::Decodable::decode(&mut bytes.as_ref()).map_err(|rlp_err| {
-                commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-            })?;
+        let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
+            &mut bytes.as_ref(),
+        )
+        .map_err(|rlp_err| {
+            commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+        })?;
 
         #[cfg(feature = "bal")]
         let block_access_list = {
