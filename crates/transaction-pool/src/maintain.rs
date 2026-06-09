@@ -278,24 +278,21 @@ enum AccountKeychainPoolEvent {
 impl AccountKeychainPoolEvent {
     /// Decodes only account-keychain events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
-        match first_topic(log)? {
-            IAccountKeychain::KeyAuthorized::SIGNATURE_HASH => {
-                decode_event(log).map(Self::KeyAuthorized)
-            }
-            IAccountKeychain::AdminKeyAuthorized::SIGNATURE_HASH => {
-                decode_event(log).map(Self::AdminKeyAuthorized)
-            }
-            IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
-            IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
-                decode_event(log).map(Self::SpendingLimitUpdated)
-            }
-            IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => {
-                decode_event(log).map(Self::AccessKeySpend)
-            }
-            IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
-                decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
-            }
-            _ => None,
+        let topic = first_topic(log)?;
+        if topic == &IAccountKeychain::KeyAuthorized::SIGNATURE_HASH {
+            decode_event(log).map(Self::KeyAuthorized)
+        } else if topic == &IAccountKeychain::AdminKeyAuthorized::SIGNATURE_HASH {
+            decode_event(log).map(Self::AdminKeyAuthorized)
+        } else if topic == &IAccountKeychain::KeyRevoked::SIGNATURE_HASH {
+            decode_event(log).map(Self::KeyRevoked)
+        } else if topic == &IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH {
+            decode_event(log).map(Self::SpendingLimitUpdated)
+        } else if topic == &IAccountKeychain::AccessKeySpend::SIGNATURE_HASH {
+            decode_event(log).map(Self::AccessKeySpend)
+        } else if topic == &IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH {
+            decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+        } else {
+            None
         }
     }
 }
@@ -311,12 +308,13 @@ enum FeeManagerPoolEvent {
 impl FeeManagerPoolEvent {
     /// Decodes only fee-manager events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
-        match first_topic(log)? {
-            IFeeManager::ValidatorTokenSet::SIGNATURE_HASH => {
-                decode_event(log).map(Self::ValidatorTokenSet)
-            }
-            IFeeManager::UserTokenSet::SIGNATURE_HASH => decode_event(log).map(Self::UserTokenSet),
-            _ => None,
+        let topic = first_topic(log)?;
+        if topic == &IFeeManager::ValidatorTokenSet::SIGNATURE_HASH {
+            decode_event(log).map(Self::ValidatorTokenSet)
+        } else if topic == &IFeeManager::UserTokenSet::SIGNATURE_HASH {
+            decode_event(log).map(Self::UserTokenSet)
+        } else {
+            None
         }
     }
 }
@@ -332,14 +330,13 @@ enum Tip403PoolEvent {
 impl Tip403PoolEvent {
     /// Decodes only TIP-403 registry events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
-        match first_topic(log)? {
-            ITIP403Registry::BlacklistUpdated::SIGNATURE_HASH => {
-                decode_event(log).map(Self::BlacklistUpdated)
-            }
-            ITIP403Registry::WhitelistUpdated::SIGNATURE_HASH => {
-                decode_event(log).map(Self::WhitelistUpdated)
-            }
-            _ => None,
+        let topic = first_topic(log)?;
+        if topic == &ITIP403Registry::BlacklistUpdated::SIGNATURE_HASH {
+            decode_event(log).map(Self::BlacklistUpdated)
+        } else if topic == &ITIP403Registry::WhitelistUpdated::SIGNATURE_HASH {
+            decode_event(log).map(Self::WhitelistUpdated)
+        } else {
+            None
         }
     }
 }
@@ -359,25 +356,24 @@ enum Tip20PoolEvent {
 impl Tip20PoolEvent {
     /// Decodes only TIP-20 events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
-        match first_topic(log)? {
-            ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
-                decode_event(log).map(Self::PauseStateUpdate)
-            }
-            ITIP20::TransferPolicyUpdate::SIGNATURE_HASH => {
-                decode_event::<ITIP20::TransferPolicyUpdate>(log)
-                    .map(|_| Self::TransferPolicyUpdate)
-            }
-            ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
-                decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
-            }
-            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
-            _ => None,
+        let topic = first_topic(log)?;
+        if topic == &ITIP20::PauseStateUpdate::SIGNATURE_HASH {
+            decode_event(log).map(Self::PauseStateUpdate)
+        } else if topic == &ITIP20::TransferPolicyUpdate::SIGNATURE_HASH {
+            decode_event::<ITIP20::TransferPolicyUpdate>(log)
+                .map(|_| Self::TransferPolicyUpdate)
+        } else if topic == &ITIP20::QuoteTokenUpdate::SIGNATURE_HASH {
+            decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
+        } else if topic == &ITIP20::Transfer::SIGNATURE_HASH {
+            decode_event(log).map(Self::Transfer)
+        } else {
+            None
         }
     }
 }
 
-fn first_topic(log: &Log) -> Option<B256> {
-    log.topics().first().copied()
+fn first_topic(log: &Log) -> Option<&B256> {
+    log.topics().first()
 }
 
 /// Decodes after the caller has matched `topic0`, avoiding the allocating
