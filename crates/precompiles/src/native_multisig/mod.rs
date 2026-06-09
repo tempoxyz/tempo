@@ -126,6 +126,26 @@ impl NativeMultisig {
         stored_config_to_init(stored)
     }
 
+    pub fn load_registered_config(
+        &self,
+        account: Address,
+        config_id: B256,
+    ) -> Result<InitMultisig> {
+        let canonical_config_id = self.config_ids[account].read()?;
+        if canonical_config_id == B256::ZERO {
+            return Err(NativeMultisigError::config_not_found().into());
+        }
+        if canonical_config_id != config_id {
+            return Err(NativeMultisigError::invalid_config_id().into());
+        }
+
+        let stored = self.configs[account][config_id].read()?;
+        if stored.threshold == 0 {
+            return Err(NativeMultisigError::config_not_found().into());
+        }
+        stored_config_to_init(stored)
+    }
+
     pub fn store_initial_config(
         &mut self,
         account: Address,
