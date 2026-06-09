@@ -160,34 +160,48 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::invalid_features_tip().into());
         }
 
-        let previous_digest =
-            self.validator_supported_features_digest[validator][call.featuresTip].read()?;
-        let was_counted = previous >= call.featuresTip && previous_digest != B256::ZERO;
+        let old_counted_digest =
+            self.counted_validator_digest(validator, call.featuresTip, previous)?;
 
         if call.featuresTip > previous {
             self.validator_supported_features_tip[validator].write(call.featuresTip)?;
         }
 
-        if was_counted && previous_digest != call.featuresDigest {
-            let previous_support =
-                self.features_tip_support_count[call.featuresTip][previous_digest].read()?;
-            self.features_tip_support_count[call.featuresTip][previous_digest]
-                .write(previous_support.saturating_sub(1))?;
-        }
+        self.validator_supported_features_digest[validator][call.featuresTip]
+            .write(call.featuresDigest)?;
 
-        if previous_digest != call.featuresDigest {
-            self.validator_supported_features_digest[validator][call.featuresTip]
-                .write(call.featuresDigest)?;
-        }
-
-        if !was_counted || previous_digest != call.featuresDigest {
-            let support =
-                self.features_tip_support_count[call.featuresTip][call.featuresDigest].read()?;
-            self.features_tip_support_count[call.featuresTip][call.featuresDigest]
-                .write(support + 1)?;
+        if old_counted_digest != Some(call.featuresDigest) {
+            if let Some(old_digest) = old_counted_digest {
+                self.decrement_features_tip_support(call.featuresTip, old_digest)?;
+            }
+            self.increment_features_tip_support(call.featuresTip, call.featuresDigest)?;
         }
 
         Ok(())
+    }
+
+    fn counted_validator_digest(
+        &self,
+        validator: Address,
+        features_tip: u64,
+        validator_supported_features_tip: u64,
+    ) -> Result<Option<B256>> {
+        if validator_supported_features_tip < features_tip {
+            return Ok(None);
+        }
+
+        let digest = self.validator_supported_features_digest[validator][features_tip].read()?;
+        Ok((digest != B256::ZERO).then_some(digest))
+    }
+
+    fn increment_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
+        let support = self.features_tip_support_count[features_tip][digest].read()?;
+        self.features_tip_support_count[features_tip][digest].write(support + 1)
+    }
+
+    fn decrement_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
+        let support = self.features_tip_support_count[features_tip][digest].read()?;
+        self.features_tip_support_count[features_tip][digest].write(support.saturating_sub(1))
     }
 
     pub fn features_tip_support(
