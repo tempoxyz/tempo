@@ -79,6 +79,15 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
 ];
 
+/// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
+/// or a fixed system precompile.
+pub fn is_precompile_address(addr: Address, spec: TempoHardfork) -> bool {
+    addr.is_tip20()
+        || SYSTEM_PRECOMPILES
+            .iter()
+            .any(|&(a, activated)| a == addr && spec >= activated)
+}
+
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.

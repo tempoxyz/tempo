@@ -11,7 +11,7 @@ pub mod dispatch;
 pub use slots as tip403_registry_slots;
 
 use crate::{
-    StorageCtx,
+    StorageCtx, is_precompile_address,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -425,8 +425,7 @@ impl TIP403Registry {
         let recovery_address = call.recoveryAuthority;
         let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
 
-        if recovery_address == RECEIVE_POLICY_GUARD_ADDRESS
-            || recovery_address.is_tip20()
+        if is_precompile_address(recovery_address, self.storage.spec())
             || recovery_address.is_virtual()
         {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
@@ -946,6 +945,7 @@ impl PolicyTypeExt for PolicyType {
 mod tests {
     use super::*;
     use crate::{
+        SYSTEM_PRECOMPILES,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
@@ -1338,7 +1338,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            for recovery_address in [RECEIVE_POLICY_GUARD_ADDRESS, PATH_USD_ADDRESS, virtual_addr] {
+            let rejected = SYSTEM_PRECOMPILES
+                .iter()
+                .map(|&(address, _)| address)
+                .chain([PATH_USD_ADDRESS, virtual_addr]);
+
+            for recovery_address in rejected {
                 let result = registry.set_receive_policy(
                     account,
                     ITIP403Registry::setReceivePolicyCall {
