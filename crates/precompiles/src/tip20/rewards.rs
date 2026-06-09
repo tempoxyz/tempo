@@ -36,7 +36,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t7() {
+        if self.storage.spec().is_t8() {
             return Ok(());
         }
 
@@ -79,7 +79,24 @@ impl TIP20Token {
     /// This function calculates the rewards earned by a holder based on their balance and the
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
+    ///
+    /// T8+: no-op, as rewards are disabled.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
+        let hardfork = self.storage.spec();
+
+        // T8+: no-op, as rewards are disabled.
+        if hardfork.is_t8() {
+            return Ok(Address::ZERO);
+        }
+        // T7+: early exit if there are no global rewards per token.
+        if hardfork.is_t7() && self.get_global_reward_per_token()?.is_zero() {
+            return Ok(Address::ZERO);
+        }
+
+        self.update_rewards_legacy(holder)
+    }
+
+    fn update_rewards_legacy(&mut self, holder: Address) -> Result<Address> {
         let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
@@ -133,7 +150,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t7() {
+        if self.storage.spec().is_t8() {
             return Ok(());
         }
 
@@ -182,6 +199,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
+        // T8+: pay only settled rewards; pending lazy accruals are forfeited.
         let reward_recipient = self.update_rewards(msg_sender)?;
 
         let mut info = self.user_reward_info[msg_sender].read()?;
@@ -315,8 +333,8 @@ impl TIP20Token {
         // Start with the stored reward balance
         let mut pending = info.reward_balance;
 
-        // At T7 and later, reward hooks are disabled; only settled rewards are claimable.
-        if self.storage.spec().is_t7() {
+        // At T8 and later, reward hooks are disabled; only settled rewards are claimable.
+        if self.storage.spec().is_t8() {
             return pending
                 .try_into()
                 .map_err(|_| TempoPrecompileError::under_overflow());
@@ -483,10 +501,11 @@ mod tests {
     }
 
     #[test]
-    fn test_t7_reward_mutators_are_noops() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+    fn test_tip1075_t8_noops_and_claims_legacy_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
         let alice = Address::random();
+        let bob = Address::random();
         let amount = U256::from(1000);
         let reward_amount = U256::from(100);
 
@@ -494,29 +513,72 @@ mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(alice, amount)
-                .with_mint(admin, reward_amount)
+                .with_mint(admin, reward_amount * U256::from(2))
                 .apply()?;
 
-            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
+            // Pre-T8: settle one reward distribution, then leave another lazy/pending.
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+            token.update_rewards(alice)?;
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+            assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
 
-            assert_eq!(token.get_balance(admin)?, reward_amount);
-            assert_eq!(token.get_balance(token.address)?, U256::ZERO);
-            assert_eq!(token.get_global_reward_per_token()?, U256::ZERO);
-            assert_eq!(token.get_opted_in_supply()?, 0);
+            // T7 still enforces legacy reward mutators; the disabling gate starts at T8.
+            StorageCtx.set_spec(TempoHardfork::T7);
+            assert!(matches!(
+                token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO }),
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidAmount(_)))
+            ));
+            token.paused.write(true)?;
             assert_eq!(
-                token.get_user_reward_info(alice)?.reward_recipient,
-                Address::ZERO
+                token
+                    .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })
+                    .unwrap_err(),
+                TIP20Error::contract_paused().into()
             );
+            token.paused.write(false)?;
+
+            StorageCtx.set_spec(TempoHardfork::T8);
+            token.paused.write(true)?;
+
+            // T8+: setRewardRecipient is a no-op, even while paused.
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            assert_eq!(
+                token.user_reward_info[alice].read()?.reward_recipient,
+                alice
+            );
+
+            // T8+: distributeReward is a no-op, even for an otherwise invalid zero amount.
+            let rpt = token.get_global_reward_per_token()?;
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
+            assert_eq!(token.get_global_reward_per_token()?, rpt);
+
+            // T8+: claimRewards pays settled rewards only and doesn't opt them in.
+            token.paused.write(false)?;
+            let claimed = token.claim_rewards(alice)?;
+            assert_eq!(claimed, reward_amount);
+            assert_eq!(token.get_balance(alice)?, amount + reward_amount);
+            assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
+            assert_eq!(token.get_global_reward_per_token()?, rpt);
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_t7_get_pending_rewards_returns_only_stored_balance() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+    fn test_t8_get_pending_rewards_returns_only_stored_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let admin = Address::random();
         let alice = Address::random();
         let alice_balance = U256::from(1000);
