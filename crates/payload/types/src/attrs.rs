@@ -1,3 +1,4 @@
+use crate::ValidationLatencyEstimate;
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -36,6 +37,12 @@ pub struct TempoPayloadAttributes {
     /// elapsed build accounting.
     #[serde(skip)]
     payload_build_control: Option<PayloadBuildControl>,
+    /// Validation latency estimate for a consensus payload build.
+    ///
+    /// Consensus snapshots this from recent locally validated blocks. `None`
+    /// means the builder should use its conservative fallback.
+    #[serde(skip)]
+    validation_latency_estimate: Option<ValidationLatencyEstimate>,
     /// Noncanonical BAL-backed parent state for speculative child builds.
     #[serde(skip)]
     speculative_parent: Option<SpeculativePayloadParent>,
@@ -98,6 +105,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_control: None,
+            validation_latency_estimate: None,
             speculative_parent: None,
             excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,
@@ -182,6 +190,20 @@ impl TempoPayloadAttributes {
         self.build_reason
     }
 
+    /// Sets the validation latency estimate for a consensus payload build.
+    pub fn with_validation_latency_estimate(
+        mut self,
+        estimate: Option<ValidationLatencyEstimate>,
+    ) -> Self {
+        self.validation_latency_estimate = estimate;
+        self
+    }
+
+    /// Returns the consensus-provided validation latency estimate.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimate
+    }
+
     /// Returns the milliseconds portion of the timestamp.
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
@@ -214,6 +236,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_control: None,
+            validation_latency_estimate: None,
             speculative_parent: None,
             excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,

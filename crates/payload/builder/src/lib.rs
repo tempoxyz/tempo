@@ -78,7 +78,8 @@ use tempo_evm::{
     evm::TempoEvm,
 };
 use tempo_payload_types::{
-    PayloadBuildControl, TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate,
+    PayloadBuildControl, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -807,6 +808,7 @@ where
             self.build_time_multiplier()
         };
         let marshal_persist = marshal_persist_estimate();
+        let validation_latency = attributes.validation_latency_estimate();
         let mut proposal_timing_attached_elapsed = None;
         let mut attempted_best_txs_next = false;
         let block_build_stop_reason = loop {
@@ -822,6 +824,10 @@ where
                 {
                     proposal_timing_attached_elapsed = Some(elapsed);
                 }
+                let current_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used,
+                    pool_transactions_included as usize,
+                );
                 if let Some(estimate) = payload_budget_exhausted(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
@@ -830,6 +836,8 @@ where
                     build_budget,
                     marshal_persist,
                     block_size_used,
+                    validation_latency,
+                    current_workload,
                 ) {
                     let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
                         && is_budgeted_build
@@ -863,6 +871,7 @@ where
                         can_wait_for_pool,
                         build_once_with_shared_trie,
                         stopped_before_first_best_txs_next = !attempted_best_txs_next,
+                        ?current_workload,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -1522,6 +1531,10 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+        let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
+        let validation_latency_duration = validation_latency
+            .and_then(|estimate| estimate.estimate(final_workload))
+            .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -1563,6 +1576,7 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
+            ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?proposal_context_wait_elapsed,
@@ -1608,7 +1622,8 @@ where
             executed_block,
             gated_executed_block,
             validation_work_duration,
-            rlp_length,
+            recorded_block_size_bytes,
+            validation_latency_duration,
         );
 
         if build_once_with_shared_trie {
@@ -1921,7 +1936,15 @@ mod tests {
         .unwrap();
         let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(
+            eth,
+            None,
+            None,
+            None,
+            Duration::ZERO,
+            rlp_length,
+            Duration::ZERO,
+        )
     }
 
     #[test]

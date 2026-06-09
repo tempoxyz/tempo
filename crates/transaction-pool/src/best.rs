@@ -146,6 +146,23 @@ impl Iterator for MergeBestTransactions {
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let buffered = usize::from(self.next_protocol_pool.is_some())
+            + usize::from(self.next_aa_2d_pool.is_some());
+        let (protocol_lower, protocol_upper) = self.protocol_pool.size_hint();
+        let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
+
+        (
+            buffered
+                .saturating_add(protocol_lower)
+                .saturating_add(aa_2d_lower),
+            protocol_upper
+                .zip(aa_2d_upper)
+                .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
+                .and_then(|upper| upper.checked_add(buffered)),
+        )
+    }
 }
 
 impl BestTransactions for MergeBestTransactions {
@@ -424,6 +441,36 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash())); // priority 3
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_f.hash())); // priority 1
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_size_hint() {
+        let protocol_sender = Address::random();
+        let protocol_tx_0 = protocol_tx_for_sender(protocol_sender, 0, 10);
+        let protocol_tx_1 = protocol_tx_for_sender(protocol_sender, 1, 9);
+        let aa_2d_tx = aa_2d_tx(0, 8);
+        let mut merged = merged_best_transactions(
+            vec![protocol_tx_0.clone(), protocol_tx_1.clone()],
+            vec![aa_2d_tx.clone()],
+        );
+        merged.no_updates();
+
+        assert_eq!(merged.size_hint(), (0, Some(3)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_0.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(2)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_1.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(1)));
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*aa_2d_tx.hash()));
+        assert_eq!(merged.size_hint(), (0, Some(0)));
     }
 
     #[test]

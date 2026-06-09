@@ -2,7 +2,12 @@
 version = "1.8.1"
 edition = "2024"
 rust-version = "1.93.0"
+authors = ["Tempo Contributors"]
 license = "MIT OR Apache-2.0"
+homepage = "https://docs.tempo.xyz"
+repository = "https://github.com/tempoxyz/tempo"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
@@ -87,9 +92,10 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
-# Include debug info in benchmarks too.
 [profile.bench]
-inherits = "profiling"
+inherits = "maxperf"
+debug = "line-tables-only"
+strip = "none"
 
 [profile.maxperf]
 inherits = "release"
@@ -147,7 +153,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
-reth-codecs = { version = "0.4.0", default-features = false }
+reth-codecs = { version = "0.4.1", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
@@ -178,7 +184,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "fe
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
-reth-primitives-traits = { version = "0.4.0", default-features = false }
+reth-primitives-traits = { version = "0.4.1", default-features = false }
 reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "feature/bal-sparse-snapshot-reth" }
@@ -210,7 +216,7 @@ revm = { version = "40.0.3", features = ["optional_fee_charge"], default-feature
 alloy = { version = "2.0.5", default-features = false }
 alloy-consensus = { version = "2.0.5", default-features = false }
 alloy-contract = { version = "2.0.5", default-features = false }
-alloy-eip7928 = { version = "0.4.0", default-features = false }
+alloy-eip7928 = { version = "0.4.1", default-features = false }
 alloy-eips = { version = "2.0.5", default-features = false }
 alloy-evm = { version = "0.36.0", default-features = false }
 revm-inspectors = "0.40.0"
@@ -264,7 +270,6 @@ criterion = { package = "codspeed-criterion-compat", version = "4.6.0" }
 dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
-crossbeam-channel = "0.5.13"
 
 ed25519-consensus = { version = "2.1.0", default-features = false }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
@@ -309,6 +314,7 @@ tracy-client = "0.18.4"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
 paste = "1"
+crossbeam-channel = "0.5"
 secp256k1 = { version = "0.30.0", default-features = false }
 pyroscope = "0.5.8"
 pyroscope_pprofrs = "0.2.10"

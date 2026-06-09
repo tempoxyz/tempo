@@ -164,11 +164,17 @@ impl TempoNode {
     where
         Node: FullNodeTypes<Types = Self>,
     {
+        let payload_service_builder = TempoPayloadServiceBuilder::new(payload_builder_builder);
+        #[cfg(not(feature = "bal"))]
+        let payload_service_builder = payload_service_builder
+            // we can disable basic parent state caching because tempo builder always uses execution cache
+            .with_pre_cache_state(false);
+
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(TempoPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(payload_service_builder)
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }

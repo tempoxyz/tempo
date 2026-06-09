@@ -8803,9 +8803,9 @@ dependencies = [
 
 [[package]]
 name = "reth-codecs"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f54468f34d9ed03356dee71bb182a2815a490934f1a291f58158053eee946ba"
+checksum = "f9c37bb4d1bac98661bf9128e1141b969034640d68697b22f70377e492fd332c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8824,9 +8824,9 @@ dependencies = [
 
 [[package]]
 name = "reth-codecs-derive"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c80c0516faf1698c57f91f07c98ecd9f3a9d3f163f1ad4bb263d9c495b3928e0"
+checksum = "ceeb8dab90194305d3f7e3f043a22d2db1fb54b6dcf5d8e75c5a4fa8540e1f57"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10378,9 +10378,9 @@ dependencies = [
 
 [[package]]
 name = "reth-primitives-traits"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1216ba179909d41d8d55c5eae6c1c33698bc7a3053c35fd425c7789a5de3c1"
+checksum = "9102518f0bbf99bc8f0e656a56fb2a7513248630275b608d3706076a82fde42b"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10398,7 +10398,6 @@ dependencies = [
  "once_cell",
  "proptest",
  "proptest-arbitrary-interop",
- "quanta",
  "rayon",
  "reth-codecs",
  "revm-bytecode",
@@ -10847,9 +10846,9 @@ dependencies = [
 
 [[package]]
 name = "reth-rpc-traits"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75186b77fef29e0160f476c9a6bde3363e503f0f32ac4ef47726ef1e3da81118"
+checksum = "9fa03a2c9681c385ae1c72b169ac9c3525163b71db0b3362f16e8929e19e45fd"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -11288,9 +11287,9 @@ dependencies = [
 
 [[package]]
 name = "reth-zstd-compressors"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80dcfa0327b7642cc41c71d8cd3626a48ac76fb8304c28bcbdf416a45615d020"
+checksum = "dc0e86cf594718932d42cebce1fa48292fb7b92721f7c914631add1ca970e814"
 dependencies = [
  "zstd",
 ]
@@ -12937,7 +12936,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.5.4"
+version = "1.8.1"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -13169,6 +13168,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.18",
+ "tikv-jemallocator",
  "tracing",
 ]
 
@@ -13549,14 +13549,18 @@ name = "tempo-xtask"
 version = "1.8.1"
 dependencies = [
  "alloy",
+ "alloy-consensus",
  "alloy-json-abi",
  "alloy-primitives",
+ "bytes",
  "clap",
  "coins-bip32",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
+ "commonware-runtime",
+ "commonware-storage",
  "commonware-utils",
  "const-hex",
  "eyre",
@@ -13564,8 +13568,13 @@ dependencies = [
  "itertools 0.14.0",
  "rand 0.8.6",
  "rayon",
+ "reth-db",
+ "reth-db-api",
  "reth-evm",
  "reth-network-peers",
+ "reth-primitives-traits",
+ "reth-provider",
+ "revm",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",

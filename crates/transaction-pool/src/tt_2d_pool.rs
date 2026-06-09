@@ -2076,6 +2076,15 @@ impl Iterator for BestAA2dTransactions {
     fn next(&mut self) -> Option<Self::Item> {
         self.next_tx_and_priority().map(|(tx, _)| tx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (
+            0,
+            self.by_id
+                .len()
+                .checked_add(self.expiring_nonce_order.len()),
+        )
+    }
 }
 
 impl BestTransactions for BestAA2dTransactions {
@@ -4082,6 +4091,76 @@ mod tests {
 
         let third = best.next();
         assert!(third.is_none());
+    }
+
+    #[test]
+    fn test_best_transactions_size_hint_counts_snapshot() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let expiring_sender = Address::random();
+
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
+        let expiring_tx = TxBuilder::aa(expiring_sender).nonce_key(U256::MAX).build();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(expiring_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        assert_eq!(best.size_hint(), (0, Some(3)));
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(2)));
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(1)));
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(0)));
+    }
+
+    #[test]
+    fn test_best_transactions_size_hint_ignores_unread_new_transactions() {
+        let mut pool = AA2dPool::default();
+        let snapshot_sender = Address::random();
+        let incoming_sender = Address::random();
+
+        let snapshot_tx = TxBuilder::aa(snapshot_sender).nonce_key(U256::ZERO).build();
+        let incoming_tx = TxBuilder::aa(incoming_sender)
+            .nonce_key(U256::from(1))
+            .build();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(snapshot_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let best = pool.best_transactions();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(incoming_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(best.size_hint(), (0, Some(1)));
     }
 
     #[test]
