@@ -502,10 +502,12 @@ impl TempoTransaction {
     /// Public version for normal RLP encoding
     pub(crate) fn rlp_encoded_fields_length_default(&self) -> usize {
         self.rlp_encoded_fields_length(
-            |signature| {
-                signature.map_or(1, |s| {
-                    rlp_header(s.rlp_rs_len() + s.v().length()).length_with_payload()
-                })
+            |signature| match signature {
+                Some(signature) => {
+                    let payload_length = signature.rlp_rs_len() + signature.v().length();
+                    rlp_header(payload_length).length_with_payload()
+                }
+                None => 1,
             },
             false,
         )
