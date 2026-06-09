@@ -328,6 +328,7 @@ where
             parent_header,
             attributes,
             payload_id,
+            ..
         } = config;
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
