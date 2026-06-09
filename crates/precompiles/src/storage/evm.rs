@@ -25,6 +25,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     is_static: bool,
     gas_params: GasParams,
     storage_credit_budget: Option<u64>,
+    tip1060_storage_credits_enabled: bool,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -49,9 +50,19 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             storage_credit_budget: None,
+            tip1060_storage_credits_enabled: true,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
+    }
+
+    /// Enables or disables TIP-1060 storage-credit accounting for storage writes through this provider.
+    ///
+    /// This is intentionally provider-scoped so protocol-internal phases such as fee collection can
+    /// opt out without affecting user execution or other precompile calls.
+    pub fn with_tip1060_storage_credits(mut self, enabled: bool) -> Self {
+        self.tip1060_storage_credits_enabled = enabled;
+        self
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
@@ -284,7 +295,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         let outcome = if self.spec.is_t7() {
-            sstore_storage_credits(self, address, &result)?
+            if self.tip1060_storage_credits_enabled {
+                sstore_storage_credits(self, address, &result)?
+            } else {
+                // TIP-1060 is intentionally disabled for this provider, but T7 still removes
+                // legacy SSTORE refunds.
+                revm::interpreter::instruction_context::GasStateOutcome {
+                    skip_gas: false,
+                    skip_refund: true,
+                }
+            }
         } else {
             Default::default()
         };

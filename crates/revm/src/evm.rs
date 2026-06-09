@@ -246,9 +246,16 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
+    use tempo_contracts::precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN,
+        ITIP1060StorageCredits::{self, Mode},
+    };
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+        account_keychain::{
+            AccountKeychain, KeyRestrictions, SignatureType as KeychainSignatureType, TokenLimit,
+            getRemainingLimitCall,
+        },
         nonce::NonceManager,
         storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
@@ -390,7 +397,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T7;
-        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T6, false);
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
         cfg.enable_amsterdam_eip8037 = false;
 
         let ctx = Context::mainnet()
@@ -551,14 +558,23 @@ mod tests {
             &self,
             tx: TempoTransaction,
         ) -> eyre::Result<tempo_primitives::AASigned> {
+            self.sign_tx_keychain_for_user(tx, self.address)
+        }
+
+        /// Sign a keychain transaction as this access key for the given root user.
+        fn sign_tx_keychain_for_user(
+            &self,
+            tx: TempoTransaction,
+            user: Address,
+        ) -> eyre::Result<tempo_primitives::AASigned> {
             // V2: sign keccak256(0x04 || sig_hash || user_address)
             let sig_hash = tx.signature_hash();
             let effective_hash = alloy_primitives::keccak256(
-                [&[0x04], sig_hash.as_slice(), self.address.as_slice()].concat(),
+                [&[0x04], sig_hash.as_slice(), user.as_slice()].concat(),
             );
             let webauthn_sig = self.sign_webauthn(effective_hash.as_slice())?;
             let keychain_sig =
-                KeychainSignature::new(self.address, PrimitiveSignature::WebAuthn(webauthn_sig));
+                KeychainSignature::new(user, PrimitiveSignature::WebAuthn(webauthn_sig));
             Ok(tx.into_signed(TempoSignature::Keychain(keychain_sig)))
         }
     }
@@ -1945,6 +1961,30 @@ mod tests {
         storage_credits_state(evm, owner).balance
     }
 
+    fn storage_credit_balance_live(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        owner: Address,
+    ) -> eyre::Result<u64> {
+        let ctx = &mut evm.ctx;
+        let word = StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || StorageCtx.sload(STORAGE_CREDITS_ADDRESS, TIP1060StorageCredits::slot(owner)),
+        )?;
+        Ok(AccountState::from_word(word)?.balance)
+    }
+
+    fn storage_credit_pending_refund(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
+        evm.ctx
+            .journaled_state
+            .transient_storage
+            .get(&STORAGE_CREDITS_ADDRESS)
+            .and_then(|slots| slots.get(&TIP1060StorageCredits::slot(owner)).copied())
+            .unwrap_or_default()
+    }
+
     fn tip1060_abi_mode(mode: CreditMode) -> Mode {
         match mode {
             CreditMode::Refund => Mode::Refund,
@@ -1982,6 +2022,145 @@ mod tests {
         bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
         // PUSH3 0x0f4240 CALL POP  (call with 1_000_000 gas and discard success flag)
         bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
+    }
+
+    /// Protocol fee collection is not settlement-eligible for TIP-1060.
+    ///
+    /// Regression for the reported flow:
+    /// - pre-tx fee collection debits an access-key spending limit down to zero (`x -> 0`),
+    /// - user execution fails/reverts under its own execution checkpoint,
+    /// - TIP-1060 settlement runs at execution end,
+    /// - post-tx fee refund restores the spending limit (`0 -> x`) after settlement.
+    ///
+    /// This uses the real handler transaction path so drift in `collect_fee_pre_tx`, `execution`,
+    /// or `reimburse_caller` wiring is caught.
+    #[test]
+    fn test_tip1060_fee_collection_keychain_limit_zero_restore_is_not_settlement_eligible()
+    -> eyre::Result<()> {
+        let root_key = P256KeyPair::random();
+        let access_key = P256KeyPair::random();
+        let user = root_key.address;
+        let gas_limit = 1_000_000u64;
+        let max_fee = U256::from(gas_limit);
+
+        let mut evm = create_funded_evm_t7(user);
+
+        // Set up an existing access key whose fee-token spending limit equals the transaction's
+        // max fee. The real handler path will debit this to zero during collect_fee_pre_tx and
+        // restore the unused portion during reimburse_caller.
+        {
+            let ctx = &mut evm.ctx;
+            StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                || -> eyre::Result<()> {
+                    TIP20Setup::path_usd(user)
+                        .with_issuer(user)
+                        .with_mint(user, max_fee)
+                        .apply()?;
+
+                    let mut keychain = AccountKeychain::new();
+                    keychain.initialize()?;
+                    keychain.set_tx_origin(user)?;
+                    keychain.set_transaction_key(Address::ZERO)?;
+                    keychain.authorize_key(
+                        user,
+                        access_key.address,
+                        KeychainSignatureType::WebAuthn,
+                        KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: true,
+                            limits: vec![TokenLimit {
+                                token: DEFAULT_FEE_TOKEN,
+                                amount: max_fee,
+                                period: 0,
+                            }],
+                            allowAnyCalls: true,
+                            allowedCalls: Vec::new(),
+                        },
+                        None,
+                    )?;
+
+                    Ok(())
+                },
+            )?;
+        }
+
+        // Test setup writes through the keychain; isolate the full transaction below from setup's
+        // legitimate TIP-1060 accounting.
+        evm.ctx
+            .journaled_state
+            .transient_storage
+            .remove(&STORAGE_CREDITS_ADDRESS);
+        let starting_keychain_credits =
+            storage_credit_balance_live(&mut evm, ACCOUNT_KEYCHAIN_ADDRESS)?;
+
+        // Real failed AA multicall: validation runs collect_fee_pre_tx, the first user call
+        // performs an SSTORE, the second user call fails and reverts the user-call checkpoint,
+        // the handler runs apply_refund at execution end, then reimburse_caller restores the
+        // unused keychain spending limit via collect_fee_post_tx.
+        let storage_writer = Address::repeat_byte(0xA3);
+        evm.ctx.db_mut().insert_account_info(
+            storage_writer,
+            AccountInfo {
+                // PUSH1 0x01 PUSH1 0x00 SSTORE STOP
+                code: Some(Bytecode::new_raw(bytes!("600160005500"))),
+                ..Default::default()
+            },
+        );
+
+        let tx = TxBuilder::new()
+            .call(storage_writer, &[])
+            .call(PATH_USD_ADDRESS, &[0x01, 0x02])
+            .gas_limit(gas_limit)
+            .with_max_fee_per_gas(1)
+            .with_max_priority_fee_per_gas(1)
+            .build();
+        let signed_tx = access_key.sign_tx_keychain_for_user(tx, user)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, user);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(!result.is_success(), "user AA call should fail");
+        assert!(
+            result.tx_gas_used() < gas_limit,
+            "failed call should leave an unused fee refund to restore the keychain limit"
+        );
+
+        let remaining_limit = {
+            let ctx = &mut evm.ctx;
+            StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                || {
+                    AccountKeychain::new().get_remaining_limit(getRemainingLimitCall {
+                        account: user,
+                        keyId: access_key.address,
+                        token: DEFAULT_FEE_TOKEN,
+                    })
+                },
+            )?
+        };
+        assert!(
+            !remaining_limit.is_zero() && remaining_limit < max_fee,
+            "post-tx fee refund must restore the access-key limit from zero to a non-zero remainder"
+        );
+
+        assert_eq!(
+            storage_credit_balance_live(&mut evm, ACCOUNT_KEYCHAIN_ADDRESS)?,
+            starting_keychain_credits,
+            "pre/post fee collection must not change keychain storage credits"
+        );
+        assert_eq!(
+            storage_credit_pending_refund(&evm, ACCOUNT_KEYCHAIN_ADDRESS),
+            U256::ZERO,
+            "post-tx fee refund must not accrue pending TIP-1060 settlement after apply_refund"
+        );
+
+        Ok(())
     }
 
     /// TIP-1060: First SSTORE runs in Refund (default) mode  and creates a pending refund-eligible
