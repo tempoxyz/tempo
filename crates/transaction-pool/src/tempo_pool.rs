@@ -336,15 +336,14 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
+                let Some(changed_accounts) = updates.fee_balance_changes.get(&fee_token) else {
+                    continue;
+                };
                 let Ok(fee_payer) = tx.transaction.fee_payer() else {
                     continue;
                 };
 
-                if updates
-                    .fee_balance_changes
-                    .get(&fee_token)
-                    .is_some_and(|accounts| accounts.contains(&fee_payer))
-                {
+                if changed_accounts.contains(&fee_payer) {
                     let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
