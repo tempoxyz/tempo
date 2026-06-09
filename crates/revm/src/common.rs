@@ -116,10 +116,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        StorageCtx::enter(
-            &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions),
-            f,
-        )
+        StorageCtx::enter(&mut ReadOnlyStorageProvider::new(self, spec, actions), f)
     }
 
     /// Resolves user-level or transaction-level fee token preference.
@@ -386,7 +383,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
-    actions: Option<StorageActions>,
+    actions: StorageActions,
     _marker: PhantomData<M>,
 }
 
@@ -395,18 +392,13 @@ where
     S: TempoStateAccess<M>,
 {
     /// Creates a new read-only storage provider.
-    fn new(state: &'a mut S, spec: TempoHardfork) -> Self {
+    fn new(state: &'a mut S, spec: TempoHardfork, actions: StorageActions) -> Self {
         Self {
             state,
             spec,
-            actions: None,
+            actions,
             _marker: PhantomData,
         }
-    }
-
-    fn with_actions(mut self, actions: StorageActions) -> Self {
-        self.actions = Some(actions);
-        self
     }
 }
 
