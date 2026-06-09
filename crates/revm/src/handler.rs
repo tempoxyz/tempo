@@ -621,7 +621,6 @@ where
         // Store original TxEnv values to restore after batch execution
         let original_kind = evm.ctx().tx().kind();
         let original_value = evm.ctx().tx().value();
-        let original_data = evm.ctx().tx().input().clone();
         let original_gas_limit = evm.ctx().tx().gas_limit();
 
         let mut final_result = None;
@@ -641,13 +640,14 @@ where
 
         for call in calls.iter() {
             // Update TxEnv to point to this specific call
-            {
+            let original_data = {
                 let tx = &mut evm.ctx().tx;
+                let original_data = core::mem::replace(&mut tx.inner.data, call.input.clone());
                 tx.inner.kind = call.to;
                 tx.inner.value = call.value;
-                tx.inner.data = call.input.clone();
                 tx.inner.gas_limit = remaining_gas;
-            }
+                original_data
+            };
 
             // Execute call with NO additional initial gas (already deducted upfront in validation)
             let frame_result = execute_single(self, evm, remaining_gas, reservoir);
@@ -657,7 +657,7 @@ where
                 let tx = &mut evm.ctx().tx;
                 tx.inner.kind = original_kind;
                 tx.inner.value = original_value;
-                tx.inner.data = original_data.clone();
+                tx.inner.data = original_data;
                 tx.inner.gas_limit = original_gas_limit;
             }
 
