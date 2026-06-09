@@ -311,6 +311,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     }
 
     #[inline]
+    fn compute_state_root_for_eth_simulate(&self) -> bool {
+        self.inner.compute_state_root_for_eth_simulate()
+    }
+
+    #[inline]
     fn evm_memory_limit(&self) -> u64 {
         self.inner.evm_memory_limit()
     }
