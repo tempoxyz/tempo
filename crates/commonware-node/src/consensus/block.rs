@@ -20,7 +20,10 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
-use std::sync::{Arc, OnceLock};
+use std::{
+    fmt::Display,
+    sync::{Arc, OnceLock},
+};
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -174,6 +177,16 @@ impl Block {
         {
             None
         }
+    }
+}
+
+impl Display for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "digest: {}, height: {}",
+            self.digest(),
+            self.height()
+        ))
     }
 }
 

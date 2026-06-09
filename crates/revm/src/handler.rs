@@ -2402,7 +2402,7 @@ pub fn validate_time_window(
     }
 
     // Validate validBefore constraint
-    // IMPORTANT: must be aligned with `fn has_expired_transactions` in `tempo-payload-builder`.
+    // IMPORTANT: must be aligned with `RecoveredSubBlock::has_expired_transactions`.
     if let Some(before) = valid_before
         && block_timestamp >= before
     {

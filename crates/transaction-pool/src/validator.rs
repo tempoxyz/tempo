@@ -320,7 +320,14 @@ where
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
-        evm.validate_transaction(transaction.tx_env().clone())
+
+        if let Some(tx_env) = transaction.cached_tx_env() {
+            evm.validate_transaction(tx_env.clone())
+        } else {
+            let result = evm.validate_transaction(transaction.tx_env_slow());
+            transaction.cache_tx_env(evm.into_ctx().tx);
+            result
+        }
     }
 
     fn validate_one(
@@ -601,7 +608,6 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let transactions: Vec<_> = transactions.into_iter().collect();
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
