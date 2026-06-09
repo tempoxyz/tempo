@@ -25,7 +25,13 @@ pub(crate) struct Args {
     inner: DownloadCommand<TempoChainSpecParser>,
 
     /// Skip encoding consensus state. This will pass-through directly to Reth.
-    #[arg(long, default_value_t = true)]
+    #[arg(
+        long,
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
     skip_consensus: bool,
 
     /// Consensus storage directory. If not set, this will be derived from --datadir.
@@ -153,6 +159,21 @@ mod tests {
 
         assert!(args.skip_consensus);
         assert_eq!(args.consensus_datadir.as_deref(), Some(Path::new("/c")));
+    }
+
+    #[test]
+    fn args_accepts_explicit_skip_consensus_false() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--manifest-url",
+            "https://snap/manifest.json",
+            "--datadir",
+            "/d",
+            "--skip-consensus=false",
+        ])
+        .unwrap();
+
+        assert!(!args.skip_consensus);
     }
 
     #[test]

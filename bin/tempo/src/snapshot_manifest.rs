@@ -51,7 +51,13 @@ pub(crate) struct Args {
     inner: SnapshotManifestCommand,
 
     /// Skip encoding consensus state. This will pass-through directly to Reth.
-    #[arg(long, default_value_t = true)]
+    #[arg(
+        long,
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
     skip_consensus: bool,
 
     /// Chain spec override for local/unknown chains.
@@ -233,6 +239,50 @@ fn execution_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_defaults_to_skip_consensus() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--source-datadir",
+            "/source",
+            "--output-dir",
+            "/output",
+        ])
+        .unwrap();
+
+        assert!(args.skip_consensus);
+    }
+
+    #[test]
+    fn args_accepts_bare_skip_consensus() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--source-datadir",
+            "/source",
+            "--output-dir",
+            "/output",
+            "--skip-consensus",
+        ])
+        .unwrap();
+
+        assert!(args.skip_consensus);
+    }
+
+    #[test]
+    fn args_accepts_explicit_skip_consensus_false() {
+        let args = Args::try_parse_from([
+            "tempo",
+            "--source-datadir",
+            "/source",
+            "--output-dir",
+            "/output",
+            "--skip-consensus=false",
+        ])
+        .unwrap();
+
+        assert!(!args.skip_consensus);
+    }
 
     #[test]
     fn consensus_manifest_serializes_binary_fields_as_hex() {
