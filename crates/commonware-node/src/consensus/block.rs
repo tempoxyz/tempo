@@ -598,14 +598,15 @@ mod tests {
     use alloy_rlp::Encodable as _;
     #[cfg(feature = "bal")]
     use bytes::Buf as _;
-    #[cfg(not(feature = "bal"))]
-    use commonware_codec::Write as _;
-    use commonware_codec::{Encode, EncodeSize as _, Read as _};
+    use commonware_codec::{Encode, EncodeSize as _, Read as _, Write as _};
     #[cfg(feature = "bal")]
     use commonware_runtime::{
-        BufferPooler as _, Runner as _, deterministic, iobuf::EncodeExt as _,
+        BufferPooler as _, Runner as _, deterministic,
+        iobuf::{Builder, EncodeExt as _},
     };
     use reth_node_core::primitives::SealedBlock;
+    #[cfg(feature = "bal")]
+    use std::num::NonZeroUsize;
     use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
     use super::Block;
@@ -797,6 +798,18 @@ mod tests {
 
         let _cached_clone = block.clone();
         deterministic::Runner::default().start(|context| async move {
+            let pool = context.network_buffer_pool();
+            let mut builder = Builder::new(
+                pool,
+                NonZeroUsize::new(block.encode_inline_size()).expect("non-zero block size"),
+            );
+            block.write_bufs(&mut builder);
+            let mut encoded_bufs = builder.finish();
+            assert_eq!(encoded_bufs.remaining(), block.encode_size());
+            let mut encoded_bufs_bytes = vec![0u8; encoded_bufs.remaining()];
+            encoded_bufs.copy_to_slice(&mut encoded_bufs_bytes);
+            assert_eq!(encoded_bufs_bytes, encoded.as_ref());
+
             let mut encoded_pool = block.encode_with_pool(context.network_buffer_pool());
             assert_eq!(encoded_pool.remaining(), block.encode_size());
             let mut encoded_pool_bytes = vec![0u8; encoded_pool.remaining()];
