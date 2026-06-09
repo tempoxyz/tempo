@@ -90,7 +90,7 @@ impl TIP20Token {
         }
         // T7+: early exit if there are no global rewards per token.
         if hardfork.is_t7() && self.get_global_reward_per_token()?.is_zero() {
-            return Ok(Address::ZERO);
+            return self.user_reward_info[holder].reward_recipient.read();
         }
 
         self.update_rewards_legacy(holder)
@@ -434,6 +434,81 @@ mod tests {
             assert_eq!(info.reward_recipient, Address::ZERO);
             assert_eq!(token.get_opted_in_supply()?, 0u128);
             assert_eq!(info.reward_per_token, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t7_zero_rpt_fast_path_preserves_opt_in_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+        let alice_balance = U256::from(1000);
+        let transfer_amount = U256::from(100);
+        let mint_amount = U256::from(100);
+        let reward_amount = U256::from(110);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            assert_eq!(token.update_rewards(alice)?, alice);
+            assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
+
+            // Repeating the opt-in before the first distribution must not double-count Alice.
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
+
+            // Transfers out of an opted-in holder and mints into one still update the opted supply
+            // before any rewards have been distributed.
+            token.transfer(
+                alice,
+                ITIP20::transferCall {
+                    to: bob,
+                    amount: transfer_amount,
+                },
+            )?;
+            assert_eq!(
+                token.get_opted_in_supply()?,
+                (alice_balance - transfer_amount).to::<u128>()
+            );
+
+            token.set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
+
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: mint_amount,
+                },
+            )?;
+            let opted_in_supply = alice_balance + mint_amount;
+            assert_eq!(token.get_opted_in_supply()?, opted_in_supply.to::<u128>());
+
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: reward_amount,
+                },
+            )?;
+            assert_eq!(
+                token.get_global_reward_per_token()?,
+                reward_amount * ACC_PRECISION / opted_in_supply
+            );
+            assert_eq!(
+                U256::from(token.get_pending_rewards(alice)?),
+                U256::from(100)
+            );
+            assert_eq!(U256::from(token.get_pending_rewards(bob)?), U256::from(10));
 
             Ok(())
         })
