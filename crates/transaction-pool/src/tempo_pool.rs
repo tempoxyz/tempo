@@ -861,21 +861,36 @@ where
         let base_fee = protocol_pool.block_info().pending_basefee;
         let left = protocol_pool.best_transactions();
         let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(Box::new(left), right, base_fee))
+        Box::new(MergeBestTransactions::new(left, right, base_fee))
     }
 
     fn best_transactions_with_attributes(
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self
-            .protocol_pool
-            .best_transactions_with_attributes(attributes);
-        let right = self
-            .aa_2d_pool
-            .read()
-            .best_transactions_with_base_fee(attributes.basefee);
-        Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
+        let protocol_pool = self.protocol_pool.inner();
+        let block_info = protocol_pool.block_info();
+        let uses_tracked_fees = attributes.basefee == block_info.pending_basefee
+            && u128::from(attributes.blob_fee.unwrap_or_default())
+                == block_info.pending_blob_fee.unwrap_or_default();
+
+        if uses_tracked_fees {
+            let left = protocol_pool.best_transactions();
+            let right = self
+                .aa_2d_pool
+                .read()
+                .best_transactions_with_base_fee(attributes.basefee);
+            Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
+        } else {
+            let left = self
+                .protocol_pool
+                .best_transactions_with_attributes(attributes);
+            let right = self
+                .aa_2d_pool
+                .read()
+                .best_transactions_with_base_fee(attributes.basefee);
+            Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
+        }
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {

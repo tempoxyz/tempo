@@ -20,18 +20,21 @@ type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
-pub struct MergeBestTransactions {
-    protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
+pub struct MergeBestTransactions<ProtocolPool = Box<dyn BestTransactions<Item = BestTransaction>>> {
+    protocol_pool: ProtocolPool,
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
     base_fee: u64,
 }
 
-impl MergeBestTransactions {
+impl<ProtocolPool> MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: BestTransactions<Item = BestTransaction>,
+{
     /// Creates a new iterator over the given iterators.
     pub(crate) fn new(
-        protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
+        protocol_pool: ProtocolPool,
         aa_2d_pool: BestAA2dTransactions,
         base_fee: u64,
     ) -> Self {
@@ -45,7 +48,10 @@ impl MergeBestTransactions {
     }
 }
 
-impl MergeBestTransactions {
+impl<ProtocolPool> MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: BestTransactions<Item = BestTransaction>,
+{
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
@@ -88,7 +94,10 @@ impl MergeBestTransactions {
     }
 }
 
-impl Iterator for MergeBestTransactions {
+impl<ProtocolPool> Iterator for MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: BestTransactions<Item = BestTransaction>,
+{
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -113,7 +122,10 @@ impl Iterator for MergeBestTransactions {
     }
 }
 
-impl BestTransactions for MergeBestTransactions {
+impl<ProtocolPool> BestTransactions for MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: BestTransactions<Item = BestTransaction>,
+{
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
