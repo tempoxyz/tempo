@@ -1030,9 +1030,13 @@ where
             .shared_gas_limit_last
             .set(shared_gas_limit as f64);
 
-        let requests = chain_spec
-            .is_prague_active_at_timestamp(attributes.timestamp)
-            .then(|| execution_result.requests.clone());
+        let requests = if chain_spec.is_prague_active_at_timestamp(attributes.timestamp)
+            && execution_result.requests.iter().next().is_some()
+        {
+            Some(execution_result.requests.clone())
+        } else {
+            None
+        };
 
         let rlp_length = block.rlp_length();
 
