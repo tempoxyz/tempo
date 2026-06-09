@@ -158,8 +158,7 @@ impl AASigned {
 
     /// Encodes this signed transaction for submission to a fee-payer service.
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
-        let payload_length =
-            self.tx.rlp_encoded_fields_length(|_| 1, true) + self.signature.length();
+        let payload_length = self.tx.rlp_encoded_fields_length(1, true) + self.signature.length();
 
         out.put_u8(TEMPO_TX_TYPE_ID);
         alloy_rlp::Header {

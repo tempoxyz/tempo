@@ -381,7 +381,7 @@ impl TempoTransaction {
     /// This hash is signed by the fee payer to sponsor the transaction
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
         // Use helper functions for consistent encoding
-        let payload_length = self.rlp_encoded_fields_length(|_| sender.length(), false);
+        let payload_length = self.rlp_encoded_fields_length(sender.length(), false);
 
         let mut buf = Vec::with_capacity(1 + rlp_header(payload_length).length_with_payload());
 
@@ -420,10 +420,10 @@ impl TempoTransaction {
 
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
-    /// This is the internal helper that takes closures for flexible encoding.
+    /// This is the internal helper that takes the signature field length for flexible encoding.
     pub(crate) fn rlp_encoded_fields_length(
         &self,
-        signature_length: impl FnOnce(&Option<Signature>) -> usize,
+        signature_length: usize,
         skip_fee_token: bool,
     ) -> usize {
         self.chain_id.length() +
@@ -443,7 +443,7 @@ impl TempoTransaction {
             } else {
                 1 // EMPTY_STRING_CODE
             } +
-            signature_length(&self.fee_payer_signature) +
+            signature_length +
             // authorization_list
             self.tempo_authorization_list.length() +
             // key_authorization (only included if present)
@@ -501,14 +501,14 @@ impl TempoTransaction {
 
     /// Public version for normal RLP encoding
     pub(crate) fn rlp_encoded_fields_length_default(&self) -> usize {
-        self.rlp_encoded_fields_length(
-            |signature| {
-                signature.map_or(1, |s| {
-                    rlp_header(s.rlp_rs_len() + s.v().length()).length_with_payload()
-                })
-            },
-            false,
-        )
+        let signature_length = match &self.fee_payer_signature {
+            Some(signature) => {
+                let payload_length = signature.rlp_rs_len() + signature.v().length();
+                rlp_header(payload_length).length_with_payload()
+            }
+            None => 1,
+        };
+        self.rlp_encoded_fields_length(signature_length, false)
     }
 
     /// Public version for normal RLP encoding
@@ -535,7 +535,7 @@ impl TempoTransaction {
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, true);
+        let payload_length = self.rlp_encoded_fields_length(1, true);
         rlp_header(payload_length).encode(out);
         self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
     }
@@ -758,7 +758,7 @@ impl SignableTransaction<Signature> for TempoTransaction {
         out.put_u8(Self::tx_type());
 
         // Compute payload length using helper
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+        let payload_length = self.rlp_encoded_fields_length(1, skip_fee_token);
 
         rlp_header(payload_length).encode(out);
 
@@ -778,7 +778,7 @@ impl SignableTransaction<Signature> for TempoTransaction {
 
     fn payload_len_for_signature(&self) -> usize {
         let skip_fee_token = self.fee_payer_signature.is_some();
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+        let payload_length = self.rlp_encoded_fields_length(1, skip_fee_token);
 
         1 + rlp_header(payload_length).length_with_payload()
     }
