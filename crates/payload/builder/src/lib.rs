@@ -370,23 +370,18 @@ where
         check_cancel!();
 
         let chain_spec = self.provider.chain_spec();
-        let is_osaka = self
-            .provider
-            .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp);
+        let timestamp = attributes.timestamp;
+        let hardfork = chain_spec.tempo_hardfork_at(timestamp);
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
-        let shared_gas_limit =
-            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
+        let shared_gas_limit = hardfork.shared_gas_limit(block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
         // The remaining `shared_gas_limit` is reserved for validator subblocks.
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit = chain_spec.general_gas_limit_at(
-            attributes.timestamp,
-            block_gas_limit,
-            shared_gas_limit,
-        );
-        let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let general_gas_limit = hardfork
+            .general_gas_limit()
+            .unwrap_or_else(|| non_shared_gas_limit / 2);
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
