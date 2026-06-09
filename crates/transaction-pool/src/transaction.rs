@@ -258,7 +258,7 @@ impl TempoPooledTransaction {
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
-    fn tx_env_slow(&self) -> TempoTxEnv {
+    pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
         TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
     }
 
@@ -268,6 +268,16 @@ impl TempoPooledTransaction {
     /// ahead of time, avoiding it during payload building.
     pub fn tx_env(&self) -> &TempoTxEnv {
         self.tx_env.get_or_init(|| self.tx_env_slow())
+    }
+
+    /// Returns the cached [`TempoTxEnv`] if already prepared.
+    pub(crate) fn cached_tx_env(&self) -> Option<&TempoTxEnv> {
+        self.tx_env.get()
+    }
+
+    /// Attempts to cache a prepared [`TempoTxEnv`].
+    pub(crate) fn cache_tx_env(&self, tx_env: TempoTxEnv) {
+        let _ = self.tx_env.set(tx_env);
     }
 
     /// Returns a cloned [`TempoTxEnv`] for this transaction.
