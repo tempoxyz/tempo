@@ -43,8 +43,10 @@ jobs:
             specs:
               - 'tips/verify/**'
               - 'crates/contracts/**'
+              - '!crates/contracts/CHANGELOG.md'
               - '!crates/contracts/Cargo.toml'
               - 'crates/precompiles/**'
+              - '!crates/precompiles/CHANGELOG.md'
               - '!crates/precompiles/Cargo.toml'
               - '.github/workflows/specs.yml'
             foundry_smoke:
@@ -120,10 +122,10 @@ jobs:
           elif git diff --name-only origin/"$BASE_REF"...HEAD \
             | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
             && ! git diff --name-only origin/"$BASE_REF"...HEAD \
-              | grep -vE '^(crates/(precompiles|contracts)/Cargo\.toml)$' \
+              | grep -vE '^(crates/(precompiles|contracts)/(Cargo\.toml|CHANGELOG\.md))$' \
               | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: only precompiles/contracts manifests changed"
+            echo "Skipping coverage: only precompiles/contracts release metadata changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
