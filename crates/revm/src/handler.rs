@@ -963,8 +963,8 @@ where
         // We only check first call of the transaction because CREATE is only allowed
         // to appear as the first call in the batch (validated in `validate_calls`)
         if !nonce_key.is_zero()
-            && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
             && caller_account.nonce() == 0
+            && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
         {
             init_gas.initial_regular_gas += cfg.gas_params.get(GasId::new_account_cost());
             init_gas.initial_state_gas += cfg.gas_params.new_account_state_gas();
