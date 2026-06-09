@@ -1,5 +1,5 @@
 [package]
-name = "tempo-commonware-node-config"
+name = "tempo-consensus-config"
 
 version.workspace = true
 edition.workspace = true

@@ -23,8 +23,8 @@ url.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
-tempo-commonware-node.workspace = true
-tempo-commonware-node-config.workspace = true
+tempo-consensus.workspace = true
+tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
 tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
@@ -113,7 +113,7 @@ path = "src/main.rs"
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-bal = ["tempo-commonware-node/bal", "tempo-node/bal"]
+bal = ["tempo-consensus/bal", "tempo-node/bal"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

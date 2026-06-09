@@ -135,9 +135,7 @@ impl GenerateLocalnet {
                 .signing_key
                 .write_to_file_encrypted(
                     &signing_key_dst,
-                    tempo_commonware_node_config::SigningKeyPassphrase::from(
-                        LOCALNET_SIGNING_KEY_SECRET,
-                    ),
+                    tempo_consensus_config::SigningKeyPassphrase::from(LOCALNET_SIGNING_KEY_SECRET),
                 )
                 .wrap_err_with(|| {
                     format!(

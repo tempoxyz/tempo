@@ -61,7 +61,7 @@ tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-evm.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
-tempo-commonware-node.workspace = true
+tempo-consensus.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 

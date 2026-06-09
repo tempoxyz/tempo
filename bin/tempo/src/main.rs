@@ -60,7 +60,7 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::{
     args::FaucetArgs,
@@ -143,7 +143,7 @@ struct TempoArgs {
     pub telemetry: defaults::TelemetryArgs,
 
     #[command(flatten)]
-    pub consensus: tempo_commonware_node::Args,
+    pub consensus: tempo_consensus::Args,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
@@ -225,7 +225,7 @@ impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParse
 }
 
 fn block_on_consensus_public_key(
-    args: &tempo_commonware_node::Args,
+    args: &tempo_consensus::Args,
 ) -> eyre::Result<Option<commonware_cryptography::ed25519::PublicKey>> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -467,7 +467,7 @@ fn main() -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
-            let mut metrics_server = tempo_commonware_node::metrics::install(
+            let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.with_label("metrics"),
                 args.consensus.metrics_address,
             )

@@ -28,7 +28,7 @@ use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
-use tempo_commonware_node_config::SigningShare;
+use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
 use tracing::info;
 

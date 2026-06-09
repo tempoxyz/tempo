@@ -12877,8 +12877,8 @@ dependencies = [
  "serde_json",
  "tempo-alloy",
  "tempo-chainspec",
- "tempo-commonware-node",
- "tempo-commonware-node-config",
+ "tempo-consensus",
+ "tempo-consensus-config",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
@@ -12963,7 +12963,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-commonware-node"
+name = "tempo-consensus"
 version = "1.8.1"
 dependencies = [
  "age",
@@ -13009,7 +13009,7 @@ dependencies = [
  "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
- "tempo-commonware-node-config",
+ "tempo-consensus-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-node",
  "tempo-payload-types",
@@ -13024,7 +13024,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-commonware-node-config"
+name = "tempo-consensus-config"
 version = "1.8.1"
 dependencies = [
  "age",
@@ -13105,7 +13105,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tempo-chainspec",
- "tempo-commonware-node",
+ "tempo-consensus",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-eyre",
@@ -13560,7 +13560,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-chainspec",
- "tempo-commonware-node-config",
+ "tempo-consensus-config",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
