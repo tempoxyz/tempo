@@ -59,6 +59,7 @@ on:
         options:
           - tip20
           - tip20_2d_nonces
+          - tip20_native_multisig_1of1
           - tip20_random_recipients
           - tip20_existing_recipients
           - mpp
@@ -570,6 +571,7 @@ jobs:
           export PATH="$CARGO_BIN_DIR:$PATH"
 
           TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
+          git config --global url."https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
           install_args=(--git "$TXGEN_GIT_URL" --locked)
           if [ -n "$BENCH_TXGEN_REF" ]; then
             TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
