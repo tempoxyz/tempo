@@ -1633,12 +1633,8 @@ impl AA2dStoredTransaction {
         }
     }
 
-    fn clone_into_pending(&self, base_fee: u64) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.submission_id,
-            priority: TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
-            transaction: self.transaction.clone(),
-        }
+    fn clone_into_pending(&self, base_fee: u64) -> PendingAA2dTransaction {
+        PendingAA2dTransaction::new(self.submission_id, self.transaction.clone(), base_fee)
     }
 }
 
@@ -1718,6 +1714,7 @@ impl PartialOrd for ExpiringNonceEvictionOrderKey {
 struct ExpiringNonceEvictionKey {
     order: ExpiringNonceEvictionOrderKey,
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    can_pay_base_fee: bool,
 }
 
 impl ExpiringNonceEvictionKey {
@@ -1728,22 +1725,29 @@ impl ExpiringNonceEvictionKey {
                 tx.submission_id,
             ),
             transaction: tx.transaction.clone(),
+            can_pay_base_fee: tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee),
         }
     }
 
-    fn from_pending_owned(tx: PendingTransaction<TxOrdering>) -> Self {
+    fn from_pending_owned(tx: PendingAA2dTransaction) -> Self {
+        let can_pay_base_fee = tx.can_pay_base_fee;
+        let tx = tx.inner;
         Self {
             order: ExpiringNonceEvictionOrderKey::new(tx.priority, tx.submission_id),
             transaction: tx.transaction,
+            can_pay_base_fee,
         }
     }
 
-    fn into_transaction(self) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.order.submission_id,
-            priority: self.order.priority,
-            transaction: self.transaction,
-        }
+    fn into_transaction(self) -> (PendingTransaction<TxOrdering>, bool) {
+        (
+            PendingTransaction {
+                submission_id: self.order.submission_id,
+                priority: self.order.priority,
+                transaction: self.transaction,
+            },
+            self.can_pay_base_fee,
+        )
     }
 
     fn priority(&self) -> &Priority<u64> {
@@ -1874,14 +1878,66 @@ const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 /// relative to transactions already yielded by the iterator.
 enum IncomingAA2dTransaction {
     /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
-    Process(PendingTransaction<TxOrdering>),
+    Process(PendingAA2dTransaction),
     /// Priority > last yielded — add only to `by_id` for nonce chain lookups, not `independent`.
-    Stash(PendingTransaction<TxOrdering>),
+    Stash(PendingAA2dTransaction),
 }
 
 enum PoppedAA2dTransaction {
-    Regular(AA2dTransactionId, PendingTransaction<TxOrdering>),
-    Expiring(PendingTransaction<TxOrdering>),
+    Regular(AA2dTransactionId, PendingAA2dTransaction),
+    Expiring(PendingTransaction<TxOrdering>, bool),
+}
+
+#[derive(Debug, Clone)]
+struct PendingAA2dTransaction {
+    inner: PendingTransaction<TxOrdering>,
+    can_pay_base_fee: bool,
+}
+
+impl PendingAA2dTransaction {
+    fn new(
+        submission_id: u64,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        base_fee: u64,
+    ) -> Self {
+        let priority = TempoTipOrdering::default().priority(&transaction.transaction, base_fee);
+        let can_pay_base_fee = transaction.transaction.max_fee_per_gas() >= u128::from(base_fee);
+        Self {
+            inner: PendingTransaction {
+                submission_id,
+                transaction,
+                priority,
+            },
+            can_pay_base_fee,
+        }
+    }
+
+    fn into_stored(self) -> AA2dStoredTransaction {
+        AA2dStoredTransaction {
+            submission_id: self.inner.submission_id,
+            transaction: self.inner.transaction,
+        }
+    }
+}
+
+impl Eq for PendingAA2dTransaction {}
+
+impl PartialEq for PendingAA2dTransaction {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl PartialOrd for PendingAA2dTransaction {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PendingAA2dTransaction {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inner.cmp(&other.inner)
+    }
 }
 
 /// A snapshot of the sub-pool containing all executable transactions.
@@ -1891,7 +1947,7 @@ pub(crate) struct BestAA2dTransactions {
     ///
     /// Expiring nonce transactions are not included here because they are keyed
     /// by expiring nonce hash, not `AA2dTransactionId`.
-    independent: BTreeSet<PendingTransaction<TxOrdering>>,
+    independent: BTreeSet<PendingAA2dTransaction>,
     /// Regular 2D nonce pending transactions grouped by their unique identifier.
     ///
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
@@ -1914,9 +1970,10 @@ pub(crate) struct BestAA2dTransactions {
 
 impl BestAA2dTransactions {
     /// Removes the best regular transaction from the set.
-    fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
+    fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingAA2dTransaction)> {
         let tx = self.independent.pop_last()?;
         let id = tx
+            .inner
             .transaction
             .transaction
             .aa_transaction_id()
@@ -1926,7 +1983,7 @@ impl BestAA2dTransactions {
     }
 
     /// Removes the best expiring nonce transaction from the set.
-    fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
+    fn pop_best_expiring_nonce(&mut self) -> Option<(PendingTransaction<TxOrdering>, bool)> {
         let key = self.expiring_nonce_order.pop_last()?;
         Some(key.into_transaction())
     }
@@ -1936,16 +1993,19 @@ impl BestAA2dTransactions {
         match (self.independent.last(), self.expiring_nonce_order.last()) {
             (Some(regular), Some(expiring)) => {
                 if regular
+                    .inner
                     .priority
                     .cmp(expiring.priority())
-                    .then_with(|| expiring.submission_id().cmp(&regular.submission_id))
+                    .then_with(|| expiring.submission_id().cmp(&regular.inner.submission_id))
                     .is_ge()
                 {
                     let (id, tx) = self.pop_best_regular()?;
                     Some(PoppedAA2dTransaction::Regular(id, tx))
                 } else {
                     self.pop_best_expiring_nonce()
-                        .map(PoppedAA2dTransaction::Expiring)
+                        .map(|(tx, can_pay_base_fee)| {
+                            PoppedAA2dTransaction::Expiring(tx, can_pay_base_fee)
+                        })
                 }
             }
             (Some(_), None) => {
@@ -1954,7 +2014,9 @@ impl BestAA2dTransactions {
             }
             (None, Some(_)) => self
                 .pop_best_expiring_nonce()
-                .map(PoppedAA2dTransaction::Expiring),
+                .map(|(tx, can_pay_base_fee)| {
+                    PoppedAA2dTransaction::Expiring(tx, can_pay_base_fee)
+                }),
             (None, None) => None,
         }
     }
@@ -1964,15 +2026,10 @@ impl BestAA2dTransactions {
         loop {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
-                    let priority = TempoTipOrdering::default()
-                        .priority(&tx.transaction.transaction, self.base_fee);
-                    let tx = PendingTransaction {
-                        submission_id: tx.submission_id,
-                        transaction: tx.transaction,
-                        priority,
-                    };
+                    let tx =
+                        PendingAA2dTransaction::new(tx.submission_id, tx.transaction, self.base_fee);
                     if let Some(last_priority) = &self.last_priority
-                        && &tx.priority > last_priority
+                        && &tx.inner.priority > last_priority
                     {
                         // Higher priority than what we already yielded — stash in `by_id`
                         // only (not `independent`) to preserve nonce chain lookups.
@@ -1996,12 +2053,12 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Process(tx) => (tx, true),
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
-                if tx.transaction.transaction.is_expiring_nonce() {
-                    if process && can_pay_base_fee(&tx, self.base_fee) {
+                if tx.inner.transaction.transaction.is_expiring_nonce() {
+                    if process && tx.can_pay_base_fee {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
-                } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
+                } else if let Some(id) = tx.inner.transaction.transaction.aa_transaction_id() {
                     if process {
                         // Only mark as independent if no ancestor is already tracked
                         if !self.by_id.contains_key(&AA2dTransactionId::new(
@@ -2012,13 +2069,7 @@ impl BestAA2dTransactions {
                             self.independent.insert(tx.clone());
                         }
                     }
-                    self.by_id.insert(
-                        id,
-                        AA2dStoredTransaction {
-                            submission_id: tx.submission_id,
-                            transaction: tx.transaction,
-                        },
-                    );
+                    self.by_id.insert(id, tx.into_stored());
                 }
             } else {
                 break;
@@ -2040,7 +2091,7 @@ impl BestAA2dTransactions {
                     if self.invalid.contains(&id.seq_id) {
                         continue;
                     }
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                    if !best.can_pay_base_fee {
                         self.invalid.insert(id.seq_id);
                         continue;
                     }
@@ -2049,10 +2100,10 @@ impl BestAA2dTransactions {
                         self.independent
                             .insert(unlocked.clone_into_pending(self.base_fee));
                     }
-                    best
+                    best.inner
                 }
-                PoppedAA2dTransaction::Expiring(best) => {
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                PoppedAA2dTransaction::Expiring(best, can_pay_base_fee) => {
+                    if !can_pay_base_fee {
                         continue;
                     }
                     best
@@ -2064,10 +2115,6 @@ impl BestAA2dTransactions {
             return Some((best.transaction, best.priority));
         }
     }
-}
-
-fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
-    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
 }
 
 impl Iterator for BestAA2dTransactions {
