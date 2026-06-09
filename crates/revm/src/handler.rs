@@ -60,7 +60,7 @@ use tempo_primitives::{
     TempoAddressExt,
     transaction::{
         InitMultisig, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, multisig_digest, validate_calls, validate_multisig_config,
+        calc_gas_balance_spending, validate_calls, validate_multisig_config,
         verify_multisig_owner_signatures, verify_trusted_multisig_owner_signatures,
     },
 };
@@ -1140,22 +1140,9 @@ where
                         .into());
                     }
 
-                    let digest = multisig_digest(
-                        tempo_tx_env.signature_hash,
-                        multisig_signature.account,
-                        multisig_signature.config_id,
-                    );
+                    let digest = multisig_signature.digest(tempo_tx_env.signature_hash);
 
                     if caller_is_multisig {
-                        if multisig_signature.init.is_some() {
-                            return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                                reason:
-                                    "multisig_init is only allowed when bootstrapping an account"
-                                        .to_string(),
-                            }
-                            .into());
-                        }
-
                         let config = multisig
                             .load_current_config(
                                 multisig_signature.account,
