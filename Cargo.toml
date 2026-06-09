@@ -2,7 +2,12 @@
 version = "1.8.1"
 edition = "2024"
 rust-version = "1.93.0"
+authors = ["Tempo Contributors"]
 license = "MIT OR Apache-2.0"
+homepage = "https://docs.tempo.xyz"
+repository = "https://github.com/tempoxyz/tempo"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
