@@ -739,9 +739,18 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
-            Self::Multisig(multisig_sig) => multisig_sig
-                .recover_account()
-                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
+            Self::Multisig(multisig_sig) => {
+                let account = multisig_sig
+                    .recover_account()
+                    .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                let digest = super::multisig::multisig_digest(
+                    *sig_hash,
+                    multisig_sig.account,
+                    multisig_sig.config_id,
+                );
+                let _ = multisig_sig.with_recovered_owners(digest, |_| Ok(()));
+                Ok(account)
+            }
         }
     }
 
