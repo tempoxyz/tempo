@@ -7,6 +7,7 @@ use std::{
 };
 
 use alloy_primitives::{Address, TxKind, U256};
+use alloy_sol_types::SolCall;
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -52,7 +53,10 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
+    tip20::{
+        ITIP20::{InsufficientBalance, transferCall},
+        TIP20Error, TIP20Token, decode_tip20_balance,
+    },
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
@@ -251,6 +255,12 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
         + TARGET_SCOPE_GAS.saturating_mul(num_targets)
         + SELECTOR_SCOPE_GAS.saturating_mul(num_selectors)
         + RECIPIENT_SCOPE_GAS.saturating_mul(num_recipients)
+}
+
+fn is_single_direct_tip20_transfer(tx: &TempoTxEnv, token: Address) -> bool {
+    tx.tempo_tx_env.is_none()
+        && tx.inner.kind.to() == Some(&token)
+        && tx.inner.data.first_chunk::<4>() == Some(&transferCall::SELECTOR)
 }
 
 /// Rewrites a failed batch step's gas accounting to match whole-transaction semantics.
@@ -1297,51 +1307,61 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let seed_tip20_fee_transfer_context =
+                cfg.spec.is_t7() && is_single_direct_tip20_transfer(tx, fee_token);
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                let route_state = TipFeeManager::new().collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
                     block.beneficiary(),
                     skip_liquidity_check,
-                )
+                )?;
+                if seed_tip20_fee_transfer_context {
+                    TIP20Token::from_address(fee_token)?.seed_fee_transfer_context()?;
+                }
+                Ok(route_state)
             });
 
-            if let Err(err) = result {
-                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                journal.checkpoint_revert(checkpoint);
+            let route_state = match result {
+                Ok(route_state) => route_state,
+                Err(err) => {
+                    // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+                    journal.checkpoint_revert(checkpoint);
 
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
+                    // Map fee collection errors to transaction validation errors since they
+                    // indicate the transaction cannot be included (e.g., insufficient liquidity
+                    // in FeeAMM pool for fee swaps)
+                    return Err(match err {
+                        TempoPrecompileError::TIPFeeAMMError(
+                            TIPFeeAMMError::InsufficientLiquidity(_),
+                        ) => FeePaymentError::InsufficientAmmLiquidity {
+                            fee: gas_balance_spending,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
+                        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                            InsufficientBalance { available, .. },
+                        )) => FeePaymentError::InsufficientFeeTokenBalance {
+                            fee: gas_balance_spending,
+                            balance: available,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
+                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                            TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                        }
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                        TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
-            }
+                        _ => FeePaymentError::Other(err.to_string()).into(),
+                    });
+                }
+            };
 
             journal.checkpoint_commit();
             evm.collected_fee = gas_balance_spending;
+            evm.fee_route_state = cfg.spec.is_t7().then_some(route_state);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -1593,6 +1613,12 @@ where
                         refund_amount,
                         fee_token,
                         beneficiary,
+                        context
+                            .cfg
+                            .spec
+                            .is_t7()
+                            .then(|| evm.fee_route_state)
+                            .flatten(),
                     )
                     .map_err(|e| EVMError::Custom(format!("{e:?}")))
             } else {
@@ -1626,6 +1652,7 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
+        evm.fee_route_state = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

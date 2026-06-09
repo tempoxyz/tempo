@@ -11,6 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip_fee_manager::FeeRouteState;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -38,6 +39,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Transaction-local route selected during `collectFeePreTx`.
+    pub(crate) fee_route_state: Option<FeeRouteState>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +87,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fee_route_state: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -126,6 +130,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.fee_token = None;
+        self.fee_route_state = None;
         self.key_expiry = None;
     }
 }

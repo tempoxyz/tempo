@@ -77,10 +77,20 @@ impl TIP20Token {
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
+        let holder_balance = self.get_balance(holder)?;
+        self.update_rewards_with_loaded_balance(holder, holder_balance, false)
+    }
+
+    pub(crate) fn update_rewards_with_loaded_balance(
+        &mut self,
+        holder: Address,
+        holder_balance: UserState,
+        checkpoint_opted_out_rewards: bool,
+    ) -> Result<RewardFlag> {
         let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, false)?
+            self.update_rewards_t6(holder, holder_balance, checkpoint_opted_out_rewards)?
         } else {
-            self.update_rewards_legacy(holder)?
+            self.update_rewards_legacy(holder, holder_balance)?
         };
         // RewardFlag output of reward updates MUST be binary (opted-in/out).
         // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
@@ -91,19 +101,15 @@ impl TIP20Token {
 
     /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
     fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, true)?
-        } else {
-            self.update_rewards_legacy(holder)?
-        };
-        // RewardFlag output of reward updates MUST be binary (opted-in/out).
-        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
-        debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
-
-        Ok(flag)
+        let holder_balance = self.get_balance(holder)?;
+        self.update_rewards_with_loaded_balance(holder, holder_balance, true)
     }
 
-    fn update_rewards_legacy(&mut self, holder: Address) -> Result<RewardFlag> {
+    fn update_rewards_legacy(
+        &mut self,
+        holder: Address,
+        holder_balance: UserState,
+    ) -> Result<RewardFlag> {
         let mut info = self.user_reward_info[holder].read()?;
         let cached_delegate = info.reward_recipient;
 
@@ -114,7 +120,6 @@ impl TIP20Token {
 
         if reward_per_token_delta != U256::ZERO {
             if cached_delegate != Address::ZERO {
-                let holder_balance = self.get_balance(holder)?;
                 let reward = holder_balance
                     .checked_mul(reward_per_token_delta)?
                     .div(ACC_PRECISION);
@@ -144,11 +149,10 @@ impl TIP20Token {
     fn update_rewards_t6(
         &mut self,
         holder: Address,
+        holder_balance: UserState,
         checkpoint_opted_out_rewards: bool,
     ) -> Result<RewardFlag> {
         // On T6, once initialized, the balance flag is the source of truth for user reward state.
-        let holder_balance = self.get_balance(holder)?;
-
         // Check uninitialized opt-outs before loading global rewards; first transfers hit this path.
         let delegate = if holder_balance.flag.is_uninitialized() {
             Some(self.user_reward_info[holder].reward_recipient.read()?)
@@ -345,27 +349,6 @@ impl TIP20Token {
     /// Sets the total supply of tokens opted into rewards.
     pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
         self.opted_in_supply.write(value)
-    }
-
-    /// Handles reward accounting for both sender and receiver during token transfers.
-    pub(crate) fn handle_rewards_on_transfer(
-        &mut self,
-        from: Address,
-        to: Address,
-        amount: U256,
-    ) -> Result<(RewardFlag, RewardFlag)> {
-        let from_flag = self.update_rewards(from)?;
-        let to_flag = self.update_rewards(to)?;
-
-        match (from_flag, to_flag) {
-            // Increase supply: from opted-out, to opted-in.
-            (RewardFlag::OptedOut, RewardFlag::OptedIn) => self.increase_opted_in_supply(amount)?,
-            // Decrease supply: from opted-in, to opted-out.
-            (RewardFlag::OptedIn, RewardFlag::OptedOut) => self.decrease_opted_in_supply(amount)?,
-            _ => (), // All other cases don't have effect
-        }
-
-        Ok((from_flag, to_flag))
     }
 
     /// Handles reward accounting when tokens are minted to an address.

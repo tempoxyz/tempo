@@ -132,6 +132,14 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+static FEE_TRANSFER_CONTEXT_ACTIVE_SLOT: LazyLock<U256> =
+    LazyLock::new(|| U256::from_be_bytes(keccak256(b"tempo.tip20.fee_transfer_context.active").0));
+static FEE_TRANSFER_CONTEXT_PAUSED_SLOT: LazyLock<U256> =
+    LazyLock::new(|| U256::from_be_bytes(keccak256(b"tempo.tip20.fee_transfer_context.paused").0));
+static FEE_TRANSFER_CONTEXT_POLICY_SLOT: LazyLock<U256> =
+    LazyLock::new(|| U256::from_be_bytes(keccak256(b"tempo.tip20.fee_transfer_context.policy").0));
+static FEE_TRANSFER_CONTEXT_USD_SLOT: LazyLock<U256> =
+    LazyLock::new(|| U256::from_be_bytes(keccak256(b"tempo.tip20.fee_transfer_context.usd").0));
 
 #[rustfmt::skip]
 /// System custody addresses added to burn-blocked protection at each hardfork.
@@ -141,7 +149,79 @@ pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS]),
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Tip20FeeTransferContext {
+    paused: bool,
+    transfer_policy_id: u64,
+    usd_valid: bool,
+}
+
 impl TIP20Token {
+    /// Seeds a transaction-local fast path for a known same-token user transfer.
+    pub fn seed_fee_transfer_context(&mut self) -> Result<()> {
+        let paused = self.paused()?;
+        let policy_id = self.transfer_policy_id()?;
+        let usd_valid = self.currency()? == USD_CURRENCY;
+
+        let mut storage = crate::storage::StorageCtx;
+        storage.tstore(
+            self.address,
+            *FEE_TRANSFER_CONTEXT_ACTIVE_SLOT,
+            U256::from(1),
+        )?;
+        storage.tstore(
+            self.address,
+            *FEE_TRANSFER_CONTEXT_PAUSED_SLOT,
+            U256::from(paused as u8),
+        )?;
+        storage.tstore(
+            self.address,
+            *FEE_TRANSFER_CONTEXT_POLICY_SLOT,
+            U256::from(policy_id),
+        )?;
+        storage.tstore(
+            self.address,
+            *FEE_TRANSFER_CONTEXT_USD_SLOT,
+            U256::from(usd_valid as u8),
+        )
+    }
+
+    fn fee_transfer_context(&self) -> Result<Option<Tip20FeeTransferContext>> {
+        if !self.storage.spec().is_t7() {
+            return Ok(None);
+        }
+
+        let storage = crate::storage::StorageCtx;
+        if storage
+            .tload(self.address, *FEE_TRANSFER_CONTEXT_ACTIVE_SLOT)?
+            .is_zero()
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(Tip20FeeTransferContext {
+            paused: !storage
+                .tload(self.address, *FEE_TRANSFER_CONTEXT_PAUSED_SLOT)?
+                .is_zero(),
+            transfer_policy_id: storage
+                .tload(self.address, *FEE_TRANSFER_CONTEXT_POLICY_SLOT)?
+                .try_into()
+                .map_err(|_| TempoPrecompileError::under_overflow())?,
+            usd_valid: !storage
+                .tload(self.address, *FEE_TRANSFER_CONTEXT_USD_SLOT)?
+                .is_zero(),
+        }))
+    }
+
+    fn consume_fee_transfer_context(&mut self) -> Result<Option<Tip20FeeTransferContext>> {
+        let context = self.fee_transfer_context()?;
+        if context.is_some() {
+            let mut storage = crate::storage::StorageCtx;
+            storage.tstore(self.address, *FEE_TRANSFER_CONTEXT_ACTIVE_SLOT, U256::ZERO)?;
+        }
+        Ok(context)
+    }
+
     /// Returns the token name.
     pub fn name(&self) -> Result<String> {
         self.name.read()
@@ -1043,9 +1123,26 @@ impl TIP20Token {
         memo: B256,
     ) -> Result<Option<Recipient>> {
         let to = Recipient::resolve(to)?;
-        self.check_not_paused()?;
-        to.validate()?;
-        self.ensure_transfer_authorized(from, to.target)?;
+        let fee_context = if spender.is_none() {
+            self.consume_fee_transfer_context()?
+        } else {
+            None
+        };
+        if let Some(context) = fee_context {
+            if context.paused || !context.usd_valid {
+                return Err(TIP20Error::contract_paused().into());
+            }
+            to.validate()?;
+            self.ensure_transfer_authorized_with_policy_id(
+                context.transfer_policy_id,
+                from,
+                to.target,
+            )?;
+        } else {
+            self.check_not_paused()?;
+            to.validate()?;
+            self.ensure_transfer_authorized(from, to.target)?;
+        }
 
         if let Some(spender) = spender {
             self.consume_allowance(from, spender, amount)?;
@@ -1120,7 +1217,23 @@ impl TIP20Token {
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
-        if !self.is_transfer_authorized(from, to)? {
+        let policy_id = self.transfer_policy_id()?;
+        self.ensure_transfer_authorized_with_policy_id(policy_id, from, to)
+    }
+
+    fn ensure_transfer_authorized_with_policy_id(
+        &self,
+        policy_id: u64,
+        from: Address,
+        to: Address,
+    ) -> Result<()> {
+        let registry = TIP403Registry::new();
+        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
+        if self.storage.spec().is_t2() && !sender_auth {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        if !(sender_auth && recipient_auth) {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1162,7 +1275,24 @@ impl TIP20Token {
             .into());
         }
 
-        let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let from_flag = if self.storage.spec().is_t7() {
+            self.update_rewards_with_loaded_balance(from, from_balance, false)?
+        } else {
+            self.update_rewards(from)?
+        };
+        let to_flag = if to.target != Address::ZERO {
+            self.update_rewards(to.target)?
+        } else {
+            RewardFlag::OptedOut
+        };
+
+        match (from_flag, to_flag) {
+            // Increase supply: from opted-out, to opted-in.
+            (RewardFlag::OptedOut, RewardFlag::OptedIn) => self.increase_opted_in_supply(amount)?,
+            // Decrease supply: from opted-in, to opted-out.
+            (RewardFlag::OptedIn, RewardFlag::OptedOut) => self.decrease_opted_in_supply(amount)?,
+            _ => (),
+        }
 
         // Adjust balances
         self.set_balance(
@@ -1289,7 +1419,11 @@ impl TIP20Token {
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_flag = self.update_rewards(from)?;
+        let from_flag = if self.storage.spec().is_t7() {
+            self.update_rewards_with_loaded_balance(from, from_balance, false)?
+        } else {
+            self.update_rewards(from)?
+        };
 
         // If user is opted into rewards, decrease opted-in supply
         if from_flag.is_opted_in() {
@@ -1330,7 +1464,15 @@ impl TIP20Token {
         }
 
         // Update rewards for the recipient and get their reward recipient
-        let to_flag = self.update_rewards(to)?;
+        let use_loaded_balance = self.storage.spec().is_t7();
+        let to_balance = use_loaded_balance
+            .then(|| self.get_balance(to))
+            .transpose()?;
+        let to_flag = if let Some(to_balance) = to_balance {
+            self.update_rewards_with_loaded_balance(to, to_balance, false)?
+        } else {
+            self.update_rewards(to)?
+        };
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_flag.is_opted_in() {
@@ -1346,8 +1488,9 @@ impl TIP20Token {
             UserState::new(new_from_balance, from_balance.flag)?,
         )?;
 
-        let new_to_balance = self
-            .get_balance(to)?
+        let new_to_balance = to_balance
+            .map(Ok)
+            .unwrap_or_else(|| self.get_balance(to))?
             .checked_add(refund)
             .map_err(|_| TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, UserState::new(new_to_balance, to_flag)?)

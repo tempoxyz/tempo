@@ -19,6 +19,15 @@ pub use tempo_contracts::precompiles::{
 };
 use tempo_precompiles_macros::contract;
 
+/// Transaction-local fee route state derived during pre-charge and reused during settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeeRouteState {
+    pub fee_token: Address,
+    pub validator_token: Address,
+    pub route: FeeRoute,
+    pub hop_token: Address,
+}
+
 /// Fee manager precompile that handles transaction fee collection and distribution.
 ///
 /// Users and validators choose their preferred TIP-20 fee token. When they differ, fees are
@@ -148,7 +157,7 @@ impl TipFeeManager {
     /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
     /// validator prefers a different token, verifies sufficient pool liquidity.
     /// Reserves liquidity on T1C+, with a two-hop fallback through `userToken.quoteToken()` on T5+.
-    /// Returns the user's fee token.
+    /// Returns the transaction-local route selected for settlement.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
@@ -161,7 +170,7 @@ impl TipFeeManager {
         max_amount: U256,
         beneficiary: Address,
         skip_liquidity_check: bool,
-    ) -> Result<Address> {
+    ) -> Result<FeeRouteState> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -171,14 +180,25 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if !skip_liquidity_check {
+        let route = if skip_liquidity_check {
+            if user_token == validator_token {
+                FeeRoute::SameToken
+            } else {
+                FeeRoute::Direct
+            }
+        } else {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
-        }
+            route
+        };
 
-        // Return the user's token preference
-        Ok(user_token)
+        Ok(FeeRouteState {
+            fee_token: user_token,
+            validator_token,
+            route,
+            hop_token: route.hop_token(),
+        })
     }
 
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
@@ -233,30 +253,49 @@ impl TipFeeManager {
         refund_amount: U256,
         fee_token: Address,
         beneficiary: Address,
+        route_state: Option<FeeRouteState>,
     ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
-        let hop_token = self.two_hop_intermediate.t_read()?;
-        let validator_token = self.get_validator_token(beneficiary)?;
-
-        let amount = if fee_token == validator_token {
-            actual_spending
-        } else if hop_token.is_zero() {
-            // Single-hop (direct) swap
-            if !actual_spending.is_zero() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
-            compute_amount_out(actual_spending)?
+        let (validator_token, route, hop_token) = if let Some(state) = route_state {
+            debug_assert_eq!(state.fee_token, fee_token);
+            (state.validator_token, state.route, state.hop_token)
         } else {
-            // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
-            if !actual_spending.is_zero() {
-                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
-                self.execute_fee_swap(hop_token, validator_token, out1)?;
+            let hop_token = self.two_hop_intermediate.t_read()?;
+            let validator_token = self.get_validator_token(beneficiary)?;
+            let route = if fee_token == validator_token {
+                FeeRoute::SameToken
+            } else if hop_token.is_zero() {
+                FeeRoute::Direct
+            } else {
+                FeeRoute::TwoHop(hop_token)
+            };
+            (validator_token, route, hop_token)
+        };
+
+        let amount = match route {
+            FeeRoute::SameToken => actual_spending,
+            FeeRoute::Direct => {
+                if !actual_spending.is_zero() {
+                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                }
+                compute_amount_out(actual_spending)?
             }
-            compute_amount_out(compute_amount_out(actual_spending)?)?
+            FeeRoute::TwoHop(intermediate) => {
+                let hop_token = if intermediate.is_zero() {
+                    hop_token
+                } else {
+                    intermediate
+                };
+                if !actual_spending.is_zero() {
+                    let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                    self.execute_fee_swap(hop_token, validator_token, out1)?;
+                }
+                compute_amount_out(compute_amount_out(actual_spending)?)?
+            }
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
@@ -511,7 +550,10 @@ mod tests {
             let result =
                 fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert!(result.is_ok());
-            assert_eq!(result?, token.address());
+            let route_state = result?;
+            assert_eq!(route_state.fee_token, token.address());
+            assert_eq!(route_state.validator_token, token.address());
+            assert_eq!(route_state.route, FeeRoute::SameToken);
 
             Ok(())
         })
@@ -560,6 +602,7 @@ mod tests {
                 refund_amount,
                 token.address(),
                 validator,
+                None,
             )?;
             assert_eq!(credited, actual_used);
 
@@ -748,6 +791,7 @@ mod tests {
                 refund_amount,
                 user_token.address(),
                 validator,
+                None,
             )?;
 
             // Expected output: 800 * 9970 / 10000 = 797
@@ -877,7 +921,10 @@ mod tests {
                 true,
             );
             assert!(result.is_ok());
-            assert_eq!(result?, user_token.address());
+            let route_state = result?;
+            assert_eq!(route_state.fee_token, user_token.address());
+            assert_eq!(route_state.validator_token, validator_token.address());
+            assert_eq!(route_state.route, FeeRoute::Direct);
 
             Ok(())
         })
@@ -1209,8 +1256,14 @@ mod tests {
 
                     let amount_u = U256::from(amount);
                     fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    let credited =
-                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let credited = fm.collect_fee_post_tx(
+                        user,
+                        amount_u,
+                        U256::ZERO,
+                        t.user,
+                        validator,
+                        None,
+                    )?;
                     let one_hop_amount = compute_amount_out(amount_u)?;
                     assert!(
                         credited < one_hop_amount,
@@ -1280,7 +1333,7 @@ mod tests {
             );
 
             // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
-            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator, None)?;
 
             let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
             let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
@@ -1334,7 +1387,7 @@ mod tests {
                 let amount = U256::from(1_000);
                 fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
                 assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator, None)?;
                 // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
                 assert_eq!(
                     fm.two_hop_intermediate.t_read()?,
@@ -1361,7 +1414,7 @@ mod tests {
                     fm.two_hop_intermediate.t_read()?.is_zero(),
                     "tx2: pre_tx took direct route, must not set intermediate",
                 );
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator, None)?;
 
                 // tx2 settled via direct pool: validator received single-hop fee.
                 let out_single: U256 = compute_amount_out(amount)?;

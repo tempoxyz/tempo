@@ -98,6 +98,15 @@ pub enum FeeRoute {
     TwoHop(Address),
 }
 
+impl FeeRoute {
+    pub const fn hop_token(self) -> Address {
+        match self {
+            Self::TwoHop(token) => token,
+            Self::SameToken | Self::Direct => Address::ZERO,
+        }
+    }
+}
+
 /// Pools read during planning, paired with their observed validator-token reserve.
 pub type PoolData = ((Address, Address), u128);
 
