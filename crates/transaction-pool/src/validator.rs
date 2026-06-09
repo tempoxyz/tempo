@@ -3,19 +3,29 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_evm::EvmEnv;
+use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_evm::{Database, EvmEnv};
+use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_evm::ConfigureEvm;
-use reth_primitives_traits::{SealedBlock, transaction::error::InvalidTransactionError};
+use reth_primitives_traits::{
+    Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
+};
 use reth_provider::BlockReaderIdExt;
-use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
+use reth_revm::{cached::CachedReads, database::StateProviderDatabase};
+use reth_storage_api::{
+    AccountReader, BytecodeReader, StateProvider, StateProviderFactory,
+    errors::{ProviderError, ProviderResult},
+};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use revm::context::result::{EVMError, InvalidTransaction};
+use revm::{
+    DatabaseRef,
+    context::result::{EVMError, InvalidTransaction},
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -300,14 +310,17 @@ where
     /// same validation logic that the block executor uses
     /// ([`TempoEvm::validate_transaction`]).
     ///
-    /// A throwaway [`TempoEvm`] is created over a [`StateProviderDatabase`]; all state
+    /// A throwaway [`TempoEvm`] is created over a cached database; all state
     /// mutations (nonce bumps, fee deduction, key authorisation) are applied to the
     /// journal and discarded when the EVM is dropped.
-    fn validate_with_evm(
+    fn validate_with_evm<DB>(
         &self,
         transaction: &TempoPooledTransaction,
-        state_provider: impl StateProvider,
-    ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>> {
+        db: DB,
+    ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>>
+    where
+        DB: Database<Error = ProviderError>,
+    {
         let evm_env = self.cached_evm_env.read().clone();
 
         // Create a throwaway EVM and run validation.
@@ -316,7 +329,7 @@ where
         // - Disable nonce check: the pool accepts future-nonce transactions (queued)
         //   and handles nonce ordering separately.
         // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
-        let mut evm = TempoEvm::new(StateProviderDatabase::new(state_provider), evm_env);
+        let mut evm = TempoEvm::new(db, evm_env);
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
@@ -330,11 +343,16 @@ where
         }
     }
 
+    /// Validates one transaction against a state snapshot.
+    ///
+    /// Caller-owned `cached_reads` lets batch validation reuse DB reads across transactions from
+    /// the same snapshot.
     fn validate_one(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
+        cached_reads: &mut CachedReads,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the current hardfork based on tip timestamp
         let spec = self
@@ -395,7 +413,8 @@ where
         // authorization, and balance checks.
         //
         // Returns resolved fee token and key expiry for pool caching.
-        let validation_ctx = match self.validate_with_evm(&transaction, &state_provider) {
+        let mut db = cached_reads.as_db_mut(StateProviderDatabase::new(&state_provider));
+        let validation_ctx = match self.validate_with_evm(&transaction, &mut db) {
             Ok(ctx) => ctx,
             Err(err) => match err {
                 EVMError::Transaction(err) => {
@@ -449,11 +468,10 @@ where
 
         // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
         let fee = transaction.fee_token_cost();
-        match self.amm_liquidity_cache.has_enough_liquidity(
-            validation_ctx.fee_token,
-            fee,
-            &state_provider,
-        ) {
+        match self
+            .amm_liquidity_cache
+            .has_enough_liquidity(validation_ctx.fee_token, fee, &mut db)
+        {
             Ok(true) => {}
             Ok(false) => {
                 return TransactionValidationOutcome::Invalid(
@@ -473,10 +491,13 @@ where
         // Delegate to the inner ETH validator for remaining checks
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
-        match self
-            .inner
-            .validate_one_with_state_provider(origin, transaction, &state_provider)
-        {
+        let inner_validation = {
+            let cached_state_provider = CachedAccountInfoReader::new(db.into_db());
+            self.inner
+                .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
+        };
+
+        match inner_validation {
             TransactionValidationOutcome::Valid {
                 balance,
                 mut state_nonce,
@@ -600,7 +621,8 @@ where
             }
         };
 
-        self.validate_one(origin, transaction, state_provider)
+        let mut cached_reads = CachedReads::default();
+        self.validate_one(origin, transaction, state_provider, &mut cached_reads)
     }
 
     async fn validate_transactions(
@@ -620,9 +642,10 @@ where
             }
         };
 
+        let mut cached_reads = CachedReads::default();
         transactions
             .into_iter()
-            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
+            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider, &mut cached_reads))
             .collect()
     }
 
@@ -643,9 +666,10 @@ where
             }
         };
 
+        let mut cached_reads = CachedReads::default();
         transactions
             .into_iter()
-            .map(|tx| self.validate_one(origin, tx, &state_provider))
+            .map(|tx| self.validate_one(origin, tx, &state_provider, &mut cached_reads))
             .collect()
     }
 
@@ -661,6 +685,40 @@ where
     }
 }
 
+/// Adapts a cached revm database back into the account info reader interface
+/// expected by the inner ETH transaction validator.
+struct CachedAccountInfoReader<DB> {
+    db: DB,
+}
+
+impl<DB> CachedAccountInfoReader<DB> {
+    const fn new(db: DB) -> Self {
+        Self { db }
+    }
+}
+
+impl<DB> AccountReader for CachedAccountInfoReader<DB>
+where
+    DB: DatabaseRef<Error = ProviderError>,
+{
+    fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
+        Ok(self.db.basic_ref(*address)?.map(|account| Account {
+            nonce: account.nonce,
+            balance: account.balance,
+            bytecode_hash: (account.code_hash != KECCAK_EMPTY).then_some(account.code_hash),
+        }))
+    }
+}
+
+impl<DB> BytecodeReader for CachedAccountInfoReader<DB>
+where
+    DB: DatabaseRef<Error = ProviderError>,
+{
+    fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
+        Ok(Some(Bytecode(self.db.code_by_hash_ref(*code_hash)?)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,13 +727,17 @@ mod tests {
     use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use reth_chainspec::EthChainSpec;
-    use reth_primitives_traits::SignedTransaction;
+    use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use reth_storage_api::{AccountReader, BytecodeReader};
     use reth_transaction_pool::{
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
-    use revm::context::result::InvalidTransaction;
-    use std::sync::Arc;
+    use revm::{DatabaseRef, context::result::InvalidTransaction};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tempo_chainspec::spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -694,6 +756,90 @@ mod tests {
 
     /// Arbitrary validity window (in seconds) used for expiring-nonce transactions in tests.
     const TEST_VALIDITY_WINDOW: u64 = 25;
+
+    struct CountingDatabaseRef {
+        address: Address,
+        code_hash: B256,
+        account: revm::state::AccountInfo,
+        bytecode: revm::bytecode::Bytecode,
+        account_reads: Arc<AtomicUsize>,
+        bytecode_reads: Arc<AtomicUsize>,
+    }
+
+    impl DatabaseRef for CountingDatabaseRef {
+        type Error = ProviderError;
+
+        fn basic_ref(
+            &self,
+            address: Address,
+        ) -> Result<Option<revm::state::AccountInfo>, Self::Error> {
+            self.account_reads.fetch_add(1, Ordering::Relaxed);
+            Ok((address == self.address).then(|| self.account.clone()))
+        }
+
+        fn code_by_hash_ref(
+            &self,
+            code_hash: B256,
+        ) -> Result<revm::bytecode::Bytecode, Self::Error> {
+            self.bytecode_reads.fetch_add(1, Ordering::Relaxed);
+            Ok(if code_hash == self.code_hash {
+                self.bytecode.clone()
+            } else {
+                Default::default()
+            })
+        }
+
+        fn storage_ref(&self, _address: Address, _index: U256) -> Result<U256, Self::Error> {
+            Ok(U256::ZERO)
+        }
+
+        fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
+            Ok(B256::ZERO)
+        }
+    }
+
+    #[test]
+    fn cached_account_info_reader_uses_native_cached_reads() {
+        let address = Address::random();
+        let code_hash = B256::random();
+        let account = Account {
+            nonce: 7,
+            balance: U256::from(42),
+            bytecode_hash: Some(code_hash),
+        };
+        let bytecode = revm::bytecode::Bytecode::default();
+        let account_reads = Arc::new(AtomicUsize::new(0));
+        let bytecode_reads = Arc::new(AtomicUsize::new(0));
+        let provider = CountingDatabaseRef {
+            address,
+            code_hash,
+            account: revm::state::AccountInfo::new(
+                account.balance,
+                account.nonce,
+                code_hash,
+                bytecode.clone(),
+            ),
+            bytecode: bytecode.clone(),
+            account_reads: account_reads.clone(),
+            bytecode_reads: bytecode_reads.clone(),
+        };
+        let mut cached_reads = CachedReads::default();
+        let cached = CachedAccountInfoReader::new(cached_reads.as_db(provider));
+
+        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(account_reads.load(Ordering::Relaxed), 1);
+
+        assert_eq!(
+            cached.bytecode_by_hash(&code_hash).unwrap(),
+            Some(Bytecode(bytecode.clone()))
+        );
+        assert_eq!(
+            cached.bytecode_by_hash(&code_hash).unwrap(),
+            Some(Bytecode(bytecode))
+        );
+        assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
+    }
 
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<Block> {
