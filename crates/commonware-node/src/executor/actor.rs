@@ -475,7 +475,7 @@ where
             acknowledgment,
             is_backfill,
         };
-        self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(request));
+        self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(request)));
         Ok(())
     }
 
@@ -517,7 +517,7 @@ where
                 let Some(request) = self.prepare_latest_observed_finalized_tip() else {
                     return;
                 };
-                ExecutionRequest::ForkchoiceUpdate(request)
+                ExecutionRequest::ForkchoiceUpdate(Box::new(request))
             };
 
             let request = match request {
@@ -537,7 +537,7 @@ where
                     ) else {
                         continue;
                     };
-                    ExecutionRequest::ForkchoiceUpdate(request)
+                    ExecutionRequest::ForkchoiceUpdate(Box::new(request))
                 }
                 ExecutionRequest::CanonicalizeAndBuild { cause, request } => {
                     let CanonicalizeAndBuild {
@@ -556,11 +556,11 @@ where
                     ) else {
                         continue;
                     };
-                    ExecutionRequest::ForkchoiceUpdate(request)
+                    ExecutionRequest::ForkchoiceUpdate(Box::new(request))
                 }
-                ExecutionRequest::FinalizeBlock(request) => {
-                    ExecutionRequest::FinalizeBlock(self.prepare_finalized_block_request(request))
-                }
+                ExecutionRequest::FinalizeBlock(request) => ExecutionRequest::FinalizeBlock(
+                    Box::new(self.prepare_finalized_block_request(*request)),
+                ),
                 request => request,
             };
             let task = execute_request(
@@ -593,16 +593,16 @@ enum ExecutionRequest {
         cause: Span,
         request: CanonicalizeAndBuild,
     },
-    ForkchoiceUpdate(ForkchoiceUpdateRequest),
-    FinalizeBlock(FinalizedBlockRequest),
+    ForkchoiceUpdate(Box<ForkchoiceUpdateRequest>),
+    FinalizeBlock(Box<FinalizedBlockRequest>),
 }
 
 impl ExecutionRequest {
     fn is_backfill(&self) -> bool {
-        let Self::FinalizeBlock(FinalizedBlockRequest { is_backfill, .. }) = self else {
+        let Self::FinalizeBlock(req) = self else {
             return false;
         };
-        *is_backfill
+        req.is_backfill
     }
 }
 
@@ -721,7 +721,7 @@ where
             }
         }
         ExecutionRequest::ForkchoiceUpdate(request) => {
-            let canonicalized = execute_forkchoice_update(&context, execution_node, request).await;
+            let canonicalized = execute_forkchoice_update(&context, execution_node, *request).await;
             ExecutionTaskResult::Completed { canonicalized }
         }
         ExecutionRequest::CanonicalizeHead { .. }
@@ -730,7 +730,7 @@ where
         }
         ExecutionRequest::FinalizeBlock(request) => {
             let fatal_on_error = !request.is_backfill;
-            match forward_finalized(&context, execution_node, public_key, metrics, request).await {
+            match forward_finalized(&context, execution_node, public_key, metrics, *request).await {
                 Ok(canonicalized) => ExecutionTaskResult::Completed { canonicalized },
                 Err(error) if fatal_on_error => ExecutionTaskResult::Fatal { error },
                 Err(error) => {
