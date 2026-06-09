@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.9"
-# dependencies = ["tomli>=2.0.1"]
-# ///
 """Sanitize Cargo.toml files for publishing outside the workspace."""
 import re
 import sys

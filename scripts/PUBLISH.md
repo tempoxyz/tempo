@@ -37,7 +37,7 @@ NOTE: the working tree is never modified — all mutations happen on temp copies
 
 ### `publish-crates.sh`
 
-Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline through `uv`, verifies compilation, validates invariants, and publishes in dependency order.
+Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline, verifies compilation, validates invariants, and publishes in dependency order.
 
 **Pre-resolve validation** (while workspace/path markers still visible):
 - No `reth-*` dependencies in any published manifest

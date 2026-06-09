@@ -26,19 +26,10 @@ err() { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 SANITIZE_PY="$REPO_ROOT/scripts/sanitize_toml.py"
 SANITIZE_RS="$REPO_ROOT/scripts/sanitize_source.py"
-UV="${UV:-uv}"
-
-uv_python() {
-    "$UV" run --no-project --with tomli python "$@"
-}
-
-uv_script() {
-    "$UV" run --no-project --with tomli --script "$@"
-}
 
 release_type_for_crate() {
     local crate_name="$1"
-    uv_python - "$crate_name" "$REPO_ROOT" <<'PY'
+    python3 - "$crate_name" "$REPO_ROOT" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -132,7 +123,7 @@ rm -f  "$TMP_WORK_DIR/alloy/src/rpc/reth_compat.rs"
 
 # ── 2. Strip reth/compat references from source ──────────────────────────────
 log "Stripping reth references from source …"
-uv_script "$SANITIZE_RS" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy" "$TMP_WORK_DIR/chainspec"
+python3 "$SANITIZE_RS" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy" "$TMP_WORK_DIR/chainspec"
 
 # All crate Cargo.toml files (used by multiple pipeline stages)
 CRATE_TOMLS=(
@@ -145,16 +136,16 @@ CRATE_TOMLS=(
 # ── 3. Sanitize Cargo.toml (strip deps/features, keep workspace refs) ────────
 log "Sanitizing Cargo.toml files …"
 
-WS_VERSION=$(uv_script "$SANITIZE_PY" get_version "$REPO_ROOT/Cargo.toml")
+WS_VERSION=$(python3 "$SANITIZE_PY" get_version "$REPO_ROOT/Cargo.toml")
 log "Workspace version: $WS_VERSION"
 
 for crate_toml in "${CRATE_TOMLS[@]}"; do
-    uv_script "$SANITIZE_PY" sanitize_base "$crate_toml" "$WS_VERSION" "$REPO_ROOT/Cargo.toml"
+    python3 "$SANITIZE_PY" sanitize_base "$crate_toml" "$WS_VERSION" "$REPO_ROOT/Cargo.toml"
 done
 
-uv_script "$SANITIZE_PY" sanitize_primitives "$TMP_WORK_DIR/primitives/Cargo.toml"
-uv_script "$SANITIZE_PY" sanitize_chainspec "$TMP_WORK_DIR/chainspec/Cargo.toml"
-uv_script "$SANITIZE_PY" sanitize_alloy "$TMP_WORK_DIR/alloy/Cargo.toml" "$REPO_ROOT/Cargo.toml"
+python3 "$SANITIZE_PY" sanitize_primitives "$TMP_WORK_DIR/primitives/Cargo.toml"
+python3 "$SANITIZE_PY" sanitize_chainspec "$TMP_WORK_DIR/chainspec/Cargo.toml"
+python3 "$SANITIZE_PY" sanitize_alloy "$TMP_WORK_DIR/alloy/Cargo.toml" "$REPO_ROOT/Cargo.toml"
 
 # ── 4. Verify compilation (before resolving workspace deps) ───────────────────
 # Use a temp workspace that provides all workspace deps via the real root,
@@ -169,7 +160,7 @@ EOF
 
 # Generate workspace deps, dynamically filtering out reth-* and all internal
 # path-only crates, then overriding the publish targets with local paths.
-uv_script "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Cargo.toml" \
+python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Cargo.toml" \
     "tempo-contracts,tempo-primitives,tempo-chainspec,tempo-alloy"
 
 # Seed the lockfile so transitive deps use the same versions as the main workspace
@@ -197,7 +188,7 @@ log "Pre-resolve validation …"
 # Dynamically discover all internal path-only deps from the workspace root
 # and ban any that aren't one of the three publish targets.
 SANITIZE_DIR=$(dirname "$SANITIZE_PY")
-INTERNAL_PATH_DEPS=$(uv_python -c "
+INTERNAL_PATH_DEPS=$(python3 -c "
 import sys; sys.path.insert(0, '$SANITIZE_DIR')
 from sanitize_toml import parse_workspace_deps
 _, _, ws_path_deps, _, _ = parse_workspace_deps('$REPO_ROOT/Cargo.toml')
@@ -252,7 +243,7 @@ log "Pre-resolve validation passed ✓"
 log "Resolving workspace dependencies …"
 
 for crate_toml in "${CRATE_TOMLS[@]}"; do
-    uv_script "$SANITIZE_PY" resolve_deps "$crate_toml" "$REPO_ROOT/Cargo.toml"
+    python3 "$SANITIZE_PY" resolve_deps "$crate_toml" "$REPO_ROOT/Cargo.toml"
 done
 
 # ── 7. Post-resolve validation ────────────────────────────────────────────────
@@ -338,7 +329,7 @@ if $SEMVER_CHECK; then
         # the local workspace version when run inside a workspace.
         published_ver=$(curl -sL "https://crates.io/api/v1/crates/$crate_name" \
             -H "User-Agent: tempo-publish-script" | \
-            uv_python -c "import sys,json; d=json.load(sys.stdin); print(d['crate']['max_stable_version'] or d['crate']['max_version'])" 2>/dev/null)
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d['crate']['max_stable_version'] or d['crate']['max_version'])" 2>/dev/null)
         if [ -z "$published_ver" ] || [ "$published_ver" = "null" ]; then
             log "$crate_name not yet published, skipping"
             continue

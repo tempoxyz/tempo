@@ -38,9 +38,5 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify crates are publishable
         run: ./scripts/publish-crates.sh
