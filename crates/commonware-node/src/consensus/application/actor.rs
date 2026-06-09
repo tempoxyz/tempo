@@ -549,7 +549,7 @@ impl Inner<Init> {
             leader,
         } = args;
 
-        let parent = fetch_block_from_el_or_subscribe(
+        let parent = subscribe(
             &self.execution_node,
             Round::new(round.epoch(), parent_view),
             parent_digest,
@@ -813,8 +813,8 @@ impl Inner<Init> {
         round: Round,
     ) -> eyre::Result<bool> {
         let (block, parent) = try_join(
-            fetch_block_from_el_or_subscribe(&self.execution_node, round, payload, &self.marshal),
-            fetch_block_from_el_or_subscribe(
+            subscribe(&self.execution_node, round, payload, &self.marshal),
+            subscribe(
                 &self.execution_node,
                 Round::new(round.epoch(), parent_view),
                 parent_digest,
@@ -1150,8 +1150,8 @@ async fn verify_header(
 }
 
 /// Read a block from the execution layer or fetches it from consensus p2p.
-#[instrument(skip_all, fields(%round, %digest), err)]
-async fn fetch_block_from_el_or_subscribe(
+#[instrument(skip_all, fields(%round, %digest), err, ret(Display))]
+async fn subscribe(
     execution_node: &TempoFullNode,
     round: Round,
     digest: Digest,
@@ -1171,7 +1171,6 @@ async fn fetch_block_from_el_or_subscribe(
             .await
             .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
     };
-    debug!("retrieved block");
     Ok(block)
 }
 
