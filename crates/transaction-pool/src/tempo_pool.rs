@@ -537,11 +537,11 @@ where
                         .tip_timestamp();
                     let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-                    let added = self.aa_2d_pool.write().add_transaction(
-                        Arc::new(tx),
-                        state_nonce,
-                        hardfork,
-                    )?;
+                    let tx = Arc::new(tx);
+                    let added =
+                        self.aa_2d_pool
+                            .write()
+                            .add_transaction(tx, state_nonce, hardfork)?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
