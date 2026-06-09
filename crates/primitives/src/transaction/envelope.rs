@@ -10,7 +10,10 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::fmt;
-use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
+use tempo_contracts::precompiles::{
+    ITIP20, ITIP20ChannelReserve, ITIP20Stealth, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_STEALTH_ADDRESS,
+};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -508,6 +511,9 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
                 |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
             )
         }
+        Some(to) if *to == TIP20_STEALTH_ADDRESS => {
+            ITIP20Stealth::ITIP20StealthCalls::is_payment(input)
+        }
         _ => false,
     }
 }
@@ -555,7 +561,7 @@ mod tests {
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
     use alloy_sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20ChannelReserve;
+    use tempo_contracts::precompiles::{ITIP20ChannelReserve, MAX_PAYMENT_CALLDATA_LEN};
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
@@ -600,6 +606,30 @@ mod tests {
             ITIP20ChannelReserve::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
             ITIP20ChannelReserve::withdrawCall { descriptor }.abi_encode().into(),
         ]
+    }
+
+    fn stealth_payment_calldata() -> Bytes {
+        stealth_payment_calldata_with(metadata(0x01), Bytes::from_static(b"memo"))
+    }
+
+    fn metadata(scheme: u8) -> Bytes {
+        let mut metadata = vec![0u8; 35];
+        metadata[0] = scheme;
+        metadata[1] = 0x02;
+        metadata[34] = 0xa7;
+        metadata.into()
+    }
+
+    fn stealth_payment_calldata_with(metadata: Bytes, memo: Bytes) -> Bytes {
+        ITIP20Stealth::transferCall {
+            token: PAYMENT_TKN,
+            stealthAddress: Address::random(),
+            amount: U256::from(1),
+            metadata,
+            memo,
+        }
+        .abi_encode()
+        .into()
     }
 
     /// Returns one envelope per tx type, all targeting `PAYMENT_TKN` with the given calldata.
@@ -850,12 +880,59 @@ mod tests {
     }
 
     #[test]
+    fn test_payment_v2_accepts_valid_tip20_stealth_calldata() {
+        for envelope in payment_envelopes_to(TIP20_STEALTH_ADDRESS, stealth_payment_calldata()) {
+            assert!(!envelope.is_payment_v1(), "V1 only accepts TIP-20 prefix");
+            assert!(
+                envelope.is_payment_v2(),
+                "V2 must accept valid TIP20Stealth calldata"
+            );
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_invalid_tip20_stealth_metadata() {
+        for calldata in [
+            stealth_payment_calldata_with(Bytes::new(), Bytes::new()),
+            stealth_payment_calldata_with(metadata(0xff), Bytes::new()),
+        ] {
+            for envelope in payment_envelopes_to(TIP20_STEALTH_ADDRESS, calldata) {
+                assert!(
+                    !envelope.is_payment_v2(),
+                    "V2 rejects invalid TIP20Stealth metadata"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_oversized_tip20_stealth_calldata() {
+        let calldata =
+            stealth_payment_calldata_with(metadata(0x01), vec![0; MAX_PAYMENT_CALLDATA_LEN].into());
+        assert!(calldata.len() > MAX_PAYMENT_CALLDATA_LEN);
+        for envelope in payment_envelopes_to(TIP20_STEALTH_ADDRESS, calldata) {
+            assert!(
+                !envelope.is_payment_v2(),
+                "V2 rejects oversized TIP20Stealth calldata"
+            );
+        }
+    }
+
+    #[test]
     fn test_payment_v2_rejects_channel_reserve_calldata_to_tip20() {
         for calldata in channel_reserve_payment_calldatas() {
             for envelope in payment_envelopes_to(PAYMENT_TKN, calldata) {
                 assert!(envelope.is_payment_v1(), "V1 accepts TIP-20 prefix");
                 assert!(!envelope.is_payment_v2(), "V2 only accepts allowed combos");
             }
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_stealth_calldata_to_tip20() {
+        for envelope in payment_envelopes_to(PAYMENT_TKN, stealth_payment_calldata()) {
+            assert!(envelope.is_payment_v1(), "V1 accepts TIP-20 prefix");
+            assert!(!envelope.is_payment_v2(), "V2 only accepts allowed combos");
         }
     }
 

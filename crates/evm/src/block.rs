@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_STEALTH_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -493,6 +493,7 @@ where
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_STEALTH_ADDRESS)?;
         }
 
         Ok(())
@@ -1676,6 +1677,10 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
 
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+
+        let acc = db.load_cache_account(TIP20_STEALTH_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }

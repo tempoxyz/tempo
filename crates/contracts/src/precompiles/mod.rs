@@ -8,6 +8,7 @@ pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
+pub mod tip20_stealth;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -25,6 +26,7 @@ pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_channel_reserve::*;
 pub use tip20_factory::*;
+pub use tip20_stealth::*;
 pub use tip403_registry::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
@@ -49,3 +51,4 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
+pub const TIP20_STEALTH_ADDRESS: Address = address!("0x537465616c746800000000000000000000000000");

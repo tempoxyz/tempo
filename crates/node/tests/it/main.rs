@@ -20,6 +20,7 @@ mod tempo_transaction;
 mod tip20;
 mod tip20_factory;
 mod tip20_gas_fees;
+mod tip20_stealth;
 mod tip_fee_amm;
 mod tip_fee_manager;
 mod utils;
