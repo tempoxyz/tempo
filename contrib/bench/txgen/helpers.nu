@@ -5,6 +5,7 @@ const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
+const TXGEN_HELPER_NATIVE_MULTISIG_1OF1_PRESET = "tip20_native_multisig_1of1"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-shell-quote [value: any] {
@@ -96,6 +97,11 @@ def txgen-preset-path [preset: string] {
     }
 
     $spec_path
+}
+
+def txgen-preset-requires-funding [preset_path: string] {
+    let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
+    $preset_name == $TXGEN_HELPER_NATIVE_MULTISIG_1OF1_PRESET
 }
 
 def txgen-account-mnemonic [] {
@@ -259,7 +265,8 @@ def txgen-run-preset-pipeline [
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
-    if not $skip_funding {
+    let should_fund = (not $skip_funding) or (txgen-preset-requires-funding $spec_path)
+    if $should_fund {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
