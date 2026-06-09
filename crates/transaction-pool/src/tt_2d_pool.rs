@@ -433,6 +433,7 @@ impl AA2dPool {
                 self.submission_id = self.submission_id.wrapping_add(1);
                 id
             },
+            expiring_nonce_slot: transaction.transaction.expiring_nonce_slot(),
             transaction: transaction.clone(),
         };
         let eviction_key =
@@ -1258,7 +1259,7 @@ impl AA2dPool {
         pending_tx: AA2dStoredTransaction,
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
-        if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
+        if let Some(slot) = pending_tx.expiring_nonce_slot {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
         self.decrement_sender_count(pending_tx.transaction.sender());
@@ -1619,6 +1620,7 @@ impl Default for AA2dPoolConfig {
 #[derive(Debug, Clone)]
 struct AA2dStoredTransaction {
     submission_id: u64,
+    expiring_nonce_slot: Option<U256>,
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
 }
 
@@ -1629,6 +1631,7 @@ impl AA2dStoredTransaction {
     ) -> Self {
         Self {
             submission_id,
+            expiring_nonce_slot: None,
             transaction,
         }
     }
@@ -2016,6 +2019,7 @@ impl BestAA2dTransactions {
                         id,
                         AA2dStoredTransaction {
                             submission_id: tx.submission_id,
+                            expiring_nonce_slot: None,
                             transaction: tx.transaction,
                         },
                     );
