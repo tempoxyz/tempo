@@ -74,6 +74,10 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
+    /// Disable the payload builder execution cache and restore parent state pre-caching.
+    #[arg(long = "builder.disable-execution-cache", default_value_t = false)]
+    pub builder_disable_execution_cache: bool,
+
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
@@ -93,6 +97,7 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
+            builder_disable_execution_cache: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -112,6 +117,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            disable_execution_cache: self.builder_disable_execution_cache,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -159,9 +165,10 @@ impl TempoNode {
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
             .payload(
-                BasicPayloadServiceBuilder::new(payload_builder_builder)
-                    // we can disable basic parent state caching because tempo builder always uses execution cache
-                    .with_pre_cache_state(false),
+                BasicPayloadServiceBuilder::new(payload_builder_builder.clone())
+                    // The Tempo builder uses execution cache by default. Re-enable
+                    // parent state pre-caching only when explicitly opting out.
+                    .with_pre_cache_state(payload_builder_builder.disable_execution_cache),
             )
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
@@ -542,6 +549,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Disable execution cache for payload builds.
+    pub disable_execution_cache: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
@@ -552,6 +561,7 @@ impl Default for TempoPayloadBuilderBuilder {
         Self {
             state_provider_metrics: false,
             enable_prewarming: false,
+            disable_execution_cache: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }

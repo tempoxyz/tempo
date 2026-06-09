@@ -152,6 +152,17 @@ struct TempoArgs {
     #[command(flatten)]
     pub node_args: TempoNodeArgs,
 
+    /// Disable sharing the engine sparse trie pipeline with the payload builder.
+    ///
+    /// Sparse trie sharing is enabled by default. The legacy
+    /// `--engine.share-sparse-trie-with-payload-builder` flag remains accepted
+    /// for compatibility and is now a no-op unless this opt-out is set.
+    #[arg(
+        long = "engine.disable-sparse-trie-with-payload-builder",
+        default_value_t = false
+    )]
+    pub disable_sparse_trie_with_payload_builder: bool,
+
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
     pub pyroscope_args: PyroscopeArgs,
@@ -167,6 +178,17 @@ impl TempoArgs {
     /// The engine runs when not in dev mode and not following uncertified.
     fn has_consensus_engine(&self, dev: bool) -> bool {
         !dev && !self.is_following_uncertified()
+    }
+}
+
+fn apply_tempo_default_overrides(cli: &mut TempoCli) {
+    if let Commands::Node(node_cmd) = &mut cli.command {
+        if node_cmd.ext.disable_sparse_trie_with_payload_builder {
+            node_cmd.engine.share_sparse_trie_with_payload_builder = false;
+        }
+        if node_cmd.ext.node_args.builder_disable_execution_cache {
+            node_cmd.engine.share_execution_cache_with_payload_builder = false;
+        }
     }
 }
 
@@ -356,6 +378,8 @@ fn main() -> eyre::Result<()> {
             err.exit();
         }
     };
+
+    apply_tempo_default_overrides(&mut cli);
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -756,7 +780,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, defaults};
+    use super::{Commands, TempoCli, apply_tempo_default_overrides, defaults};
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
@@ -767,12 +791,15 @@ mod tests {
     fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
-        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let mut cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        apply_tempo_default_overrides(&mut cli);
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
+        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
+        assert!(!node_cmd.ext.node_args.builder_disable_execution_cache);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -787,16 +814,20 @@ mod tests {
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
-        let cli = TempoCli::try_parse_from([
+        let mut cli = TempoCli::try_parse_from([
             "tempo",
             "node",
             "--dev",
             "--engine.share-sparse-trie-with-payload-builder",
+            "--engine.share-execution-cache-with-payload-builder",
         ])
         .unwrap();
+        apply_tempo_default_overrides(&mut cli);
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
+        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -809,5 +840,21 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
+
+        let mut cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.disable-sparse-trie-with-payload-builder",
+            "--builder.disable-execution-cache",
+        ])
+        .unwrap();
+        apply_tempo_default_overrides(&mut cli);
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(!node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert!(node_cmd.ext.node_args.builder_disable_execution_cache);
     }
 }
