@@ -43,7 +43,9 @@ jobs:
             specs:
               - 'tips/verify/**'
               - 'crates/contracts/**'
+              - '!crates/contracts/Cargo.toml'
               - 'crates/precompiles/**'
+              - '!crates/precompiles/Cargo.toml'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
@@ -115,6 +117,13 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD \
+            | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
+            && ! git diff --name-only origin/"$BASE_REF"...HEAD \
+              | grep -vE '^(crates/(precompiles|contracts)/Cargo\.toml)$' \
+              | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: only precompiles/contracts manifests changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
