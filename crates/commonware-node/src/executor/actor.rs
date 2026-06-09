@@ -277,7 +277,6 @@ where
                     }
                 }
 
-                // Complete all backfills first.
                 block = &mut self.pending_backfill => {
                     match block {
                         (height, Some(block)) => {
@@ -289,7 +288,11 @@ where
                                 ack,
                                 true,
                             ) {
-                                warn!(%error, %height, "failed queueing backfilled block for execution");
+                                warn!(
+                                    %error,
+                                    %height,
+                                    "failed enqueueing backfilled block for execution",
+                                );
                             }
                         }
                         (height, None) => {
@@ -302,7 +305,6 @@ where
                     }
                 }
 
-                // Serve requests lasts.
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
                     if let Err(error) = self.handle_message(msg) {
@@ -335,7 +337,7 @@ where
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
-        if !self.is_startup_backfilling()
+        if !self.is_backfilling()
             && self.execution_task.is_none()
             && self.execution_queue.is_empty()
         {
@@ -346,7 +348,7 @@ where
     }
 
     fn prepare_latest_observed_finalized_tip(&mut self) -> Option<ForkchoiceUpdateRequest> {
-        if self.is_startup_backfilling() {
+        if self.is_backfilling() {
             return None;
         }
 
@@ -370,7 +372,7 @@ where
 
     fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
-        let is_backfilling = self.is_startup_backfilling();
+        let is_backfilling = self.is_backfilling();
         match message.command {
             Command::CanonicalizeHead(request) => {
                 if is_backfilling {
@@ -464,25 +466,16 @@ where
         cause: Span,
         block: Block,
         acknowledgment: Exact,
-        startup_backfill: bool,
+        is_backfill: bool,
     ) -> eyre::Result<()> {
         let request = FinalizedBlockRequest {
             cause,
             forkchoice: None,
             block,
             acknowledgment,
-            fatal_on_error: !startup_backfill,
+            is_backfill,
         };
-        let request = if startup_backfill {
-            ExecutionRequest::BackfillBlock(request)
-        } else {
-            ExecutionRequest::FinalizeBlock(request)
-        };
-        if startup_backfill {
-            self.enqueue_startup_backfill_request(request);
-        } else {
-            self.enqueue_execution_request(request);
-        }
+        self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(request));
         Ok(())
     }
 
@@ -502,23 +495,12 @@ where
         if matches!(&request, ExecutionRequest::Heartbeat { .. })
             && (!self.execution_queue.is_empty()
                 || !self.execution_task.is_none()
-                || self.is_startup_backfilling())
+                || self.is_backfilling())
         {
             return;
         }
 
         self.execution_queue.push_back(request);
-        self.start_next_execution_task();
-    }
-
-    fn enqueue_startup_backfill_request(&mut self, request: ExecutionRequest) {
-        let index = self
-            .execution_queue
-            .iter()
-            .take_while(|request| request.is_startup_backfill())
-            .count();
-        self.execution_queue.insert(index, request);
-        self.start_next_execution_task();
     }
 
     fn start_next_execution_task(&mut self) {
@@ -527,7 +509,7 @@ where
         }
         loop {
             let request = if let Some(request) = self.execution_queue.front() {
-                if self.is_startup_backfilling() && !request.is_startup_backfill() {
+                if self.is_backfilling() && !request.is_backfill() {
                     return;
                 }
                 self.execution_queue.pop_front().expect("front exists")
@@ -576,9 +558,6 @@ where
                     };
                     ExecutionRequest::ForkchoiceUpdate(request)
                 }
-                ExecutionRequest::BackfillBlock(request) => {
-                    ExecutionRequest::BackfillBlock(self.prepare_finalized_block_request(request))
-                }
                 ExecutionRequest::FinalizeBlock(request) => {
                     ExecutionRequest::FinalizeBlock(self.prepare_finalized_block_request(request))
                 }
@@ -597,7 +576,7 @@ where
         }
     }
 
-    fn is_startup_backfilling(&self) -> bool {
+    fn is_backfilling(&self) -> bool {
         self.pending_backfill.is_some() || !self.finalized_heights_to_backfill.is_empty()
     }
 }
@@ -615,13 +594,15 @@ enum ExecutionRequest {
         request: CanonicalizeAndBuild,
     },
     ForkchoiceUpdate(ForkchoiceUpdateRequest),
-    BackfillBlock(FinalizedBlockRequest),
     FinalizeBlock(FinalizedBlockRequest),
 }
 
 impl ExecutionRequest {
-    fn is_startup_backfill(&self) -> bool {
-        matches!(self, Self::BackfillBlock(_))
+    fn is_backfill(&self) -> bool {
+        let Self::FinalizeBlock(FinalizedBlockRequest { is_backfill, .. }) = self else {
+            return false;
+        };
+        *is_backfill
     }
 }
 
@@ -692,7 +673,7 @@ struct FinalizedBlockRequest {
     forkchoice: Option<LastCanonicalized>,
     block: Block,
     acknowledgment: Exact,
-    fatal_on_error: bool,
+    is_backfill: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,8 +728,8 @@ where
         | ExecutionRequest::CanonicalizeAndBuild { .. } => {
             unreachable!("raw canonicalization requests are prepared before execution")
         }
-        ExecutionRequest::BackfillBlock(request) | ExecutionRequest::FinalizeBlock(request) => {
-            let fatal_on_error = request.fatal_on_error;
+        ExecutionRequest::FinalizeBlock(request) => {
+            let fatal_on_error = !request.is_backfill;
             match forward_finalized(&context, execution_node, public_key, metrics, request).await {
                 Ok(canonicalized) => ExecutionTaskResult::Completed { canonicalized },
                 Err(error) if fatal_on_error => ExecutionTaskResult::Fatal { error },
@@ -869,7 +850,7 @@ async fn forward_finalized<TContext: Pacer>(
         forkchoice,
         block,
         acknowledgment,
-        fatal_on_error: _,
+        is_backfill: _,
     } = request;
 
     if let Some(canonicalized) = forkchoice {
