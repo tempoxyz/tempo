@@ -78,7 +78,10 @@ use tempo_primitives::{
         TEMPO_EXPIRING_NONCE_KEY, multisig_digest,
     },
 };
-use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+use tempo_revm::{
+    TempoBatchCallEnv, calculate_aa_batch_intrinsic_gas,
+    gas_params::tempo_gas_params_with_amsterdam,
+};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -96,6 +99,7 @@ const REWARD_BENCH_TX_COUNT: usize = 1_024;
 const REWARD_DISTRIBUTION_AMOUNT: u128 = 1_000_000_000_000;
 const REWARD_TRANSFER_AMOUNT: u128 = 1_000_000;
 const EXECUTION_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const NATIVE_MULTISIG_1_OF_1_GAS_OVERHEAD: u64 = 6_000;
 
 #[derive(Clone)]
 struct Workload {
@@ -153,6 +157,87 @@ struct NativeMultisigAccount {
 struct ExecutionStats {
     txs: u64,
     gas_used: u64,
+}
+
+fn assert_native_multisig_gas_overhead(
+    label: &str,
+    secp_stats: &ExecutionStats,
+    multisig_stats: &ExecutionStats,
+    secp_txs: &[Recovered<TempoTxEnvelope>],
+    multisig_txs: &[Recovered<TempoTxEnvelope>],
+    hardfork: TempoHardfork,
+) {
+    assert_eq!(
+        multisig_stats.txs, secp_stats.txs,
+        "native multisig gas comparison must use the same transaction count"
+    );
+
+    let actual_delta = i128::from(multisig_stats.gas_used) - i128::from(secp_stats.gas_used);
+    let expected_delta = i128::from(total_aa_intrinsic_gas(multisig_txs, hardfork))
+        - i128::from(total_aa_intrinsic_gas(secp_txs, hardfork));
+    let signature_delta = i128::from(
+        secp_stats
+            .txs
+            .saturating_mul(NATIVE_MULTISIG_1_OF_1_GAS_OVERHEAD),
+    );
+    let calldata_delta = expected_delta - signature_delta;
+
+    assert_eq!(
+        actual_delta, expected_delta,
+        "{label} native multisig 1-of-1 executed gas delta changed"
+    );
+
+    eprintln!(
+        "{label}/tip20_native_multisig gas: secp256k1={} native_multisig_1_of_1={} delta={} ({:.3} gas/tx, signature={} calldata={})",
+        secp_stats.gas_used,
+        multisig_stats.gas_used,
+        actual_delta,
+        actual_delta as f64 / secp_stats.txs.max(1) as f64,
+        signature_delta,
+        calldata_delta
+    );
+}
+
+fn total_aa_intrinsic_gas(txs: &[Recovered<TempoTxEnvelope>], hardfork: TempoHardfork) -> u64 {
+    txs.iter().map(|tx| aa_intrinsic_gas(tx, hardfork)).sum()
+}
+
+fn aa_intrinsic_gas(tx: &Recovered<TempoTxEnvelope>, hardfork: TempoHardfork) -> u64 {
+    let aa = tx
+        .inner()
+        .as_aa()
+        .expect("tip20 execution bench expects Tempo AA transactions");
+    let aa_tx = aa.tx();
+    let aa_env = TempoBatchCallEnv {
+        signature: aa.signature().clone(),
+        valid_before: aa_tx.valid_before.map(NonZeroU64::get),
+        valid_after: aa_tx.valid_after.map(NonZeroU64::get),
+        aa_calls: aa_tx.calls.clone(),
+        tempo_authorization_list: aa_tx
+            .tempo_authorization_list
+            .iter()
+            .map(|auth| {
+                tempo_primitives::transaction::RecoveredTempoAuthorization::recover(auth.clone())
+            })
+            .collect(),
+        nonce_key: aa_tx.nonce_key,
+        subblock_transaction: aa_tx.subblock_proposer().is_some(),
+        key_authorization: aa_tx.key_authorization.clone(),
+        signature_hash: aa.signature_hash(),
+        tx_hash: *aa.hash(),
+        override_key_id: None,
+        expiring_nonce_idx: None,
+    };
+    let gas_params = tempo_gas_params_with_amsterdam(hardfork, false);
+
+    calculate_aa_batch_intrinsic_gas(
+        &aa_env,
+        &gas_params,
+        None::<std::iter::Empty<&revm::context::transaction::AccessListItem>>,
+        hardfork,
+    )
+    .expect("generated TIP20 transaction should have valid intrinsic gas")
+    .initial_total_gas()
 }
 
 #[derive(Clone, Debug)]
@@ -1162,18 +1247,26 @@ fn tip20_execution(c: &mut Criterion) {
             hardfork,
         );
 
-        execute_txs(
+        let secp_prewarm_stats = execute_txs(
             &config,
             secp_fixture.prewarm_state_db(),
             &secp_workload.transactions,
             secp_workload.block_timestamp,
             hardfork,
         );
-        execute_txs(
+        let multisig_prewarm_stats = execute_txs(
             &config,
             multisig_fixture.prewarm_state_db(),
             &multisig_workload.transactions,
             multisig_workload.block_timestamp,
+            hardfork,
+        );
+        assert_native_multisig_gas_overhead(
+            label,
+            &secp_prewarm_stats,
+            &multisig_prewarm_stats,
+            &secp_workload.transactions,
+            &multisig_workload.transactions,
             hardfork,
         );
 

@@ -3552,6 +3552,51 @@ mod tests {
     }
 
     #[test]
+    fn test_aa_gas_native_multisig_1_of_1_secp256k1_overhead() {
+        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+        let mut multisig_env = base_env.clone();
+        multisig_env.signature = TempoSignature::Multisig(MultisigSignature {
+            account: Address::from([0x44; 20]),
+            config_id: B256::from([0x55; 32]),
+            signatures: vec![owner_signature],
+            init: None,
+        });
+
+        let base_gas = calculate_aa_batch_intrinsic_gas(
+            &base_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+        let multisig_gas = calculate_aa_batch_intrinsic_gas(
+            &multisig_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+
+        let expected_overhead = KEYCHAIN_VALIDATION_GAS + ECRECOVER_GAS;
+        assert_eq!(
+            multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+            expected_overhead,
+            "1-of-1 native multisig should add key validation plus one owner ecrecover"
+        );
+        assert_eq!(
+            multisig_gas.initial_state_gas, base_gas.initial_state_gas,
+            "native multisig signature validation overhead is regular intrinsic gas"
+        );
+        assert_eq!(
+            multisig_gas.initial_total_gas() - base_gas.initial_total_gas(),
+            expected_overhead
+        );
+    }
+
+    #[test]
     fn test_aa_gas_create_call() {
         use crate::TempoBatchCallEnv;
         use alloy_primitives::{Bytes, TxKind};
