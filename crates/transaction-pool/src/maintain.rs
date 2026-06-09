@@ -139,8 +139,30 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
+            // Fee token pause events and balance changes
+            if log.address.is_tip20() {
+                match Tip20PoolEvent::decode(log) {
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        updates.pause_events.push((log.address, event.isPaused));
+                    }
+                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
+                        updates.transfer_policy_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
+                        updates.quote_token_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::Transfer(event)) => {
+                        updates
+                            .fee_balance_changes
+                            .entry(log.address)
+                            .or_default()
+                            .insert(event.from);
+                    }
+                    None => {}
+                }
+            }
             // Key revocations and spending limit changes
-            if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
+            else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 match AccountKeychainPoolEvent::decode(log) {
                     Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
                         updates.revoked_keys.insert(event.account, event.publicKey);
@@ -210,28 +232,6 @@ impl TempoPoolUpdates {
                             .push((event.policyId, event.account));
                     }
                     Some(_) | None => {}
-                }
-            }
-            // Fee token pause events and balance changes
-            else if log.address.is_tip20() {
-                match Tip20PoolEvent::decode(log) {
-                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
-                        updates.pause_events.push((log.address, event.isPaused));
-                    }
-                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
-                        updates.transfer_policy_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
-                        updates.quote_token_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::Transfer(event)) => {
-                        updates
-                            .fee_balance_changes
-                            .entry(log.address)
-                            .or_default()
-                            .insert(event.from);
-                    }
-                    None => {}
                 }
             }
         }
