@@ -415,9 +415,6 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(TIP403RegistryError::invalid_recovery_authority().into());
-        }
         if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
