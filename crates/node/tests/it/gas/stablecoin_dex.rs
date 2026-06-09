@@ -6,6 +6,7 @@ use alloy::{
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX,
     ITIP20::{self, ITIP20Instance},
@@ -15,8 +16,9 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
     stablecoin_dex::MIN_ORDER_AMOUNT, tip20::ISSUER_ROLE,
 };
+use test_case::test_case;
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
     Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
@@ -83,11 +85,19 @@ where
     Ok(token)
 }
 
+#[test_case(TempoHardfork::T6, "stablecoin_dex_order_gas_snapshots_t6" ; "t6")]
+#[test_case(TempoHardfork::T7, "stablecoin_dex_order_gas_snapshots_t7" ; "t7")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_stablecoin_dex_order_gas_snapshots() -> eyre::Result<()> {
+async fn test_stablecoin_dex_order_gas_snapshots(
+    hardfork: TempoHardfork,
+    snapshot_name: &str,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let admin = signer(0)?;
@@ -217,7 +227,7 @@ async fn test_stablecoin_dex_order_gas_snapshots() -> eyre::Result<()> {
         eprintln!("{name}: {gas_used}");
     }
 
-    insta::assert_yaml_snapshot!(gas);
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }
