@@ -131,7 +131,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{Context, ExecuteEvm, MainContext, database::EmptyDB};
+    use revm::{Context, ExecuteEvm, MainContext, database::EmptyDB, primitives::B256};
 
     /// Test set_block and replay with default TempoEvm.
     #[test]
@@ -145,10 +145,19 @@ mod tests {
         let mut evm = TempoEvm::new(ctx, ());
         evm.native_multisig_account_cache
             .insert(Address::repeat_byte(0x42), true);
+        evm.native_multisig_config_cache.insert(
+            (Address::repeat_byte(0x42), B256::repeat_byte(0x24)),
+            tempo_primitives::transaction::InitMultisig {
+                salt: B256::ZERO,
+                threshold: 1,
+                owners: Vec::new(),
+            },
+        );
 
         // Set block with default fields
         evm.set_block(TempoBlockEnv::default());
         assert!(evm.native_multisig_account_cache.is_empty());
+        assert!(evm.native_multisig_config_cache.is_empty());
 
         // Replay executes the current transaction and returns result with state.
         // With default tx (no calls, system tx), it should succeed.
