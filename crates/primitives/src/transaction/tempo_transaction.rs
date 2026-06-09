@@ -289,20 +289,23 @@ pub fn validate_calls(calls: &[Call], has_authorization_list: bool) -> Result<()
         return Err("calls list cannot be empty");
     }
 
-    let mut calls_iter = calls.iter();
+    let Some((first_call, remaining_calls)) = calls.split_first() else {
+        unreachable!("empty calls list checked above");
+    };
 
     // Only the first call in the batch can be a CREATE call.
-    if let Some(call) = calls_iter.next()
-        // Authorization list validation: Can NOT have CREATE when authorization list is non-empty
-        // This follows EIP-7702 semantics - when using delegation
-        && has_authorization_list
-        && call.to.is_create()
-    {
+    // Authorization list validation: Can NOT have CREATE when authorization list is non-empty.
+    // This follows EIP-7702 semantics - when using delegation.
+    if has_authorization_list && first_call.to.is_create() {
         return Err("calls cannot contain CREATE when 'aa_authorization_list' is non-empty");
     }
 
+    if remaining_calls.is_empty() {
+        return Ok(());
+    }
+
     // All subsequent calls must be CALL.
-    for call in calls_iter {
+    for call in remaining_calls {
         if call.to.is_create() {
             return Err(
                 "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
