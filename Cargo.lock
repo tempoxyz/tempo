@@ -10180,6 +10180,7 @@ name = "reth-node-ethereum"
 version = "2.2.0"
 source = "git+https://github.com/paradigmxyz/reth?branch=feature%2Fbal-sparse-snapshot-reth#6d33c0096798c4edc12d9399b584898dca012d38"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-network",
  "alloy-primitives",
@@ -10201,6 +10202,7 @@ dependencies = [
  "reth-network",
  "reth-node-api",
  "reth-node-builder",
+ "reth-node-core",
  "reth-payload-primitives",
  "reth-primitives-traits",
  "reth-provider",
@@ -10214,6 +10216,8 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "revm",
+ "serde",
+ "serde_json",
  "tokio",
  "tower",
 ]
@@ -10398,6 +10402,7 @@ dependencies = [
  "once_cell",
  "proptest",
  "proptest-arbitrary-interop",
+ "quanta",
  "rayon",
  "reth-codecs",
  "revm-bytecode",
@@ -11089,6 +11094,7 @@ dependencies = [
  "rolling-file",
  "tracing",
  "tracing-appender",
+ "tracing-chrome",
  "tracing-journald",
  "tracing-logfmt",
  "tracing-samply",
@@ -14091,6 +14097,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tracing-chrome"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf0a738ed5d6450a9fb96e86a23ad808de2b727fd1394585da5cdd6788ffe724"
+dependencies = [
+ "serde_json",
+ "tracing-core",
+ "tracing-subscriber 0.3.23",
 ]
 
 [[package]]

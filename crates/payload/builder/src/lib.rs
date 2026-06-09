@@ -412,6 +412,7 @@ where
             parent_header,
             attributes,
             payload_id,
+            ..
         } = config;
         let build_reason = attributes.build_reason().unwrap_or("unknown");
         let payload_number = parent_header.number().saturating_add(1);
