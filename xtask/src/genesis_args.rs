@@ -235,6 +235,37 @@ impl Validator {
 }
 
 impl GenesisArgs {
+    pub(crate) fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub(crate) fn set_chain_id(&mut self, chain_id: u64) {
+        self.chain_id = chain_id;
+    }
+
+    pub(crate) fn validator_onchain_addresses(&self) -> eyre::Result<Vec<Address>> {
+        if self.validator_addresses.is_empty() {
+            let validator_count = u32::try_from(self.validators.len())
+                .map_err(|_| eyre!("too many validators to derive account addresses"))?;
+            if self.accounts < validator_count.saturating_add(1) {
+                return Err(eyre!("not enough accounts created for validators"));
+            }
+
+            (1..=validator_count)
+                .map(|worker_id| {
+                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    Ok(secret_key_to_address(signer.credential()))
+                })
+                .collect()
+        } else {
+            if self.validator_addresses.len() < self.validators.len() {
+                return Err(eyre!("not enough addresses provided for validators"));
+            }
+
+            Ok(self.validator_addresses[0..self.validators.len()].to_vec())
+        }
+    }
+
     /// Generates a genesis json file.
     ///
     /// It creates a new genesis allocation for the configured accounts.

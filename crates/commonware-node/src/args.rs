@@ -307,14 +307,12 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Disable dual-writing newly finalized blocks to the legacy immutable
-    /// archive. By default the marshal writes each finalized block to
-    /// both the new prunable archive and the legacy archive so an
-    /// operator can roll back to the previous binary.
-    ///
-    /// Nodes that are started with this set and restarted without are not
-    /// supported.
-    #[arg(long = "consensus.no-legacy-archive")]
+    /// Deprecated compatibility flag. Ignored because the legacy immutable
+    /// finalized blocks archive has been removed.
+    #[arg(
+        long = "consensus.no-legacy-archive",
+        help = "Deprecated: the legacy finalized blocks archive has been removed, so this flag no longer has any effect."
+    )]
     pub no_legacy_archive: bool,
 }
 

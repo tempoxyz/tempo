@@ -43,7 +43,11 @@ jobs:
             specs:
               - 'tips/verify/**'
               - 'crates/contracts/**'
+              - '!crates/contracts/CHANGELOG.md'
+              - '!crates/contracts/Cargo.toml'
               - 'crates/precompiles/**'
+              - '!crates/precompiles/CHANGELOG.md'
+              - '!crates/precompiles/Cargo.toml'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
@@ -115,6 +119,13 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD \
+            | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
+            && ! git diff --name-only origin/"$BASE_REF"...HEAD \
+              | grep -vE '^(crates/(precompiles|contracts)/(Cargo\.toml|CHANGELOG\.md))$' \
+              | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: only precompiles/contracts release metadata changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
@@ -202,7 +213,7 @@ jobs:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
     # Skip for forked repos
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:

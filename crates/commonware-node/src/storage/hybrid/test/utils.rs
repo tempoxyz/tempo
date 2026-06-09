@@ -1,5 +1,4 @@
-//! Shared helpers for [`crate::storage::hybrid`] and
-//! [`crate::storage::legacy`] unit tests.
+//! Shared helpers for [`crate::storage::hybrid`] unit tests.
 //!
 //! Provides:
 //! - deterministic [`Block`] construction utilities,
@@ -9,8 +8,8 @@
 //!   had to implement reth's full `BlockReader` / `BlockIdReader` /
 //!   `HeaderProvider` / `TransactionsProvider` / … surface; switching
 //!   to our own trait shrinks it to ~30 lines.
-//! - thin wrappers around the prunable/legacy archive constructors that
-//!   hide the page-cache plumbing.
+//! - a thin wrapper around the prunable archive constructor that hides
+//!   the page-cache plumbing.
 
 use std::{
     collections::HashMap,
@@ -24,10 +23,7 @@ use alloy_consensus::Header;
 use alloy_primitives::B256;
 use commonware_consensus::Heightable as _;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
-use commonware_storage::{
-    archive::{immutable, prunable},
-    translator::TwoCap,
-};
+use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZU16, NZUsize};
 use parking_lot::Mutex;
 use reth_node_core::primitives::SealedBlock;
@@ -35,11 +31,10 @@ use reth_provider::{ProviderError, ProviderResult};
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use crate::{
-    consensus::{Digest, block::Block},
+    consensus::block::Block,
     storage::{
         REPLAY_BUFFER, WRITE_BUFFER,
         hybrid::{FinalizedBlocksProvider, Prunable},
-        legacy::init_legacy_finalized_blocks_archive,
     },
 };
 
@@ -50,13 +45,9 @@ const TEST_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096);
 /// of blocks at a time.
 const TEST_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(64);
 
-/// Partition prefix shared by every test's prunable and legacy archives.
-/// Each test runs against its own [`commonware_runtime::deterministic`]
-/// context, so the in-memory storage is already isolated per test — there
-/// is no need to disambiguate partitions across tests. Within a single
-/// test the prunable and legacy archives use distinct internal suffixes
-/// (`-prunable-*` vs `-{LEGACY_FINALIZED_BLOCKS}-*`), so sharing the
-/// prefix between them is also safe.
+/// Partition prefix shared by every test's prunable archive. Each test
+/// runs against its own [`commonware_runtime::deterministic`] context, so
+/// the in-memory storage is already isolated per test.
 const TEST_PARTITION_PREFIX: &str = "test";
 
 /// Build a deterministic [`Block`] at `height` whose parent points at
@@ -227,18 +218,4 @@ where
     )
     .await
     .expect("init prunable archive")
-}
-
-/// Initialize a fresh legacy immutable finalized blocks archive against
-/// `context`.
-pub(in crate::storage::hybrid) async fn fresh_legacy<TContext>(
-    context: &TContext,
-) -> immutable::Archive<TContext, Digest, Block>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-{
-    let cache = fresh_page_cache(context);
-    init_legacy_finalized_blocks_archive(context, TEST_PARTITION_PREFIX, cache)
-        .await
-        .expect("init legacy archive")
 }
