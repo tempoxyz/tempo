@@ -17,7 +17,7 @@ use crate::{
         payload_budget_decision, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PayloadBestTransactions},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -533,18 +533,19 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
+        let best_txs = if self.enable_prewarming {
+            PayloadBestTransactions::Prewarming(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
                 parent_header.hash(),
                 executor.evm().evm_env(),
                 best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
+            ))
         } else {
-            Box::new(best_txs)
-        });
+            PayloadBestTransactions::Direct(best_txs)
+        };
+        let mut best_txs = StateAwareBestTransactions::new(best_txs);
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());

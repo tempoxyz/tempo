@@ -28,6 +28,51 @@ use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+pub(crate) enum PayloadBestTransactions<Txs> {
+    Prewarming(BestTransactionsPrewarming),
+    Direct(Txs),
+}
+
+impl<Txs> Iterator for PayloadBestTransactions<Txs>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Prewarming(best_txs) => best_txs.next(),
+            Self::Direct(best_txs) => best_txs.next(),
+        }
+    }
+}
+
+impl<Txs> BestTransactions for PayloadBestTransactions<Txs>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        match self {
+            Self::Prewarming(best_txs) => best_txs.mark_invalid(transaction, kind),
+            Self::Direct(best_txs) => best_txs.mark_invalid(transaction, kind),
+        }
+    }
+
+    fn no_updates(&mut self) {
+        match self {
+            Self::Prewarming(best_txs) => best_txs.no_updates(),
+            Self::Direct(best_txs) => best_txs.no_updates(),
+        }
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        match self {
+            Self::Prewarming(best_txs) => best_txs.set_skip_blobs(skip_blobs),
+            Self::Direct(best_txs) => best_txs.set_skip_blobs(skip_blobs),
+        }
+    }
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
