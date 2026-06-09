@@ -108,7 +108,8 @@ impl TempoPoolUpdates {
 
     /// Returns true if there are no updates to process.
     pub fn is_empty(&self) -> bool {
-        self.expired_txs.is_empty()
+        self.fee_balance_changes.is_empty()
+            && self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
             && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
@@ -119,7 +120,6 @@ impl TempoPoolUpdates {
             && self.pause_events.is_empty()
             && self.transfer_policy_updates.is_empty()
             && self.quote_token_updates.is_empty()
-            && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
     }
@@ -241,13 +241,13 @@ impl TempoPoolUpdates {
 
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
-        self.has_keychain_subject_updates()
+        !self.fee_balance_changes.is_empty()
+            || self.has_keychain_subject_updates()
             || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
-            || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
     }
 
