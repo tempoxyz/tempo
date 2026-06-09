@@ -25,7 +25,7 @@ use reth_provider::{
 };
 use serde::{Deserialize, Serialize};
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
-use tempo_commonware_node::{consensus::Digest, find_last_finalized_marker};
+use tempo_consensus::{consensus::Digest, find_last_finalized_marker};
 use tempo_node::node::TempoNode;
 use tempo_telemetry_util::display_duration;
 
