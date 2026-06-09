@@ -24,7 +24,7 @@ use crate::{
 };
 
 #[test_traced("WARN")]
-fn committee_of_one() {
+fn committee_of_one_restart() {
     SimpleRestart {
         committee_size: 1,
         epoch_length: 10,
@@ -35,8 +35,8 @@ fn committee_of_one() {
     .run()
 }
 
-#[test_traced("WARN")]
-fn committee_of_three() {
+#[test_traced]
+fn committee_of_three_restart() {
     SimpleRestart {
         committee_size: 3,
         epoch_length: 10,

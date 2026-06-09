@@ -1,5 +1,34 @@
 # Changelog
 
+## `tempo-contracts@1.8.0`
+
+### Minor Changes
+
+- Added T6 admin access key support for account keychain authorization and SDK transaction builders. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+- Reject channel reserve payment-lane calls with malformed Tempo signature encodings. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+- Added TIP-1059 discounted gas pricing for pure payment transfers that fit within the SSTORE_SET gas cap. Introduced `is_discounted_payment_call` helper, `TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE` constant, and applied the discounted effective gas price in both EVM execution and RPC receipt conversion when T6 is active. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+- Added the T6 `SignatureVerifier.verifyKeychain` and `SignatureVerifier.verifyKeychainAdmin` selectors for checking account-bound active and admin keychain signatures. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+
+## `tempo-contracts@1.7.3`
+
+
+## `tempo-contracts@1.7.2`
+
+### Patch Changes
+
+- Bumped alloy to `2.0.5` and updated transitive dependencies.
+- Dropped constructor helpers in favor of the newly auto-generated ones by the `sol!` macro. (by @ArseniiKulikov, [#4058](https://github.com/tempoxyz/tempo/pull/4058))
+
+## `tempo-contracts@1.7.0`
+
+### Minor Changes
+
+- Added the TIP-20 channel reserve precompile with channel open, settle, top-up, close, request-close, and withdraw flows gated at T5. (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
+
+### Patch Changes
+
+- Enshrined the stricter TIP-1045 payment classifier (`is_payment_v2`) at the T5 hardfork for consensus-level payment lane validation. Relaxed the v2 classifier to allow bounded `key_authorization` (RLP length ≤ 1024 bytes). (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
+
 ## `tempo-contracts@1.6.0`
 
 

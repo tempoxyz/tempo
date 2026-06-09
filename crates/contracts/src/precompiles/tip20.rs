@@ -1,6 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
 /// Decimal precision for all TIP-20 tokens.
@@ -179,6 +179,19 @@ crate::sol! {
 }
 
 impl ITIP20::ITIP20Calls {
+    /// Returns the recipient address for the TIP-20 call, if one exists.
+    pub fn to(&self) -> Option<Address> {
+        Some(match self {
+            Self::transfer(c) => c.to,
+            Self::transferWithMemo(c) => c.to,
+            Self::transferFrom(c) => c.to,
+            Self::transferFromWithMemo(c) => c.to,
+            Self::mint(c) => c.to,
+            Self::mintWithMemo(c) => c.to,
+            _ => return None,
+        })
+    }
+
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
@@ -193,9 +206,11 @@ impl ITIP20::ITIP20Calls {
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len()
-                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
+                return false;
+            };
+
+            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
         }
 
         is_call::<ITIP20::transferCall>(input)
@@ -208,124 +223,56 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
     }
-}
 
-impl RolesAuthError {
-    /// Creates an error for unauthorized access.
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IRolesAuth::Unauthorized {})
-    }
-}
+    /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment call selectors.
+    ///
+    /// Approvals and mints remain payment-lane eligible via [`Self::is_payment`] but do not
+    /// receive the settlement discount.
+    pub fn is_discounted_payment_call(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
+                return false;
+            };
 
-impl TIP20Error {
-    /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {
-            available,
-            required,
-            token,
-        })
-    }
+            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
+        }
 
-    /// Creates an error for insufficient spending allowance.
-    pub const fn insufficient_allowance() -> Self {
-        Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
+        is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
     }
 
-    /// Creates an error for unauthorized callers
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(ITIP20::Unauthorized {})
+    /// Returns addresses whose balance slots are accessed by this call.
+    ///
+    /// For transfers: `[to]` or `[from, to]`. For mints: `[to]`.
+    /// For burns, approves, and view calls: empty.
+    pub fn balance_addresses(&self) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(c.to), None],
+            Self::transferWithMemo(c) => [Some(c.to), None],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            _ => [None, None],
+        }
     }
 
-    /// Creates an error when minting would set a supply cap that is too large, or invalid.
-    pub const fn invalid_supply_cap() -> Self {
-        Self::InvalidSupplyCap(ITIP20::InvalidSupplyCap {})
-    }
-
-    /// Creates an error when minting would exceed supply cap.
-    pub const fn supply_cap_exceeded() -> Self {
-        Self::SupplyCapExceeded(ITIP20::SupplyCapExceeded {})
-    }
-
-    /// Creates an error for invalid payload data.
-    pub const fn invalid_payload() -> Self {
-        Self::InvalidPayload(ITIP20::InvalidPayload {})
-    }
-
-    /// Creates an error for invalid quote token.
-    pub const fn invalid_quote_token() -> Self {
-        Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
-    }
-
-    /// Creates an error when transfer is forbidden by policy.
-    pub const fn policy_forbids() -> Self {
-        Self::PolicyForbids(ITIP20::PolicyForbids {})
-    }
-
-    /// Creates an error for invalid recipient address.
-    pub const fn invalid_recipient() -> Self {
-        Self::InvalidRecipient(ITIP20::InvalidRecipient {})
-    }
-
-    /// Creates an error when contract is paused.
-    pub const fn contract_paused() -> Self {
-        Self::ContractPaused(ITIP20::ContractPaused {})
-    }
-
-    /// Creates an error for invalid currency.
-    pub const fn invalid_currency() -> Self {
-        Self::InvalidCurrency(ITIP20::InvalidCurrency {})
-    }
-
-    /// Creates an error for invalid amount.
-    pub const fn invalid_amount() -> Self {
-        Self::InvalidAmount(ITIP20::InvalidAmount {})
-    }
-
-    /// Error for when opted in supply is 0
-    pub const fn no_opted_in_supply() -> Self {
-        Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
-    pub const fn protected_address() -> Self {
-        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
-    }
-
-    /// Error when an address is not a valid TIP20 token
-    pub const fn invalid_token() -> Self {
-        Self::InvalidToken(ITIP20::InvalidToken {})
-    }
-
-    /// Error when transfer policy ID does not exist
-    pub const fn invalid_transfer_policy_id() -> Self {
-        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
-    }
-
-    /// Error when token is uninitialized (has no bytecode)
-    pub const fn uninitialized() -> Self {
-        Self::Uninitialized(ITIP20::Uninitialized {})
-    }
-
-    /// Error when permit signature has expired (block.timestamp > deadline)
-    pub const fn permit_expired() -> Self {
-        Self::PermitExpired(ITIP20::PermitExpired {})
-    }
-
-    /// Error when permit signature is invalid
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ITIP20::InvalidSignature {})
-    }
-
-    /// Error when logoURI exceeds 256 bytes (TIP-1026)
-    pub const fn logo_uri_too_long() -> Self {
-        Self::LogoURITooLong(ITIP20::LogoURITooLong {})
-    }
-
-    /// Error when logoURI is not a syntactically valid URI or its scheme is
-    /// not in the protocol allowlist (TIP-1026).
-    pub const fn invalid_logo_uri() -> Self {
-        Self::InvalidLogoURI(ITIP20::InvalidLogoURI {})
+    /// Returns addresses whose rewards slots are accessed by this call.
+    pub fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(sender), Some(c.to)],
+            Self::transferWithMemo(c) => [Some(sender), Some(c.to)],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            Self::burn(_) | Self::burnWithMemo(_) => [Some(sender), Some(Address::ZERO)],
+            _ => [None, None],
+        }
     }
 }
 
@@ -370,6 +317,31 @@ mod test {
         ]
     }
 
+    #[rustfmt::skip]
+    fn discounted_payment_calldatas() -> [Vec<u8>; 6] {
+        let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::transferCall { to, amount }.abi_encode(),
+            ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+            ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::burnCall { amount }.abi_encode(),
+            ITIP20::burnWithMemoCall { amount, memo }.abi_encode(),
+        ]
+    }
+
+    #[rustfmt::skip]
+    fn non_discounted_payment_calldatas() -> [Vec<u8>; 3] {
+        let (to, amount, memo) = (Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::approveCall { spender: to, amount }.abi_encode(),
+            ITIP20::mintCall { to, amount }.abi_encode(),
+            ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
+        ]
+    }
+
     #[test]
     fn test_is_payment() {
         for calldata in payment_calldatas() {
@@ -378,6 +350,21 @@ mod test {
 
         for calldata in non_payment_calldatas() {
             assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+    }
+
+    #[test]
+    fn test_is_discounted_payment_call() {
+        for calldata in discounted_payment_calldatas() {
+            assert!(ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
+        }
+
+        for calldata in non_discounted_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
+        }
+
+        for calldata in non_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
         }
     }
 }

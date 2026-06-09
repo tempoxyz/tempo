@@ -1,7 +1,7 @@
 # Scheduled e2e regression benchmarks.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for the mix and tip20 presets.
-# Nightly runs compare the latest successful nightly Docker commit against the
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for the tip20 preset.
+# Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
 # same preset.
 # Tag runs compare the pushed release tag against the previous release tag.
@@ -58,7 +58,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
-          presets=(tip20 mix)
+          presets=(tip20)
           bench_entries=()
           save_entries=()
           stale_presets=()
@@ -145,6 +145,7 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     with:
       actor: ${{ matrix.actor }}
@@ -153,9 +154,10 @@ jobs:
       baseline-name: ${{ matrix.baseline_name }}
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
-      tps: "20000"
+      duration: "600"
+      tps: "50000"
       run-type: ${{ matrix.run_type }}
-      disable-abba: "true"
+      run-pairs: "1"
       clickhouse-run: feature-1
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
@@ -165,6 +167,8 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 

@@ -4,10 +4,13 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 ## Pull Requests
 
+- Format Rust code with `cargo +nightly fmt`.
+
 ## TIPs (Tempo Improvement Proposals)
 
 When creating a new TIP:
 
+- Run `./scripts/setup-hooks.sh` once per clone so Git runs the TIP naming hook.
 - Branch: `tip/XXXX` where `XXXX` is the next available TIP number (check `tips/` directory and existing branches).
 - File: `tips/tip-XXXX.md` matching the branch number.
 - Follow the template in `tips/tip_template.md`.

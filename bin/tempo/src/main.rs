@@ -225,6 +225,16 @@ impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParse
     }
 }
 
+fn block_on_consensus_public_key(
+    args: &tempo_commonware_node::Args,
+) -> eyre::Result<Option<commonware_cryptography::ed25519::PublicKey>> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .wrap_err("failed building runtime for consensus key parsing")?
+        .block_on(args.public_key())
+}
+
 /// Print installed extensions as a footer after root help output.
 /// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
 fn print_extensions_footer() {
@@ -366,10 +376,7 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
-        let consensus_pubkey = node_cmd
-            .ext
-            .consensus
-            .public_key()
+        let consensus_pubkey = block_on_consensus_public_key(&node_cmd.ext.consensus)
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
@@ -472,6 +479,7 @@ fn main() -> eyre::Result<()> {
                 let consensus_pubkey = args
                     .consensus
                     .public_key()
+                    .await
                     .wrap_err("failed parsing consensus key")?
                     .map(|k| k.to_string());
 
@@ -554,7 +562,8 @@ fn main() -> eyre::Result<()> {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
-            .public_key()?
+            .public_key()
+            .await?
             .map(|key| B256::from_slice(key.as_ref()));
 
         // Initialize Pyroscope profiling if enabled
@@ -739,4 +748,66 @@ fn main() -> eyre::Result<()> {
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Once, time::Duration};
+
+    use clap::Parser;
+
+    use super::{Commands, TempoCli, defaults};
+
+    fn init_defaults_once() {
+        static INIT: Once = Once::new();
+        INIT.call_once(defaults::init_defaults);
+    }
+
+    #[test]
+    fn consensus_block_budget_defaults_are_stable() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert_eq!(node_cmd.builder.max_payload_tasks, 1);
+        assert_eq!(
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(50)
+        );
+        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.share-sparse-trie-with-payload-builder",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(50)
+        );
+    }
 }

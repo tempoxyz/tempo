@@ -13,12 +13,12 @@ pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
 pub mod metrics;
+pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub(crate) mod storage;
+pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
-
-pub(crate) mod subblocks;
 
 use std::sync::Arc;
 
@@ -30,6 +30,7 @@ use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -65,7 +66,8 @@ pub async fn run_consensus_stack(
         .map(|signing_share| signing_share.into_inner());
 
     let signing_key = config
-        .signing_key()?
+        .signing_key()
+        .await?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
@@ -95,6 +97,13 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
+    let target_block_time = config.target_block_time.into_duration();
+    // Consensus owns the end-to-end local proposal window. The network budget
+    // is reserved for propagation, and the remaining time is passed down to
+    // proposal handling and local payload building.
+    let proposal_return_budget =
+        target_block_time.saturating_sub(config.network_budget.into_duration());
+
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
@@ -114,14 +123,15 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        payload_interrupt_time: config.time_to_prepare_proposal_transactions.into_duration(),
-        new_payload_wait_time: config.minimum_time_before_propose.into_duration(),
+        proposal_return_budget,
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         with_subblocks: false,
 
         feed_state,
+
+        finalized_blocks_retention: config.finalized_blocks_retention,
     }
     .try_init(context.with_label("engine"))
     .await
@@ -164,11 +174,23 @@ pub async fn run_follow_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    let epoch_length = execution_node
-        .chain_spec()
+    let chain_spec = execution_node.chain_spec();
+
+    let epoch_length = chain_spec
         .info
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
+
+    let chain_spec_network_identity = chain_spec
+        .network_identity
+        .clone()
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
+
+    let network_identity = config
+        .network_identity()
+        .unwrap_or(chain_spec_network_identity);
+
+    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.with_label("upstream"),
@@ -180,10 +202,12 @@ pub async fn run_follow_stack(
         feed_state,
         upstream,
         upstream_mailbox,
+        network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        finalized_blocks_retention: config.finalized_blocks_retention,
     };
 
     let ret = config

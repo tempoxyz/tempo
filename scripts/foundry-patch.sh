@@ -109,6 +109,53 @@ done <<< "$PATCHES"
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
+# Foundry's lockfile can still contain packages sourced from old
+# tempoxyz/tempo git revisions after the Cargo.toml patches above are written.
+# `cargo metadata` may fail before it can rewrite those entries if an old Tempo
+# revision carries incompatible transitive constraints, so refresh only those
+# stale Tempo packages first. The name@version form keeps the update targeted
+# and unambiguous when the lockfile contains multiple versions of a crate.
+update_stale_tempo_git_packages() {
+  local stale_tempo_pkgs
+  stale_tempo_pkgs="$(
+    awk '
+      /^\[\[package\]\]/ {
+        name = ""
+        version = ""
+        next
+      }
+      /^name = / {
+        name = $3
+        gsub(/"/, "", name)
+        next
+      }
+      /^version = / {
+        version = $3
+        gsub(/"/, "", version)
+        next
+      }
+      /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
+        if (name != "" && version != "") {
+          print name "@" version
+        }
+      }
+    ' Cargo.lock | sort -u
+  )"
+
+  if [[ -z "$stale_tempo_pkgs" ]]; then
+    return 0
+  fi
+
+  local update_args=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    update_args+=("-p" "$pkg")
+  done <<< "$stale_tempo_pkgs"
+
+  echo "Cargo.lock still contains stale Tempo git packages; running 'cargo update ${update_args[*]}'"
+  cargo update "${update_args[@]}" >/dev/null
+}
+
 # ── 4. Re-resolve the lockfile without upgrading unrelated crates ──────────
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
 # A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
@@ -118,52 +165,35 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # already pinned in foundry's lockfile (e.g. reth bumps `alloy-eip7928` to ^0.3.6
 # while foundry's lock has 0.3.5), cargo cannot resolve it without an update.
 # On such failures, parse the conflicting package out of the error and run a
-# targeted `cargo update -p <pkg>` for it, then retry. Loop while there are
+# targeted `cargo update -p <pkg>` for it, then retry. If Cargo reports the
+# previously selected version, include it to avoid ambiguity when Foundry's
+# lockfile contains multiple versions of the same package. Loop while there are
 # pending conflicts so several distinct crates can be resolved in one run
 # without falling back to a blanket `cargo update`. Bail out if the same crate
 # conflicts twice in a row (i.e. `cargo update` made no progress).
 pushd "$FOUNDRY_ROOT" >/dev/null
+update_stale_tempo_git_packages
 prev_conflict_pkg=""
 while true; do
   err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
-  conflict_pkg="$(printf '%s\n' "$err" | sed -nE "s/^error: failed to select a version for \`([^']+)\`.*/\1/p" | head -n1)"
+  clean_err="$(printf '%s\n' "$err" | sed -E 's/\x1b\[[0-9;]*[[:alpha:]]//g')"
+  conflict_pkg="$(printf '%s\n' "$clean_err" | sed -nE 's/^error: failed to select a version for `([^`]+)`.*/\1/p' | head -n1)"
+  selected_version="$(printf '%s\n' "$clean_err" | sed -nE 's/^[[:space:]]*previously selected package `[^ ]+ v([^`]+)`.*/\1/p' | head -n1)"
   if [[ -z "$conflict_pkg" || "$conflict_pkg" == "$prev_conflict_pkg" ]]; then
-    printf '%s\n' "$err" >&2
+    printf '%s\n' "$clean_err" >&2
     exit 1
   fi
-  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $conflict_pkg' and retrying"
-  cargo update -p "$conflict_pkg" >/dev/null
+  update_pkg="$conflict_pkg"
+  if [[ -n "$selected_version" ]]; then
+    update_pkg="${conflict_pkg}@${selected_version}"
+  fi
+  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $update_pkg' and retrying"
+  cargo update -p "$update_pkg" >/dev/null
   prev_conflict_pkg="$conflict_pkg"
 done
 
-stale_tempo_pkgs="$(
-  awk '
-    /^\[\[package\]\]/ {
-      name = ""
-      next
-    }
-    /^name = / {
-      name = $3
-      gsub(/"/, "", name)
-      next
-    }
-    /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
-      if (name != "") {
-        print name
-      }
-    }
-  ' Cargo.lock | sort -u
-)"
-if [[ -n "$stale_tempo_pkgs" ]]; then
-  update_args=()
-  while IFS= read -r pkg; do
-    [[ -n "$pkg" ]] || continue
-    update_args+=("-p" "$pkg")
-  done <<< "$stale_tempo_pkgs"
-  echo "Cargo.lock still contains stale Tempo git packages; running 'cargo update ${update_args[*]}'"
-  cargo update "${update_args[@]}" >/dev/null
-  cargo metadata --format-version=1 --no-default-features >/dev/null
-fi
+update_stale_tempo_git_packages
+cargo metadata --format-version=1 --no-default-features >/dev/null
 popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then

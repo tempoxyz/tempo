@@ -25,6 +25,7 @@
 
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+#[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 
@@ -199,6 +200,8 @@ tempo_hardfork! (
         T5,
         /// T6 hardfork
         T6,
+        /// T7 hardfork
+        T7,
     }
 );
 
@@ -305,6 +308,7 @@ impl TempoHardfork {
             Self::T4 => None,
             Self::T5 => None,
             Self::T6 => None,
+            Self::T7 => None,
         }
     }
 
@@ -321,8 +325,9 @@ impl TempoHardfork {
             Self::T2 => Some(MAINNET_T2_TIMESTAMP),
             Self::T3 => Some(MAINNET_T3_TIMESTAMP),
             Self::T4 => Some(MAINNET_T4_TIMESTAMP),
-            Self::T5 => None,
+            Self::T5 => Some(MAINNET_T5_TIMESTAMP),
             Self::T6 => None,
+            Self::T7 => None,
         }
     }
 
@@ -341,6 +346,7 @@ impl TempoHardfork {
             Self::T4 => None,
             Self::T5 => None,
             Self::T6 => None,
+            Self::T7 => None,
         }
     }
 
@@ -357,24 +363,28 @@ impl TempoHardfork {
             Self::T2 => Some(MODERATO_T2_TIMESTAMP),
             Self::T3 => Some(MODERATO_T3_TIMESTAMP),
             Self::T4 => Some(MODERATO_T4_TIMESTAMP),
-            Self::T5 => None,
+            Self::T5 => Some(MODERATO_T5_TIMESTAMP),
             Self::T6 => None,
+            Self::T7 => None,
         }
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<TempoHardfork> for SpecId {
     fn from(_value: TempoHardfork) -> Self {
         Self::OSAKA
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<&TempoHardfork> for SpecId {
     fn from(value: &TempoHardfork) -> Self {
         Self::from(*value)
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<SpecId> for TempoHardfork {
     fn from(_spec: SpecId) -> Self {
         // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.

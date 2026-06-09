@@ -300,7 +300,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn state_gas_used(&self) -> u64 {
-        self.gas_tracker.state_gas_spent()
+        // SAFETY: we never decrement the state gas spent counter
+        self.gas_tracker.state_gas_spent() as u64
     }
 
     #[inline]
@@ -748,7 +749,7 @@ mod tests {
         let signer = PrivateKeySigner::random();
         let digest = keccak256(b"test message");
         let sig = signer.sign_hash_sync(&digest).unwrap();
-        let v = sig.v() as u8 + 27;
+        let v = u8::from(sig.v()) + 27;
         let r: B256 = sig.r().into();
         let s: B256 = sig.s().into();
 

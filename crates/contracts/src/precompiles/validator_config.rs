@@ -1,5 +1,3 @@
-use alloc::string::String;
-
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
 
 crate::sol! {
@@ -95,43 +93,5 @@ crate::sol! {
 
         error NotHostPort(string field, string input, string backtrace);
         error NotIpPort(string field, string input, string backtrace);
-    }
-}
-
-impl ValidatorConfigError {
-    /// Creates an error for unauthorized access.
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IValidatorConfig::Unauthorized {})
-    }
-
-    /// Creates an error when validator already exists.
-    pub const fn validator_already_exists() -> Self {
-        Self::ValidatorAlreadyExists(IValidatorConfig::ValidatorAlreadyExists {})
-    }
-
-    /// Creates an error when validator is not found.
-    pub const fn validator_not_found() -> Self {
-        Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
-    }
-
-    /// Creates an error when public key is invalid (zero).
-    pub const fn invalid_public_key() -> Self {
-        Self::InvalidPublicKey(IValidatorConfig::InvalidPublicKey {})
-    }
-
-    pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
-        Self::NotHostPort(IValidatorConfig::NotHostPort {
-            field,
-            input,
-            backtrace,
-        })
-    }
-
-    pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
-        Self::NotIpPort(IValidatorConfig::NotIpPort {
-            field,
-            input,
-            backtrace,
-        })
     }
 }

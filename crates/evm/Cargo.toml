@@ -4,8 +4,13 @@ description = "TODO:"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -34,17 +39,32 @@ alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-rpc-types-eth = { workspace = true, optional = true }
 
 derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-eips.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }
+alloy-signer.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+alloy-sol-types.workspace = true
+criterion.workspace = true
 revm.workspace = true
+reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
+reth-trie.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+tikv-jemallocator = "0.6.1"
 
 [features]
 default = ["rpc", "engine"]
-rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
+rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+
+[[bench]]
+name = "tip20_execution"
+harness = false

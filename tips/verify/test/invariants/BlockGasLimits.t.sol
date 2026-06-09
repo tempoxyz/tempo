@@ -102,7 +102,7 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Run all invariant checks
-    function invariant_globalInvariants() public view {
+    function invariant_blockGasLimitsGlobal() public view {
         _invariantTxGasCap();
         _invariantMaxDeploymentFits();
     }

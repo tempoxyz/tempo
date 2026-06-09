@@ -13,6 +13,12 @@ crate::sol! {
             COMPOUND
         }
 
+        enum BlockedReason {
+            NONE,
+            TOKEN_FILTER,
+            RECEIVE_POLICY
+        }
+
         // View Functions
         function policyIdCounter() external view returns (uint64);
         function policyExists(uint64 policyId) external view returns (bool);
@@ -22,6 +28,8 @@ crate::sol! {
         function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
         function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
         function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
+        function receivePolicy(address account) external view returns (bool hasReceivePolicy, uint64 senderPolicyId, PolicyType senderPolicyType, uint64 tokenFilterId, PolicyType tokenFilterType, address recoveryAuthority);
+        function validateReceivePolicy(address token, address sender, address receiver) external view returns (bool authorized, BlockedReason blockedReason);
 
         // State-Changing Functions
         function createPolicy(address admin, PolicyType policyType) external returns (uint64);
@@ -30,6 +38,7 @@ crate::sol! {
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
+        function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
@@ -37,6 +46,7 @@ crate::sol! {
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
         event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
+        event ReceivePolicyUpdated(address indexed account, uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority);
 
         // Errors
         error Unauthorized();
@@ -45,6 +55,8 @@ crate::sol! {
         error InvalidPolicyType();
         error IncompatiblePolicyType();
         error VirtualAddressNotAllowed();
+        error InvalidReceivePolicyType();
+        error InvalidRecoveryAuthority();
     }
 }
 
@@ -62,36 +74,5 @@ impl ITIP403Registry::PolicyType {
     /// Returns `true` if this is a compound policy.
     pub const fn is_compound(&self) -> bool {
         matches!(self, Self::COMPOUND)
-    }
-}
-
-impl TIP403RegistryError {
-    /// Creates an error for unauthorized calls
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(ITIP403Registry::Unauthorized {})
-    }
-
-    /// Creates an error for incompatible policy types
-    pub const fn invalid_policy_type() -> Self {
-        Self::InvalidPolicyType(ITIP403Registry::InvalidPolicyType {})
-    }
-
-    /// Creates an error for incompatible policy types
-    pub const fn incompatible_policy_type() -> Self {
-        Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
-    }
-
-    /// Creates an error for non-existent policy
-    pub const fn policy_not_found() -> Self {
-        Self::PolicyNotFound(ITIP403Registry::PolicyNotFound {})
-    }
-
-    pub const fn policy_not_simple() -> Self {
-        Self::PolicyNotSimple(ITIP403Registry::PolicyNotSimple {})
-    }
-
-    /// Virtual addresses are TIP-1022 forwarding aliases and cannot be used as policy members.
-    pub const fn virtual_address_not_allowed() -> Self {
-        Self::VirtualAddressNotAllowed(ITIP403Registry::VirtualAddressNotAllowed {})
     }
 }

@@ -11,14 +11,14 @@
 //! layer calls to complete.
 
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime},
 };
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
@@ -40,15 +40,17 @@ use futures::{
     future::try_join,
 };
 use rand_08::{CryptoRng, Rng};
-use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
+use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
+use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _};
-use tempo_payload_types::TempoPayloadAttributes;
+use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use tempo_payload_types::{
+    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
+    marshal_persist_estimate, observe_marshal_persist,
+};
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
 
@@ -60,6 +62,7 @@ use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     subblocks,
+    utils::OptionFuture,
 };
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
@@ -67,6 +70,20 @@ pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     mailbox: mpsc::Receiver<Message>,
 
     inner: Inner<TState>,
+}
+
+struct BuildProposalArgs<'a> {
+    propose_start: Instant,
+    parent_view: View,
+    parent_digest: Digest,
+    round: Round,
+    payload_id_rx: &'a mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+    leader: PublicKey,
+}
+
+struct ProposalReturn {
+    time: SystemTime,
+    block_size_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -99,8 +116,7 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                payload_resolve_time: config.payload_resolve_time,
-                payload_return_time: config.payload_return_time,
+                proposal_return_budget: config.proposal_return_budget,
 
                 my_mailbox,
                 marshal: config.marshal,
@@ -111,6 +127,7 @@ where
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
+                validation_latency_estimator: Default::default(),
 
                 metrics,
 
@@ -200,8 +217,8 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    payload_resolve_time: Duration,
-    payload_return_time: Duration,
+    // Local proposal window after reserving network propagation time.
+    proposal_return_budget: Duration,
 
     my_mailbox: Mailbox,
 
@@ -211,6 +228,7 @@ struct Inner<TState> {
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
+    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 
@@ -309,43 +327,109 @@ impl Inner<Init> {
             mut response,
             round,
             leader,
+            started_at: propose_start,
         } = request;
 
-        let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
+        let proposal_digest = {
+            let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
+            let mut proposal = Box::pin(async {
+                // Follow the commonware marshal::standard::inline application:
+                //
+                // >On leader recovery, marshal may already hold a verified block
+                // >for this round (persisted by a pre-crash propose whose
+                // >notarize vote never reached the journal).
+                //
+                // >The parent context recovered by simplex may differ from the one
+                // >the cached block was built against, so the stored block is not safe to reuse
+                // >and building a fresh block would land on the same prunable
+                // >archive index and be silently dropped.
+                //
+                // >Skip this view and let the voter nullify it via timeout.
+                //
+                // TODO: we are diverging from commonware in that we return the digest
+                // here. Is that ok or can that cause problems?
+                //
+                // `marshal.get_verified` can take a long time if marshal is busy
+                // persisting the parent block, so we race it with payload building to
+                // avoid delaying the usual proposal path. If it finds a verified block,
+                // we always prefer that block and skip the newly built proposal,
+                // even when payload construction finishes first.
+                let already_verified = OptionFuture::some(self.marshal.get_verified(round));
+                futures::pin_mut!(already_verified);
 
-        let proposal_digest = select!(
-            () = response.closed() => {
-                if let Some(rx) = payload_id_rx.as_mut() {
-                    let id = rx
-                        .await
-                        .wrap_err("executor dropped response")?
-                        .wrap_err("failed requesting a new payload build")?;
-                    let fut = self
-                        .execution_node
-                        .payload_builder_handle
-                        .resolve_kind_fut(id, PayloadKind::WaitForPending)
-                        .await
-                        .wrap_err("failed resolving payload")?;
-                    drop(fut);
+                let mut proposal = Box::pin(self.clone().build_proposal(
+                    context.clone(),
+                    BuildProposalArgs {
+                        propose_start,
+                        parent_view,
+                        parent_digest,
+                        round,
+                        payload_id_rx: &mut payload_id_rx,
+                        leader,
+                    },
+                ));
+
+                let (block, proposal_return) = tokio::select! {
+                    biased;
+
+                    Some(block) = &mut already_verified => {
+                        drop(proposal);
+                        self.cancel_payload_build(&mut payload_id_rx).await;
+                        debug!("skipping proposal: verified block already exists for round on restart");
+                        (block, None)
+                    },
+
+                    res = &mut proposal => {
+                        let proposal = res.wrap_err("failed creating a proposal")?;
+
+                        // Make sure that we get a response from the already_verified future before proposing.
+                        if already_verified.is_none() {
+                            proposal
+                        } else {
+                            if let Some(block) = already_verified.await {
+                                debug!("skipping proposal: verified block already exists for round on restart");
+                                (block, None)
+                            } else {
+                                proposal
+                            }
+                        }
+                    },
+                };
+
+                let digest = block.digest();
+                if let Some(proposal_return) = proposal_return {
+                    let persist_start = Instant::now();
+                    if !self.marshal.proposed(round, block).await {
+                        bail!("marshal actor rejected persisting proposal");
+                    }
+                    observe_marshal_persist(
+                        proposal_return.block_size_bytes,
+                        persist_start.elapsed(),
+                    );
+
+                    // Keep waiting for the remaining return time, if there's anything left after building the block.
+                    context.sleep_until(proposal_return.time).await;
                 }
 
-                Err(eyre!(
-                    "proposal return channel was closed by consensus \
-                    engine before block could be proposed; aborting"
-                ))
-           },
+                eyre::Ok(digest)
+            });
 
-            res = self.clone().propose(
-                context.clone(),
-                parent_view,
-                parent_digest,
-                round,
-                &mut payload_id_rx,
-                leader,
-            ) => {
-                res.wrap_err("failed creating a proposal")
+            tokio::select! {
+                () = response.closed() => {
+                    drop(proposal);
+                    self.cancel_payload_build(&mut payload_id_rx).await;
+
+                    return Err(eyre!(
+                        "proposal return channel was closed by consensus \
+                        engine before block could be proposed; aborting"
+                    ))
+                },
+
+                res = &mut proposal => {
+                    res?
+                },
             }
-        )?;
+        };
 
         info!(
             proposal.digest = %proposal_digest,
@@ -416,36 +500,54 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn propose<TContext: Pacer>(
+    async fn cancel_payload_build(
+        &self,
+        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+    ) {
+        let Some(rx) = payload_id_rx.take() else {
+            return;
+        };
+
+        let payload_id = match rx.await {
+            Ok(Ok(payload_id)) => payload_id,
+            Ok(Err(error)) => {
+                warn!(%error, "payload build was not started before cancellation");
+                return;
+            }
+            Err(_) => {
+                warn!("executor dropped response before payload build could be cancelled");
+                return;
+            }
+        };
+
+        let fut = match self
+            .execution_node
+            .payload_builder_handle
+            .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+            .await
+        {
+            Ok(fut) => fut,
+            Err(error) => {
+                warn!(%error, %payload_id, "failed resolving payload while cancelling build");
+                return;
+            }
+        };
+        drop(fut);
+    }
+
+    async fn build_proposal<TContext: Pacer>(
         self,
         context: TContext,
-        parent_view: View,
-        parent_digest: Digest,
-        round: Round,
-        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
-        leader: PublicKey,
-    ) -> eyre::Result<Digest> {
-        let propose_start = Instant::now();
-
-        // Follow the commonware marshal::standard::inline application:
-        //
-        // >On leader recovery, marshal may already hold a verified block
-        // >for this round (persisted by a pre-crash propose whose
-        // >notarize vote never reached the journal).
-        //
-        // >The parent context recovered by simplex may differ from the one
-        // >the cached block was built against, so the stored block is not safe to reuse
-        // >and building a fresh block would land on the same prunable
-        // >archive index and be silently dropped.
-        //
-        // >Skip this view and let the voter nullify it via timeout.
-        //
-        // TODO: we are diverging from commonware in that we return the digest
-        // here. Is that ok or can that cause problems?
-        if let Some(block) = self.marshal.get_verified(round).await {
-            debug!("skipping proposal: verified block already exists for round on restart");
-            return Ok(block.digest());
-        }
+        args: BuildProposalArgs<'_>,
+    ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
+        let BuildProposalArgs {
+            propose_start,
+            parent_view,
+            parent_digest,
+            round,
+            payload_id_rx,
+            leader,
+        } = args;
 
         let parent = get_parent(
             &self.execution_node,
@@ -468,11 +570,28 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
+            // If the header has a block access list hash but the block itself doesn't
+            // it likely means that the block was fetched from reth database and we need to
+            // additionally fetch the BAL from commonware.
+            let parent = if parent.block().header().block_access_list_hash().is_some()
+                && parent.block_access_list().is_none()
+            {
+                self.marshal
+                    .subscribe_by_digest(
+                        Some(Round::new(round.epoch(), parent_view)),
+                        parent_digest,
+                    )
+                    .await
+                    .await
+                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+            } else {
+                parent
+            };
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
             info!("parent is last height of epoch; re-proposing parent");
-            return Ok(parent_digest);
+            return Ok((parent, None));
         }
 
         let is_genesis_parent = parent.height().is_zero()
@@ -487,7 +606,7 @@ impl Inner<Init> {
         // (genesis/boundary block) must exist and be finalized, so we can skip
         // it.
         if !is_genesis_parent
-            && !verify_block(
+            && verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
                 &self.epoch_strategy,
@@ -502,6 +621,7 @@ impl Inner<Init> {
             )
             .await
             .wrap_err("failed verifying block against execution layer")?
+            .is_none()
         {
             bail!("the proposal parent block is not valid");
         }
@@ -568,23 +688,27 @@ impl Inner<Init> {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
-        let consensus_context = if self
-            .execution_node
-            .chain_spec()
-            .is_t4_active_at_timestamp(timestamp)
-        {
-            Some(TempoConsensusContext {
-                epoch: round.epoch().get(),
-                view: round.view().get(),
-                parent_view: parent_view.get(),
-                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
-            })
-        } else {
-            None
-        };
+        let consensus_context = Some(TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: parent_view.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(&leader),
+        });
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let marshal_persist = marshal_persist_estimate();
+        // Give the builder only the proposal window that remains when payload
+        // construction is requested. This accounts for a late `handle_propose`
+        // start instead of resetting the budget at builder entry.
+        let build_budget = self
+            .proposal_return_budget
+            .saturating_sub(propose_start.elapsed());
+        let validation_latency_estimate = self
+            .validation_latency_estimator
+            .lock()
+            .ok()
+            .and_then(|estimator| estimator.estimate());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -597,13 +721,14 @@ impl Inner<Init> {
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
             },
-        );
-
-        let interrupt_handle = attrs.interrupt_handle().clone();
+        )
+        .with_payload_build_budget(build_budget)
+        .with_validation_latency_estimate(validation_latency_estimate);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        let payload_build_start = Instant::now();
         *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
             parent.height(),
             parent.digest(),
@@ -623,32 +748,6 @@ impl Inner<Init> {
         let _ = tx.send(Ok(payload_id));
         *payload_id_rx = Some(rx);
 
-        let elapsed = propose_start.elapsed();
-        let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
-        let remaining_return = self.payload_return_time.saturating_sub(elapsed);
-        debug!(
-            elapsed = %display_duration(elapsed),
-            resolve_time = %display_duration(remaining_resolve),
-            return_time = %display_duration(remaining_return),
-            "sleeping before payload builder resolving"
-        );
-
-        // Start the timer for `remaining_return`
-        //
-        // This guarantees that we will not propose the block too early, and waits for at least
-        // `remaining_return` (`payload_return_time` minus time already spent in propose),
-        // plus whatever time is needed to finish building the block.
-        let payload_return_time = context.current() + remaining_return;
-
-        // Give payload builder at least `remaining_resolve` until we interrupt it.
-        //
-        // The interrupt doesn't mean we'll immediately get the payload back,
-        // but only signals the builder to stop executing transactions,
-        // and start calculating the state root and sealing the block.
-        context.sleep(remaining_resolve).await;
-
-        interrupt_handle.interrupt();
-
         let payload = self
             .execution_node
             .payload_builder_handle
@@ -662,16 +761,48 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        let proposal = Block::from_execution_block(payload.block().clone());
-        let digest = proposal.digest();
-        if !self.marshal.proposed(round, proposal).await {
-            bail!("marshal actor rejected persisting proposal");
-        }
+        let payload_build_elapsed = payload_build_start.elapsed();
+        let payload_validation_work_elapsed = payload.validation_work_duration();
+        let validation_latency_elapsed = payload.validation_latency_duration();
+        let (block, block_access_list) = payload.into_execution_payload();
+        let execution_block_rlp_size_bytes = block.rlp_length();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_rlp_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let consensus_block_size_bytes = proposal.encode_size();
+        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
+        let proposal_elapsed = propose_start.elapsed();
+        // Pace proposal return from the original propose start. Validators still
+        // need to repeat replayable build work and marshal persistence, so leave
+        // room for those costs before returning the proposal.
+        let return_delay = self
+            .proposal_return_budget
+            .saturating_sub(proposal_elapsed)
+            .saturating_sub(validation_latency_elapsed)
+            .saturating_sub(validator_marshal_persist);
+        debug!(
+            proposal_elapsed = %display_duration(proposal_elapsed),
+            build_time = %display_duration(payload_build_elapsed),
+            payload_validation_work = %display_duration(payload_validation_work_elapsed),
+            validation_latency_time = %display_duration(validation_latency_elapsed),
+            validator_marshal_persist = %display_duration(validator_marshal_persist),
+            return_time = %display_duration(return_delay),
+            execution_block_rlp_size_bytes,
+            consensus_block_size_bytes,
+            "sleeping before returning proposal"
+        );
+        let proposal_return_time = context.current() + return_delay;
 
-        // Keep waiting for the remaining return time, if there's anything left after building the block.
-        context.sleep_until(payload_return_time).await;
-
-        Ok(digest)
+        Ok((
+            proposal,
+            Some(ProposalReturn {
+                time: proposal_return_time,
+                block_size_bytes: consensus_block_size_bytes,
+            }),
+        ))
     }
 
     async fn verify<TContext: Pacer>(
@@ -728,7 +859,6 @@ impl Inner<Init> {
             &block,
             (parent_view, parent_digest),
             round,
-            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
@@ -753,7 +883,7 @@ impl Inner<Init> {
             );
         }
 
-        let is_good = verify_block(
+        let validation_duration = verify_block(
             context,
             round.epoch(),
             &self.epoch_strategy,
@@ -767,6 +897,19 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
+        if let Some(duration) = validation_duration
+            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
+        {
+            estimator.observe(
+                block.height().get(),
+                ValidationLatencyWorkload::new(
+                    block.block().gas_used(),
+                    block.block().body().transaction_count(),
+                ),
+                duration,
+            );
+        }
+        let is_good = validation_duration.is_some();
 
         let block_height = block.height();
         let block_digest = block.digest();
@@ -803,8 +946,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            payload_resolve_time: self.payload_resolve_time,
-            payload_return_time: self.payload_return_time,
+            proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
@@ -815,6 +957,7 @@ impl Inner<Uninit> {
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
+            validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
         };
 
@@ -836,9 +979,10 @@ struct Init {
 
 /// Verifies `block` given its `parent` against the execution layer.
 ///
-/// Returns whether the block is valid or not. Returns an error if validation
-/// was not possible, for example if communication with the execution layer
-/// failed.
+/// Returns EL validation duration when validation reached the execution layer
+/// and succeeded, or `None` if the block is invalid. Returns an error if
+/// validation was not possible, for example if communication with the execution
+/// layer failed.
 ///
 /// Reason the reason for why a block was not valid is communicated as a
 /// tracing event.
@@ -862,7 +1006,7 @@ async fn verify_block<TContext: Pacer>(
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
-) -> eyre::Result<bool> {
+) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let epoch_info = epoch_strategy
@@ -870,14 +1014,14 @@ async fn verify_block<TContext: Pacer>(
         .expect("epoch strategy is for all heights");
     if epoch_info.epoch() != epoch {
         info!("block does not belong to this epoch");
-        return Ok(false);
+        return Ok(None);
     }
     if block.parent_hash() != *parent_digest {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
         );
-        return Ok(false);
+        return Ok(None);
     }
 
     // Scheme registration precedes engine creation, so the scheme must exist
@@ -892,24 +1036,26 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let block = block.clone().into_inner();
+    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
+        block_access_list,
         validator_set,
     };
+    let validation_start = Instant::now();
     let payload_status = engine
         .new_payload(execution_data)
         .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(true),
+        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
                 "execution layer returned that the block was invalid"
             );
-            Ok(false)
+            Ok(None)
         }
         PayloadStatusEnum::Accepted => {
             bail!(
@@ -932,7 +1078,6 @@ async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
-    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -941,25 +1086,23 @@ async fn verify_header(
         .containing(block.height())
         .expect("epoch strategy is for all heights");
 
-    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
-        let ctx = block
-            .header()
-            .consensus_context
-            .ok_or_eyre("missing consensus context after t4 activation")?;
+    let ctx = block
+        .header()
+        .consensus_context
+        .ok_or_eyre("missing consensus context")?;
 
-        let expected_ctx = TempoConsensusContext {
-            epoch: round.epoch().get(),
-            view: round.view().get(),
-            parent_view: parent.0.get(),
-            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
-        };
+    let expected_ctx = TempoConsensusContext {
+        epoch: round.epoch().get(),
+        view: round.view().get(),
+        parent_view: parent.0.get(),
+        proposer: crate::utils::public_key_to_tempo_primitive(proposer),
+    };
 
-        if ctx != expected_ctx {
-            bail!("mismatching block consensus context");
-        }
-    } else if block.header().consensus_context.is_some() {
-        bail!("block consensus context set prior to activation");
-    }
+    ensure!(
+        ctx == expected_ctx,
+        "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
+        block.digest()
+    );
 
     if epoch_info.last() == block.height() {
         info!(
@@ -1023,20 +1166,15 @@ async fn get_parent(
     parent_view: View,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
-    let genesis_digest = execution_node.chain_spec().genesis_hash();
-    if parent_digest == Digest(genesis_digest) {
-        let genesis_block = Block::from_execution_block(
-            execution_node
-                .provider
-                .block_by_number(0)
-                .map_or_else(
-                    |e| Err(eyre::Report::new(e)),
-                    |block| block.ok_or_eyre("execution layer did not have block"),
-                )
-                .wrap_err("execution layer did not have the genesis block")?
-                .seal(),
-        );
-        Ok(genesis_block)
+    if let Some(parent) = execution_node
+        .provider
+        .find_block_by_hash(parent_digest.0, BlockSource::Any)
+        .wrap_err_with(|| {
+            format!("failed querying execution layer for parent block `{parent_digest}`")
+        })?
+    {
+        // EL database reads do not include commonware sidecars.
+        Ok(Block::from_execution_block_unchecked(parent.seal(), None))
     } else {
         marshal
             .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)

@@ -582,11 +582,11 @@ mod tests {
         );
 
         // Boundary: u32::MAX is accepted
-        let at_max = U256::from(u32::MAX as u64 * 2 + 1);
+        let at_max = U256::from(u64::from(u32::MAX) * 2 + 1);
         assert_eq!(calc_string_length(at_max, true), Ok(u32::MAX as usize));
 
         // Boundary: u32::MAX + 1 is rejected
-        let above_max = U256::from((u32::MAX as u64 + 1) * 2 + 1);
+        let above_max = U256::from((u64::from(u32::MAX) + 1) * 2 + 1);
         assert_eq!(
             calc_string_length(above_max, true),
             Err(TempoPrecompileError::under_overflow())

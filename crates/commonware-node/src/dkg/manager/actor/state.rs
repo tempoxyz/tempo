@@ -892,7 +892,7 @@ impl Read for Event {
             }),
             2 => Ok(Self::Log {
                 dealer: ReadExt::read(buf)?,
-                log: Read::read_cfg(buf, &NZU32!(u16::MAX as u32))?,
+                log: Read::read_cfg(buf, &NZU32!(u32::from(u16::MAX)))?,
             }),
             3 => Ok(Self::Finalized {
                 digest: ReadExt::read(buf)?,

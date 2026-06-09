@@ -17,7 +17,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
@@ -26,24 +26,29 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
+use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
+use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::default::Default;
+use reth_transaction_pool::{
+    Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
-use tempo_payload_builder::TempoPayloadBuilder;
+use tempo_payload_builder::{
+    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
+};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    ordering::TempoTipOrdering,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -51,7 +56,7 @@ use tempo_transaction_pool::{
 };
 
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -65,9 +70,32 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
 
-    /// Disable state cache for the payload builder.
-    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
-    pub builder_disable_state_cache: bool,
+    /// Enable prewarming for the payload builder.
+    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    pub builder_enable_prewarming: bool,
+
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
+    ///
+    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// execution earlier to leave more room for `builder_finish`.
+    #[arg(
+        long = "builder.build-time-multiplier",
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
+    )]
+    pub builder_build_time_multiplier: f64,
+}
+
+impl Default for TempoNodeArgs {
+    fn default() -> Self {
+        Self {
+            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            builder_state_provider_metrics: false,
+            builder_enable_prewarming: false,
+            builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
 }
 
 impl TempoNodeArgs {
@@ -83,7 +111,8 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            disable_state_cache: self.builder_disable_state_cache,
+            enable_prewarming: self.builder_enable_prewarming,
+            build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
 }
@@ -129,7 +158,11 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(
+                BasicPayloadServiceBuilder::new(payload_builder_builder)
+                    // we can disable basic parent state caching because tempo builder always uses execution cache
+                    .with_pre_cache_state(false),
+            )
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -148,7 +181,7 @@ impl TempoNode {
 impl NodeTypes for TempoNode {
     type Primitives = TempoPrimitives;
     type ChainSpec = TempoChainSpec;
-    type Storage = EthStorage<TempoTxEnvelope, TempoHeader>;
+    type Storage = EmptyBodyStorage<TempoTxEnvelope, TempoHeader>;
     type Payload = TempoPayloadTypes;
 }
 
@@ -347,9 +380,20 @@ where
 }
 
 /// Builder for [`TempoConsensus`].
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoConsensusBuilder;
+pub struct TempoConsensusBuilder {
+    /// Whether to allow BAL hashes before Amsterdam activation.
+    pub allow_bal_hashes: bool,
+}
+
+impl Default for TempoConsensusBuilder {
+    fn default() -> Self {
+        Self {
+            allow_bal_hashes: cfg!(feature = "bal"),
+        }
+    }
+}
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
@@ -358,7 +402,10 @@ where
     type Consensus = TempoConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()))
+        Ok(TempoConsensus::new_with_bal_hashes(
+            ctx.chain_spec(),
+            self.allow_bal_hashes,
+        ))
     }
 }
 
@@ -461,9 +508,12 @@ where
                 amm_liquidity_cache.clone(),
             )
         });
-        let protocol_pool = TxPoolBuilder::new(ctx)
-            .with_validator(validator)
-            .build(blob_store, pool_config.clone());
+        let protocol_pool = Pool::new(
+            validator,
+            TempoTipOrdering::default(),
+            blob_store,
+            pool_config.clone(),
+        );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
         let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
@@ -472,7 +522,8 @@ where
 
         // Spawn unified Tempo pool maintenance task
         // This consolidates: expired AA txs, 2D nonce updates, AMM cache, and keychain revocations
-        ctx.task_executor().spawn_critical_task(
+        ctx.task_executor().spawn_critical_os_thread(
+            "tempo-txpool-maintenance",
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
@@ -484,13 +535,26 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
     pub state_provider_metrics: bool,
-    /// Disable state cache for the payload builder.
-    pub disable_state_cache: bool,
+    /// Enable prewarming for the payload builder.
+    pub enable_prewarming: bool,
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
+    pub build_time_multiplier: f64,
+}
+
+impl Default for TempoPayloadBuilderBuilder {
+    fn default() -> Self {
+        Self {
+            state_provider_metrics: false,
+            enable_prewarming: false,
+            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -509,10 +573,14 @@ where
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
+            ctx.task_executor().clone(),
             evm_config,
-            ctx.is_dev(),
-            self.state_provider_metrics,
-            self.disable_state_cache,
+            TempoPayloadBuilderConfig {
+                is_dev: ctx.is_dev(),
+                state_provider_metrics: self.state_provider_metrics,
+                enable_prewarming: self.enable_prewarming,
+                build_time_multiplier: self.build_time_multiplier,
+            },
         ))
     }
 }

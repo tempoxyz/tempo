@@ -3,7 +3,10 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-        context::result::{EVMError, ResultAndState, ResultGas},
+        context::{
+            DBErrorMarker,
+            result::{EVMError, ResultAndState, ResultGas},
+        },
         inspector::NoOpInspector,
     },
 };
@@ -29,8 +32,7 @@ impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
-    type Error<DBError: std::error::Error + Send + Sync + 'static> =
-        EVMError<DBError, TempoInvalidTransaction>;
+    type Error<DBError: DBErrorMarker> = EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
@@ -95,6 +97,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &self.inner.inner.ctx
     }
 
+    /// Returns the [`EvmEnv`] for the current block.
+    pub fn evm_env(&self) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
+        EvmEnv {
+            cfg_env: self.ctx().cfg.clone(),
+            block_env: self.ctx().block.clone(),
+        }
+    }
+
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
         &mut self.inner.inner.ctx
@@ -103,6 +113,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
         &mut self.inner
+    }
+
+    /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
+    /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
+    pub fn validator_fee(&self) -> alloy_primitives::U256 {
+        self.inner.validator_fee
     }
 
     /// Sets the inspector for the EVM.
