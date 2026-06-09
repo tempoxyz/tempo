@@ -858,16 +858,10 @@ where
         let ctx = &mut evm.ctx;
         let spec = ctx.cfg.spec;
 
-        // Check if this is an AA transaction with an authorization list
-        let has_aa_auth_list = ctx
-            .tx
-            .tempo_tx_env
-            .as_ref()
-            .map(|aa_env| !aa_env.tempo_authorization_list.is_empty())
-            .unwrap_or(false);
-
-        let refunded_accounts = if has_aa_auth_list {
-            let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
+        let refunded_accounts = if let Some(tempo_tx_env) = ctx.tx.tempo_tx_env.as_ref() {
+            if tempo_tx_env.tempo_authorization_list.is_empty() {
+                return Ok(0);
+            }
 
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
@@ -880,6 +874,10 @@ where
             )?
             .0
         } else {
+            if ctx.tx.authorization_list_len() == 0 {
+                return Ok(0);
+            }
+
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
                 ctx.tx.authorization_list(),
