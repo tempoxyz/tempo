@@ -20,6 +20,8 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+const EMPTY_LIST_CODE: u8 = 0xc0;
+
 /// Placeholder signature used to mark transactions that need fee-payer signing.
 pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
@@ -426,12 +428,23 @@ impl TempoTransaction {
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
     ) -> usize {
+        let access_list_length = if self.access_list.is_empty() {
+            1
+        } else {
+            self.access_list.length()
+        };
+        let authorization_list_length = if self.tempo_authorization_list.is_empty() {
+            1
+        } else {
+            self.tempo_authorization_list.length()
+        };
+
         self.chain_id.length() +
             self.max_priority_fee_per_gas.length() +
             self.max_fee_per_gas.length() +
             self.gas_limit.length() +
             self.calls.length() +
-            self.access_list.length() +
+            access_list_length +
             self.nonce_key.length() +
             self.nonce.length() +
             self.valid_before.map_or(1, |valid_before| valid_before.length()) +
@@ -445,7 +458,7 @@ impl TempoTransaction {
             } +
             signature_length(&self.fee_payer_signature) +
             // authorization_list
-            self.tempo_authorization_list.length() +
+            authorization_list_length +
             // key_authorization (only included if present)
             if let Some(key_auth) = &self.key_authorization {
                 key_auth.length()
@@ -465,7 +478,11 @@ impl TempoTransaction {
         self.max_fee_per_gas.encode(out);
         self.gas_limit.encode(out);
         self.calls.encode(out);
-        self.access_list.encode(out);
+        if self.access_list.is_empty() {
+            out.put_u8(EMPTY_LIST_CODE);
+        } else {
+            self.access_list.encode(out);
+        }
         self.nonce_key.encode(out);
         self.nonce.encode(out);
 
@@ -490,7 +507,11 @@ impl TempoTransaction {
         encode_signature(&self.fee_payer_signature, out);
 
         // Encode authorization_list
-        self.tempo_authorization_list.encode(out);
+        if self.tempo_authorization_list.is_empty() {
+            out.put_u8(EMPTY_LIST_CODE);
+        } else {
+            self.tempo_authorization_list.encode(out);
+        }
 
         // Encode key_authorization (truly optional - only encoded if present)
         if let Some(key_auth) = &self.key_authorization {
