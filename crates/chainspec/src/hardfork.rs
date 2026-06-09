@@ -25,6 +25,7 @@
 
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+#[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 
@@ -369,18 +370,21 @@ impl TempoHardfork {
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<TempoHardfork> for SpecId {
     fn from(_value: TempoHardfork) -> Self {
         Self::OSAKA
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<&TempoHardfork> for SpecId {
     fn from(value: &TempoHardfork) -> Self {
         Self::from(*value)
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<SpecId> for TempoHardfork {
     fn from(_spec: SpecId) -> Self {
         // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.

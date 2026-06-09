@@ -6,10 +6,10 @@
 pub mod gas {
     //! Gas-accounting constants shared with `spec.rs`.
 
-    use alloy_evm::revm::interpreter::gas::{
-        COLD_SLOAD_COST as COLD_SLOAD, SSTORE_SET, WARM_SSTORE_RESET,
-        WARM_STORAGE_READ_COST as WARM_SLOAD,
-    };
+    const COLD_SLOAD: u64 = 2100;
+    const SSTORE_SET: u64 = 20000;
+    const WARM_SLOAD: u64 = 100;
+    const WARM_SSTORE_RESET: u64 = 2900;
 
     /// T0 base fee: 10 billion attodollars (1×10^10).
     ///

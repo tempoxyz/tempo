@@ -19,7 +19,7 @@ reth-chainspec = { workspace = true, optional = true }
 reth-network-peers = { workspace = true, optional = true }
 tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, optional = true }
 alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
@@ -39,7 +39,7 @@ commonware-cryptography = { workspace = true, optional = true }
 default = ["std", "serde", "reth", "cli"]
 std = [
     "alloy-eips/std",
-    "alloy-evm/std",
+    "alloy-evm?/std",
     "alloy-genesis/std",
     "alloy-primitives/std",
     "once_cell/std",
@@ -55,8 +55,10 @@ serde = [
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
+evm = ["dep:alloy-evm", "tempo-primitives/evm"]
 reth = [
     "std",
+    "evm",
     "dep:commonware-codec",
     "dep:commonware-cryptography",
     "dep:eyre",
