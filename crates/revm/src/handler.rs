@@ -61,7 +61,7 @@ use tempo_primitives::{
     transaction::{
         InitMultisig, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
         calc_gas_balance_spending, multisig_digest, validate_calls, validate_multisig_config,
-        verify_multisig_owner_signatures,
+        verify_multisig_owner_signatures, verify_trusted_multisig_owner_signatures,
     },
 };
 
@@ -1105,17 +1105,25 @@ where
                         .into());
                     };
 
-                    multisig_signature.recover_account().map_err(|reason| {
-                        TempoInvalidTransaction::NativeMultisigValidationFailed {
-                            reason: reason.to_string(),
-                        }
-                    })?;
                     if multisig_signature.account != tx.caller() {
                         return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
                             reason: "multisig signature account does not match transaction caller"
                                 .to_string(),
                         }
                         .into());
+                    }
+                    if caller_is_multisig {
+                        multisig_signature.validate_registered_shape().map_err(|reason| {
+                            TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                reason: reason.to_string(),
+                            }
+                        })?;
+                    } else {
+                        multisig_signature.recover_account().map_err(|reason| {
+                            TempoInvalidTransaction::NativeMultisigValidationFailed {
+                                reason: reason.to_string(),
+                            }
+                        })?;
                     }
                     if tempo_tx_env.key_authorization.is_some() {
                         return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
@@ -1165,9 +1173,9 @@ where
                                 }
                             })?;
                         } else {
-                            verify_multisig_owner_signatures(
+                            verify_trusted_multisig_owner_signatures(
                                 digest,
-                                &multisig_signature.signatures,
+                                multisig_signature,
                                 &config,
                             )
                             .map_err(|reason| {
@@ -3117,12 +3125,12 @@ mod tests {
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
-            signature: TempoSignature::Multisig(MultisigSignature {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
                 config_id,
-                signatures: vec![Bytes::from_static(&[0xaa; 65])],
-                init: Some(config),
-            }),
+                vec![Bytes::from_static(&[0xaa; 65])],
+                Some(config),
+            )),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -3182,12 +3190,12 @@ mod tests {
         .to_bytes();
 
         let aa_env = TempoBatchCallEnv {
-            signature: TempoSignature::Multisig(MultisigSignature {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
                 config_id,
-                signatures: vec![owner_signature],
-                init: Some(config.clone()),
-            }),
+                vec![owner_signature],
+                Some(config.clone()),
+            )),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -3224,12 +3232,12 @@ mod tests {
         let config_id = config.config_id().unwrap();
         let account = config.account().unwrap();
         let aa_env = TempoBatchCallEnv {
-            signature: TempoSignature::Multisig(MultisigSignature {
+            signature: TempoSignature::Multisig(MultisigSignature::new(
                 account,
                 config_id,
-                signatures: vec![Bytes::from_static(&[0xaa; 65])],
-                init: None,
-            }),
+                vec![Bytes::from_static(&[0xaa; 65])],
+                None,
+            )),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -3558,12 +3566,12 @@ mod tests {
         let owner_signature =
             PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
         let mut multisig_env = base_env.clone();
-        multisig_env.signature = TempoSignature::Multisig(MultisigSignature {
-            account: Address::from([0x44; 20]),
-            config_id: B256::from([0x55; 32]),
-            signatures: vec![owner_signature],
-            init: None,
-        });
+        multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::from([0x44; 20]),
+            B256::from([0x55; 32]),
+            vec![owner_signature],
+            None,
+        ));
 
         let base_gas = calculate_aa_batch_intrinsic_gas(
             &base_env,

@@ -246,12 +246,12 @@ fn create_mock_native_multisig_sig(
     let signatures =
         create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?;
 
-    Ok(TempoSignature::Multisig(MultisigSignature {
-        account: derive_multisig_account(config_id),
+    Ok(TempoSignature::Multisig(MultisigSignature::new(
+        derive_multisig_account(config_id),
         config_id,
         signatures,
-        init: Some(init.clone()),
-    }))
+        Some(init.clone()),
+    )))
 }
 
 fn create_mock_native_multisig_sig_for_config(
@@ -267,16 +267,12 @@ fn create_mock_native_multisig_sig_for_config(
         return Err("multisig config_id does not derive transaction caller");
     }
 
-    Ok(TempoSignature::Multisig(MultisigSignature {
+    Ok(TempoSignature::Multisig(MultisigSignature::new(
         account,
         config_id,
-        signatures: create_mock_native_multisig_owner_signatures(
-            signature_count,
-            key_type,
-            key_data,
-        )?,
-        init: None,
-    }))
+        create_mock_native_multisig_owner_signatures(signature_count, key_type, key_data)?,
+        None,
+    )))
 }
 
 fn mock_multisig_signature_count_for_threshold(

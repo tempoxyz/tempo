@@ -750,12 +750,12 @@ fn sign_multisig_tip20_transfer(
 
     recover_signed_tip20_transaction(
         tx,
-        TempoSignature::Multisig(MultisigSignature {
-            account: multisig.account,
-            config_id: multisig.config_id,
-            signatures: vec![owner_signature],
-            init: None,
-        }),
+        TempoSignature::Multisig(MultisigSignature::new(
+            multisig.account,
+            multisig.config_id,
+            vec![owner_signature],
+            None,
+        )),
     )
 }
 

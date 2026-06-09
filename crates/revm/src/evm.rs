@@ -736,12 +736,12 @@ mod tests {
         let digest = multisig_digest(tx.signature_hash(), account, config_id);
         let owner_signature =
             PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
-        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature {
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
             account,
             config_id,
-            signatures: vec![owner_signature],
-            init: Some(config.clone()),
-        }));
+            vec![owner_signature],
+            Some(config.clone()),
+        )));
 
         let mut evm = create_funded_evm_t6(account);
         StorageCtx::enter_ctx(&mut evm.ctx, || NativeMultisig::new().initialize())?;
