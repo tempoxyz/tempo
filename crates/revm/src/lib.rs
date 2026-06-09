@@ -23,4 +23,4 @@ pub use error::{TempoHaltReason, TempoInvalidTransaction};
 pub use evm::TempoEvm;
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
-pub use tx::{TempoBatchCallEnv, TempoTxEnv};
+pub use tx::{ActiveAaCall, TempoBatchCallEnv, TempoTxEnv, TempoTxEnvInner};

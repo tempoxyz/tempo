@@ -12,6 +12,10 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -61,15 +65,21 @@ pub struct TempoBatchCallEnv {
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
-
-    /// Perf optimization for expiring nonce transactions.
-    ///
-    /// Stores how many other expiring nonce transactions are there in the block before this one.
-    pub expiring_nonce_idx: Option<usize>,
 }
-/// Tempo transaction environment.
+
+/// The AA batch call currently exposed as the EVM transaction call during execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveAaCall {
+    /// Index into [`TempoBatchCallEnv::aa_calls`].
+    pub index: usize,
+
+    /// Remaining gas limit for this call.
+    pub gas_limit: u64,
+}
+
+/// Canonical Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
-pub struct TempoTxEnv {
+pub struct TempoTxEnvInner {
     /// Inner Ethereum [`TxEnv`].
     #[deref]
     #[deref_mut]
@@ -93,11 +103,81 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
-    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
-    pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+    /// AA-specific transaction environment (shared to keep cloned [`TempoTxEnv`] lean).
+    pub tempo_tx_env: Option<Arc<TempoBatchCallEnv>>,
+}
+
+/// Tempo transaction environment.
+///
+/// The canonical transaction payload is shared behind an [`Arc`]. Per-execution metadata stays on
+/// the outer value so cloned transaction environments do not need to deep-clone AA calldata when
+/// block execution annotates them.
+#[derive(Debug, Clone, Default)]
+pub struct TempoTxEnv {
+    /// Shared canonical transaction environment.
+    shared: Arc<TempoTxEnvInner>,
+
+    /// Current AA batch call exposed through the [`Transaction`] impl during execution.
+    pub active_aa_call: Option<ActiveAaCall>,
+
+    /// Perf optimization for expiring nonce transactions.
+    ///
+    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    pub expiring_nonce_idx: Option<usize>,
 }
 
 impl TempoTxEnv {
+    /// Creates a new transaction environment from canonical transaction data.
+    pub fn new(inner: TempoTxEnvInner) -> Self {
+        Self {
+            shared: Arc::new(inner),
+            ..Default::default()
+        }
+    }
+
+    /// Returns this transaction environment with AA batch data attached.
+    pub fn with_batch_call_env(mut self, aa_env: TempoBatchCallEnv) -> Self {
+        self.inner_mut().tempo_tx_env = Some(Arc::new(aa_env));
+        self
+    }
+
+    /// Returns a mutable reference to the canonical transaction data.
+    ///
+    /// This uses copy-on-write if the canonical data is shared. Runtime AA subcall selection should
+    /// use [`Self::set_active_aa_call`] instead of mutating the canonical [`TxEnv`].
+    pub fn inner_mut(&mut self) -> &mut TempoTxEnvInner {
+        Arc::make_mut(&mut self.shared)
+    }
+
+    /// Exposes one AA batch call as the active EVM transaction call.
+    pub fn set_active_aa_call(&mut self, index: usize, gas_limit: u64) {
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            debug_assert!(
+                index < aa.aa_calls.len(),
+                "active AA call index out of bounds"
+            );
+        }
+        self.active_aa_call = Some(ActiveAaCall { index, gas_limit });
+    }
+
+    /// Clears the active AA batch call override.
+    pub fn clear_active_aa_call(&mut self) {
+        self.active_aa_call = None;
+    }
+
+    fn active_call(&self) -> Option<&Call> {
+        let active = self.active_aa_call?;
+        let aa = self
+            .tempo_tx_env
+            .as_ref()
+            .expect("active AA call requires tempo_tx_env");
+        Some(
+            aa.aa_calls
+                .get(active.index)
+                .expect("active AA call index must refer to an existing call"),
+        )
+    }
+
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
@@ -199,6 +279,20 @@ impl TempoTxEnv {
     }
 }
 
+impl Deref for TempoTxEnv {
+    type Target = TempoTxEnvInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.shared.as_ref()
+    }
+}
+
+impl DerefMut for TempoTxEnv {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner_mut()
+    }
+}
+
 fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
     matches!(to, TxKind::Call(to) if to.is_tip20())
         && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
@@ -206,10 +300,16 @@ fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
 
 impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
-        Self {
+        Self::new(TempoTxEnvInner {
             inner,
             ..Default::default()
-        }
+        })
+    }
+}
+
+impl From<TempoTxEnvInner> for TempoTxEnv {
+    fn from(inner: TempoTxEnvInner) -> Self {
+        Self::new(inner)
     }
 }
 
@@ -222,7 +322,9 @@ impl Transaction for TempoTxEnv {
     }
 
     fn kind(&self) -> TxKind {
-        self.inner.kind()
+        self.active_call()
+            .map(|call| call.to)
+            .unwrap_or_else(|| self.inner.kind())
     }
 
     fn caller(&self) -> Address {
@@ -230,7 +332,9 @@ impl Transaction for TempoTxEnv {
     }
 
     fn gas_limit(&self) -> u64 {
-        self.inner.gas_limit()
+        self.active_aa_call
+            .map(|call| call.gas_limit)
+            .unwrap_or_else(|| self.inner.gas_limit())
     }
 
     fn gas_price(&self) -> u128 {
@@ -238,7 +342,9 @@ impl Transaction for TempoTxEnv {
     }
 
     fn value(&self) -> U256 {
-        self.inner.value()
+        self.active_call()
+            .map(|call| call.value)
+            .unwrap_or_else(|| self.inner.value())
     }
 
     fn nonce(&self) -> u64 {
@@ -270,7 +376,9 @@ impl Transaction for TempoTxEnv {
     }
 
     fn input(&self) -> &Bytes {
-        self.inner.input()
+        self.active_call()
+            .map(|call| &call.input)
+            .unwrap_or_else(|| self.inner.input())
     }
 
     fn blob_versioned_hashes(&self) -> &[B256] {
@@ -300,15 +408,15 @@ impl Transaction for TempoTxEnv {
 
 impl TransactionEnvMut for TempoTxEnv {
     fn set_gas_limit(&mut self, gas_limit: u64) {
-        self.inner.set_gas_limit(gas_limit);
+        self.inner_mut().inner.set_gas_limit(gas_limit);
     }
 
     fn set_nonce(&mut self, nonce: u64) {
-        self.inner.set_nonce(nonce);
+        self.inner_mut().inner.set_nonce(nonce);
     }
 
     fn set_access_list(&mut self, access_list: AccessList) {
-        self.inner.set_access_list(access_list);
+        self.inner_mut().inner.set_access_list(access_list);
     }
 }
 
@@ -357,7 +465,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             )
         };
 
-        Self {
+        Self::new(TempoTxEnvInner {
             inner: TxEnv {
                 tx_type: tx.ty(),
                 caller,
@@ -392,7 +500,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(TempoBatchCallEnv {
                 signature: signature.clone(),
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
@@ -409,39 +517,37 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
-                // can only be derived when given an entire block
-                expiring_nonce_idx: None,
             })),
-        }
+        })
     }
 }
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
+            tx @ TempoTxEnvelope::Legacy(inner) => Self::new(TempoTxEnvInner {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
-            },
-            TempoTxEnvelope::Eip2930(inner) => Self {
+            }),
+            TempoTxEnvelope::Eip2930(inner) => Self::new(TempoTxEnvInner {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
-            TempoTxEnvelope::Eip1559(inner) => Self {
+            }),
+            TempoTxEnvelope::Eip1559(inner) => Self::new(TempoTxEnvInner {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
-            TempoTxEnvelope::Eip7702(inner) => Self {
+            }),
+            TempoTxEnvelope::Eip7702(inner) => Self::new(TempoTxEnvInner {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
+            }),
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
     }
@@ -468,6 +574,7 @@ mod tests {
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
+    use std::sync::Arc;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
         TempoTxEnvelope,
@@ -488,6 +595,10 @@ mod tests {
             value: alloy_primitives::U256::ZERO,
             input: alloy_primitives::Bytes::new(),
         }
+    }
+
+    fn tx_with_aa(aa_env: super::TempoBatchCallEnv) -> super::TempoTxEnv {
+        super::TempoTxEnv::default().with_batch_call_env(aa_env)
     }
 
     #[test]
@@ -661,24 +772,20 @@ mod tests {
     #[test]
     fn test_fee_payer_without_signature_uses_caller() {
         let caller = Address::repeat_byte(0xAB);
-        let tx_env = super::TempoTxEnv {
-            inner: TxEnv {
-                caller,
-                ..Default::default()
-            },
-            fee_payer: None,
+        let tx_env = super::TempoTxEnv::from(TxEnv {
+            caller,
             ..Default::default()
-        };
+        });
 
         assert_eq!(tx_env.fee_payer(), Ok(caller));
     }
 
     #[test]
     fn test_fee_payer_invalid_signature_rejected() {
-        let tx_env = super::TempoTxEnv {
+        let tx_env = super::TempoTxEnv::new(super::TempoTxEnvInner {
             fee_payer: Some(None),
             ..Default::default()
-        };
+        });
 
         assert!(matches!(
             tx_env.fee_payer(),
@@ -689,30 +796,27 @@ mod tests {
     #[test]
     fn test_fee_payer_resolving_to_sender_is_allowed_in_tx_env() {
         let caller = Address::repeat_byte(0xAB);
-        let tx_env = super::TempoTxEnv {
+        let tx_env = super::TempoTxEnv::new(super::TempoTxEnvInner {
             inner: TxEnv {
                 caller,
                 ..Default::default()
             },
             fee_payer: Some(Some(caller)),
             ..Default::default()
-        };
+        });
 
         assert_eq!(tx_env.fee_payer(), Ok(caller));
     }
 
     #[test]
     fn test_has_fee_payer_signature() {
-        let without_sig = super::TempoTxEnv {
-            fee_payer: None,
-            ..Default::default()
-        };
+        let without_sig = super::TempoTxEnv::default();
         assert!(!without_sig.has_fee_payer_signature());
 
-        let with_sig = super::TempoTxEnv {
+        let with_sig = super::TempoTxEnv::new(super::TempoTxEnvInner {
             fee_payer: Some(Some(Address::repeat_byte(0xAB))),
             ..Default::default()
-        };
+        });
         assert!(with_sig.has_fee_payer_signature());
     }
 
@@ -830,14 +934,11 @@ mod tests {
         let addr = Address::repeat_byte(0x42);
         let data = Bytes::from(vec![0x01, 0x02, 0x03]);
 
-        let tx_env = super::TempoTxEnv {
-            inner: TxEnv {
-                kind: TxKind::Call(addr),
-                data: data.clone(),
-                ..Default::default()
-            },
+        let tx_env = super::TempoTxEnv::from(TxEnv {
+            kind: TxKind::Call(addr),
+            data: data.clone(),
             ..Default::default()
-        };
+        });
 
         let first_call = tx_env.first_call();
         assert!(first_call.is_some());
@@ -857,24 +958,21 @@ mod tests {
         let input1 = Bytes::from(vec![0xAA, 0xBB]);
         let input2 = Bytes::from(vec![0xCC, 0xDD]);
 
-        let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![
-                    Call {
-                        to: TxKind::Call(addr1),
-                        value: U256::ZERO,
-                        input: input1.clone(),
-                    },
-                    Call {
-                        to: TxKind::Call(addr2),
-                        value: U256::from(100),
-                        input: input2,
-                    },
-                ],
-                ..Default::default()
-            })),
+        let tx_env = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![
+                Call {
+                    to: TxKind::Call(addr1),
+                    value: U256::ZERO,
+                    input: input1.clone(),
+                },
+                Call {
+                    to: TxKind::Call(addr2),
+                    value: U256::from(100),
+                    input: input2,
+                },
+            ],
             ..Default::default()
-        };
+        });
 
         let first_call = tx_env.first_call();
         assert!(first_call.is_some());
@@ -884,15 +982,66 @@ mod tests {
     }
 
     #[test]
-    fn test_first_call_with_empty_aa_calls() {
-        // Test with tempo_tx_env but empty calls list
-        let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![],
+    fn test_active_aa_call_overrides_transaction_view_without_mutating_inner() {
+        let canonical_addr = Address::repeat_byte(0x10);
+        let canonical_input = Bytes::from_static(b"canonical");
+        let call_addr = Address::repeat_byte(0x20);
+        let call_input = Bytes::from_static(b"active");
+
+        let tx_env = super::TempoTxEnv::new(super::TempoTxEnvInner {
+            inner: TxEnv {
+                kind: TxKind::Call(canonical_addr),
+                data: canonical_input.clone(),
+                gas_limit: 50_000,
+                value: U256::from(1),
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(Address::repeat_byte(0x11)),
+                        value: U256::from(2),
+                        input: Bytes::from_static(b"first"),
+                    },
+                    Call {
+                        to: TxKind::Call(call_addr),
+                        value: U256::from(3),
+                        input: call_input.clone(),
+                    },
+                ],
                 ..Default::default()
             })),
             ..Default::default()
-        };
+        });
+
+        let mut active_tx = tx_env.clone();
+        active_tx.set_active_aa_call(1, 12_345);
+
+        assert_eq!(Transaction::kind(&active_tx), TxKind::Call(call_addr));
+        assert_eq!(Transaction::value(&active_tx), U256::from(3));
+        assert_eq!(Transaction::input(&active_tx), &call_input);
+        assert_eq!(Transaction::gas_limit(&active_tx), 12_345);
+
+        assert_eq!(active_tx.inner.kind, TxKind::Call(canonical_addr));
+        assert_eq!(active_tx.inner.data, canonical_input);
+        assert_eq!(active_tx.inner.gas_limit, 50_000);
+        assert_eq!(active_tx.inner.value, U256::from(1));
+
+        assert_eq!(Transaction::kind(&tx_env), TxKind::Call(canonical_addr));
+        assert_eq!(Transaction::input(&tx_env), &canonical_input);
+
+        active_tx.clear_active_aa_call();
+        assert_eq!(Transaction::kind(&active_tx), TxKind::Call(canonical_addr));
+        assert_eq!(Transaction::input(&active_tx), &canonical_input);
+    }
+
+    #[test]
+    fn test_first_call_with_empty_aa_calls() {
+        // Test with tempo_tx_env but empty calls list
+        let tx_env = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![],
+            ..Default::default()
+        });
 
         assert!(tx_env.first_call().is_none());
     }
@@ -910,43 +1059,37 @@ mod tests {
         let input3 = Bytes::from(vec![0x04, 0x05, 0x06]);
 
         // Non-AA transaction: returns single call from inner TxEnv
-        let non_aa_tx = super::TempoTxEnv {
-            inner: TxEnv {
-                kind: TxKind::Call(addr1),
-                data: input1.clone(),
-                ..Default::default()
-            },
+        let non_aa_tx = super::TempoTxEnv::from(TxEnv {
+            kind: TxKind::Call(addr1),
+            data: input1.clone(),
             ..Default::default()
-        };
+        });
         let calls: Vec<_> = non_aa_tx.calls().collect();
         assert_eq!(calls.len(), 1);
         assert_eq!(*calls[0].0, TxKind::Call(addr1));
         assert_eq!(calls[0].1, input1.as_ref());
 
         // AA transaction with multiple calls
-        let aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![
-                    Call {
-                        to: TxKind::Call(addr1),
-                        value: U256::ZERO,
-                        input: input1.clone(),
-                    },
-                    Call {
-                        to: TxKind::Call(addr2),
-                        value: U256::from(50),
-                        input: input2.clone(),
-                    },
-                    Call {
-                        to: TxKind::Create,
-                        value: U256::from(100),
-                        input: input3.clone(),
-                    },
-                ],
-                ..Default::default()
-            })),
+        let aa_tx = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![
+                Call {
+                    to: TxKind::Call(addr1),
+                    value: U256::ZERO,
+                    input: input1.clone(),
+                },
+                Call {
+                    to: TxKind::Call(addr2),
+                    value: U256::from(50),
+                    input: input2.clone(),
+                },
+                Call {
+                    to: TxKind::Create,
+                    value: U256::from(100),
+                    input: input3.clone(),
+                },
+            ],
             ..Default::default()
-        };
+        });
         let calls: Vec<_> = aa_tx.calls().collect();
         assert_eq!(calls.len(), 3);
         assert_eq!(*calls[0].0, TxKind::Call(addr1));
@@ -957,13 +1100,10 @@ mod tests {
         assert_eq!(calls[2].1, input3.as_ref());
 
         // AA transaction with empty calls list
-        let empty_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![],
-                ..Default::default()
-            })),
+        let empty_aa_tx = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![],
             ..Default::default()
-        };
+        });
         let calls: Vec<_> = empty_aa_tx.calls().collect();
         assert!(calls.is_empty());
     }
@@ -1002,14 +1142,13 @@ mod tests {
             .abi_encode(),
         );
 
-        let tx = |to, input: Bytes, gas_limit: u64| super::TempoTxEnv {
-            inner: TxEnv {
+        let tx = |to, input: Bytes, gas_limit: u64| {
+            super::TempoTxEnv::from(TxEnv {
                 kind: to,
                 data: input,
                 gas_limit,
                 ..Default::default()
-            },
-            ..Default::default()
+            })
         };
 
         assert!(tx(TxKind::Call(PAYMENT_TKN), transfer.clone(), 250_000).is_discounted_payment());
@@ -1029,47 +1168,35 @@ mod tests {
         }]);
         assert!(!access_list_tx.is_discounted_payment());
 
-        let aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![Call {
-                    to: TxKind::Call(PAYMENT_TKN),
-                    value: U256::ZERO,
-                    input: transfer.clone(),
-                }],
-                ..Default::default()
-            })),
-            inner: TxEnv {
-                gas_limit: 250_000,
-                ..Default::default()
-            },
+        let mut aa_tx = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![Call {
+                to: TxKind::Call(PAYMENT_TKN),
+                value: U256::ZERO,
+                input: transfer.clone(),
+            }],
             ..Default::default()
-        };
+        });
+        aa_tx.inner.gas_limit = 250_000;
         assert!(aa_tx.is_discounted_payment());
 
-        let mixed_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
-                aa_calls: vec![
-                    Call {
-                        to: TxKind::Call(PAYMENT_TKN),
-                        value: U256::ZERO,
-                        input: transfer,
-                    },
-                    Call {
-                        to: TxKind::Call(PAYMENT_TKN),
-                        value: U256::ZERO,
-                        input: approve,
-                    },
-                ],
-                ..Default::default()
-            })),
+        let mixed_aa_tx = tx_with_aa(super::TempoBatchCallEnv {
+            aa_calls: vec![
+                Call {
+                    to: TxKind::Call(PAYMENT_TKN),
+                    value: U256::ZERO,
+                    input: transfer,
+                },
+                Call {
+                    to: TxKind::Call(PAYMENT_TKN),
+                    value: U256::ZERO,
+                    input: approve,
+                },
+            ],
             ..Default::default()
-        };
+        });
         assert!(!mixed_aa_tx.is_discounted_payment());
 
-        let empty_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv::default())),
-            ..Default::default()
-        };
+        let empty_aa_tx = tx_with_aa(super::TempoBatchCallEnv::default());
         assert!(!empty_aa_tx.is_discounted_payment());
     }
 
@@ -1084,15 +1211,12 @@ mod tests {
         gas_price: u128,
         value: alloy_primitives::U256,
     ) -> super::TempoTxEnv {
-        super::TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit,
-                gas_price,
-                value,
-                ..Default::default()
-            },
+        super::TempoTxEnv::from(revm::context::TxEnv {
+            gas_limit,
+            gas_price,
+            value,
             ..Default::default()
-        }
+        })
     }
 
     proptest! {
@@ -1193,8 +1317,7 @@ mod tests {
         /// Property: calls() returns exactly aa_calls.len() for AA transactions
         #[test]
         fn proptest_calls_count_aa_tx(num_calls in 0usize..20) {
-            let aa_tx = super::TempoTxEnv {
-                tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            let aa_tx = tx_with_aa(super::TempoBatchCallEnv {
                     aa_calls: (0..num_calls)
                         .map(|_| Call {
                             to: TxKind::Call(alloy_primitives::Address::ZERO),
@@ -1203,9 +1326,7 @@ mod tests {
                         })
                         .collect(),
                     ..Default::default()
-                })),
-                ..Default::default()
-            };
+            });
             prop_assert_eq!(aa_tx.calls().count(), num_calls);
         }
 

@@ -200,13 +200,14 @@ where
             let TxKind::Call(to) = tx.inner.kind else {
                 return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
             };
+            let input = tx.inner.data.clone();
 
             let mut result = if self.inspect {
                 self.inner
-                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+                    .inspect_system_call_with_caller(tx.inner.caller, to, input)?
             } else {
                 self.inner
-                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+                    .system_call_with_caller(tx.inner.caller, to, input)?
             };
 
             // system transactions should not consume any gas
@@ -275,24 +276,31 @@ mod tests {
         database::{EmptyDB, in_memory_db::CacheDB},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+    use tempo_revm::{TempoTxEnvInner, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
+
+    fn tx_env(inner: TxEnv, is_system_tx: bool) -> TempoTxEnv {
+        TempoTxEnv::new(TempoTxEnvInner {
+            inner,
+            is_system_tx,
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn can_execute_system_tx() {
         let mut evm = test_evm(EmptyDB::default());
         let result = evm
-            .transact(TempoTxEnv {
-                inner: TxEnv {
+            .transact(tx_env(
+                TxEnv {
                     caller: Address::ZERO,
                     gas_price: 0,
                     gas_limit: 21000,
                     ..Default::default()
                 },
-                is_system_tx: true,
-                ..Default::default()
-            })
+                true,
+            ))
             .unwrap();
 
         assert!(result.result.is_success());
@@ -302,18 +310,16 @@ mod tests {
     fn test_transact_raw() {
         let mut evm = test_evm_with_basefee(EmptyDB::default(), 0);
 
-        let tx = TempoTxEnv {
-            inner: TxEnv {
+        let tx = tx_env(
+            TxEnv {
                 caller: Address::repeat_byte(0x01),
                 gas_price: 0,
                 gas_limit: 21000,
                 kind: TxKind::Call(Address::repeat_byte(0x02)),
                 ..Default::default()
             },
-            is_system_tx: false,
-            fee_token: None,
-            ..Default::default()
-        };
+            false,
+        );
 
         let result = evm.transact_raw(tx);
         assert!(result.is_ok());
@@ -328,17 +334,16 @@ mod tests {
         let mut evm = test_evm(EmptyDB::default());
 
         // System transaction
-        let tx = TempoTxEnv {
-            inner: TxEnv {
+        let tx = tx_env(
+            TxEnv {
                 caller: Address::ZERO,
                 gas_price: 0,
                 gas_limit: 21000,
                 kind: TxKind::Call(Address::repeat_byte(0x01)),
                 ..Default::default()
             },
-            is_system_tx: true,
-            ..Default::default()
-        };
+            true,
+        );
 
         let result = evm.transact_raw(tx);
         assert!(result.is_ok());
@@ -354,17 +359,16 @@ mod tests {
         let mut evm = test_evm(EmptyDB::default());
 
         // System transaction with Create kind
-        let tx = TempoTxEnv {
-            inner: TxEnv {
+        let tx = tx_env(
+            TxEnv {
                 caller: Address::ZERO,
                 gas_price: 0,
                 gas_limit: 21000,
                 kind: TxKind::Create,
                 ..Default::default()
             },
-            is_system_tx: true,
-            ..Default::default()
-        };
+            true,
+        );
 
         let result = evm.transact_raw(tx);
         assert!(result.is_err());
@@ -395,17 +399,16 @@ mod tests {
         let mut evm = test_evm(cache_db);
 
         // System transaction that will fail with call to contract that reverts
-        let tx = TempoTxEnv {
-            inner: TxEnv {
+        let tx = tx_env(
+            TxEnv {
                 caller: Address::ZERO,
                 gas_price: 0,
                 gas_limit: 1_000_000,
                 kind: TxKind::Call(contract_addr),
                 ..Default::default()
             },
-            is_system_tx: true,
-            ..Default::default()
-        };
+            true,
+        );
 
         let result = evm.transact_raw(tx);
         assert!(result.is_err());

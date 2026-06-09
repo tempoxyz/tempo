@@ -454,7 +454,6 @@ where
     fn prevalidate_keychain_call_scopes(
         &self,
         evm: &mut TempoEvm<DB, I>,
-        calls: &[tempo_primitives::transaction::Call],
         remaining_gas: &mut u64,
         reservoir: u64,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
@@ -467,7 +466,7 @@ where
         // This keeps unpaid transaction validation bounded while still failing before the first
         // user call executes.
 
-        let (access_key_addr, user_address) = {
+        let (tempo_tx_env, access_key_addr, user_address) = {
             let ctx = evm.ctx();
             let tx = ctx.tx();
             let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() else {
@@ -489,9 +488,13 @@ where
                     })?
             };
 
-            (access_key_addr, keychain_sig.user_address)
+            (
+                Arc::clone(tempo_tx_env),
+                access_key_addr,
+                keychain_sig.user_address,
+            )
         };
-        let Some(kind) = calls.first().map(|call| call.to) else {
+        let Some(kind) = tempo_tx_env.aa_calls.first().map(|call| call.to) else {
             return Err(EVMError::Custom(
                 "AA transactions must contain at least one call".into(),
             ));
@@ -501,7 +504,7 @@ where
         let (validation, gas_used) =
             StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, reservoir, || {
                 let keychain = AccountKeychain::default();
-                for call in calls {
+                for call in &tempo_tx_env.aa_calls {
                     keychain.validate_call_scope_for_transaction(
                         user_address,
                         access_key_addr,
@@ -602,7 +605,6 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -613,21 +615,29 @@ where
             u64,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
+        let tempo_tx_env = evm
+            .ctx()
+            .tx()
+            .tempo_tx_env
+            .as_ref()
+            .ok_or_else(|| EVMError::Custom("AA transaction missing tempo_tx_env".into()))?
+            .clone();
+        let call_count = tempo_tx_env.aa_calls.len();
+        let first_call_is_create = tempo_tx_env
+            .aa_calls
+            .first()
+            .map(|call| call.to.is_create())
+            .unwrap_or(false);
+
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
 
-        // Store original TxEnv values to restore after batch execution
-        let original_kind = evm.ctx().tx().kind();
-        let original_value = evm.ctx().tx().value();
-        let original_data = evm.ctx().tx().input().clone();
-        let original_gas_limit = evm.ctx().tx().gas_limit();
-
         let mut final_result = None;
 
         if let Some(mut frame_result) =
-            self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
+            self.prevalidate_keychain_call_scopes(evm, &mut remaining_gas, reservoir)?
         {
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
@@ -639,27 +649,15 @@ where
             return Ok(frame_result);
         }
 
-        for call in calls.iter() {
-            // Update TxEnv to point to this specific call
-            {
-                let tx = &mut evm.ctx().tx;
-                tx.inner.kind = call.to;
-                tx.inner.value = call.value;
-                tx.inner.data = call.input.clone();
-                tx.inner.gas_limit = remaining_gas;
-            }
+        for call_index in 0..call_count {
+            evm.ctx_mut()
+                .tx
+                .set_active_aa_call(call_index, remaining_gas);
 
             // Execute call with NO additional initial gas (already deducted upfront in validation)
             let frame_result = execute_single(self, evm, remaining_gas, reservoir);
 
-            // Restore original TxEnv immediately after execution, even if execution failed
-            {
-                let tx = &mut evm.ctx().tx;
-                tx.inner.kind = original_kind;
-                tx.inner.value = original_value;
-                tx.inner.data = original_data.clone();
-                tx.inner.gas_limit = original_gas_limit;
-            }
+            evm.ctx_mut().tx.clear_active_aa_call();
 
             let mut frame_result = frame_result?;
 
@@ -685,7 +683,7 @@ where
                     .map(|aa| aa.nonce_key.is_zero())
                     .unwrap_or(true);
 
-                if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+                if uses_protocol_nonce && first_call_is_create {
                     let caller = evm.ctx().tx().caller();
                     if let Ok(mut caller_acc) =
                         evm.ctx().journal_mut().load_account_with_code_mut(caller)
@@ -742,9 +740,8 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
+        self.execute_multi_call_with(evm, gas_limit, reservoir, Self::execute_single_call)
     }
 
     /// Executes a standard single-call transaction with inspector support.
@@ -772,18 +769,11 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
     {
-        self.execute_multi_call_with(
-            evm,
-            gas_limit,
-            reservoir,
-            calls,
-            Self::inspect_execute_single_call,
-        )
+        self.execute_multi_call_with(evm, gas_limit, reservoir, Self::inspect_execute_single_call)
     }
 }
 
@@ -821,9 +811,8 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, gas_limit, reservoir, calls)
+        if evm.ctx().tx().tempo_tx_env.is_some() {
+            self.execute_multi_call(evm, gas_limit, reservoir)
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
         }
@@ -1019,7 +1008,7 @@ where
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                let prev_ptr = if let Some(expiring_nonce_idx) = tx.expiring_nonce_idx {
                     let ptr = nonce_manager
                         .expiring_nonce_ring_ptr
                         .read()
@@ -2338,9 +2327,8 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
+        if evm.ctx().tx().tempo_tx_env.is_some() {
+            self.inspect_execute_multi_call(evm, gas_limit, reservoir)
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
         }
@@ -2419,7 +2407,7 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{
-        TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
+        TempoBlockEnv, TempoTxEnv, TempoTxEnvInner, evm::TempoEvm, gas_params::tempo_gas_params,
         tx::TempoBatchCallEnv,
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2450,6 +2438,14 @@ mod tests {
         Journal::new(db)
     }
 
+    fn aa_tx_env(inner: revm::context::TxEnv, aa_env: TempoBatchCallEnv) -> TempoTxEnv {
+        TempoTxEnv::new(TempoTxEnvInner {
+            inner,
+            tempo_tx_env: Some(Arc::new(aa_env)),
+            ..Default::default()
+        })
+    }
+
     type TestHandlerEvmResult<T> =
         Result<T, EVMError<<CacheDB<EmptyDB> as revm::Database>::Error, TempoInvalidTransaction>>;
 
@@ -2470,10 +2466,7 @@ mod tests {
             aa_env: TempoBatchCallEnv,
             configure_tx_env: impl FnOnce(&mut TempoTxEnv),
         ) -> Self {
-            let mut tx_env = TempoTxEnv {
-                tempo_tx_env: Some(Box::new(aa_env)),
-                ..Default::default()
-            };
+            let mut tx_env = TempoTxEnv::default().with_batch_call_env(aa_env);
             configure_tx_env(&mut tx_env);
             Self::new(spec, tx_env)
         }
@@ -2659,7 +2652,7 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T1C;
 
-        let tx_env = TempoTxEnv {
+        let tx_env = TempoTxEnv::new(TempoTxEnvInner {
             inner: revm::context::TxEnv {
                 caller,
                 ..Default::default()
@@ -2667,7 +2660,7 @@ mod tests {
             fee_token: Some(invalid_token),
             fee_payer: Some(Some(caller)),
             ..Default::default()
-        };
+        });
 
         let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
             Context::mainnet()
@@ -3685,13 +3678,13 @@ mod tests {
                     .with_db(CacheDB::new(EmptyDB::default()))
                     .with_block(TempoBlockEnv::default())
                     .with_cfg(cfg)
-                    .with_tx(TempoTxEnv {
-                        inner: revm::context::TxEnv {
+                    .with_tx(aa_tx_env(
+                        revm::context::TxEnv {
                             gas_limit: 1_000_000,
                             nonce,
                             ..Default::default()
                         },
-                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        TempoBatchCallEnv {
                             aa_calls: vec![Call {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
@@ -3699,9 +3692,8 @@ mod tests {
                             }],
                             nonce_key,
                             ..Default::default()
-                        })),
-                        ..Default::default()
-                    })
+                        },
+                    ))
                     .with_new_journal(journal);
                 TempoEvm::<_, ()>::new(ctx, ())
             };
@@ -3801,13 +3793,13 @@ mod tests {
                     .with_db(CacheDB::new(EmptyDB::default()))
                     .with_block(TempoBlockEnv::default())
                     .with_cfg(cfg)
-                    .with_tx(TempoTxEnv {
-                        inner: revm::context::TxEnv {
+                    .with_tx(aa_tx_env(
+                        revm::context::TxEnv {
                             gas_limit,
                             nonce,
                             ..Default::default()
                         },
-                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        TempoBatchCallEnv {
                             aa_calls: vec![Call {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
@@ -3815,9 +3807,8 @@ mod tests {
                             }],
                             nonce_key: U256::ONE,
                             ..Default::default()
-                        })),
-                        ..Default::default()
-                    })
+                        },
+                    ))
                     .with_new_journal(journal);
 
                 let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
@@ -3866,7 +3857,7 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
 
-        let tx_env = TempoTxEnv {
+        let tx_env = TempoTxEnv::new(TempoTxEnvInner {
             inner: revm::context::TxEnv {
                 caller,
                 gas_limit: 1_000_000,
@@ -3874,7 +3865,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(DEFAULT_FEE_TOKEN),
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![Call {
                     to: TxKind::Call(target),
@@ -3886,7 +3877,7 @@ mod tests {
                 ..Default::default()
             })),
             ..Default::default()
-        };
+        });
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T3, tx_env, |cfg_override| {
             *cfg_override = cfg;
@@ -3982,7 +3973,7 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
 
-        let tx_env = TempoTxEnv {
+        let tx_env = TempoTxEnv::new(TempoTxEnvInner {
             inner: revm::context::TxEnv {
                 caller,
                 gas_limit: 1_000_000,
@@ -3990,7 +3981,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(DEFAULT_FEE_TOKEN),
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![Call {
                     to: TxKind::Call(target),
@@ -4002,7 +3993,7 @@ mod tests {
                 ..Default::default()
             })),
             ..Default::default()
-        };
+        });
 
         let ctx = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
@@ -4085,21 +4076,20 @@ mod tests {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T3;
 
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
+        let tx_env = aa_tx_env(
+            revm::context::TxEnv {
                 caller,
                 gas_limit: 1_000_000,
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![],
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
-            })),
-            ..Default::default()
-        };
+            },
+        );
 
         let ctx = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
@@ -4113,7 +4103,7 @@ mod tests {
         let mut remaining_gas = 100_000;
 
         let err = handler
-            .prevalidate_keychain_call_scopes(&mut evm, &[], &mut remaining_gas, 0)
+            .prevalidate_keychain_call_scopes(&mut evm, &mut remaining_gas, 0)
             .expect_err("empty calls should return an error instead of panicking");
 
         match err {
@@ -4143,25 +4133,6 @@ mod tests {
         const SPENT: (u64, u64) = (1000, 500);
         const REFUND: (i64, i64) = (100, 50);
 
-        // Create minimal EVM context
-        let db = CacheDB::new(EmptyDB::default());
-        let journal = Journal::new(db);
-        let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
-            .with_block(TempoBlockEnv::default())
-            .with_cfg(CfgEnv::default())
-            .with_tx(TempoTxEnv {
-                inner: revm::context::TxEnv {
-                    gas_limit: GAS_LIMIT,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .with_new_journal(journal);
-
-        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-
         // Create mock calls
         let calls = vec![
             Call {
@@ -4176,12 +4147,33 @@ mod tests {
             },
         ];
 
+        // Create minimal EVM context
+        let db = CacheDB::new(EmptyDB::default());
+        let journal = Journal::new(db);
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(CfgEnv::default())
+            .with_tx(aa_tx_env(
+                revm::context::TxEnv {
+                    gas_limit: GAS_LIMIT,
+                    ..Default::default()
+                },
+                TempoBatchCallEnv {
+                    aa_calls: calls,
+                    ..Default::default()
+                },
+            ))
+            .with_new_journal(journal);
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
         let (mut call_idx, calls_gas) = (0, [(SPENT.0, REFUND.0), (SPENT.1, REFUND.1)]);
         let result = handler.execute_multi_call_with(
             &mut evm,
             GAS_LIMIT - INTRINSIC_GAS,
             0,
-            calls,
             |_handler, _evm, gas, _reservoir| {
                 let (spent, refund) = calls_gas[call_idx];
                 call_idx += 1;
@@ -4486,16 +4478,15 @@ mod tests {
             let expected_addr = Address::with_last_byte(0);
             let expected_input = vec![0u8; 1];
 
-            let tx_env = TempoTxEnv {
-                inner: revm::context::TxEnv::default(),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            let tx_env = aa_tx_env(
+                revm::context::TxEnv::default(),
+                TempoBatchCallEnv {
                     aa_calls: calls,
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
-                })),
-                ..Default::default()
-            };
+                },
+            );
 
             let first = tx_env.first_call();
             prop_assert!(first.is_some(), "first_call should return Some for non-empty AA calls");
@@ -4508,16 +4499,15 @@ mod tests {
         /// Property: first_call returns None for AA transaction with zero calls
         #[test]
         fn proptest_first_call_empty_aa(_dummy in 0u8..1) {
-            let tx_env = TempoTxEnv {
-                inner: revm::context::TxEnv::default(),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            let tx_env = aa_tx_env(
+                revm::context::TxEnv::default(),
+                TempoBatchCallEnv {
                     aa_calls: vec![],
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
-                })),
-                ..Default::default()
-            };
+                },
+            );
 
             prop_assert!(tx_env.first_call().is_none(), "first_call should return None for empty AA calls");
         }
@@ -4528,15 +4518,11 @@ mod tests {
             let calldata = Bytes::from(vec![0xab_u8; calldata_len]);
             let target = Address::random();
 
-            let tx_env = TempoTxEnv {
-                inner: revm::context::TxEnv {
+            let tx_env = TempoTxEnv::from(revm::context::TxEnv {
                     kind: TxKind::Call(target),
                     data: calldata.clone(),
                     ..Default::default()
-                },
-                tempo_tx_env: None,
-                ..Default::default()
-            };
+            });
 
             let first = tx_env.first_call();
             prop_assert!(first.is_some(), "first_call should return Some for non-AA tx");
@@ -4682,13 +4668,13 @@ mod tests {
                 .with_db(CacheDB::new(EmptyDB::default()))
                 .with_block(TempoBlockEnv::default())
                 .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
+                .with_tx(aa_tx_env(
+                    revm::context::TxEnv {
                         gas_limit: 1_000_000,
                         nonce,
                         ..Default::default()
                     },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    TempoBatchCallEnv {
                         aa_calls: vec![Call {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
@@ -4696,9 +4682,8 @@ mod tests {
                         }],
                         nonce_key,
                         ..Default::default()
-                    })),
-                    ..Default::default()
-                })
+                    },
+                ))
                 .with_new_journal(journal);
             TempoEvm::<_, ()>::new(ctx, ())
         };
@@ -4776,13 +4761,13 @@ mod tests {
                 .with_db(CacheDB::new(EmptyDB::default()))
                 .with_block(TempoBlockEnv::default())
                 .with_cfg(cfg)
-                .with_tx(TempoTxEnv {
-                    inner: revm::context::TxEnv {
+                .with_tx(aa_tx_env(
+                    revm::context::TxEnv {
                         gas_limit: 1_000_000,
                         nonce,
                         ..Default::default()
                     },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    TempoBatchCallEnv {
                         aa_calls: vec![Call {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
@@ -4790,9 +4775,8 @@ mod tests {
                         }],
                         nonce_key,
                         ..Default::default()
-                    })),
-                    ..Default::default()
-                })
+                    },
+                ))
                 .with_new_journal(journal);
             TempoEvm::<_, ()>::new(ctx, ())
         };
@@ -4882,7 +4866,7 @@ mod tests {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
 
-            let tx = TempoTxEnv {
+            let tx = TempoTxEnv::new(TempoTxEnvInner {
                 inner: revm::context::TxEnv {
                     caller: user,
                     gas_limit: 1_000_000,
@@ -4890,7 +4874,7 @@ mod tests {
                     ..Default::default()
                 },
                 fee_token: Some(DEFAULT_FEE_TOKEN),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                tempo_tx_env: Some(Arc::new(TempoBatchCallEnv {
                     signature: sig,
                     aa_calls: vec![Call {
                         to: TxKind::Call(Address::ZERO),
@@ -4903,7 +4887,7 @@ mod tests {
                     ..Default::default()
                 })),
                 ..Default::default()
-            };
+            });
 
             let ctx = Context::mainnet()
                 .with_db(CacheDB::new(EmptyDB::default()))
@@ -4993,7 +4977,8 @@ mod tests {
 
                 if !spec.is_t1c()
                     && let Some(aa_env) = evm.tx.tempo_tx_env.as_mut()
-                    && let TempoSignature::Keychain(keychain_sig) = &mut aa_env.signature
+                    && let TempoSignature::Keychain(keychain_sig) =
+                        &mut Arc::make_mut(aa_env).signature
                 {
                     // Overwrite the signature version pre-T1C to bypass the version check.
                     keychain_sig.version = KeychainVersion::V1;
@@ -5909,15 +5894,12 @@ mod tests {
     fn test_state_gas_tx_gas_limit_above_cap_allowed() {
         let calldata = Bytes::from(vec![1, 2, 3]);
 
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000,
-                kind: TxKind::Call(Address::random()),
-                data: calldata,
-                ..Default::default()
-            },
+        let tx_env = TempoTxEnv::from(revm::context::TxEnv {
+            gas_limit: 60_000_000,
+            kind: TxKind::Call(Address::random()),
+            data: calldata,
             ..Default::default()
-        };
+        });
 
         // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
@@ -5941,15 +5923,12 @@ mod tests {
     fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
         let calldata = Bytes::from(vec![1, 2, 3]);
 
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 60_000_000, // Double the cap
-                kind: TxKind::Call(Address::random()),
-                data: calldata,
-                ..Default::default()
-            },
+        let tx_env = TempoTxEnv::from(revm::context::TxEnv {
+            gas_limit: 60_000_000, // Double the cap
+            kind: TxKind::Call(Address::random()),
+            data: calldata,
             ..Default::default()
-        };
+        });
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T1, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(30_000_000);
@@ -5973,15 +5952,14 @@ mod tests {
             subblock_transaction: true,
             ..Default::default()
         };
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
+        let tx_env = aa_tx_env(
+            revm::context::TxEnv {
                 gas_limit: TX_GAS_LIMIT,
                 kind: TxKind::Call(Address::random()),
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(aa_env)),
-            ..Default::default()
-        };
+            aa_env,
+        );
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(CAP);
@@ -6039,15 +6017,14 @@ mod tests {
             subblock_transaction: true,
             ..Default::default()
         };
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
+        let tx_env = aa_tx_env(
+            revm::context::TxEnv {
                 gas_limit: 100_000,
                 kind: TxKind::Call(Address::random()),
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(aa_env)),
-            ..Default::default()
-        };
+            aa_env,
+        );
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(30_000_000);
@@ -6099,15 +6076,12 @@ mod tests {
         let calldata = Bytes::from(vec![1, 2, 3]);
 
         let journal = Journal::new(CacheDB::new(EmptyDB::default()));
-        let tx_env = TempoTxEnv {
-            inner: revm::context::TxEnv {
-                gas_limit: 1_000_000,
-                kind: TxKind::Call(Address::random()),
-                data: calldata,
-                ..Default::default()
-            },
+        let tx_env = TempoTxEnv::from(revm::context::TxEnv {
+            gas_limit: 1_000_000,
+            kind: TxKind::Call(Address::random()),
+            data: calldata,
             ..Default::default()
-        };
+        });
 
         let ctx = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
@@ -6543,7 +6517,7 @@ mod tests {
             ],
         );
 
-        let aa_env = make_aa_env(calls.clone());
+        let aa_env = make_aa_env(calls);
         let mut test = TestHandlerEvm::aa(TempoHardfork::T4, aa_env, |tx_env| {
             tx_env.inner.caller = Address::random();
             tx_env.inner.gas_limit = tx_gas_limit;
@@ -6566,7 +6540,6 @@ mod tests {
                 &mut test.evm,
                 gas_limit,
                 reservoir,
-                calls,
                 |_handler, _evm, gas, _reservoir| {
                     // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                     let (instruction_result, spent) = call_results[call_idx];
