@@ -35,6 +35,8 @@ pub struct FeatureRegistry {
     validator_supported_features_tip: Mapping<Address, u64>,
     /// Digest of each ordered feature registry prefix reported by each validator.
     validator_supported_features_digest: Mapping<Address, Mapping<u64, B256>>,
+    /// Number of validators that currently agree with a feature tip digest.
+    features_tip_support_count: Mapping<u64, Mapping<B256, u64>>,
 }
 
 impl FeatureRegistry {
@@ -158,12 +160,32 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::invalid_features_tip().into());
         }
 
+        let previous_digest =
+            self.validator_supported_features_digest[validator][call.featuresTip].read()?;
+        let was_counted = previous >= call.featuresTip && previous_digest != B256::ZERO;
+
         if call.featuresTip > previous {
             self.validator_supported_features_tip[validator].write(call.featuresTip)?;
         }
 
-        self.validator_supported_features_digest[validator][call.featuresTip]
-            .write(call.featuresDigest)?;
+        if was_counted && previous_digest != call.featuresDigest {
+            let previous_support =
+                self.features_tip_support_count[call.featuresTip][previous_digest].read()?;
+            self.features_tip_support_count[call.featuresTip][previous_digest]
+                .write(previous_support.saturating_sub(1))?;
+        }
+
+        if previous_digest != call.featuresDigest {
+            self.validator_supported_features_digest[validator][call.featuresTip]
+                .write(call.featuresDigest)?;
+        }
+
+        if !was_counted || previous_digest != call.featuresDigest {
+            let support =
+                self.features_tip_support_count[call.featuresTip][call.featuresDigest].read()?;
+            self.features_tip_support_count[call.featuresTip][call.featuresDigest]
+                .write(support + 1)?;
+        }
 
         Ok(())
     }
@@ -174,23 +196,12 @@ impl FeatureRegistry {
     ) -> Result<IFeatureRegistry::featuresTipSupportReturn> {
         let expected_digest = protocol_features_digest(features_tip)
             .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?;
-        let active_validators = ValidatorConfigV2::new().get_active_validators()?;
-        let mut support = 0u64;
-
-        for validator in &active_validators {
-            let reported_tip =
-                self.validator_supported_features_tip[validator.validatorAddress].read()?;
-            let reported_digest = self.validator_supported_features_digest
-                [validator.validatorAddress][features_tip]
-                .read()?;
-            if reported_tip >= features_tip && reported_digest == expected_digest {
-                support += 1;
-            }
-        }
+        let active_validator_count = ValidatorConfigV2::new().active_validator_count()?;
+        let support = self.features_tip_support_count[features_tip][expected_digest].read()?;
 
         Ok((
             U256::from(support),
-            U256::from(required_support_count(active_validators.len() as u64)),
+            U256::from(required_support_count(active_validator_count)),
         )
             .into())
     }

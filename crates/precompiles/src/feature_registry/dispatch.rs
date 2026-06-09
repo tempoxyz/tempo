@@ -904,6 +904,108 @@ mod tests {
     }
 
     #[test]
+    fn features_tip_support_uses_cached_digest_count() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            initialize_validator_config_owner(owner)?;
+            let digest = protocol_features_digest(1).unwrap();
+
+            for seed in 1..=5 {
+                let validator = Address::repeat_byte(seed as u8);
+                let public_key = add_test_validator(owner, validator, seed)?;
+                if seed <= 4 {
+                    registry.set_supported_features_tip(
+                        Address::ZERO,
+                        IFeatureRegistry::setSupportedFeaturesTipCall {
+                            publicKey: public_key,
+                            featuresTip: 1,
+                            featuresDigest: digest,
+                        },
+                    )?;
+                }
+            }
+
+            let support = registry.features_tip_support(1)?;
+            assert_eq!(support.support, U256::from(4));
+            assert_eq!(support.required, U256::from(4));
+            assert!(registry.has_features_tip_quorum(1)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_moves_cached_support_between_digests() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let stale_digest = B256::repeat_byte(0xff);
+            let expected_digest = protocol_features_digest(1).unwrap();
+
+            registry.validator_supported_features_tip[validator].write(1)?;
+            registry.validator_supported_features_digest[validator][1].write(stale_digest)?;
+            registry.features_tip_support_count[1][stale_digest].write(1)?;
+
+            registry.set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: 1,
+                    featuresDigest: expected_digest,
+                },
+            )?;
+
+            assert_eq!(
+                registry.features_tip_support_count[1][stale_digest].read()?,
+                0
+            );
+            assert_eq!(
+                registry.features_tip_support_count[1][expected_digest].read()?,
+                1
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_counts_existing_digest_when_tip_increases() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let expected_digest = protocol_features_digest(1).unwrap();
+
+            registry.validator_supported_features_digest[validator][1].write(expected_digest)?;
+
+            registry.set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: 1,
+                    featuresDigest: expected_digest,
+                },
+            )?;
+
+            assert_eq!(
+                registry.features_tip_support_count[1][expected_digest].read()?,
+                1
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn has_features_tip_quorum_rejects_unknown_feature_tip() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
