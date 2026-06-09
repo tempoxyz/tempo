@@ -30,12 +30,6 @@ if [[ ! -f "$FOUNDRY_CARGO" ]]; then
   exit 1
 fi
 
-# Already patched – nothing to do
-if grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' "$FOUNDRY_CARGO"; then
-  echo "Foundry Cargo.toml already contains tempo git patch section – skipping."
-  exit 0
-fi
-
 # ── 1. Discover tempo-* workspace crates that have local paths ──────────────
 PATCHES="$({
   awk '
@@ -55,56 +49,73 @@ if [[ -z "$PATCHES" ]]; then
 fi
 
 # ── 2. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
-{
-  printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
+GIT_REPLACEMENTS="$(
   while IFS=$'\t' read -r crate path; do
     [[ -n "$crate" ]] || continue
     printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
   done <<< "$PATCHES"
-} >> "$FOUNDRY_CARGO"
+)"
+
+tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+awk -v replacements="$GIT_REPLACEMENTS" '
+  /^\[patch\."https:\/\/github\.com\/tempoxyz\/tempo"\]/ {
+    in_section = 1
+    next
+  }
+  in_section && /^\[/ {
+    in_section = 0
+  }
+  !in_section { print }
+  END {
+    print ""
+    print "[patch.\"https://github.com/tempoxyz/tempo\"]"
+    print replacements
+  }
+' "$FOUNDRY_CARGO" > "$tmp_cargo"
+mv "$tmp_cargo" "$FOUNDRY_CARGO"
 
 # ── 3. Patch [patch.crates-io] ──────────────────────────────────────────────
-# Upstream foundry pins some tempo crates to git revisions in [patch.crates-io].
-# Replace those with local paths so Cargo doesn't conflict.
-while IFS=$'\t' read -r crate path; do
-  [[ -n "$crate" ]] || continue
-  local_path="${TEMPO_ROOT}/${path}"
-  replacement="${crate} = { path = \"${local_path}\" }"
-  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
-  awk -v crate="$crate" -v replacement="$replacement" '
-    /^\[patch\.crates-io\]/ {
-      seen = 1
-      in_section = 1
-      print
-      next
+# Upstream Foundry pins some tempo crates in [patch.crates-io]. Replace every
+# tempo-* patch entry with the local checkout paths so transitive crates cannot
+# pull an older registry/git copy of the same Tempo package.
+CRATES_IO_REPLACEMENTS="$(
+  while IFS=$'\t' read -r crate path; do
+    [[ -n "$crate" ]] || continue
+    printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
+  done <<< "$PATCHES"
+)"
+
+tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+awk -v replacements="$CRATES_IO_REPLACEMENTS" '
+  /^\[patch\.crates-io\]/ {
+    seen = 1
+    in_section = 1
+    inserted = 0
+    print
+    next
+  }
+  in_section && /^\[/ {
+    if (!inserted) {
+      print replacements
+      inserted = 1
     }
-    in_section && /^\[/ {
-      if (!done) {
-        print replacement
-        done = 1
-      }
-      in_section = 0
+    in_section = 0
+  }
+  in_section && $0 ~ /^tempo-[A-Za-z0-9_-]+[[:space:]]*=/ {
+    next
+  }
+  { print }
+  END {
+    if (!seen) {
+      print ""
+      print "[patch.crates-io]"
+      print replacements
+    } else if (in_section && !inserted) {
+      print replacements
     }
-    in_section && index($0, crate " = ") == 1 {
-      if (!done) {
-        print replacement
-        done = 1
-      }
-      next
-    }
-    { print }
-    END {
-      if (!seen) {
-        print ""
-        print "[patch.crates-io]"
-        print replacement
-      } else if (in_section && !done) {
-        print replacement
-      }
-    }
-  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
-  mv "$tmp_cargo" "$FOUNDRY_CARGO"
-done <<< "$PATCHES"
+  }
+' "$FOUNDRY_CARGO" > "$tmp_cargo"
+mv "$tmp_cargo" "$FOUNDRY_CARGO"
 
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
@@ -193,13 +204,26 @@ while true; do
 done
 
 update_stale_tempo_git_packages
-cargo metadata --format-version=1 --no-default-features >/dev/null
+metadata="$(cargo metadata --format-version=1 --no-default-features)"
 popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
   grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
   echo "Expected all Tempo crates to resolve locally after patching" >&2
+  exit 1
+fi
+
+remote_tempo_sources="$(
+  printf '%s' "$metadata" \
+    | jq -r '.packages[] | select(.name | startswith("tempo-")) | select(.source != null) | "\(.name) \(.version) \(.source)"' \
+    | sort -u
+)"
+
+if [[ -n "$remote_tempo_sources" ]]; then
+  echo "ERROR: Tempo crates still resolve from non-local sources after patching:" >&2
+  printf '%s\n' "$remote_tempo_sources" >&2
+  echo "Expected all Tempo crates to resolve from local paths under $TEMPO_ROOT" >&2
   exit 1
 fi
 
