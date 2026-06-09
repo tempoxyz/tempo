@@ -1149,8 +1149,7 @@ async fn verify_header(
     Ok(())
 }
 
-/// Attempts to read a block from the execution layer or fetch it from consensus
-/// p2p.
+/// Read a block from the execution layer or fetches it from consensus p2p.
 #[instrument(skip_all, fields(%round, %digest), err)]
 async fn fetch_block_from_el_or_subscribe(
     execution_node: &TempoFullNode,
@@ -1158,7 +1157,7 @@ async fn fetch_block_from_el_or_subscribe(
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
-    let block = if let Some(parent) = execution_node
+    let block = if let Some(block) = execution_node
         .provider
         .find_block_by_hash(digest.0, BlockSource::Any)
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
