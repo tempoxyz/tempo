@@ -125,6 +125,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
+        self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
     }
