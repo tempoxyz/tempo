@@ -489,8 +489,8 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         let bal_task_handle = if self.enable_bal {
-            let sparse_trie_state_hook = trie_handle.as_ref().unwrap().state_hook();
-            let bal_task_handle = self.spawn_bal_task(sparse_trie_state_hook);
+            let bal_task_handle =
+                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
             executor
                 .evm_mut()
                 .db_mut()
@@ -1221,7 +1221,7 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, mut state_root_task_hook: impl OnStateHook) -> BalTaskHandle {
+    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {
@@ -1234,7 +1234,9 @@ where
                     }
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
-                        state_root_task_hook.on_state(&state);
+                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                            state_root_task_hook.on_state(&state);
+                        }
                     }
                 }
             }
