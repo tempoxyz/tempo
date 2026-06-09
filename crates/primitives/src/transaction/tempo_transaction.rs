@@ -132,10 +132,19 @@ pub struct Call {
 }
 
 impl Call {
+    #[inline]
+    fn value_rlp_length(&self) -> usize {
+        if self.value.is_zero() {
+            1
+        } else {
+            self.value.length()
+        }
+    }
+
     /// Returns the RLP header for this call, encapsulating both length calculation and header creation
     #[inline]
     fn rlp_header(&self) -> alloy_rlp::Header {
-        let payload_length = self.to.length() + self.value.length() + self.input.length();
+        let payload_length = self.to.length() + self.value_rlp_length() + self.input.length();
         alloy_rlp::Header {
             list: true,
             payload_length,
