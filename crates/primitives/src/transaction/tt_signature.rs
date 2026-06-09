@@ -55,6 +55,19 @@ pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
 
+#[inline]
+fn signature_rlp_length(encoded_len: usize) -> usize {
+    debug_assert_ne!(
+        encoded_len, 1,
+        "signature byte strings are never single-byte RLP scalars"
+    );
+    alloy_rlp::Header {
+        list: false,
+        payload_length: encoded_len,
+    }
+    .length_with_payload()
+}
+
 /// WebAuthn authenticator data flags (byte 32)
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 const UP: u8 = 0x01; // User Presence (bit 0)
@@ -327,7 +340,7 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        signature_rlp_length(self.encoded_length())
     }
 }
 
@@ -728,7 +741,7 @@ impl alloy_rlp::Encodable for TempoSignature {
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        signature_rlp_length(self.encoded_length())
     }
 }
 
