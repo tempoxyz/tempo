@@ -151,7 +151,11 @@ impl Encodable for Call {
     fn encode(&self, out: &mut dyn BufMut) {
         self.rlp_header().encode(out);
         self.to.encode(out);
-        self.value.encode(out);
+        if self.value.is_zero() {
+            out.put_u8(EMPTY_STRING_CODE);
+        } else {
+            self.value.encode(out);
+        }
         self.input.encode(out);
     }
 
