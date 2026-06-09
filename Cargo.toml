@@ -401,16 +401,16 @@ vergen-git2 = "9.1.0"
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 
 [patch.crates-io]
-# Commonware at HEAD after PR #3588 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
+# Commonware at HEAD after PR #3588 was merged, with marshal/broadcast trace instrumentation.
+commonware-broadcast = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-codec = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-consensus = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-cryptography = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-macros = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-math = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-p2p = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-parallel = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-resolver = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-runtime = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-storage = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
+commonware-utils = { git = "https://github.com/mattsse/monorepo", branch = "mattsse/marshal-broadcast-instrumentation" }
