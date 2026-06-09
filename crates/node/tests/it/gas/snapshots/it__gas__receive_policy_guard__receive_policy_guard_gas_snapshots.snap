@@ -2,9 +2,9 @@
 source: crates/node/tests/it/gas/receive_policy_guard.rs
 expression: gas
 ---
-claim_originator_recovery_to_destination: 308129
-claim_receiver_recovery_to_receiver: 306181
-claim_third_party_recovery_to_destination: 306281
+claim_originator_recovery_to_destination: 308117
+claim_receiver_recovery_to_receiver: 306169
+claim_third_party_recovery_to_destination: 306269
 set_receive_policy_allowed_third_party_recovery: 778029
 set_receive_policy_originator_recovery: 527777
 set_receive_policy_receiver_recovery: 528017
