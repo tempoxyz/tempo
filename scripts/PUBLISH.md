@@ -37,7 +37,7 @@ NOTE: the working tree is never modified — all mutations happen on temp copies
 
 ### `publish-crates.sh`
 
-Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline, verifies compilation, validates invariants, and publishes in dependency order.
+Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline through `uv`, verifies compilation, validates invariants, and publishes in dependency order.
 
 **Pre-resolve validation** (while workspace/path markers still visible):
 - No `reth-*` dependencies in any published manifest
@@ -76,7 +76,7 @@ Strips reth/node-specific code from `.rs` files using two strategies:
 
 Transforms `Cargo.toml` files. Uses depth-aware brace/bracket tracking for robust multi-line dependency and feature block handling. String-aware comment stripping to avoid corrupting lines with `#` in quoted values. Six actions:
 
-**`sanitize_base <toml> <version> [ws_toml]`** — Resolves workspace package fields (`version`, `edition`, `rust-version`, `license`) to concrete values read from the workspace root `Cargo.toml`. Removes `[lints]` section and `publish.workspace = true`.
+**`sanitize_base <toml> <version> [ws_toml]`** — Resolves inherited workspace package metadata to concrete values read from the workspace root `Cargo.toml`. Removes `[lints]` section and `publish.workspace = true`.
 
 **`sanitize_primitives <toml>`** — Removes reth-specific content from `tempo-primitives` manifest:
 - Feature blocks: `reth`, `reth-codec`, `serde-bincode-compat`, `rpc`
@@ -89,7 +89,7 @@ Transforms `Cargo.toml` files. Uses depth-aware brace/bracket tracking for robus
 
 **`resolve_deps <toml> <ws_toml>`** — Replaces `workspace = true` references with concrete versions parsed from the workspace root. Preserves `default-features = false` (from both workspace and local specs), `features`, `optional`, and `package` flags. Uses depth-aware multi-line collection. Fails immediately if a dep has no version (git-only or missing).
 
-**`gen_workspace <ws_toml> <out_toml> [crate1,crate2,...]`** — Generates a temporary workspace `Cargo.toml` for the compilation check step. Dynamically discovers internal path-only crates from the workspace root (no hardcoded list) and filters them out along with `reth-*` deps. Re-adds the specified publish crates as local path overrides.
+**`gen_workspace <ws_toml> <out_toml> [crate1,crate2,...]`** — Generates a temporary workspace `Cargo.toml` for the compilation check step. Dynamically discovers internal path-only crates from the workspace root (no hardcoded list) and filters them out along with `reth-*` deps. Re-adds the specified publish crates as local path overrides and preserves workspace package metadata for inherited package fields.
 
 **`get_version <ws_toml>`** — Prints the workspace package version to stdout. Used by `publish-crates.sh` to avoid duplicating version extraction logic.
 
