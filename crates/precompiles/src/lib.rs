@@ -22,6 +22,7 @@ pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
 pub mod validator_config_v2;
+pub mod zk_tls;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
@@ -32,7 +33,7 @@ use crate::{
     stablecoin_dex::StablecoinDEX, storage::StorageCtx, tip_fee_manager::TipFeeManager,
     tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve, tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    validator_config_v2::ValidatorConfigV2, zk_tls::ZkTlsVerifier,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -57,7 +58,7 @@ pub use tempo_contracts::precompiles::{
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZK_TLS_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -146,6 +147,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg))
+        } else if *address == ZK_TLS_VERIFIER_ADDRESS && cfg.spec.is_t6() {
+            Some(ZkTlsVerifier::create_precompile(&cfg))
         } else {
             None
         }
@@ -276,6 +279,13 @@ impl ReceivePolicyGuard {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ReceivePolicyGuard", cfg, |input| { Self::new() })
+    }
+}
+
+impl ZkTlsVerifier {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("ZkTlsVerifier", cfg, |input| { Self::new() })
     }
 }
 
@@ -1167,6 +1177,12 @@ mod tests {
             "TIP20 channel reserve should not be registered before T5"
         );
 
+        let zktls_verifier_precompile = precompiles.get(&ZK_TLS_VERIFIER_ADDRESS);
+        assert!(
+            zktls_verifier_precompile.is_none(),
+            "zkTLS verifier should not be registered before T6"
+        );
+
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
         assert!(
@@ -1211,6 +1227,27 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_zktls_verifier_registered_at_t6_only() {
+        let mut pre_t6 = CfgEnv::<TempoHardfork>::default();
+        pre_t6.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
+        assert!(
+            tempo_precompiles(&pre_t6)
+                .get(&ZK_TLS_VERIFIER_ADDRESS)
+                .is_none(),
+            "zkTLS verifier should NOT be registered before T6"
+        );
+
+        let mut t6 = CfgEnv::<TempoHardfork>::default();
+        t6.set_spec_and_mainnet_gas_params(TempoHardfork::T6);
+        assert!(
+            tempo_precompiles(&t6)
+                .get(&ZK_TLS_VERIFIER_ADDRESS)
+                .is_some(),
+            "zkTLS verifier should be registered at T6"
         );
     }
 
