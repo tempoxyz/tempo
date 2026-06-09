@@ -30,6 +30,15 @@ const POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC: &str =
 const POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC: &str =
     "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_last";
 const NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX: &str = "_nullifications_per_leader";
+#[cfg(feature = "bal")]
+const SPECULATIVE_BUILDS_STARTED_FROM_VERIFY_SUFFIX: &str =
+    "_speculative_payload_builds_started_from_verify_total";
+#[cfg(feature = "bal")]
+const SPECULATIVE_BUILDS_REUSED_BY_PROPOSE_SUFFIX: &str =
+    "_speculative_payload_builds_reused_by_propose_total";
+#[cfg(feature = "bal")]
+const SPECULATIVE_BUILDS_STARTED_FROM_PROPOSE_FALLBACK_SUFFIX: &str =
+    "_speculative_payload_builds_started_from_propose_fallback_total";
 
 // These tests compute deltas from the process-global Prometheus recorder, so
 // running them concurrently lets one test observe the other's payload-builder metrics.
@@ -69,6 +78,26 @@ fn mixed_validators_build_blocks_with_and_without_shared_sparse_trie_payload_bui
         deltas.nullification_count, 0,
         "expected mixed sparse trie configuration to build without consensus nullifications"
     );
+    #[cfg(feature = "bal")]
+    {
+        assert!(
+            deltas.speculative_builds_started_from_verify > 0,
+            "expected handle_verify to start speculative BAL payload builds"
+        );
+        assert!(
+            deltas.speculative_builds_reused_by_propose > 0,
+            "expected handle_propose to reuse a verify-started speculative BAL payload build"
+        );
+        assert!(
+            deltas.speculative_builds_started_from_verify
+                >= deltas.speculative_builds_reused_by_propose,
+            "expected reused speculative BAL payload builds to be accounted for by handle_verify starts; \
+             verify_starts={}, reused={}, propose_fallbacks={}",
+            deltas.speculative_builds_started_from_verify,
+            deltas.speculative_builds_reused_by_propose,
+            deltas.speculative_builds_started_from_propose_fallback
+        );
+    }
 }
 
 fn payload_builder_test_lock() -> MutexGuard<'static, ()> {
@@ -100,7 +129,7 @@ fn run_payload_builder_test(
         POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC,
     );
 
-    let nullification_count =
+    let consensus_metrics =
         Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
             let setup = Setup::new()
                 .how_many_signers(share_sparse_trie_with_payload_builder.len() as u32)
@@ -126,7 +155,27 @@ fn run_payload_builder_test(
             )
             .await;
 
-            consensus_metric_sum(&context, NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
+            ConsensusMetricSnapshot {
+                nullification_count: consensus_metric_sum(
+                    &context,
+                    NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX,
+                ),
+                #[cfg(feature = "bal")]
+                speculative_builds_started_from_verify: consensus_metric_sum(
+                    &context,
+                    SPECULATIVE_BUILDS_STARTED_FROM_VERIFY_SUFFIX,
+                ),
+                #[cfg(feature = "bal")]
+                speculative_builds_reused_by_propose: consensus_metric_sum(
+                    &context,
+                    SPECULATIVE_BUILDS_REUSED_BY_PROPOSE_SUFFIX,
+                ),
+                #[cfg(feature = "bal")]
+                speculative_builds_started_from_propose_fallback: consensus_metric_sum(
+                    &context,
+                    SPECULATIVE_BUILDS_STARTED_FROM_PROPOSE_FALLBACK_SUFFIX,
+                ),
+            }
         });
 
     let final_finalization_count =
@@ -163,7 +212,16 @@ fn run_payload_builder_test(
         pool_transactions_inclusion_ratio_count: final_pool_transactions_inclusion_ratio_count
             - initial_pool_transactions_inclusion_ratio_count,
         pool_transactions_inclusion_ratio_last,
-        nullification_count,
+        nullification_count: consensus_metrics.nullification_count,
+        #[cfg(feature = "bal")]
+        speculative_builds_started_from_verify: consensus_metrics
+            .speculative_builds_started_from_verify,
+        #[cfg(feature = "bal")]
+        speculative_builds_reused_by_propose: consensus_metrics
+            .speculative_builds_reused_by_propose,
+        #[cfg(feature = "bal")]
+        speculative_builds_started_from_propose_fallback: consensus_metrics
+            .speculative_builds_started_from_propose_fallback,
     }
 }
 
@@ -177,6 +235,22 @@ struct MetricDelta {
     pool_transactions_inclusion_ratio_count: u64,
     pool_transactions_inclusion_ratio_last: Option<f64>,
     nullification_count: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_started_from_verify: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_reused_by_propose: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_started_from_propose_fallback: u64,
+}
+
+struct ConsensusMetricSnapshot {
+    nullification_count: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_started_from_verify: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_reused_by_propose: u64,
+    #[cfg(feature = "bal")]
+    speculative_builds_started_from_propose_fallback: u64,
 }
 
 fn assert_pool_inclusion_metrics(deltas: &MetricDelta) {

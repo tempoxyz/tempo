@@ -10,6 +10,8 @@ pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
+#[cfg(feature = "bal")]
+pub(crate) mod fast_path;
 pub mod feed;
 pub mod follow;
 pub mod metrics;

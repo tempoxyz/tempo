@@ -139,6 +139,8 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
+        #[cfg(feature = "bal")]
+        let fast_path_payloads = crate::fast_path::FastPathPayloadCache::default();
 
         let alias::marshal::Initialized {
             actor: marshal,
@@ -170,6 +172,8 @@ where
                 execution_node: execution_node.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
+                #[cfg(feature = "bal")]
+                fast_path_payloads: fast_path_payloads.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
             },
@@ -243,6 +247,8 @@ where
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
+            #[cfg(feature = "bal")]
+            fast_path_payloads,
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
@@ -301,6 +307,7 @@ where
             dkg_manager_mailbox,
 
             application,
+            application_mailbox,
 
             executor,
             executor_mailbox,
@@ -349,6 +356,7 @@ where
     /// Acts as the glue between the consensus and execution layers implementing
     /// the `[commonware_consensus::Automaton]` trait.
     application: application::Actor<TContext>,
+    application_mailbox: application::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
@@ -487,7 +495,13 @@ where
                 self.epoch_manager_mailbox,
                 Reporters::from((
                     self.executor_mailbox,
-                    Reporters::from((self.dkg_manager_mailbox.clone(), self.peer_manager_mailbox)),
+                    Reporters::from((
+                        self.application_mailbox,
+                        Reporters::from((
+                            self.dkg_manager_mailbox.clone(),
+                            self.peer_manager_mailbox,
+                        )),
+                    )),
                 )),
             )),
             self.broadcast_mailbox,

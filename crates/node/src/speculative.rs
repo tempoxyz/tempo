@@ -1,0 +1,49 @@
+use std::{sync::Arc, time::Instant};
+
+use alloy_primitives::Bytes;
+use eyre::WrapErr as _;
+use reth_engine_tree::tree::SavedCache;
+use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
+use reth_tracing::tracing::info;
+use reth_trie_parallel::state_root_task::StateRootHandle;
+use tempo_payload_types::TempoExecutionData;
+use tempo_primitives::Block as TempoBlock;
+
+use crate::TempoFullNode;
+
+/// Requests Reth-owned inputs for a BAL speculative child build.
+///
+/// Reth owns the live sparse-trie and state-trie-overlay state. For an unvalidated parent, Reth
+/// returns a deferred handle immediately and attaches a private sparse-trie snapshot after preparing
+/// the parent's post-state from BAL or from an already validated parent. Reth also returns a
+/// non-exclusive shared execution-cache view for the parent payload's base parent.
+pub async fn speculative_bal_payload_builder_inputs(
+    node: &TempoFullNode,
+    speculative_parent_block: &SealedBlock<TempoBlock>,
+    block_access_list: &Bytes,
+) -> eyre::Result<(StateRootHandle, Option<SavedCache>)> {
+    let prepare_start = Instant::now();
+    let payload = TempoExecutionData {
+        block: Arc::new(speculative_parent_block.clone()),
+        block_access_list: Some(block_access_list.clone()),
+        validator_set: None,
+    };
+
+    let (trie_handle, cache) = node
+        .add_ons_handle
+        .beacon_engine_handle
+        .payload_builder_sparse_trie_handle::<(StateRootHandle, Option<SavedCache>)>(payload)
+        .await
+        .wrap_err("failed preparing speculative BAL payload-builder inputs through Reth engine")?;
+
+    info!(
+        parent_hash = %speculative_parent_block.hash(),
+        parent_number = speculative_parent_block.number(),
+        parent_state_root = %speculative_parent_block.state_root(),
+        has_execution_cache = cache.is_some(),
+        prepare_elapsed = ?prepare_start.elapsed(),
+        "received speculative BAL payload-builder inputs from Reth",
+    );
+
+    Ok((trie_handle, cache))
+}

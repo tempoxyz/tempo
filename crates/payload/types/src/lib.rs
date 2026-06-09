@@ -7,7 +7,11 @@ mod attrs;
 mod budget;
 
 use alloy_primitives::{B256, Bytes};
-pub use attrs::TempoPayloadAttributes;
+pub use attrs::{
+    PayloadBuildControl, PayloadBuildControlSnapshot, PayloadProposalContext,
+    PayloadProposalContextCancelled, ProposalTimingAlreadyAttached, SpeculativePayloadParent,
+    TempoPayloadAttributes,
+};
 pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
@@ -29,6 +33,9 @@ use tempo_primitives::{Block, TempoPrimitives};
 #[non_exhaustive]
 pub struct TempoPayloadTypes;
 
+/// Executed payload data emitted by Tempo's payload builder.
+pub type TempoBuiltPayloadExecutedBlock = BuiltPayloadExecutedBlock<TempoPrimitives>;
+
 /// Built payload type for Tempo node.
 ///
 /// Wraps [`EthBuiltPayload`] and optionally includes the executed block data
@@ -41,11 +48,15 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// Executed block data withheld from Reth's unconditional built-payload subscriber.
+    gated_executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     /// Replayable builder work for this payload.
     ///
     /// This excludes proposer-only idle waiting, but includes transaction
     /// execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
+    /// RLP-encoded execution block size, excluding Commonware/BAL sidecar framing.
+    execution_block_size_bytes: usize,
     /// Time validators are expected to spend validating this payload.
     validation_latency_duration: Duration,
 }
@@ -56,14 +67,18 @@ impl TempoBuiltPayload {
         inner: EthBuiltPayload<TempoPrimitives>,
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        gated_executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
+        execution_block_size_bytes: usize,
         validation_latency_duration: Duration,
     ) -> Self {
         Self {
             inner,
             block_access_list,
             executed_block,
+            gated_executed_block,
             validation_work_duration,
+            execution_block_size_bytes,
             validation_latency_duration,
         }
     }
@@ -76,9 +91,29 @@ impl TempoBuiltPayload {
         )
     }
 
+    /// Converts the built payload into owned execution payload parts and gated executed state.
+    pub fn into_execution_payload_with_gated_fast_path(
+        self,
+    ) -> (
+        SealedBlock<Block>,
+        Option<Bytes>,
+        Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    ) {
+        (
+            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
+            self.block_access_list,
+            self.gated_executed_block,
+        )
+    }
+
     /// Returns replayable builder work for this payload.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
+    }
+
+    /// Returns the RLP-encoded execution block size in bytes.
+    pub fn execution_block_size_bytes(&self) -> usize {
+        self.execution_block_size_bytes
     }
 
     /// Returns the time validators are expected to spend validating this payload.

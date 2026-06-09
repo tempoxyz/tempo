@@ -1,5 +1,6 @@
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton, Relay,
+    Automaton, CertifiableAutomaton, Relay, Reporter,
+    marshal::Update,
     simplex::{Plan, types::Context},
     types::{Epoch, Round, View},
 };
@@ -9,7 +10,7 @@ use commonware_utils::channel::oneshot;
 use futures::{SinkExt as _, channel::mpsc};
 use std::time::Instant;
 
-use crate::consensus::Digest;
+use crate::consensus::{Digest, block::Block};
 
 #[derive(Clone)]
 pub(crate) struct Mailbox {
@@ -26,6 +27,7 @@ impl Mailbox {
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
     Broadcast(Box<Broadcast>),
+    Finalized(Box<Update<Block>>),
     Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
@@ -170,5 +172,16 @@ impl Relay for Mailbox {
             .send(Broadcast { digest, plan }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
+    }
+}
+
+impl Reporter for Mailbox {
+    type Activity = Update<Block>;
+
+    async fn report(&mut self, update: Self::Activity) {
+        self.inner
+            .send(Message::Finalized(Box::new(update)))
+            .await
+            .expect("application is present and ready to receive finalization updates");
     }
 }

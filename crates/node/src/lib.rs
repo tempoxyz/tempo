@@ -15,7 +15,11 @@ pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 pub mod engine;
 pub mod node;
 pub mod rpc;
+#[cfg(feature = "bal")]
+mod speculative;
 pub mod telemetry;
+#[cfg(feature = "bal")]
+pub use speculative::speculative_bal_payload_builder_inputs;
 pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;

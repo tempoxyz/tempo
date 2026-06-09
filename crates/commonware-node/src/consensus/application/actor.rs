@@ -10,17 +10,22 @@
 //! deterministic runtime to spend real life time to wait for the execution
 //! layer calls to complete.
 
+#[cfg(feature = "bal")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
 use alloy_consensus::BlockHeader;
+#[cfg(feature = "bal")]
+use alloy_consensus::transaction::TxHashRef as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
+    marshal::Update,
     simplex::Plan,
     types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
@@ -32,7 +37,7 @@ use commonware_runtime::{
 };
 use prometheus_client::metrics::counter::Counter;
 
-use commonware_utils::SystemTimeExt;
+use commonware_utils::{SystemTimeExt, acknowledgement::Acknowledgement};
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
@@ -41,23 +46,32 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
+#[cfg(feature = "bal")]
+use reth_payload_builder::{BuildNewPayload, PayloadBuilderError};
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+#[cfg(feature = "bal")]
+use tempo_payload_types::SpeculativePayloadParent;
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    marshal_persist_estimate, observe_marshal_persist,
+    PayloadBuildControl, TempoBuiltPayloadExecutedBlock, TempoPayloadAttributes,
+    ValidationLatencyEstimator, ValidationLatencyWorkload, marshal_persist_estimate,
+    observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
+#[cfg(feature = "bal")]
+use tokio::sync::{Mutex as AsyncMutex, oneshot as tokio_oneshot};
 use tracing::{Level, debug, info, info_span, instrument, warn};
 
 use super::{
     Mailbox,
     ingress::{Broadcast, Genesis, Message, Propose, Verify},
 };
+#[cfg(feature = "bal")]
+use crate::fast_path::FastPathPayloadCache;
 use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
@@ -77,13 +91,315 @@ struct BuildProposalArgs<'a> {
     parent_view: View,
     parent_digest: Digest,
     round: Round,
-    payload_id_rx: &'a mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+    payload_id_rx: &'a mut Option<PendingPayloadId>,
     leader: PublicKey,
+}
+
+enum PendingPayloadId {
+    Canonical(oneshot::Receiver<eyre::Result<PayloadId>>),
+    #[cfg(feature = "bal")]
+    Speculative(tokio_oneshot::Receiver<Result<PayloadId, PayloadBuilderError>>),
+    Ready(PayloadId),
+}
+
+impl PendingPayloadId {
+    fn ready(payload_id: PayloadId) -> Self {
+        Self::Ready(payload_id)
+    }
+
+    async fn recv(&mut self) -> eyre::Result<PayloadId> {
+        match self {
+            Self::Canonical(rx) => (&mut *rx)
+                .await
+                .wrap_err("executor dropped response")?
+                .wrap_err("failed requesting a new payload build"),
+            #[cfg(feature = "bal")]
+            Self::Speculative(rx) => (&mut *rx)
+                .await
+                .wrap_err("payload builder dropped speculative payload id response")?
+                .wrap_err("failed starting speculative payload build"),
+            Self::Ready(payload_id) => Ok(*payload_id),
+        }
+    }
 }
 
 struct ProposalReturn {
     time: SystemTime,
     block_size_bytes: usize,
+    fast_path_executed_block: Option<TempoBuiltPayloadExecutedBlock>,
+}
+
+#[cfg(feature = "bal")]
+#[derive(Clone, Debug, Default)]
+struct SpeculativeBuildRegistry {
+    active: Arc<AsyncMutex<Option<SpeculativeBuild>>>,
+    current_control: Arc<AsyncMutex<Option<PayloadBuildControl>>>,
+    generation: Arc<AtomicU64>,
+}
+
+#[cfg(feature = "bal")]
+#[derive(Debug)]
+struct SpeculativeBuild {
+    parent_digest: Digest,
+    parent_height: Height,
+    build_control: PayloadBuildControl,
+    payload_id_rx: Option<tokio_oneshot::Receiver<Result<PayloadId, PayloadBuilderError>>>,
+    payload_id: Option<PayloadId>,
+}
+
+#[cfg(feature = "bal")]
+impl Drop for SpeculativeBuild {
+    fn drop(&mut self) {
+        self.build_control.cancel();
+    }
+}
+
+#[cfg(feature = "bal")]
+impl SpeculativeBuildRegistry {
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn advance_generation(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    async fn replace(&self, execution_node: Arc<TempoFullNode>, build: SpeculativeBuild) {
+        self.advance_generation();
+        self.track_build_control(build.build_control.clone()).await;
+        let old = self.active.lock().await.replace(build);
+        if let Some(old) = old {
+            Self::spawn_cancel(execution_node, old, "replaced_by_new_verify");
+        }
+    }
+
+    async fn replace_if_generation(
+        &self,
+        execution_node: Arc<TempoFullNode>,
+        build: SpeculativeBuild,
+        expected_generation: u64,
+        stale_reason: &'static str,
+    ) -> bool {
+        let mut active = self.active.lock().await;
+        if self.generation() != expected_generation
+            || active
+                .as_ref()
+                .is_some_and(|active| active.parent_height >= build.parent_height)
+        {
+            drop(active);
+            Self::spawn_cancel(execution_node, build, stale_reason);
+            return false;
+        }
+
+        self.advance_generation();
+        let old = active.replace(build);
+        drop(active);
+        if let Some(old) = old {
+            Self::spawn_cancel(execution_node, old, "replaced_by_newer_successor");
+        }
+        true
+    }
+
+    async fn stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        self.advance_generation();
+        self.cancel_current_control(reason).await;
+        if let Some(build) = self.active.lock().await.take() {
+            Self::spawn_cancel(execution_node, build, reason);
+        }
+    }
+
+    fn request_stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        self.advance_generation();
+        let mut needs_async_cleanup = false;
+
+        match self.current_control.try_lock() {
+            Ok(mut current_control) => {
+                if let Some(control) = current_control.take() {
+                    control.cancel();
+                    debug!(
+                        reason,
+                        "cancelled current speculative payload build control"
+                    );
+                }
+            }
+            Err(_) => {
+                needs_async_cleanup = true;
+                debug!(
+                    reason,
+                    "scheduling speculative payload build control cancellation"
+                );
+            }
+        }
+
+        match self.active.try_lock() {
+            Ok(mut active) => {
+                if let Some(build) = active.take() {
+                    Self::spawn_cancel(execution_node.clone(), build, reason);
+                }
+            }
+            Err(_) => {
+                needs_async_cleanup = true;
+                debug!(
+                    reason,
+                    "scheduling speculative payload build registry cleanup"
+                );
+            }
+        }
+
+        if needs_async_cleanup {
+            let registry = self.clone();
+            let task_executor = execution_node.task_executor.clone();
+            task_executor.spawn_task(async move {
+                registry.stop_active(execution_node, reason).await;
+            });
+        }
+    }
+
+    async fn stop_if_finalized_past_parent(
+        &self,
+        execution_node: Arc<TempoFullNode>,
+        finalized_height: Height,
+        reason: &'static str,
+    ) {
+        let Some(build) = ({
+            let mut active = self.active.lock().await;
+            if active
+                .as_ref()
+                .is_some_and(|build| finalized_height > build.parent_height)
+            {
+                active.take()
+            } else {
+                None
+            }
+        }) else {
+            return;
+        };
+        self.advance_generation();
+        build.build_control.cancel();
+        Self::spawn_cancel(execution_node, build, reason);
+    }
+
+    async fn take_matching(&self, parent_digest: Digest) -> Option<SpeculativeBuild> {
+        let mut active = self.active.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|build| build.parent_digest == parent_digest)
+        {
+            self.advance_generation();
+            active.take()
+        } else {
+            None
+        }
+    }
+
+    async fn track_build_control(&self, build_control: PayloadBuildControl) {
+        self.current_control.lock().await.replace(build_control);
+    }
+
+    async fn cancel_current_control(&self, reason: &'static str) {
+        let Some(control) = self.current_control.lock().await.take() else {
+            return;
+        };
+        control.cancel();
+        debug!(
+            reason,
+            "cancelled current speculative payload build control"
+        );
+    }
+
+    fn spawn_cancel(
+        execution_node: Arc<TempoFullNode>,
+        mut build: SpeculativeBuild,
+        reason: &'static str,
+    ) {
+        build.build_control.cancel();
+        debug!(
+            parent.digest = %build.parent_digest,
+            parent.height = %build.parent_height,
+            reason,
+            "scheduled speculative payload build cancellation",
+        );
+
+        let task_executor = execution_node.task_executor.clone();
+        // Cancelling can wait for payload-id delivery and pending payload resolution.
+        // Keep that work on the execution-side task executor so a stale build
+        // cannot consume the consensus view budget before block verification starts.
+        task_executor.spawn_task(async move {
+            build.cancel(execution_node.as_ref(), reason).await;
+        });
+    }
+}
+
+#[cfg(feature = "bal")]
+impl SpeculativeBuild {
+    async fn payload_id(&mut self) -> eyre::Result<PayloadId> {
+        if let Some(payload_id) = self.payload_id {
+            return Ok(payload_id);
+        }
+        let rx = self
+            .payload_id_rx
+            .take()
+            .ok_or_eyre("speculative payload id receiver was already consumed")?;
+        let payload_id = rx
+            .await
+            .wrap_err("payload builder dropped speculative payload id response")?
+            .wrap_err("failed starting speculative payload build")?;
+        self.payload_id = Some(payload_id);
+        Ok(payload_id)
+    }
+
+    async fn cancel(&mut self, execution_node: &TempoFullNode, reason: &'static str) {
+        let payload_id = match self.payload_id().await {
+            Ok(payload_id) => payload_id,
+            Err(error) => {
+                warn!(
+                    %error,
+                    parent.digest = %self.parent_digest,
+                    parent.height = %self.parent_height,
+                    reason,
+                    "speculative payload build was not started before cancellation",
+                );
+                return;
+            }
+        };
+
+        let fut = match execution_node
+            .payload_builder_handle
+            .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+            .await
+        {
+            Ok(Some(fut)) => fut,
+            Ok(None) => {
+                debug!(
+                    %payload_id,
+                    parent.digest = %self.parent_digest,
+                    parent.height = %self.parent_height,
+                    reason,
+                    "speculative payload build was already gone before cancellation",
+                );
+                return;
+            }
+            Err(error) => {
+                warn!(
+                    %error,
+                    %payload_id,
+                    parent.digest = %self.parent_digest,
+                    parent.height = %self.parent_height,
+                    reason,
+                    "failed resolving speculative payload while cancelling build",
+                );
+                return;
+            }
+        };
+        drop(fut);
+        debug!(
+            %payload_id,
+            parent.digest = %self.parent_digest,
+            parent.height = %self.parent_height,
+            reason,
+            "cancelled speculative payload build",
+        );
+    }
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -122,6 +438,8 @@ where
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
+                #[cfg(feature = "bal")]
+                fast_path_payloads: config.fast_path_payloads,
                 executor: config.executor,
 
                 subblocks: config.subblocks,
@@ -191,6 +509,12 @@ where
                     move |_| inner.handle_broadcast(*broadcast)
                 });
             }
+            Message::Finalized(finalized) => {
+                self.context.with_label("finalized").spawn({
+                    let inner = self.inner.clone();
+                    move |_| inner.handle_finalized(*finalized)
+                });
+            }
             Message::Genesis(genesis) => {
                 self.context.with_label("genesis").spawn({
                     let inner = self.inner.clone();
@@ -225,6 +549,8 @@ struct Inner<TState> {
     marshal: crate::alias::marshal::Mailbox,
 
     execution_node: Arc<TempoFullNode>,
+    #[cfg(feature = "bal")]
+    fast_path_payloads: FastPathPayloadCache,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
@@ -246,6 +572,30 @@ impl Inner<Init> {
             Plan::Forward { round, recipients } => (round, recipients),
         };
         self.marshal.forward(round, digest, recipients).await;
+    }
+
+    async fn handle_finalized(self, update: Update<Block>) {
+        let finalized_height = match update {
+            Update::Tip(_, height, _) => height,
+            Update::Block(block, ack) => {
+                let height = block.height();
+                ack.acknowledge();
+                height
+            }
+        };
+
+        #[cfg(not(feature = "bal"))]
+        let _ = finalized_height;
+
+        #[cfg(feature = "bal")]
+        self.state
+            .speculative_builds
+            .stop_if_finalized_past_parent(
+                self.execution_node.clone(),
+                finalized_height,
+                "finalized_past_speculative_parent",
+            )
+            .await;
     }
 
     #[instrument(
@@ -331,7 +681,7 @@ impl Inner<Init> {
         } = request;
 
         let proposal_digest = {
-            let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
+            let mut payload_id_rx: Option<PendingPayloadId> = None;
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
                 //
@@ -374,7 +724,10 @@ impl Inner<Init> {
 
                     Some(block) = &mut already_verified => {
                         drop(proposal);
-                        self.cancel_payload_build(&mut payload_id_rx).await;
+                        self.cancel_payload_build(
+                            &mut payload_id_rx,
+                            "proposal_already_verified_on_restart",
+                        );
                         debug!("skipping proposal: verified block already exists for round on restart");
                         (block, None)
                     },
@@ -398,6 +751,14 @@ impl Inner<Init> {
 
                 let digest = block.digest();
                 if let Some(proposal_return) = proposal_return {
+                    #[cfg(feature = "bal")]
+                    let block_height = block.height();
+                    #[cfg(feature = "bal")]
+                    let block_hash = block.block_hash();
+                    #[cfg(feature = "bal")]
+                    let successor_parent = block.clone();
+                    let fast_path_executed_block = proposal_return.fast_path_executed_block;
+
                     let persist_start = Instant::now();
                     if !self.marshal.proposed(round, block).await {
                         bail!("marshal actor rejected persisting proposal");
@@ -406,6 +767,44 @@ impl Inner<Init> {
                         proposal_return.block_size_bytes,
                         persist_start.elapsed(),
                     );
+
+                    if let Some(executed_block) = fast_path_executed_block {
+                        #[cfg(feature = "bal")]
+                        {
+                            let successor_executed_block = executed_block.clone();
+                            self.fast_path_payloads.insert(
+                                digest,
+                                block_height,
+                                block_hash,
+                                executed_block,
+                            );
+                            debug!(
+                                proposal.digest = %digest,
+                                proposal.height = %block_height,
+                                proposal.hash = %block_hash,
+                                "cached gated built payload for finalization fast path",
+                            );
+                            let successor_return_wait = proposal_return
+                                .time
+                                .duration_since(context.current())
+                                .unwrap_or_default();
+                            debug!(
+                                proposal.digest = %digest,
+                                proposal.height = %block_height,
+                                proposal.hash = %block_hash,
+                                ?successor_return_wait,
+                                "scheduling speculative BAL successor build before proposal return sleep",
+                            );
+                            self.spawn_speculative_successor_build(
+                                context.clone(),
+                                successor_parent,
+                                successor_executed_block,
+                            );
+                        }
+
+                        #[cfg(not(feature = "bal"))]
+                        let _ = executed_block;
+                    }
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.time).await;
@@ -417,7 +816,10 @@ impl Inner<Init> {
             tokio::select! {
                 () = response.closed() => {
                     drop(proposal);
-                    self.cancel_payload_build(&mut payload_id_rx).await;
+                    self.cancel_payload_build(
+                        &mut payload_id_rx,
+                        "proposal_response_channel_closed",
+                    );
 
                     return Err(eyre!(
                         "proposal return channel was closed by consensus \
@@ -480,6 +882,11 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
+        #[cfg(feature = "bal")]
+        self.state
+            .speculative_builds
+            .request_stop_active(self.execution_node.clone(), "new_handle_verify");
+
         let result = select!(
             () = response.closed() => {
                 Err(eyre!(
@@ -500,39 +907,129 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn cancel_payload_build(
+    fn cancel_payload_build(
         &self,
-        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+        payload_id_rx: &mut Option<PendingPayloadId>,
+        reason: &'static str,
     ) {
-        let Some(rx) = payload_id_rx.take() else {
+        let Some(mut pending) = payload_id_rx.take() else {
             return;
         };
 
-        let payload_id = match rx.await {
-            Ok(Ok(payload_id)) => payload_id,
-            Ok(Err(error)) => {
-                warn!(%error, "payload build was not started before cancellation");
-                return;
-            }
-            Err(_) => {
-                warn!("executor dropped response before payload build could be cancelled");
-                return;
-            }
-        };
+        let execution_node = self.execution_node.clone();
+        let task_executor = execution_node.task_executor.clone();
+        task_executor.spawn_task(async move {
+            let payload_id = match pending.recv().await {
+                Ok(payload_id) => payload_id,
+                Err(error) => {
+                    warn!(%error, reason, "payload build was not started before cancellation");
+                    return;
+                }
+            };
 
-        let fut = match self
-            .execution_node
-            .payload_builder_handle
-            .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
-            .await
+            let fut = match execution_node
+                .payload_builder_handle
+                .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                .await
+            {
+                Ok(Some(fut)) => fut,
+                Ok(None) => {
+                    debug!(%payload_id, reason, "payload build was already gone before cancellation");
+                    return;
+                }
+                Err(error) => {
+                    warn!(%error, %payload_id, reason, "failed resolving payload while cancelling build");
+                    return;
+                }
+            };
+            drop(fut);
+        });
+    }
+
+    async fn proposal_extra_data(
+        &self,
+        parent: &Block,
+        parent_digest: Digest,
+        round: Round,
+    ) -> eyre::Result<Bytes> {
+        let parent_epoch_info = self
+            .epoch_strategy
+            .containing(parent.height())
+            .expect("epoch strategy is for all heights");
+
+        if parent_epoch_info.last() == parent.height().next()
+            && parent_epoch_info.epoch() == round.epoch()
         {
-            Ok(fut) => fut,
-            Err(error) => {
-                warn!(%error, %payload_id, "failed resolving payload while cancelling build");
-                return;
+            let outcome = self
+                .state
+                .dkg_manager
+                .get_dkg_outcome(parent_digest, parent.height())
+                .await
+                .wrap_err("failed getting public dkg ceremony outcome")?;
+            ensure!(
+                round.epoch().next() == outcome.epoch,
+                "outcome is for epoch `{}`, but we are trying to include the \
+                outcome for epoch `{}`",
+                outcome.epoch,
+                round.epoch().next(),
+            );
+            info!(
+                %outcome.epoch,
+                outcome.network_identity = %outcome.network_identity(),
+                outcome.dealers = ?outcome.dealers(),
+                outcome.players = ?outcome.players(),
+                outcome.next_players = ?outcome.next_players(),
+                "received DKG outcome; will include in payload builder attributes",
+            );
+            Ok(outcome.encode().into())
+        } else {
+            match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "failed getting signed dealer log for current epoch \
+                        because actor dropped response channel",
+                    );
+                    Ok(Bytes::default())
+                }
+                Ok(None) => Ok(Bytes::default()),
+                Ok(Some(log)) => {
+                    info!(
+                        "received signed dealer log; will include in payload \
+                        builder attributes"
+                    );
+                    Ok(log.encode().into())
+                }
             }
-        };
-        drop(fut);
+        }
+    }
+
+    async fn verify_proposal_parent<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent_epoch: Epoch,
+        parent: &Block,
+    ) -> eyre::Result<()> {
+        if verify_block(
+            context,
+            parent_epoch,
+            &self.epoch_strategy,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            parent,
+            parent.parent_digest(),
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?
+        .is_none()
+        {
+            bail!("the proposal parent block is not valid");
+        }
+
+        Ok(())
     }
 
     async fn build_proposal<TContext: Pacer>(
@@ -557,6 +1054,11 @@ impl Inner<Init> {
             &self.marshal,
         )
         .await?;
+        #[cfg(feature = "bal")]
+        let parent = {
+            self.ensure_block_access_list_sidecar(parent, round, parent_view, parent_digest)
+                .await?
+        };
 
         debug!(height = %parent.height(), "retrieved parent block",);
 
@@ -570,23 +1072,6 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
-            // If the header has a block access list hash but the block itself doesn't
-            // it likely means that the block was fetched from reth database and we need to
-            // additionally fetch the BAL from commonware.
-            let parent = if parent.block().header().block_access_list_hash().is_some()
-                && parent.block_access_list().is_none()
-            {
-                self.marshal
-                    .subscribe_by_digest(
-                        Some(Round::new(round.epoch(), parent_view)),
-                        parent_digest,
-                    )
-                    .await
-                    .await
-                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
-            } else {
-                parent
-            };
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
@@ -598,83 +1083,10 @@ impl Inner<Init> {
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
 
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && verify_block(
-                context.clone(),
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-            .is_none()
-        {
-            bail!("the proposal parent block is not valid");
-        }
-
-        // Query DKG manager for ceremony data before building payload
-        // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height().next()
-            && parent_epoch_info.epoch() == round.epoch()
-        {
-            // At epoch boundary: include public ceremony outcome
-            let outcome = self
-                .state
-                .dkg_manager
-                .get_dkg_outcome(parent_digest, parent.height())
-                .await
-                .wrap_err("failed getting public dkg ceremony outcome")?;
-            ensure!(
-                round.epoch().next() == outcome.epoch,
-                "outcome is for epoch `{}`, but we are trying to include the \
-                outcome for epoch `{}`",
-                outcome.epoch,
-                round.epoch().next(),
-            );
-            info!(
-                %outcome.epoch,
-                outcome.network_identity = %outcome.network_identity(),
-                outcome.dealers = ?outcome.dealers(),
-                outcome.players = ?outcome.players(),
-                outcome.next_players = ?outcome.next_players(),
-                "received DKG outcome; will include in payload builder attributes",
-            );
-            outcome.encode().into()
-        } else {
-            // Regular block: try to include DKG dealer log.
-            match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
-                Err(error) => {
-                    warn!(
-                        %error,
-                        "failed getting signed dealer log for current epoch \
-                        because actor dropped response channel",
-                    );
-                    Bytes::default()
-                }
-                Ok(None) => Bytes::default(),
-                Ok(Some(log)) => {
-                    info!(
-                        "received signed dealer log; will include in payload \
-                        builder attributes"
-                    );
-                    log.encode().into()
-                }
-            }
-        };
+        // Query DKG manager for ceremony data before building or attaching payload.
+        let extra_data = self
+            .proposal_extra_data(&parent, parent_digest, round)
+            .await?;
 
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
         //
@@ -698,12 +1110,160 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
+        #[cfg(feature = "bal")]
+        let nullified_view_recovery =
+            !is_genesis_parent && is_nullified_view_recovery(round, parent_view);
+
+        #[cfg(feature = "bal")]
+        if let Some(mut speculative_build) = self
+            .state
+            .speculative_builds
+            .take_matching(parent_digest)
+            .await
+        {
+            self.state
+                .speculative_builds
+                .track_build_control(speculative_build.build_control.clone())
+                .await;
+            let consensus_context = consensus_context
+                .expect("proposal consensus context is constructed immediately above");
+            let build_budget = if nullified_view_recovery {
+                Duration::ZERO
+            } else {
+                self.proposal_return_budget
+                    .saturating_sub(propose_start.elapsed())
+            };
+            speculative_build
+                .build_control
+                .attach_proposal_context_with_budget(extra_data, consensus_context, build_budget)
+                .map_err(|error| eyre!("failed attaching speculative proposal context: {error}"))?;
+            self.metrics
+                .speculative_payload_builds_reused_by_propose
+                .inc();
+            debug!(
+                parent.digest = %parent_digest,
+                parent.height = %parent.height(),
+                "attached proposal context to speculative BAL payload build"
+            );
+
+            if !is_genesis_parent {
+                if let Err(error) = self
+                    .verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                    .await
+                {
+                    SpeculativeBuildRegistry::spawn_cancel(
+                        self.execution_node.clone(),
+                        speculative_build,
+                        "proposal_parent_validation_failed",
+                    );
+                    return Err(error);
+                }
+            }
+
+            let (proposal, proposal_return) = self
+                .resolve_speculative_proposal_payload(
+                    &context,
+                    &mut speculative_build,
+                    payload_id_rx,
+                    propose_start,
+                    Instant::now(),
+                    nullified_view_recovery,
+                )
+                .await?;
+
+            return Ok((proposal, Some(proposal_return)));
+        }
+
+        // Send the proposal parent to execution layer to cover edge cases when
+        // we were not asked to verify it and are missing it in the EL. For a
+        // matching speculative build, proposal context is attached before this
+        // check so replayable builder work can continue while validation runs.
+        if !is_genesis_parent {
+            self.verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                .await?;
+        }
+
+        #[cfg(feature = "bal")]
+        if !is_genesis_parent {
+            let consensus_context = consensus_context
+                .expect("proposal consensus context is constructed immediately above");
+            let build_budget = if nullified_view_recovery {
+                Duration::ZERO
+            } else {
+                self.proposal_return_budget
+                    .saturating_sub(propose_start.elapsed())
+            };
+            let build_control = PayloadBuildControl::new(build_budget);
+            build_control
+                .attach_proposal_context(extra_data.clone(), consensus_context)
+                .map_err(|error| {
+                    eyre!("failed attaching propose-time speculative proposal context: {error}")
+                })?;
+            if nullified_view_recovery {
+                self.metrics
+                    .speculative_payload_builds_started_from_propose_recovery
+                    .inc();
+                debug!(
+                    parent.digest = %parent.digest(),
+                    parent.height = %parent.height(),
+                    parent.view = %parent_view,
+                    round.view = %round.view(),
+                    "limiting missing-slot BAL proposal fallback after nullified view recovery"
+                );
+            }
+
+            self.state
+                .speculative_builds
+                .track_build_control(build_control.clone())
+                .await;
+            let mut speculative_build = self
+                .dispatch_speculative_payload_build(
+                    &context,
+                    &parent,
+                    build_control,
+                    extra_data,
+                    Some(consensus_context),
+                    "missing_slot_handle_propose",
+                )
+                .await
+                .wrap_err("failed starting missing-slot speculative BAL payload build")?;
+            debug!(
+                parent.digest = %parent.digest(),
+                parent.height = %parent.height(),
+                "started speculative BAL payload build from handle_propose after missing verify slot"
+            );
+            self.metrics
+                .speculative_payload_builds_started_from_propose_fallback
+                .inc();
+
+            let (proposal, proposal_return) = self
+                .resolve_speculative_proposal_payload(
+                    &context,
+                    &mut speculative_build,
+                    payload_id_rx,
+                    propose_start,
+                    Instant::now(),
+                    nullified_view_recovery,
+                )
+                .await?;
+
+            return Ok((proposal, Some(proposal_return)));
+        }
+
         // Give the builder only the proposal window that remains when payload
         // construction is requested. This accounts for a late `handle_propose`
         // start instead of resetting the budget at builder entry.
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
+        let build_control = PayloadBuildControl::new(build_budget);
+        build_control
+            .attach_proposal_context(
+                extra_data.clone(),
+                consensus_context
+                    .expect("proposal consensus context is constructed immediately above"),
+            )
+            .expect("new payload build control cannot already have proposal timing");
         let validation_latency_estimate = self
             .validation_latency_estimator
             .lock()
@@ -722,31 +1282,30 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         )
-        .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_payload_build_control(build_control)
+        .with_validation_latency_estimate(validation_latency_estimate)
+        .with_build_reason("canonical_handle_propose");
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
         let payload_build_start = Instant::now();
-        *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
-            parent.height(),
-            parent.digest(),
-            attrs,
-        )?);
+        *payload_id_rx = Some(PendingPayloadId::Canonical(
+            self.state
+                .executor
+                .canonicalize_and_build(parent.height(), parent.digest(), attrs)?,
+        ));
 
         let payload_id = payload_id_rx
             .as_mut()
             .expect("just set")
+            .recv()
             .await
-            .wrap_err("executor dropped response")?
-            .wrap_err("failed requesting a new payload build")?;
+            .wrap_err("failed receiving payload id")?;
 
-        // Replace the slot with a pre-filled oneshot so the cancel branch can keep
-        // unconditionally awaiting `payload_id_rx` and immediately get back `payload_id`.
-        let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Ok(payload_id));
-        *payload_id_rx = Some(rx);
+        // Replace the slot with the resolved id so the cancel branch can keep
+        // unconditionally waiting for a `PayloadId` and immediately get this job.
+        *payload_id_rx = Some(PendingPayloadId::ready(payload_id));
 
         let payload = self
             .execution_node
@@ -764,12 +1323,12 @@ impl Inner<Init> {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
+        let execution_block_size_bytes = payload.execution_block_size_bytes();
         let (block, block_access_list) = payload.into_execution_payload();
-        let execution_block_rlp_size_bytes = block.rlp_length();
         let proposal = Block::from_execution_block_with_encoded_size(
             block,
             block_access_list,
-            execution_block_rlp_size_bytes,
+            execution_block_size_bytes,
         )
         .wrap_err("payload builder produced an invalid block access list")?;
         let consensus_block_size_bytes = proposal.encode_size();
@@ -790,7 +1349,7 @@ impl Inner<Init> {
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
-            execution_block_rlp_size_bytes,
+            execution_block_size_bytes,
             consensus_block_size_bytes,
             "sleeping before returning proposal"
         );
@@ -801,8 +1360,404 @@ impl Inner<Init> {
             Some(ProposalReturn {
                 time: proposal_return_time,
                 block_size_bytes: consensus_block_size_bytes,
+                fast_path_executed_block: None,
             }),
         ))
+    }
+
+    #[cfg(feature = "bal")]
+    async fn ensure_block_access_list_sidecar(
+        &self,
+        block: Block,
+        round: Round,
+        block_view: View,
+        block_digest: Digest,
+    ) -> eyre::Result<Block> {
+        if block.block().header().block_access_list_hash().is_some()
+            && block.block_access_list().is_none()
+        {
+            self.marshal
+                .subscribe_by_digest(Some(Round::new(round.epoch(), block_view)), block_digest)
+                .await
+                .await
+                .map_err(|_| eyre!("syncer dropped channel before the BAL sidecar block was sent"))
+        } else {
+            Ok(block)
+        }
+    }
+
+    #[cfg(feature = "bal")]
+    async fn dispatch_speculative_payload_build<TContext: commonware_runtime::Clock>(
+        &self,
+        context: &TContext,
+        block: &Block,
+        build_control: PayloadBuildControl,
+        extra_data: Bytes,
+        consensus_context: Option<TempoConsensusContext>,
+        reason: &'static str,
+    ) -> eyre::Result<SpeculativeBuild> {
+        let block_access_list = block.required_block_access_list().clone();
+
+        let mut epoch_millis = context.current().epoch_millis();
+        if epoch_millis <= block.header().timestamp_millis() {
+            self.metrics.parent_ahead_of_local_time.inc();
+            epoch_millis = block.header().timestamp_millis() + 1;
+        }
+        let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
+        let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let parent_hash = block.block_hash();
+        let validation_latency_estimate = self
+            .validation_latency_estimator
+            .lock()
+            .ok()
+            .and_then(|estimator| estimator.estimate());
+        let parent_transaction_hashes = block
+            .body()
+            .transactions()
+            .map(|tx| *tx.tx_hash())
+            .collect::<Vec<_>>();
+
+        let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
+            &self.execution_node,
+            block.block(),
+            &block_access_list,
+        )
+        .await?;
+        debug!(
+            parent.digest = %block.digest(),
+            parent.height = %block.height(),
+            parent.hash = %block.block_hash(),
+            parent.state_root = %block.state_root(),
+            reason,
+            "prepared private BAL sparse-trie input for speculative payload build"
+        );
+
+        let attrs = TempoPayloadAttributes::new(
+            Some(proposer_public_key),
+            timestamp,
+            timestamp_millis_part,
+            extra_data,
+            consensus_context,
+            Vec::new,
+        )
+        .with_build_reason(reason)
+        .with_payload_build_control(build_control.clone())
+        .with_validation_latency_estimate(validation_latency_estimate)
+        .with_speculative_parent(SpeculativePayloadParent::new(
+            block.sealed_header().clone(),
+            block_access_list,
+        ))
+        .with_excluded_pool_transaction_hashes(parent_transaction_hashes)
+        .without_executed_block_fast_path();
+
+        let payload_id_rx =
+            self.execution_node
+                .payload_builder_handle
+                .send_new_payload(BuildNewPayload {
+                    attributes: attrs,
+                    parent_hash,
+                    cache,
+                    trie_handle: Some(trie_handle),
+                });
+
+        Ok(SpeculativeBuild {
+            parent_digest: block.digest(),
+            parent_height: block.height(),
+            build_control,
+            payload_id_rx: Some(payload_id_rx),
+            payload_id: None,
+        })
+    }
+
+    #[cfg(feature = "bal")]
+    async fn resolve_speculative_proposal_payload<TContext: Pacer>(
+        &self,
+        context: &TContext,
+        speculative_build: &mut SpeculativeBuild,
+        payload_id_rx: &mut Option<PendingPayloadId>,
+        propose_start: Instant,
+        payload_build_start: Instant,
+        return_immediately: bool,
+    ) -> eyre::Result<(Block, ProposalReturn)> {
+        if payload_id_rx.is_none() {
+            *payload_id_rx = Some(if let Some(payload_id) = speculative_build.payload_id {
+                PendingPayloadId::ready(payload_id)
+            } else {
+                PendingPayloadId::Speculative(
+                    speculative_build
+                        .payload_id_rx
+                        .take()
+                        .ok_or_eyre("speculative payload id receiver was already consumed")?,
+                )
+            });
+        }
+
+        let payload_id = payload_id_rx
+            .as_mut()
+            .expect("speculative cancel receiver was just installed")
+            .recv()
+            .await
+            .wrap_err("failed receiving speculative payload id")?;
+        speculative_build.payload_id = Some(payload_id);
+        *payload_id_rx = Some(PendingPayloadId::ready(payload_id));
+
+        let payload = self
+            .execution_node
+            .payload_builder_handle
+            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .pace(context, Duration::from_millis(20))
+            .await
+            .ok_or_eyre("no speculative payload found under provided id")
+            .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
+            .wrap_err_with(|| {
+                format!("failed getting speculative payload for payload ID `{payload_id}`")
+            })?;
+
+        let marshal_persist = marshal_persist_estimate();
+        let payload_build_elapsed = payload_build_start.elapsed();
+        let payload_validation_work_elapsed = payload.validation_work_duration();
+        let validation_latency_elapsed = payload.validation_latency_duration();
+        let execution_block_size_bytes = payload.execution_block_size_bytes();
+        let (block, block_access_list, fast_path_executed_block) =
+            payload.into_execution_payload_with_gated_fast_path();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let block_size_bytes = proposal.encode_size();
+        let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
+        let proposal_elapsed = propose_start.elapsed();
+        let return_delay = proposal_return_delay(
+            self.proposal_return_budget,
+            proposal_elapsed,
+            validation_latency_elapsed,
+            validator_marshal_persist,
+            return_immediately,
+        );
+        debug!(
+            %payload_id,
+            proposal_elapsed = %display_duration(proposal_elapsed),
+            build_time = %display_duration(payload_build_elapsed),
+            payload_validation_work = %display_duration(payload_validation_work_elapsed),
+            validation_latency_time = %display_duration(validation_latency_elapsed),
+            validator_marshal_persist = %display_duration(validator_marshal_persist),
+            return_time = %display_duration(return_delay),
+            return_immediately,
+            block_size_bytes,
+            "resolved speculative proposal return timing"
+        );
+        let proposal_return_time = context.current() + return_delay;
+
+        ensure!(
+            proposal.parent_digest() == speculative_build.parent_digest,
+            "speculative payload parent `{}` did not match requested parent `{}`",
+            proposal.parent_digest(),
+            speculative_build.parent_digest,
+        );
+        ensure!(
+            proposal.height() == speculative_build.parent_height.next(),
+            "speculative payload height `{}` did not extend parent height `{}`",
+            proposal.height(),
+            speculative_build.parent_height,
+        );
+        if let Some(expected_context) = speculative_build.build_control.proposal_context() {
+            ensure!(
+                proposal.header().consensus_context == Some(expected_context.consensus_context()),
+                "speculative payload consensus context did not match attached proposal context",
+            );
+            ensure!(
+                proposal.header().extra_data() == expected_context.extra_data(),
+                "speculative payload extra data did not match attached proposal context",
+            );
+        }
+
+        Ok((
+            proposal,
+            ProposalReturn {
+                time: proposal_return_time,
+                block_size_bytes,
+                fast_path_executed_block,
+            },
+        ))
+    }
+
+    #[cfg(feature = "bal")]
+    async fn start_speculative_build_from_parent<TContext: commonware_runtime::Clock>(
+        &self,
+        context: &TContext,
+        block: &Block,
+        reason: &'static str,
+        expected_generation: Option<u64>,
+    ) -> eyre::Result<bool> {
+        if let Some(consensus_context) = block.header().consensus_context {
+            if consensus_context.view > consensus_context.parent_view.saturating_add(1) {
+                debug!(
+                    parent.digest = %block.digest(),
+                    parent.height = %block.height(),
+                    block.view = consensus_context.view,
+                    parent.view = consensus_context.parent_view,
+                    reason,
+                    "skipping speculative BAL payload build after view gap"
+                );
+                return Ok(false);
+            }
+        }
+
+        let build_control = PayloadBuildControl::new(self.proposal_return_budget);
+        self.state
+            .speculative_builds
+            .track_build_control(build_control.clone())
+            .await;
+
+        let prepare_start = Instant::now();
+        let build = self
+            .dispatch_speculative_payload_build(
+                context,
+                block,
+                build_control,
+                Bytes::default(),
+                None,
+                reason,
+            )
+            .await?;
+        let prepare_elapsed = prepare_start.elapsed();
+
+        if build.build_control.is_cancelled() {
+            debug!(
+                parent.digest = %block.digest(),
+                parent.height = %block.height(),
+                prepare_elapsed = ?prepare_elapsed,
+                reason,
+                "discarding cancelled speculative BAL payload build before registry insertion"
+            );
+            return Ok(false);
+        }
+
+        let inserted = if let Some(expected_generation) = expected_generation {
+            self.state
+                .speculative_builds
+                .replace_if_generation(
+                    self.execution_node.clone(),
+                    build,
+                    expected_generation,
+                    "stale_speculative_successor",
+                )
+                .await
+        } else {
+            self.state
+                .speculative_builds
+                .replace(self.execution_node.clone(), build)
+                .await;
+            true
+        };
+
+        if !inserted {
+            debug!(
+                parent.digest = %block.digest(),
+                parent.height = %block.height(),
+                prepare_elapsed = ?prepare_elapsed,
+                reason,
+                "discarding stale speculative BAL payload build after registry generation changed"
+            );
+            return Ok(false);
+        }
+
+        debug!(
+            parent.digest = %block.digest(),
+            parent.height = %block.height(),
+            prepare_elapsed = ?prepare_elapsed,
+            reason,
+            "started speculative BAL payload build"
+        );
+
+        Ok(true)
+    }
+
+    #[cfg(feature = "bal")]
+    async fn start_speculative_build<TContext: commonware_runtime::Clock>(
+        &self,
+        context: &TContext,
+        block: &Block,
+    ) -> eyre::Result<()> {
+        if self
+            .start_speculative_build_from_parent(context, block, "handle_verify", None)
+            .await?
+        {
+            self.metrics
+                .speculative_payload_builds_started_from_verify
+                .inc();
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bal")]
+    fn spawn_speculative_successor_build<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent: Block,
+        executed_block: TempoBuiltPayloadExecutedBlock,
+    ) {
+        let inner = (*self).clone();
+        let expected_generation = self.state.speculative_builds.generation();
+        let task_executor = self.execution_node.task_executor.clone();
+        task_executor.spawn_task(async move {
+            if let Err(error) = inner
+                .insert_and_start_speculative_successor_build(
+                    context,
+                    parent,
+                    executed_block,
+                    expected_generation,
+                )
+                .await
+            {
+                warn!(%error, "failed starting speculative BAL successor build");
+            }
+        });
+    }
+
+    #[cfg(feature = "bal")]
+    async fn insert_and_start_speculative_successor_build<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent: Block,
+        executed_block: TempoBuiltPayloadExecutedBlock,
+        expected_generation: u64,
+    ) -> eyre::Result<()> {
+        let insert_start = Instant::now();
+        self.execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .insert_executed_block_and_wait(executed_block)
+            .pace(&context, Duration::from_millis(20))
+            .await
+            .wrap_err("failed inserting self-built parent before speculative successor build")?;
+        let insert_elapsed = insert_start.elapsed();
+        debug!(
+            parent.digest = %parent.digest(),
+            parent.height = %parent.height(),
+            parent.hash = %parent.block_hash(),
+            ?insert_elapsed,
+            "inserted self-built parent before speculative successor build"
+        );
+
+        let started = self
+            .start_speculative_build_from_parent(
+                &context,
+                &parent,
+                "handle_propose_successor",
+                Some(expected_generation),
+            )
+            .await?;
+        if started {
+            self.metrics
+                .speculative_payload_builds_started_from_propose_successor
+                .inc();
+        }
+
+        Ok(())
     }
 
     async fn verify<TContext: Pacer>(
@@ -813,9 +1768,11 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<bool> {
+        let block_fetch_start = Instant::now();
+        debug!("subscribing to proposal block for verification");
         let block_request = self
             .marshal
-            .subscribe_by_digest(None, payload)
+            .subscribe_by_digest(Some(round), payload)
             .await
             .map_err(|_| {
                 eyre!("marshal actor dropped channel before the block-to-verified was sent")
@@ -833,6 +1790,12 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed getting required blocks")?;
+        debug!(
+            elapsed = ?block_fetch_start.elapsed(),
+            block.height = %block.height(),
+            parent.height = %parent.height(),
+            "fetched proposal block and parent for verification"
+        );
 
         // Can only repropose at the end of an epoch.
         //
@@ -869,6 +1832,19 @@ impl Inner<Init> {
             return Ok(false);
         }
 
+        #[cfg(feature = "bal")]
+        // Capture the private sparse-trie snapshot and deferred builder handle before validating B.
+        // Reth fulfills the BAL-derived parent prep and the B+1 build asynchronously after this.
+        if let Err(error) = self.start_speculative_build(&context, &block).await {
+            warn!(
+                %error,
+                block.digest = %block.digest(),
+                block.height = %block.height(),
+                "failed starting speculative BAL payload build; continuing validation"
+            );
+        }
+
+        debug!("validating proposal block against execution layer");
         if let Err(error) = self
             .state
             .executor
@@ -883,7 +1859,7 @@ impl Inner<Init> {
             );
         }
 
-        let validation_duration = verify_block(
+        let validation_duration = match verify_block(
             context,
             round.epoch(),
             &self.epoch_strategy,
@@ -896,7 +1872,17 @@ impl Inner<Init> {
             &self.scheme_provider,
         )
         .await
-        .wrap_err("failed verifying block against execution layer")?;
+        {
+            Ok(validation_duration) => validation_duration,
+            Err(error) => {
+                #[cfg(feature = "bal")]
+                self.state
+                    .speculative_builds
+                    .stop_active(self.execution_node.clone(), "parent_validation_error")
+                    .await;
+                return Err(error).wrap_err("failed verifying block against execution layer");
+            }
+        };
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
@@ -926,6 +1912,12 @@ impl Inner<Init> {
                 .canonicalize_head(block_height, block_digest)
                 .await
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
+        } else {
+            #[cfg(feature = "bal")]
+            self.state
+                .speculative_builds
+                .stop_active(self.execution_node.clone(), "parent_validation_failed")
+                .await;
         }
         Ok(is_good)
     }
@@ -950,10 +1942,14 @@ impl Inner<Uninit> {
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
+            #[cfg(feature = "bal")]
+            fast_path_payloads: self.fast_path_payloads,
             executor: self.executor.clone(),
             state: Init {
                 dkg_manager,
                 executor: self.executor.clone(),
+                #[cfg(feature = "bal")]
+                speculative_builds: SpeculativeBuildRegistry::default(),
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
@@ -962,6 +1958,28 @@ impl Inner<Uninit> {
         };
 
         Ok(initialized)
+    }
+}
+
+#[cfg(feature = "bal")]
+fn is_nullified_view_recovery(round: Round, parent_view: View) -> bool {
+    round.view() > parent_view.next()
+}
+
+fn proposal_return_delay(
+    proposal_return_budget: Duration,
+    proposal_elapsed: Duration,
+    payload_validation_elapsed: Duration,
+    validator_marshal_persist: Duration,
+    return_immediately: bool,
+) -> Duration {
+    if return_immediately {
+        Duration::ZERO
+    } else {
+        proposal_return_budget
+            .saturating_sub(proposal_elapsed)
+            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validator_marshal_persist)
     }
 }
 
@@ -975,6 +1993,8 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
+    #[cfg(feature = "bal")]
+    speculative_builds: SpeculativeBuildRegistry,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -1187,6 +2207,16 @@ async fn get_parent(
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_verify: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_reused_by_propose: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_fallback: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_recovery: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_successor: Counter,
 }
 
 impl Metrics {
@@ -1200,9 +2230,116 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time",
             parent_ahead_of_local_time.clone(),
         );
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_verify = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_verify",
+                "number of BAL speculative payload builds started from block verification",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_reused_by_propose = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_reused_by_propose",
+                "number of BAL speculative payload builds started by verification and reused by proposal",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_fallback = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_fallback",
+                "number of BAL speculative payload builds started from proposal because no verify-started build was available",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_recovery = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_recovery",
+                "number of BAL proposal fallback builds limited after nullified view recovery",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_successor = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_successor",
+                "number of BAL speculative payload builds started from a self-proposed parent",
+                counter.clone(),
+            );
+            counter
+        };
 
         Self {
             parent_ahead_of_local_time,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_verify,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_reused_by_propose,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_fallback,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_recovery,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_successor,
         }
+    }
+}
+
+#[cfg(all(test, feature = "bal"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nullified_view_recovery_detects_view_gap_after_parent() {
+        let parent_view = View::new(27);
+
+        assert!(!is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(28)),
+            parent_view
+        ));
+        assert!(is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(29)),
+            parent_view
+        ));
+        assert!(is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(270)),
+            parent_view
+        ));
+    }
+
+    #[test]
+    fn recovery_proposal_return_delay_is_zero() {
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                Duration::from_millis(30),
+                Duration::from_millis(20),
+                true,
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                Duration::from_millis(30),
+                Duration::from_millis(20),
+                false,
+            ),
+            Duration::from_millis(410)
+        );
     }
 }

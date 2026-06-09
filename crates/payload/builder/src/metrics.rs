@@ -120,7 +120,7 @@ pub(crate) enum BlockBuildStopReason {
 }
 
 impl BlockBuildStopReason {
-    const fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::GasLimit => "gas_limit",
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",

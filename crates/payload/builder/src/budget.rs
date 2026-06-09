@@ -7,11 +7,12 @@
 //! latency feedback, and the size-dependent cost of persisting large blocks
 //! through consensus.
 //!
-//! The decision model is:
-//! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
-//! Idle waiting only happens on the proposer. Builder work is projected from the
-//! current build, while validator work uses feedback from previously validated
-//! blocks when available and otherwise falls back to the builder projection.
+//! Before `handle_propose`, completed builder work is already paid locally and
+//! only the remaining builder tail affects proposal return. After
+//! `handle_propose`, proposer work includes elapsed work since proposal timing
+//! was attached, plus the projected builder tail. Validator work uses recent
+//! validation feedback when available and otherwise falls back to a measured
+//! fraction of builder work.
 
 use std::time::Duration;
 
@@ -25,9 +26,12 @@ use tempo_payload_types::{
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
+pub(crate) const SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER: u64 =
+    BUILD_TIME_MULTIPLIER_SCALE + BUILD_TIME_MULTIPLIER_SCALE / 10;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
+const VALIDATOR_REPLAY_WORK_SCALE: u64 = 650_000;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
@@ -53,58 +57,95 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PayloadBudgetDecision {
-    pub(crate) predicted_builder_work: Duration,
-    pub(crate) predicted_validator_work: Duration,
-    pub(crate) marshal_persist: Duration,
-    pub(crate) total_reserved: Duration,
+pub(crate) fn estimated_validator_replay_work(predicted_work: Duration) -> Duration {
+    scaled_duration(predicted_work, VALIDATOR_REPLAY_WORK_SCALE)
 }
 
-/// Builds the shared proposer/validator budget decision for the current payload.
-///
-/// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
-/// the proposer-only time spent waiting for more transactions, which is not
-/// replayed by validators and therefore counts once.
-/// `validation_latency` is an estimate of validator-side replay work from
-/// previously validated proposals. If no latency estimate is usable for the
-/// current workload, the validator reserve falls back to
-/// `predicted_builder_work`, which is the replayable proposer work projected
-/// from this build.
-/// `current_workload` describes the block currently being assembled.
-///
-/// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected builder work once, learned validator
-/// work once capped at the conservative builder-work projection, and marshal
-/// persistence once for each side.
-pub(crate) fn payload_budget_decision(
+/// Predicted proposal-return work for a payload budget check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PayloadBudgetEstimate {
+    pub(crate) work_elapsed: Duration,
+    pub(crate) predicted_work: Duration,
+    pub(crate) proposer_work: Duration,
+    pub(crate) validator_replay_work: Duration,
+    pub(crate) marshal_persist: Duration,
+    pub(crate) total_budgeted_work: Duration,
+}
+
+#[expect(clippy::too_many_arguments)]
+fn payload_budget_estimate(
     elapsed: Duration,
     idle_elapsed: Duration,
+    proposal_timing_attached_elapsed: Option<Duration>,
     multiplier: u64,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
     validation_latency: Option<ValidationLatencyEstimate>,
     current_workload: ValidationLatencyWorkload,
-) -> PayloadBudgetDecision {
+) -> PayloadBudgetEstimate {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let validation_latency_estimate =
-        validation_latency.and_then(|estimate| estimate.estimate(current_workload));
-    let predicted_validator_work = validation_latency_estimate
-        .map(|estimate| estimate.min(predicted_builder_work))
-        .unwrap_or(predicted_builder_work);
+    let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_remaining_work = predicted_work.saturating_sub(work_elapsed);
+    let proposer_work =
+        proposal_timing_attached_elapsed.map_or(predicted_remaining_work, |attached_elapsed| {
+            elapsed
+                .saturating_sub(attached_elapsed)
+                .saturating_add(predicted_remaining_work)
+        });
+    let validator_replay_work = validation_latency
+        .and_then(|estimate| estimate.estimate(current_workload))
+        .map(|estimate| estimate.min(predicted_work))
+        .unwrap_or_else(|| estimated_validator_replay_work(predicted_work));
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
-    let total_reserved = idle_elapsed
-        .saturating_add(predicted_builder_work)
-        .saturating_add(predicted_validator_work)
+    let total_budgeted_work = proposer_work
+        .saturating_add(validator_replay_work)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist);
-    PayloadBudgetDecision {
-        predicted_builder_work,
-        predicted_validator_work,
+
+    PayloadBudgetEstimate {
+        work_elapsed,
+        predicted_work,
+        proposer_work,
+        validator_replay_work,
         marshal_persist,
-        total_reserved,
+        total_budgeted_work,
     }
+}
+
+/// Returns the budget estimate when the shared proposer/validator budget is exhausted.
+///
+/// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
+/// the proposer-only time spent waiting for more transactions, which is not
+/// replayed by validators.
+/// `proposal_timing_attached_elapsed` is `None` before `handle_propose`
+/// attaches timing. In that mode, already completed builder work does not delay
+/// proposal return, but the remaining builder tail and validator replay still
+/// reserve budget.
+/// `budget` is the remaining consensus payload build budget. `block_size_bytes`
+/// is the current encoded-size estimate used for marshal persistence.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn payload_budget_exhausted(
+    elapsed: Duration,
+    idle_elapsed: Duration,
+    proposal_timing_attached_elapsed: Option<Duration>,
+    multiplier: u64,
+    budget: Duration,
+    marshal_persist: MarshalPersistEstimator,
+    block_size_bytes: usize,
+    validation_latency: Option<ValidationLatencyEstimate>,
+    current_workload: ValidationLatencyWorkload,
+) -> Option<PayloadBudgetEstimate> {
+    let estimate = payload_budget_estimate(
+        elapsed,
+        idle_elapsed,
+        proposal_timing_attached_elapsed,
+        multiplier,
+        marshal_persist,
+        block_size_bytes,
+        validation_latency,
+        current_workload,
+    );
+    (estimate.total_budgeted_work >= budget).then_some(estimate)
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
@@ -168,109 +209,158 @@ mod tests {
     }
 
     #[test]
-    fn payload_budget_accounts_for_leader_idle_once() {
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(270));
-
-        let decision = payload_budget_decision(
-            Duration::from_millis(350),
-            Duration::from_millis(250),
-            1_350_000,
-            MarshalPersistEstimator::default(),
-            0,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(520));
-    }
-
-    #[test]
     fn payload_budget_uses_validator_feedback_when_available() {
         let workload = ValidationLatencyWorkload::new(100, 0);
         let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
-        let decision = payload_budget_decision(
+        let estimate = payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
+            Duration::from_millis(215),
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
             workload,
-        );
+        )
+        .expect("builder plus learned validator work reaches budget");
 
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
-        assert_eq!(decision.total_reserved, Duration::from_millis(215));
+        assert_eq!(estimate.predicted_work, Duration::from_millis(135));
+        assert_eq!(estimate.validator_replay_work, Duration::from_millis(80));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(215));
     }
 
     #[test]
-    fn payload_budget_caps_scaled_validator_feedback_at_builder_projection() {
+    fn payload_budget_caps_validator_feedback_at_builder_projection() {
         let validation_latency = validation_latency_estimate(
             ValidationLatencyWorkload::new(100, 10),
             Duration::from_millis(100),
         );
-        let decision = payload_budget_decision(
+        let estimate = payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            Some(Duration::ZERO),
             1_350_000,
+            Duration::from_millis(270),
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
             ValidationLatencyWorkload::new(200, 10),
-        );
+        )
+        .expect("scaled feedback is capped at projected builder work");
 
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(270));
+        assert_eq!(estimate.validator_replay_work, Duration::from_millis(135));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(270));
     }
 
     #[test]
     fn payload_budget_accounts_for_marshal_persist_twice() {
         let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
 
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            marshal_persist,
-            15_000,
-            None,
-            ValidationLatencyWorkload::default(),
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_micros(252_600),
+                marshal_persist,
+                15_000,
+                None,
+                ValidationLatencyWorkload::default(),
+            )
+            .is_some()
         );
-        assert_eq!(decision.marshal_persist, Duration::from_millis(15));
-        assert_eq!(decision.total_reserved, Duration::from_millis(300));
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                Some(Duration::ZERO),
+                1_350_000,
+                Duration::from_micros(252_600),
+                marshal_persist,
+                14_874,
+                None,
+                ValidationLatencyWorkload::default(),
+            )
+            .is_none()
+        );
+    }
 
-        let decision = payload_budget_decision(
+    #[test]
+    fn payload_budget_before_propose_only_charges_remaining_builder_work() {
+        let estimate = payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
+            None,
             1_350_000,
-            marshal_persist,
-            14_999,
+            Duration::from_millis(122),
+            MarshalPersistEstimator::default(),
+            0,
             None,
             ValidationLatencyWorkload::default(),
+        )
+        .expect("remaining builder tail plus validator replay exceeds budget");
+
+        assert_eq!(estimate.work_elapsed, Duration::from_millis(100));
+        assert_eq!(estimate.predicted_work, Duration::from_millis(135));
+        assert_eq!(estimate.proposer_work, Duration::from_millis(35));
+        assert_eq!(
+            estimate.validator_replay_work,
+            Duration::from_micros(87_750)
         );
-        assert_eq!(decision.marshal_persist, Duration::from_micros(14_999));
-        assert_eq!(decision.total_reserved, Duration::from_micros(299_998));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_micros(122_750));
+
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(100),
+                Duration::ZERO,
+                None,
+                1_350_000,
+                Duration::from_millis(123),
+                MarshalPersistEstimator::default(),
+                0,
+                None,
+                ValidationLatencyWorkload::default(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn payload_budget_after_propose_charges_post_propose_elapsed() {
+        let estimate = payload_budget_exhausted(
+            Duration::from_millis(120),
+            Duration::ZERO,
+            Some(Duration::from_millis(100)),
+            1_000_000,
+            Duration::from_millis(98),
+            MarshalPersistEstimator::default(),
+            0,
+            None,
+            ValidationLatencyWorkload::default(),
+        )
+        .expect("post-propose work plus validator replay reaches budget");
+
+        assert_eq!(estimate.predicted_work, Duration::from_millis(120));
+        assert_eq!(estimate.proposer_work, Duration::from_millis(20));
+        assert_eq!(estimate.validator_replay_work, Duration::from_millis(78));
+        assert_eq!(estimate.total_budgeted_work, Duration::from_millis(98));
+
+        assert!(
+            payload_budget_exhausted(
+                Duration::from_millis(120),
+                Duration::ZERO,
+                Some(Duration::from_millis(100)),
+                1_000_000,
+                Duration::from_millis(99),
+                MarshalPersistEstimator::default(),
+                0,
+                None,
+                ValidationLatencyWorkload::default(),
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -279,5 +369,6 @@ mod tests {
             scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
         );
+        assert_eq!(SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER, 1_100_000);
     }
 }

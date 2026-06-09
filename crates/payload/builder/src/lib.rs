@@ -3,21 +3,26 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "bal")]
+pub mod bal_overlay;
 mod budget;
+pub mod job;
 mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
+pub use job::TempoPayloadJobGenerator;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
+        BUILD_TIME_MULTIPLIER_SCALE, SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER,
+        decay_build_time_multiplier, estimated_validator_replay_work,
+        observed_build_time_multiplier, payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmingStateProviderConfig},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -30,6 +35,8 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+#[cfg(feature = "bal")]
+use reth_engine_tree::tree::CacheFillMode;
 use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
@@ -57,16 +64,22 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, RecvTimeoutError},
     },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    evm::TempoEvm,
+};
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+    PayloadBuildControl, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -75,7 +88,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
+    SkippingBestTransactions, StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -90,6 +103,78 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
                 .is_some_and(|valid| valid.get() <= timestamp)
         })
     })
+}
+
+const SPARSE_TRIE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PROPOSAL_CONTEXT_POOL_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+enum CancelableRecv<T> {
+    Received(T),
+    Cancelled,
+    Disconnected,
+}
+
+fn recv_sparse_trie_with_cancel<T>(
+    rx: Receiver<T>,
+    should_cancel: impl Fn() -> bool,
+) -> CancelableRecv<T> {
+    loop {
+        if should_cancel() {
+            return CancelableRecv::Cancelled;
+        }
+
+        match rx.recv_timeout(SPARSE_TRIE_CANCEL_POLL_INTERVAL) {
+            Ok(value) => return CancelableRecv::Received(value),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return CancelableRecv::Disconnected,
+        }
+    }
+}
+
+enum ProposalContextWait {
+    Attached,
+    Cancelled,
+}
+
+fn builder_elapsed_excluding_proposal_wait_at(
+    payload_build_control: Option<&PayloadBuildControl>,
+    start: Instant,
+    proposal_context_wait_elapsed: Duration,
+    now: Instant,
+) -> Duration {
+    payload_build_control
+        .map(|control| control.snapshot_at(now).builder_elapsed())
+        .unwrap_or_else(|| now.saturating_duration_since(start))
+        .saturating_sub(proposal_context_wait_elapsed)
+}
+
+fn wait_for_late_proposal_context(
+    ctx: &mut TempoBlockExecutionCtx<'_>,
+    control: &PayloadBuildControl,
+    should_cancel: &dyn Fn() -> bool,
+    wait_elapsed: &mut Duration,
+) -> Result<ProposalContextWait, PayloadBuilderError> {
+    if ctx.consensus_context.is_some() {
+        return Ok(ProposalContextWait::Attached);
+    }
+
+    let wait_start = Instant::now();
+    match control.wait_for_proposal_context_while(should_cancel) {
+        Ok(proposal_context) => {
+            *wait_elapsed += wait_start.elapsed();
+            ctx.inner.extra_data = proposal_context.extra_data().clone();
+            ctx.consensus_context = Some(proposal_context.consensus_context());
+            Ok(ProposalContextWait::Attached)
+        }
+        Err(_) if control.is_cancelled() || should_cancel() => {
+            *wait_elapsed += wait_start.elapsed();
+            Ok(ProposalContextWait::Cancelled)
+        }
+        Err(error) => {
+            *wait_elapsed += wait_start.elapsed();
+            Err(PayloadBuilderError::other(error))
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +246,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
     ) -> Self {
+        let build_time_multiplier = scaled_build_time_multiplier(config.build_time_multiplier);
         Self {
             pool,
             provider,
@@ -173,9 +259,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
-            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
-                config.build_time_multiplier,
-            ))),
+            build_time_multiplier: Arc::new(AtomicU64::new(build_time_multiplier)),
         }
     }
 
@@ -329,15 +413,25 @@ where
             attributes,
             payload_id,
         } = config;
+        let build_reason = attributes.build_reason().unwrap_or("unknown");
+        let payload_number = parent_header.number().saturating_add(1);
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
-
+        let payload_build_control = attributes.payload_build_control().cloned();
+        let speculative_bal_build =
+            cfg!(feature = "bal") && attributes.speculative_parent().is_some();
+        let build_cancelled = || {
+            cancel.is_cancelled()
+                || payload_build_control
+                    .as_ref()
+                    .is_some_and(|control| control.is_cancelled())
+        };
         macro_rules! check_cancel {
             () => {
-                if cancel.is_cancelled() {
+                if build_cancelled() {
                     return Ok(BuildOutcome::Cancelled);
                 }
             };
@@ -352,10 +446,111 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
+        let prewarm_parent_hash = attributes
+            .speculative_parent()
+            .map(|parent| parent.base_parent_hash())
+            .unwrap_or_else(|| parent_header.hash());
+        let cache_wrapped_under_bal =
+            cfg!(feature = "bal") && attributes.speculative_parent().is_some();
+        // Speculative BAL prewarm may share validation's cache, so it can read but must not fill.
+        let prewarm_cache_fill_on_miss = !cache_wrapped_under_bal;
+        #[cfg(feature = "bal")]
+        let builder_local_cache = if cache_wrapped_under_bal {
+            execution_cache.as_ref().map(|cache| {
+                let cache_create_start = Instant::now();
+                let local_cache = cache.empty_like(parent_header.hash());
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    elapsed = ?cache_create_start.elapsed(),
+                    "created builder-local execution cache overlay for speculative BAL payload"
+                );
+                local_cache
+            })
+        } else {
+            None
+        };
+        #[cfg(feature = "bal")]
+        let build_state_provider =
+            |speculative_bal_overlay: Option<bal_overlay::SharedBalOverlay>| -> Result<
+                (
+                    reth_storage_api::StateProviderBox,
+                    Option<bal_overlay::SharedBalOverlay>,
+                ),
+                PayloadBuilderError,
+            > {
+                if let Some(speculative_parent) = attributes.speculative_parent() {
+                    if speculative_parent.parent_hash() != parent_header.hash() {
+                        return Err(PayloadBuilderError::other(
+                            ProviderError::StateForHashNotFound(parent_header.hash()),
+                        ));
+                    }
+
+                    let base_provider = self
+                        .provider
+                        .state_by_block_hash(speculative_parent.base_parent_hash())?;
+                    let base_provider = if let Some(execution_cache) = &execution_cache {
+                        Box::new(CachedStateProvider::new(
+                            base_provider,
+                            execution_cache.cache().clone(),
+                            None,
+                        )) as reth_storage_api::StateProviderBox
+                    } else {
+                        base_provider
+                    };
+                    let parent_header = speculative_parent.parent_header();
+                    let overlay = if let Some(overlay) = speculative_bal_overlay {
+                        overlay
+                    } else {
+                        bal_overlay::SharedBalOverlay::new(
+                            base_provider.as_ref(),
+                            parent_header.as_ref(),
+                            speculative_parent.block_access_list(),
+                        )?
+                    };
+                    let state_provider =
+                        Box::new(bal_overlay::BalOverlayStateProvider::from_shared(
+                            base_provider,
+                            parent_header,
+                            overlay.clone(),
+                        )) as reth_storage_api::StateProviderBox;
+                    let state_provider = if let Some(cache) = &builder_local_cache {
+                        Box::new(CachedStateProvider::new_with_mode(
+                            state_provider,
+                            cache.cache().clone(),
+                            CacheFillMode::FillOnMiss,
+                            Some(self.cache_metrics.clone()),
+                            None,
+                        )) as reth_storage_api::StateProviderBox
+                    } else {
+                        state_provider
+                    };
+
+                    Ok((state_provider, Some(overlay)))
+                } else {
+                    Ok((
+                        self.provider.state_by_block_hash(parent_header.hash())?,
+                        None,
+                    ))
+                }
+            };
+
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = &execution_cache {
+        #[cfg(feature = "bal")]
+        let (mut state_provider, speculative_bal_overlay) = build_state_provider(None)?;
+        #[cfg(not(feature = "bal"))]
+        let mut state_provider = {
+            if attributes.speculative_parent().is_some() {
+                return Err(PayloadBuilderError::other(
+                    ProviderError::UnsupportedProvider,
+                ));
+            }
+            self.provider.state_by_block_hash(parent_header.hash())?
+        };
+        if !cache_wrapped_under_bal && let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -474,7 +669,7 @@ where
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
-        let ctx = self
+        let mut ctx = self
             .evm_config
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
@@ -488,7 +683,17 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
+        let mut proposal_context_wait_elapsed = Duration::ZERO;
+
         if let Some(ref handle) = trie_handle {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                parent_hash = %parent_header.hash(),
+                parent_number = parent_header.number(),
+                deferred_parent_pending = handle.is_deferred_parent_pending(),
+                "streaming payload-builder sparse-trie updates; final state root remains gated"
+            );
             executor
                 .evm_mut()
                 .db_mut()
@@ -528,19 +733,60 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let excluded_pool_transaction_hashes =
+            (!attributes.excluded_pool_transaction_hashes().is_empty()).then(|| {
+                Arc::new(
+                    attributes
+                        .excluded_pool_transaction_hashes()
+                        .iter()
+                        .copied()
+                        .collect::<HashSet<_>>(),
+                )
+            });
+        let excluded_pool_transaction_skips = Arc::new(AtomicU64::new(0));
+        let best_txs: Box<dyn BestTransactions<Item = _>> =
+            if let Some(excluded_hashes) = excluded_pool_transaction_hashes.clone() {
+                let skipped = excluded_pool_transaction_skips.clone();
+                let metrics = self.metrics.clone();
+                Box::new(SkippingBestTransactions::new(
+                    best_txs,
+                    move |tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>| {
+                        if excluded_hashes.contains(tx.hash()) {
+                            skipped.fetch_add(1, Ordering::Relaxed);
+                            metrics.inc_pool_tx_skipped("parent_block_tx");
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                ))
+            } else {
+                Box::new(best_txs)
+            };
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
+        let prewarming_config = PrewarmingStateProviderConfig::new(
+            self.provider.clone(),
+            prewarm_parent_hash,
+            execution_cache.clone(),
+            prewarm_cache_fill_on_miss,
+            executor.evm().evm_env(),
+        );
+        #[cfg(feature = "bal")]
+        let prewarming_config = prewarming_config.with_speculative_parent(
+            builder_local_cache.clone(),
+            attributes.speculative_parent().cloned(),
+            speculative_bal_overlay.clone(),
+        );
+
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
+                prewarming_config,
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
-            Box::new(best_txs)
+            best_txs
         });
         self.metrics
             .pool_fetch_duration_seconds
@@ -550,45 +796,82 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut late_excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
-        let build_time_multiplier = self.build_time_multiplier();
+        let is_budgeted_build = payload_build_control.is_some();
+        let build_time_multiplier = if speculative_bal_build {
+            SPECULATIVE_BAL_BUILD_TIME_MULTIPLIER
+        } else {
+            self.build_time_multiplier()
+        };
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let mut proposal_timing_attached_elapsed = None;
+        let mut attempted_best_txs_next = false;
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
-                let elapsed = start.elapsed();
+            if let Some(control) = payload_build_control.as_ref() {
+                let snapshot = control.snapshot();
+                let build_budget = snapshot.proposal_return_budget();
+                let elapsed = snapshot
+                    .builder_elapsed()
+                    .saturating_sub(proposal_context_wait_elapsed);
+                if control.proposal_timing_attached() && proposal_timing_attached_elapsed.is_none()
+                {
+                    proposal_timing_attached_elapsed = Some(elapsed);
+                }
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = payload_budget_decision(
+                if let Some(estimate) = payload_budget_exhausted(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
+                    proposal_timing_attached_elapsed,
                     build_time_multiplier,
+                    build_budget,
                     marshal_persist,
                     block_size_used,
                     validation_latency,
                     current_workload,
-                );
-                if budget_decision.total_reserved >= build_budget {
+                ) {
+                    let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
+                        && is_budgeted_build
+                        && build_once_with_shared_trie;
+                    let proposal_elapsed = proposal_timing_attached_elapsed
+                        .map(|attached_elapsed| elapsed.saturating_sub(attached_elapsed));
                     debug!(
                         target: "payload_builder",
+                        id = %payload_id,
+                        build_reason,
+                        parent_hash = %parent_header.hash(),
+                        parent_number = parent_header.number(),
+                        payload_number,
+                        stop_reason = BlockBuildStopReason::BuildBudget.as_str(),
                         ?elapsed,
+                        builder_elapsed = ?snapshot.builder_elapsed(),
+                        ?proposal_elapsed,
+                        ?estimate.work_elapsed,
+                        ?estimate.predicted_work,
+                        ?estimate.proposer_work,
+                        ?estimate.validator_replay_work,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
-                        predicted_builder_work = ?budget_decision.predicted_builder_work,
-                        predicted_validator_work = ?budget_decision.predicted_validator_work,
-                        total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
+                        ?estimate.marshal_persist,
+                        ?estimate.total_budgeted_work,
+                        proposal_timing_attached = proposal_timing_attached_elapsed.is_some(),
+                        pool_transactions_yielded,
+                        pool_transactions_included,
+                        cumulative_gas_used,
+                        non_shared_gas_limit,
+                        can_wait_for_pool,
+                        build_once_with_shared_trie,
+                        stopped_before_first_best_txs_next = !attempted_best_txs_next,
                         ?current_workload,
-                        gas_used = cumulative_gas_used,
-                        transactions = pool_transactions_included,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -598,13 +881,29 @@ where
                 }
             }
 
+            attempted_best_txs_next = true;
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
+                    && is_budgeted_build
+                    && build_once_with_shared_trie;
+                if can_wait_for_pool {
+                    if payload_build_control
+                        .as_ref()
+                        .is_some_and(|control| !control.proposal_timing_attached())
+                    {
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            build_reason,
+                            parent_hash = %parent_header.hash(),
+                            parent_number = parent_header.number(),
+                            payload_number,
+                            "stopping pool transaction execution before waiting for proposal context"
+                        );
+                        break BlockBuildStopReason::TxPoolEmpty;
+                    }
+                    std::thread::sleep(PROPOSAL_CONTEXT_POOL_POLL_INTERVAL);
+                    normal_transaction_fill_idle_elapsed += PROPOSAL_CONTEXT_POOL_POLL_INTERVAL;
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -614,9 +913,58 @@ where
                 } else {
                     BlockBuildStopReason::TxPoolEmpty
                 };
+                let (builder_elapsed, elapsed, build_budget, proposal_timing_attached) =
+                    if let Some(control) = payload_build_control.as_ref() {
+                        let snapshot = control.snapshot();
+                        let builder_elapsed = snapshot.builder_elapsed();
+                        (
+                            Some(builder_elapsed),
+                            Some(builder_elapsed.saturating_sub(proposal_context_wait_elapsed)),
+                            Some(snapshot.proposal_return_budget()),
+                            control.proposal_timing_attached(),
+                        )
+                    } else {
+                        (None, None, None, false)
+                    };
+                let proposal_elapsed = elapsed.and_then(|elapsed| {
+                    proposal_timing_attached_elapsed
+                        .map(|attached_elapsed| elapsed.saturating_sub(attached_elapsed))
+                });
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    build_reason,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    payload_number,
+                    stop_reason = stop_reason.as_str(),
+                    ?elapsed,
+                    ?builder_elapsed,
+                    ?proposal_elapsed,
+                    ?build_budget,
+                    proposal_timing_attached,
+                    pool_transactions_yielded,
+                    pool_transactions_included,
+                    can_wait_for_pool,
+                    build_once_with_shared_trie,
+                    stopped_before_first_best_txs_next = !attempted_best_txs_next,
+                    cumulative_gas_used,
+                    non_shared_gas_limit,
+                    skipped_oversized_block,
+                    "stopping pool transaction execution"
+                );
                 break stop_reason;
             };
             pool_transactions_yielded += 1;
+
+            if excluded_pool_transaction_hashes
+                .as_ref()
+                .is_some_and(|hashes| hashes.contains(pool_tx.hash()))
+            {
+                late_excluded_pool_transaction_skips += 1;
+                self.metrics.inc_pool_tx_skipped("parent_block_tx");
+                continue;
+            }
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),
@@ -743,16 +1091,25 @@ where
             ));
         };
 
-        // cancel pre-warming, if any, by dropping the iter
+        // Cancel pre-warming, if any, by dropping the iterator before block
+        // finalization begins.
         drop(best_txs);
 
-        let elapsed_at_tx_cutoff = start.elapsed();
+        let elapsed_at_tx_cutoff = builder_elapsed_excluding_proposal_wait_at(
+            payload_build_control.as_ref(),
+            start,
+            proposal_context_wait_elapsed,
+            Instant::now(),
+        );
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
+        let block_build_stop_reason_label = block_build_stop_reason.as_str();
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
-        let normal_transaction_fill_elapsed = execution_start.elapsed();
+        let normal_transaction_fill_elapsed = execution_start
+            .elapsed()
+            .saturating_sub(proposal_context_wait_elapsed);
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
@@ -871,10 +1228,6 @@ where
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let finish_provider = InstrumentedFinishProvider {
-            inner: &*state_provider,
-            metrics: self.metrics.clone(),
-        };
 
         check_cancel!();
 
@@ -884,6 +1237,7 @@ where
         drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
+        check_cancel!();
         let evm_env = evm.into_env();
 
         // merge all transitions into bundle state before deriving the hashed post-state
@@ -892,22 +1246,110 @@ where
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
+        check_cancel!();
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
-            .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
+        let block_access_list = db.take_built_alloy_bal();
+        let block_access_list_hash = block_access_list
+            .as_ref()
+            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+        let bundle_state = db.take_bundle();
+        drop(db);
+
+        let needs_late_proposal_context = attributes.consensus_context().is_none()
+            && ctx.consensus_context.is_none()
+            && attributes.payload_build_control().is_some();
+
+        let finish_state_provider = if needs_late_proposal_context {
+            drop(state_provider);
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                build_reason,
+                parent_hash = %parent_header.hash(),
+                parent_number = parent_header.number(),
+                payload_number,
+                "released payload-builder state provider before waiting for proposal context"
+            );
+
+            if let Some(control) = attributes.payload_build_control() {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    "waiting for proposal context before finalizing speculative payload"
+                );
+                match wait_for_late_proposal_context(
+                    &mut ctx,
+                    control,
+                    &|| cancel.is_cancelled(),
+                    &mut proposal_context_wait_elapsed,
+                )? {
+                    ProposalContextWait::Attached => {}
+                    ProposalContextWait::Cancelled => return Ok(BuildOutcome::Cancelled),
+                }
+            }
+            check_cancel!();
+
+            #[cfg(feature = "bal")]
+            let (mut reopened_state_provider, _) =
+                build_state_provider(speculative_bal_overlay.clone())?;
+            #[cfg(not(feature = "bal"))]
+            let mut reopened_state_provider = {
+                if attributes.speculative_parent().is_some() {
+                    return Err(PayloadBuilderError::other(
+                        ProviderError::UnsupportedProvider,
+                    ));
+                }
+                self.provider.state_by_block_hash(parent_header.hash())?
+            };
+            if !cache_wrapped_under_bal && let Some(execution_cache) = &execution_cache {
+                reopened_state_provider = Box::new(CachedStateProvider::new(
+                    reopened_state_provider,
+                    execution_cache.cache().clone(),
+                    Some(self.cache_metrics.clone()),
+                ));
+            }
+            if self.state_provider_metrics {
+                reopened_state_provider = Box::new(InstrumentedStateProvider::new(
+                    reopened_state_provider,
+                    "builder",
+                ));
+            }
+            reopened_state_provider
         } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
+            state_provider
+        };
+        let finish_provider = InstrumentedFinishProvider {
+            inner: &*finish_state_provider,
+            metrics: self.metrics.clone(),
+        };
+
+        let hashed_state = if let Some(hashed_state_rx) = trie_handle
+            .as_mut()
+            .map(|handle| handle.take_hashed_state_rx())
+        {
+            match recv_sparse_trie_with_cancel(hashed_state_rx, build_cancelled) {
+                CancelableRecv::Received(hashed_state) => hashed_state,
+                CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
+                CancelableRecv::Disconnected => {
+                    check_cancel!();
+                    finish_provider.hashed_post_state(&bundle_state)
+                }
+            }
+        } else {
+            check_cancel!();
+            finish_provider.hashed_post_state(&bundle_state)
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
+                let state_root_rx = handle.take_state_root_rx();
+                let state_root_result = recv_sparse_trie_with_cancel(state_root_rx, build_cancelled);
+                drop(handle);
+
+                match state_root_result {
+                    CancelableRecv::Received(Ok(outcome)) => {
                         let elapsed = state_root_wait_start.elapsed();
                         self.metrics
                             .sparse_trie_state_root_wait_duration_seconds
@@ -920,12 +1362,21 @@ where
                         );
                         Some((outcome, elapsed))
                     }
-                    Err(err) => {
+                    CancelableRecv::Received(Err(err)) => {
                         warn!(
                             target: "payload_builder",
                             id = %payload_id,
                             %err,
                             "sparse trie failed, falling back to sync state root"
+                        );
+                        None
+                    }
+                    CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
+                    CancelableRecv::Disconnected => {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            "sparse trie state root channel disconnected, falling back to sync state root"
                         );
                         None
                     }
@@ -935,14 +1386,12 @@ where
             }
             .unzip();
 
-        let block_access_list = db.take_built_alloy_bal();
-        let block_access_list_hash = block_access_list
-            .as_ref()
-            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+        check_cancel!();
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
+            check_cancel!();
             let (state_root, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
@@ -950,9 +1399,12 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
+        check_cancel!();
+
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
+        check_cancel!();
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -961,7 +1413,7 @@ where
                 &parent_header,
                 transactions,
                 &execution_result,
-                &db.bundle_state,
+                &bundle_state,
                 &finish_provider,
                 state_root,
                 block_access_list_hash,
@@ -1034,6 +1486,9 @@ where
         } else {
             pool_transactions_included as f64 / pool_transactions_yielded as f64
         };
+        let excluded_pool_transaction_skips = excluded_pool_transaction_skips
+            .load(Ordering::Relaxed)
+            + late_excluded_pool_transaction_skips;
         self.metrics
             .pool_transactions_yielded
             .record(pool_transactions_yielded as f64);
@@ -1056,11 +1511,21 @@ where
             .pool_transactions_inclusion_ratio_last
             .set(pool_transactions_inclusion_ratio);
 
-        let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
-        if payload_build_budget.is_some() {
+        let elapsed = builder_elapsed_excluding_proposal_wait_at(
+            payload_build_control.as_ref(),
+            start,
+            proposal_context_wait_elapsed,
+            Instant::now(),
+        );
+        let replayable_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = if speculative_bal_build {
+            estimated_validator_replay_work(replayable_work_duration)
+        } else {
+            replayable_work_duration
+        };
+        if is_budgeted_build && !speculative_bal_build {
             self.update_build_time_multiplier(
-                validation_work_duration,
+                replayable_work_duration,
                 validation_work_at_tx_cutoff,
             );
         }
@@ -1083,6 +1548,8 @@ where
             .set(recorded_block_size_bytes as f64);
 
         info!(
+            id = %payload_id,
+            build_reason,
             parent_hash = ?block.parent_hash(),
             number = block.number(),
             hash = ?block.hash(),
@@ -1095,8 +1562,16 @@ where
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
+            excluded_pool_transaction_skips,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
+            block_build_stop_reason = block_build_stop_reason_label,
+            proposal_timing_attached = payload_build_control
+                .as_ref()
+                .is_some_and(|control| control.proposal_timing_attached()),
+            build_once_with_shared_trie,
+            is_budgeted_build,
+            speculative_bal_build,
             subblock_transactions,
             total_transactions,
             ?elapsed,
@@ -1104,6 +1579,7 @@ where
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ?proposal_context_wait_elapsed,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
@@ -1116,28 +1592,40 @@ where
         let block_access_list: Option<Bytes> =
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
+        let block_num_hash = block.num_hash();
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
-            state: db.take_bundle(),
+            state: bundle_state,
         };
 
-        let executed_block = BuiltPayloadExecutedBlock {
+        let built_executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
         };
+        let (executed_block, gated_executed_block) = if attributes.publish_executed_block() {
+            (Some(built_executed_block), None)
+        } else {
+            debug!(
+                block_number = %block_num_hash.number,
+                block_hash = %block_num_hash.hash,
+                "deferring executed-block fast path for built payload"
+            );
+            (None, Some(built_executed_block))
+        };
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
             block_access_list,
-            Some(executed_block),
+            executed_block,
+            gated_executed_block,
             validation_work_duration,
+            recorded_block_size_bytes,
             validation_latency_duration,
         );
 
-        drop(db);
         if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
@@ -1159,42 +1647,41 @@ where
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
 
-        self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+        let _ = self.executor.spawn_blocking(|| {
+            let mut transactions = Vec::new();
+            let mut senders = Vec::new();
 
-                let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
+            let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_bloom = Bloom::ZERO;
 
-                let mut buf = Vec::new();
+            let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
-                    buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    transactions.push(tx);
-                    senders.push(sender);
+            for (tx, receipt) in transactions_rx.into_iter() {
+                let (tx, sender) = tx.into_parts();
+                buf.clear();
+                tx.encode_2718(&mut buf);
+                transactions_root.push_next(&buf);
+                transactions.push(tx);
+                senders.push(sender);
 
-                    let receipt = receipt.with_bloom_ref();
+                let receipt = receipt.with_bloom_ref();
 
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
-                }
-                let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send((
-                    transactions_root,
-                    receipts_root,
-                    receipts_bloom,
-                    transactions,
-                    senders,
-                ));
-            });
+                buf.clear();
+                receipt.encode_2718(&mut buf);
+                receipts_root.push_next(&buf);
+                receipts_bloom |= receipt.bloom();
+            }
+            let transactions_root = transactions_root.finalize();
+            let receipts_root = receipts_root.finalize();
+            let _ = result_tx.send((
+                transactions_root,
+                receipts_root,
+                receipts_bloom,
+                transactions,
+                senders,
+            ));
+        });
 
         (transactions_tx, result_rx)
     }
@@ -1297,6 +1784,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::Block as _;
+    use reth_revm::cancelled::CancelOnDrop;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1304,6 +1792,73 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_receives_value() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(7u64).unwrap();
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, || false),
+            CancelableRecv::Received(7)
+        ));
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_reports_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel::<u64>();
+        drop(tx);
+
+        let cancel = CancelOnDrop::default();
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, || cancel.is_cancelled()),
+            CancelableRecv::Disconnected
+        ));
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_stops_on_cancel() {
+        let (_tx, rx) = std::sync::mpsc::channel::<u64>();
+        let cancel = CancelOnDrop::default();
+        drop(cancel.clone());
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, || cancel.is_cancelled()),
+            CancelableRecv::Cancelled
+        ));
+    }
+
+    #[test]
+    fn builder_elapsed_subtracts_proposal_context_wait() {
+        let start = Instant::now();
+        let control = PayloadBuildControl::new_at(Duration::from_millis(300), start);
+
+        assert_eq!(
+            builder_elapsed_excluding_proposal_wait_at(
+                Some(&control),
+                start,
+                Duration::from_millis(40),
+                start + Duration::from_millis(125),
+            ),
+            Duration::from_millis(85)
+        );
+    }
+
+    #[test]
+    fn builder_elapsed_subtracts_proposal_context_wait_without_control() {
+        let start = Instant::now();
+
+        assert_eq!(
+            builder_elapsed_excluding_proposal_wait_at(
+                None,
+                start,
+                Duration::from_millis(40),
+                start + Duration::from_millis(125),
+            ),
+            Duration::from_millis(85)
+        );
     }
 
     trait TestExt {
@@ -1378,8 +1933,17 @@ mod tests {
         }
         .try_into_recovered()
         .unwrap();
+        let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(
+            eth,
+            None,
+            None,
+            None,
+            Duration::ZERO,
+            rlp_length,
+            Duration::ZERO,
+        )
     }
 
     #[test]

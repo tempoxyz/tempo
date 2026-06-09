@@ -160,11 +160,13 @@ impl Block {
     }
 
     /// Returns the wrapped block.
+    #[cfg(feature = "bal")]
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         &self.0.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
+    #[cfg_attr(not(feature = "bal"), allow(dead_code))]
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]
         {
@@ -174,6 +176,20 @@ impl Block {
         {
             None
         }
+    }
+
+    /// Returns a validated BAL sidecar, panicking if the BAL invariant is broken.
+    #[cfg(feature = "bal")]
+    pub(crate) fn required_block_access_list(&self) -> &Bytes {
+        let block_access_list = self
+            .block_access_list()
+            .expect("BAL feature requires verified blocks to carry a block access list sidecar");
+        validate_block_access_list_hash(
+            self.0.execution_block.block_access_list_hash(),
+            Some(block_access_list),
+        )
+        .expect("BAL feature requires block access list sidecar to match the block header");
+        block_access_list
     }
 }
 
@@ -207,9 +223,6 @@ impl Write for Block {
         self.0.execution_block.encode(buf);
         #[cfg(feature = "bal")]
         if self.0.execution_block.block_access_list_hash().is_some() {
-            // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
-            // without the commonware BAL sidecar. Encoding one will panic here, which
-            // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
                 .0
                 .block_access_list
@@ -578,12 +591,22 @@ fn validate_block_access_list_hash(
 mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
+    #[cfg(feature = "bal")]
+    use alloy_primitives::Bytes;
     use alloy_primitives::{B256, bytes, keccak256};
+    #[cfg(feature = "bal")]
+    use alloy_rlp::Encodable as _;
+    #[cfg(feature = "bal")]
+    use bytes::Buf as _;
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
-    use commonware_codec::{Encode, Read as _};
+    use commonware_codec::{Encode, EncodeSize as _, Read as _};
+    #[cfg(feature = "bal")]
+    use commonware_runtime::{
+        BufferPooler as _, Runner as _, deterministic, iobuf::EncodeExt as _,
+    };
     use reth_node_core::primitives::SealedBlock;
-    use tempo_primitives::{Block as TempoBlock, TempoHeader};
+    use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
 
     use super::Block;
     #[cfg(feature = "bal")]
@@ -741,6 +764,71 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn block_access_list_pool_encoding_matches_standard_encoding() {
+        let block_access_list = Bytes::from(vec![0xAB; 141]);
+        let mut execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        execution_block.header_mut().consensus_context = Some(TempoConsensusContext {
+            epoch: 0,
+            view: 1,
+            parent_view: 0,
+            proposer: tempo_primitives::ed25519::PublicKey::from_seed([0x11; 32]),
+        });
+        execution_block = SealedBlock::seal_slow(execution_block.into_block());
+        let execution_block_size = execution_block.length();
+        let block_access_list_size = block_access_list.encode_size();
+        let block = Block::from_execution_block_with_encoded_size(
+            execution_block,
+            Some(block_access_list),
+            execution_block_size,
+        )
+        .unwrap();
+        let encoded = block.encode();
+        assert_eq!(
+            block.encode_size(),
+            execution_block_size + block_access_list_size
+        );
+        assert_eq!(block.encode_inline_size(), block.encode_size());
+        assert_eq!(encoded.len(), block.encode_size());
+
+        let _cached_clone = block.clone();
+        deterministic::Runner::default().start(|context| async move {
+            let mut encoded_pool = block.encode_with_pool(context.network_buffer_pool());
+            assert_eq!(encoded_pool.remaining(), block.encode_size());
+            let mut encoded_pool_bytes = vec![0u8; encoded_pool.remaining()];
+            encoded_pool.copy_to_slice(&mut encoded_pool_bytes);
+
+            assert_eq!(encoded_pool_bytes, encoded.as_ref());
+        });
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn required_block_access_list_returns_valid_sidecar() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let block =
+            Block::from_execution_block(execution_block, Some(block_access_list.clone())).unwrap();
+
+        assert_eq!(
+            block.required_block_access_list().as_ref(),
+            block_access_list.as_ref()
+        );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    #[should_panic(expected = "BAL feature requires verified blocks to carry a block access list")]
+    fn required_block_access_list_panics_without_sidecar() {
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let block = Block::from_execution_block_unchecked(execution_block, None);
+
+        let _ = block.required_block_access_list();
     }
 
     #[cfg(feature = "bal")]

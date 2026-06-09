@@ -4,9 +4,12 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+#[cfg(feature = "bal")]
+use crate::bal_overlay::SharedBalOverlay;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_errors::ProviderResult;
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
@@ -15,6 +18,8 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+#[cfg(feature = "bal")]
+use tempo_payload_types::SpeculativePayloadParent;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
@@ -24,7 +29,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{debug, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -36,16 +41,68 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    #[cfg(test)]
+    done_rx: Receiver<()>,
+}
+
+/// State-provider inputs for transaction prewarming.
+#[derive(Clone)]
+pub(crate) struct PrewarmingStateProviderConfig<Provider> {
+    provider: Provider,
+    parent_hash: B256,
+    cache: Option<SavedCache>,
+    #[cfg(feature = "bal")]
+    local_cache: Option<SavedCache>,
+    cache_fill_on_miss: bool,
+    #[cfg(feature = "bal")]
+    speculative_parent: Option<SpeculativePayloadParent>,
+    #[cfg(feature = "bal")]
+    speculative_bal_overlay: Option<SharedBalOverlay>,
+    evm_env: EvmEnvFor<TempoEvmConfig>,
+}
+
+impl<Provider> PrewarmingStateProviderConfig<Provider> {
+    pub(crate) fn new(
+        provider: Provider,
+        parent_hash: B256,
+        cache: Option<SavedCache>,
+        cache_fill_on_miss: bool,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+    ) -> Self {
+        Self {
+            provider,
+            parent_hash,
+            cache,
+            #[cfg(feature = "bal")]
+            local_cache: None,
+            cache_fill_on_miss,
+            #[cfg(feature = "bal")]
+            speculative_parent: None,
+            #[cfg(feature = "bal")]
+            speculative_bal_overlay: None,
+            evm_env,
+        }
+    }
+
+    #[cfg(feature = "bal")]
+    pub(crate) fn with_speculative_parent(
+        mut self,
+        local_cache: Option<SavedCache>,
+        speculative_parent: Option<SpeculativePayloadParent>,
+        speculative_bal_overlay: Option<SharedBalOverlay>,
+    ) -> Self {
+        self.local_cache = local_cache;
+        self.speculative_parent = speculative_parent;
+        self.speculative_bal_overlay = speculative_bal_overlay;
+        self
+    }
 }
 
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
         executor: TaskExecutor,
-        provider: Provider,
-        cache: Option<SavedCache>,
-        parent_hash: B256,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
+        config: PrewarmingStateProviderConfig<Provider>,
         best_txs: Txs,
     ) -> Self
     where
@@ -54,12 +111,11 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        #[cfg(test)]
+        let (done_tx, done_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
-            provider,
-            parent_hash,
-            cache,
-            evm_env,
+            config,
             stop: stop.clone(),
         };
 
@@ -67,10 +123,14 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop,
+            #[cfg(test)]
+            done_rx,
         };
 
         let prewarm_executor = executor.clone();
-        executor.spawn_blocking_named("builder-prewarm", move || {
+        // Builder prewarm waits on command and transaction channels; avoid serializing all
+        // speculative jobs behind one named worker.
+        let _ = executor.spawn_blocking(move || {
             Self::start_prewarming(
                 prewarm_executor,
                 BestTransactionsPrewarmingContext {
@@ -82,6 +142,8 @@ impl BestTransactionsPrewarming {
                     next_expiring_nonce_offset: 0,
                 },
             );
+            #[cfg(test)]
+            let _ = done_tx.send(());
         });
 
         this
@@ -97,7 +159,24 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let pool = executor.prewarming_pool();
+        let pool = executor.payload_builder_prewarming_pool();
+        let prewarming_threads = pool.current_num_threads();
+        let initial_lookahead = prewarming_threads * 2;
+        #[cfg(feature = "bal")]
+        let (speculative_bal_prewarm, shared_bal_overlay) = (
+            ctx.prewarm.config.speculative_parent.is_some(),
+            ctx.prewarm.config.speculative_bal_overlay.is_some(),
+        );
+        #[cfg(not(feature = "bal"))]
+        let (speculative_bal_prewarm, shared_bal_overlay) = (false, false);
+        debug!(
+            target: "payload_builder",
+            prewarming_threads,
+            initial_lookahead,
+            speculative_bal_prewarm,
+            shared_bal_overlay,
+            "starting builder transaction prewarming"
+        );
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -130,7 +209,7 @@ impl BestTransactionsPrewarming {
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            for _ in 0..initial_lookahead {
                 advance(&mut ctx);
             }
 
@@ -170,7 +249,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.clear_type::<PrewarmEvmState>();
     }
 
     fn prewarm_transaction<Provider>(
@@ -194,7 +273,7 @@ impl BestTransactionsPrewarming {
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches = storage_touches_for_transaction(
                     &tx,
-                    prewarm.evm_env.block_env.beneficiary,
+                    prewarm.config.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
                 );
 
@@ -256,6 +335,8 @@ impl Drop for BestTransactionsPrewarming {
         let _ = self
             .commands_tx
             .send(BestTransactionsCommand::Stop { drain_rx });
+        #[cfg(test)]
+        let _ = self.done_rx.recv_timeout(std::time::Duration::from_secs(1));
     }
 }
 
@@ -311,10 +392,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
 struct PrewarmingExecutionContext<Provider> {
-    provider: Provider,
-    parent_hash: B256,
-    cache: Option<SavedCache>,
-    evm_env: EvmEnvFor<TempoEvmConfig>,
+    config: PrewarmingStateProviderConfig<Provider>,
     stop: Arc<AtomicBool>,
 }
 
@@ -323,32 +401,89 @@ where
     Provider: StateProviderFactory + Clone + 'static,
 {
     fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+        let state_provider = match self.state_provider_for_ctx() {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
                     target: "payload_builder",
                     %err,
-                    parent_hash = ?self.parent_hash,
+                    parent_hash = ?self.config.parent_hash,
                     "failed to build state provider for transaction prewarming"
                 );
                 return None;
             }
         };
 
-        if let Some(cache) = &self.cache {
-            state_provider = Box::new(CachedStateProvider::new_prewarm(
-                state_provider,
-                cache.cache().clone(),
-            ));
-        }
-
         let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
+        let mut evm_env = self.config.evm_env.clone();
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
         Some(TempoEvm::new(state_provider, evm_env))
+    }
+
+    fn state_provider_for_ctx(&self) -> ProviderResult<StateProviderBox> {
+        #[cfg(feature = "bal")]
+        if let Some(speculative_parent) = &self.config.speculative_parent {
+            let mut state_provider = self
+                .config
+                .provider
+                .state_by_block_hash(speculative_parent.base_parent_hash())?;
+
+            if let Some(cache) = &self.config.cache {
+                state_provider = Box::new(CachedStateProvider::new(
+                    state_provider,
+                    cache.cache().clone(),
+                    None,
+                ));
+            }
+
+            let parent_header = speculative_parent.parent_header();
+            let overlay = if let Some(overlay) = &self.config.speculative_bal_overlay {
+                overlay.clone()
+            } else {
+                SharedBalOverlay::new(
+                    state_provider.as_ref(),
+                    parent_header.as_ref(),
+                    speculative_parent.block_access_list(),
+                )?
+            };
+            state_provider = Box::new(crate::bal_overlay::BalOverlayStateProvider::from_shared(
+                state_provider,
+                parent_header,
+                overlay,
+            ));
+
+            if let Some(cache) = &self.config.local_cache {
+                state_provider = Box::new(CachedStateProvider::new_prewarm(
+                    state_provider,
+                    cache.cache().clone(),
+                ));
+            }
+
+            return Ok(state_provider);
+        }
+
+        let mut state_provider = self
+            .config
+            .provider
+            .state_by_block_hash(self.config.parent_hash)?;
+        if let Some(cache) = &self.config.cache {
+            state_provider = if self.config.cache_fill_on_miss {
+                Box::new(CachedStateProvider::new_prewarm(
+                    state_provider,
+                    cache.cache().clone(),
+                ))
+            } else {
+                Box::new(CachedStateProvider::new(
+                    state_provider,
+                    cache.cache().clone(),
+                    None,
+                ))
+            };
+        }
+
+        Ok(state_provider)
     }
 
     fn is_stopped(&self) -> bool {
@@ -789,15 +924,11 @@ mod tests {
 
     struct TestPrewarming {
         prewarming: Option<BestTransactionsPrewarming>,
-        executor: TaskExecutor,
     }
 
     impl Drop for TestPrewarming {
         fn drop(&mut self) {
             drop(self.prewarming.take());
-            self.executor
-                .spawn_blocking_named("builder-prewarm", || {})
-                .get();
         }
     }
 
@@ -861,18 +992,14 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
+        let config =
+            PrewarmingStateProviderConfig::new(provider, parent_header.hash(), None, true, evm_env);
         let prewarming = BestTransactionsPrewarming::new(
             executor.clone(),
-            provider,
-            None,
-            parent_header.hash(),
-            evm_env,
+            config,
             TestBestTransactions::new(txs, log),
         );
-        TestPrewarming {
-            prewarming: Some(prewarming),
-            executor,
-        }
+        TestPrewarming { prewarming: Some(prewarming) }
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -982,7 +1109,7 @@ mod tests {
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let txs = (0..executor.payload_builder_prewarming_pool().current_num_threads() * 2 + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
@@ -1000,7 +1127,7 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances = executor.payload_builder_prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
@@ -1060,7 +1187,7 @@ mod tests {
     #[test]
     fn prewarming_does_not_use_shared_worker_state_slot() {
         let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
+        let pool = executor.payload_builder_prewarming_pool();
         pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
 
         let sender = Address::random();

@@ -39,6 +39,7 @@ reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-transaction-pool.workspace = true
 reth-trie-common.workspace = true
+reth-trie-parallel.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true

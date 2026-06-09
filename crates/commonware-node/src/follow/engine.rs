@@ -153,6 +153,8 @@ impl<TUpstream> Config<TUpstream> {
                 execution_node: self.execution_node.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
+                #[cfg(feature = "bal")]
+                fast_path_payloads: crate::fast_path::FastPathPayloadCache::default(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: None,
             },
