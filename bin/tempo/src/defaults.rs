@@ -4,14 +4,18 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultTraceValues, DefaultTxPoolValues,
+    DefaultPruningValues, DefaultTraceValues, DefaultTxPoolValues, StaticFilesArgs,
 };
+use reth_prune_types::{MINIMUM_DISTANCE, PruneMode, PruneModes};
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
+/// One Tempo epoch length plus one block.
+const MINIMAL_PRUNING_DISTANCE: u64 = 86_401;
+const DEFAULT_BLOCKS_PER_STATIC_FILE: u64 = 50_000;
 
 /// Default OTLP logs filter level for telemetry.
 const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
@@ -198,6 +202,46 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
+fn minimal_prune_modes() -> PruneModes {
+    PruneModes {
+        sender_recovery: Some(PruneMode::Full),
+        transaction_lookup: Some(PruneMode::Full),
+        receipts: Some(PruneMode::Distance(MINIMUM_DISTANCE)),
+        account_history: Some(PruneMode::Distance(MINIMAL_PRUNING_DISTANCE)),
+        storage_history: Some(PruneMode::Distance(MINIMAL_PRUNING_DISTANCE)),
+        bodies_history: Some(PruneMode::Distance(MINIMAL_PRUNING_DISTANCE)),
+        receipts_log_filter: Default::default(),
+    }
+}
+
+fn init_pruning_defaults() {
+    DefaultPruningValues::default()
+        .with_minimal_prune_modes(minimal_prune_modes())
+        .try_init()
+        .expect("failed to initialize pruning defaults");
+}
+
+pub(crate) fn apply_static_file_defaults(static_files: &mut StaticFilesArgs) {
+    static_files
+        .blocks_per_file_headers
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+    static_files
+        .blocks_per_file_transactions
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+    static_files
+        .blocks_per_file_receipts
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+    static_files
+        .blocks_per_file_transaction_senders
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+    static_files
+        .blocks_per_file_account_change_sets
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+    static_files
+        .blocks_per_file_storage_change_sets
+        .get_or_insert(DEFAULT_BLOCKS_PER_STATIC_FILE);
+}
+
 fn init_engine_defaults() {
     DefaultEngineValues::default()
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
@@ -261,6 +305,7 @@ pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
+    init_pruning_defaults();
     init_engine_defaults();
     init_trace_defaults();
     init_otlp_defaults();
