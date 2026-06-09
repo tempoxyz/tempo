@@ -30,7 +30,6 @@ use commonware_p2p::Recipients;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
 };
-use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
@@ -40,6 +39,10 @@ use futures::{
     future::try_join,
 };
 use rand_08::{CryptoRng, Rng};
+use reth_metrics::{
+    Metrics,
+    metrics::{self, Counter, Histogram},
+};
 use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -106,7 +109,7 @@ where
         let (tx, rx) = mpsc::channel(config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
-        let metrics = Metrics::init(&config.context);
+        let metrics = Metrics::default();
 
         Ok(Self {
             context: ContextCell::new(config.context),
@@ -408,6 +411,13 @@ impl Inner<Init> {
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
+                    let proposal_return_delay = proposal_return
+                        .time
+                        .duration_since(context.current())
+                        .unwrap_or_default();
+                    self.metrics
+                        .proposal_return_delay_seconds
+                        .record(proposal_return_delay.as_secs_f64());
                     context.sleep_until(proposal_return.time).await;
                 }
 
@@ -682,7 +692,7 @@ impl Inner<Init> {
         // timestamp is not in the future during EL validation.
         let mut epoch_millis = context.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
-            self.metrics.parent_ahead_of_local_time.inc();
+            self.metrics.parent_ahead_of_local_time.increment(1);
             epoch_millis = parent.timestamp_millis() + 1
         };
 
@@ -1184,25 +1194,12 @@ async fn get_parent(
     }
 }
 
-#[derive(Clone)]
+#[derive(Metrics, Clone)]
+#[metrics(scope = "commonware_node.consensus.application")]
 struct Metrics {
+    /// Number of times the parent block timestamp was ahead of local time.
     parent_ahead_of_local_time: Counter,
-}
 
-impl Metrics {
-    fn init<TContext>(context: &TContext) -> Self
-    where
-        TContext: commonware_runtime::Metrics,
-    {
-        let parent_ahead_of_local_time = Counter::default();
-        context.register(
-            "parent_ahead_of_local_time",
-            "number of times the parent block timestamp was ahead of local time",
-            parent_ahead_of_local_time.clone(),
-        );
-
-        Self {
-            parent_ahead_of_local_time,
-        }
-    }
+    /// Remaining time intentionally waited before returning a locally built proposal in seconds.
+    proposal_return_delay_seconds: Histogram,
 }

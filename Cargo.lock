@@ -13001,6 +13001,7 @@ dependencies = [
  "reth-consensus-common",
  "reth-ethereum",
  "reth-evm",
+ "reth-metrics",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
