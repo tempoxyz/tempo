@@ -696,7 +696,7 @@ impl Encodable2718 for TempoPooledTransaction {
     }
 
     fn encode_2718_len(&self) -> usize {
-        self.inner.transaction.encode_2718_len()
+        self.inner.encoded_length
     }
 
     fn encode_2718(&self, out: &mut dyn bytes::BufMut) {
@@ -1255,6 +1255,7 @@ mod tests {
             .build();
 
         // Test various Transaction trait methods
+        assert_eq!(tx.encode_2718_len(), tx.encoded_length());
         assert_eq!(tx.chain_id(), Some(42431));
         assert_eq!(tx.nonce(), 0);
         assert_eq!(tx.gas_limit(), 1_000_000);
