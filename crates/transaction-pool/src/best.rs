@@ -13,7 +13,7 @@ use reth_transaction_pool::{
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
+use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -165,14 +165,11 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
-                let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
+                if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
-                        .insert((address, slot), present_balance);
+                        .insert((address, slot), storage_slot.present_value);
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
+                    *balance = storage_slot.present_value;
                 }
             }
         }
