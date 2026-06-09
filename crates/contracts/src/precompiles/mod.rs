@@ -50,40 +50,42 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
 
-/// Fixed Tempo system precompile addresses active at genesis.
-pub const GENESIS_SYSTEM_PRECOMPILES: &[Address] = &[
-    TIP403_REGISTRY_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS,
-    ACCOUNT_KEYCHAIN_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
-];
+/// Activation hardfork for a fixed Tempo system precompile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SystemPrecompileActivation {
+    Genesis,
+    T3,
+    T5,
+    T6,
+}
 
-/// Fixed Tempo system precompile addresses activated at T3.
-pub const T3_SYSTEM_PRECOMPILES: &[Address] =
-    &[ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS];
-
-/// Fixed Tempo system precompile addresses activated at T5.
-pub const T5_SYSTEM_PRECOMPILES: &[Address] = &[TIP20_CHANNEL_RESERVE_ADDRESS];
-
-/// Fixed Tempo system precompile addresses activated at T6.
-pub const T6_SYSTEM_PRECOMPILES: &[Address] = &[RECEIVE_POLICY_GUARD_ADDRESS];
-
-/// All fixed Tempo system precompile addresses.
-pub const SYSTEM_PRECOMPILES: &[Address] = &[
-    TIP403_REGISTRY_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS,
-    ACCOUNT_KEYCHAIN_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
-    TIP20_FACTORY_ADDRESS,
-    ADDRESS_REGISTRY_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
-    RECEIVE_POLICY_GUARD_ADDRESS,
+/// Fixed system precompile addresses and corresponding activation hardfork.
+pub const SYSTEM_PRECOMPILES: &[(Address, SystemPrecompileActivation)] = &[
+    (TIP403_REGISTRY_ADDRESS, SystemPrecompileActivation::Genesis),
+    (TIP_FEE_MANAGER_ADDRESS, SystemPrecompileActivation::Genesis),
+    (STABLECOIN_DEX_ADDRESS, SystemPrecompileActivation::Genesis),
+    (
+        NONCE_PRECOMPILE_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        VALIDATOR_CONFIG_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        VALIDATOR_CONFIG_V2_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (TIP20_FACTORY_ADDRESS, SystemPrecompileActivation::Genesis),
+    (ADDRESS_REGISTRY_ADDRESS, SystemPrecompileActivation::T3),
+    (SIGNATURE_VERIFIER_ADDRESS, SystemPrecompileActivation::T3),
+    (
+        TIP20_CHANNEL_RESERVE_ADDRESS,
+        SystemPrecompileActivation::T5,
+    ),
+    (RECEIVE_POLICY_GUARD_ADDRESS, SystemPrecompileActivation::T6),
 ];
