@@ -127,6 +127,8 @@ struct ProposalReturn {
     time: SystemTime,
     block_size_bytes: usize,
     fast_path_executed_block: Option<TempoBuiltPayloadExecutedBlock>,
+    #[cfg(feature = "bal")]
+    successor_parent_ready: bool,
 }
 
 #[cfg(feature = "bal")]
@@ -758,6 +760,8 @@ impl Inner<Init> {
                     #[cfg(feature = "bal")]
                     let successor_parent = block.clone();
                     let fast_path_executed_block = proposal_return.fast_path_executed_block;
+                    #[cfg(feature = "bal")]
+                    let successor_parent_ready = proposal_return.successor_parent_ready;
 
                     let persist_start = Instant::now();
                     if !self.marshal.proposed(round, block).await {
@@ -798,12 +802,32 @@ impl Inner<Init> {
                             self.spawn_speculative_successor_build(
                                 context.clone(),
                                 successor_parent,
-                                successor_executed_block,
+                                Some(successor_executed_block),
                             );
                         }
 
                         #[cfg(not(feature = "bal"))]
                         let _ = executed_block;
+                    } else {
+                        #[cfg(feature = "bal")]
+                        if successor_parent_ready {
+                            let successor_return_wait = proposal_return
+                                .time
+                                .duration_since(context.current())
+                                .unwrap_or_default();
+                            debug!(
+                                proposal.digest = %digest,
+                                proposal.height = %block_height,
+                                proposal.hash = %block_hash,
+                                ?successor_return_wait,
+                                "scheduling speculative BAL successor build without fast-path parent insert",
+                            );
+                            self.spawn_speculative_successor_build(
+                                context.clone(),
+                                successor_parent,
+                                None,
+                            );
+                        }
                     }
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
@@ -1361,6 +1385,8 @@ impl Inner<Init> {
                 time: proposal_return_time,
                 block_size_bytes: consensus_block_size_bytes,
                 fast_path_executed_block: None,
+                #[cfg(feature = "bal")]
+                successor_parent_ready: false,
             }),
         ))
     }
@@ -1518,7 +1544,7 @@ impl Inner<Init> {
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
         let execution_block_size_bytes = payload.execution_block_size_bytes();
-        let (block, block_access_list, fast_path_executed_block) =
+        let (block, block_access_list, fast_path_executed_block, successor_parent_ready) =
             payload.into_execution_payload_with_gated_fast_path();
         let proposal = Block::from_execution_block_with_encoded_size(
             block,
@@ -1579,6 +1605,7 @@ impl Inner<Init> {
                 time: proposal_return_time,
                 block_size_bytes,
                 fast_path_executed_block,
+                successor_parent_ready,
             },
         ))
     }
@@ -1698,14 +1725,14 @@ impl Inner<Init> {
         &self,
         context: TContext,
         parent: Block,
-        executed_block: TempoBuiltPayloadExecutedBlock,
+        executed_block: Option<TempoBuiltPayloadExecutedBlock>,
     ) {
         let inner = (*self).clone();
         let expected_generation = self.state.speculative_builds.generation();
         let task_executor = self.execution_node.task_executor.clone();
         task_executor.spawn_task(async move {
             if let Err(error) = inner
-                .insert_and_start_speculative_successor_build(
+                .prepare_and_start_speculative_successor_build(
                     context,
                     parent,
                     executed_block,
@@ -1719,29 +1746,38 @@ impl Inner<Init> {
     }
 
     #[cfg(feature = "bal")]
-    async fn insert_and_start_speculative_successor_build<TContext: Pacer>(
+    async fn prepare_and_start_speculative_successor_build<TContext: Pacer>(
         &self,
         context: TContext,
         parent: Block,
-        executed_block: TempoBuiltPayloadExecutedBlock,
+        executed_block: Option<TempoBuiltPayloadExecutedBlock>,
         expected_generation: u64,
     ) -> eyre::Result<()> {
-        let insert_start = Instant::now();
-        self.execution_node
-            .add_ons_handle
-            .beacon_engine_handle
-            .insert_executed_block_and_wait(executed_block)
-            .pace(&context, Duration::from_millis(20))
-            .await
-            .wrap_err("failed inserting self-built parent before speculative successor build")?;
-        let insert_elapsed = insert_start.elapsed();
-        debug!(
-            parent.digest = %parent.digest(),
-            parent.height = %parent.height(),
-            parent.hash = %parent.block_hash(),
-            ?insert_elapsed,
-            "inserted self-built parent before speculative successor build"
-        );
+        if let Some(executed_block) = executed_block {
+            let insert_start = Instant::now();
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .insert_executed_block_and_wait(executed_block)
+                .pace(&context, Duration::from_millis(20))
+                .await
+                .wrap_err("failed inserting self-built parent before speculative successor build")?;
+            let insert_elapsed = insert_start.elapsed();
+            debug!(
+                parent.digest = %parent.digest(),
+                parent.height = %parent.height(),
+                parent.hash = %parent.block_hash(),
+                ?insert_elapsed,
+                "inserted self-built parent before speculative successor build"
+            );
+        } else {
+            debug!(
+                parent.digest = %parent.digest(),
+                parent.height = %parent.height(),
+                parent.hash = %parent.block_hash(),
+                "starting speculative BAL successor build without fast-path parent insert"
+            );
+        }
 
         let started = self
             .start_speculative_build_from_parent(
@@ -1889,8 +1925,8 @@ impl Inner<Init> {
             estimator.observe(
                 block.height().get(),
                 ValidationLatencyWorkload::new(
-                    block.block().gas_used(),
-                    block.block().body().transaction_count(),
+                    block.gas_used(),
+                    block.body().transaction_count(),
                 ),
                 duration,
             );
@@ -1966,6 +2002,7 @@ fn is_nullified_view_recovery(round: Round, parent_view: View) -> bool {
     round.view() > parent_view.next()
 }
 
+#[cfg(feature = "bal")]
 fn proposal_return_delay(
     proposal_return_budget: Duration,
     proposal_elapsed: Duration,

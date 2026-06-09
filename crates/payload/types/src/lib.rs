@@ -50,6 +50,12 @@ pub struct TempoBuiltPayload {
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     /// Executed block data withheld from Reth's unconditional built-payload subscriber.
     gated_executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// Whether this payload can be used as the parent for a successor speculative build.
+    ///
+    /// This is separate from `gated_executed_block`: speculative BAL payloads may
+    /// have cumulative trie updates that are not safe to fast-insert, while the
+    /// block and its BAL sidecar are still enough to prepare the next build.
+    successor_parent_ready: bool,
     /// Replayable builder work for this payload.
     ///
     /// This excludes proposer-only idle waiting, but includes transaction
@@ -68,6 +74,7 @@ impl TempoBuiltPayload {
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         gated_executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        successor_parent_ready: bool,
         validation_work_duration: Duration,
         execution_block_size_bytes: usize,
         validation_latency_duration: Duration,
@@ -77,6 +84,7 @@ impl TempoBuiltPayload {
             block_access_list,
             executed_block,
             gated_executed_block,
+            successor_parent_ready,
             validation_work_duration,
             execution_block_size_bytes,
             validation_latency_duration,
@@ -98,11 +106,13 @@ impl TempoBuiltPayload {
         SealedBlock<Block>,
         Option<Bytes>,
         Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        bool,
     ) {
         (
             Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
             self.block_access_list,
             self.gated_executed_block,
+            self.successor_parent_ready,
         )
     }
 
