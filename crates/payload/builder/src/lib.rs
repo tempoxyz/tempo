@@ -1530,6 +1530,7 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let execution_block_size_bytes = rlp_length;
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
@@ -1623,7 +1624,7 @@ where
             executed_block,
             gated_executed_block,
             validation_work_duration,
-            recorded_block_size_bytes,
+            execution_block_size_bytes,
             validation_latency_duration,
         );
 
