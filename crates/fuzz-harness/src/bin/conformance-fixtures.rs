@@ -64,7 +64,7 @@ fn report_progress(checked: usize, total: usize, failures: usize, stderr_is_tty:
     if stderr_is_tty {
         eprint!("\rchecked {checked}/{total} fixture(s), failures={failures}");
         let _ = io::stderr().flush();
-    } else if checked % 10_000 == 0 || checked == total {
+    } else if checked.is_multiple_of(10_000) || checked == total {
         eprintln!("checked {checked}/{total} fixture(s), failures={failures}");
     }
 }

@@ -27,15 +27,16 @@ fn check_supply(
             continue;
         };
 
-        if let Some(supply_cap) = supply_cap(evm, token)? {
-            if !supply_cap.is_zero() && total_supply > supply_cap {
-                return Err(format!(
-                    "TEMPO-TIP20-SUPPLY-CAP side={side} token={} total_supply={} supply_cap={}",
-                    fmt_addr(token),
-                    total_supply,
-                    supply_cap
-                ));
-            }
+        if let Some(supply_cap) = supply_cap(evm, token)?
+            && !supply_cap.is_zero()
+            && total_supply > supply_cap
+        {
+            return Err(format!(
+                "TEMPO-TIP20-SUPPLY-CAP side={side} token={} total_supply={} supply_cap={}",
+                fmt_addr(token),
+                total_supply,
+                supply_cap
+            ));
         }
 
         let mut known_balance_sum = U256::ZERO;

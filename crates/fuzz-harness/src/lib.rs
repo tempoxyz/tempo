@@ -30,8 +30,7 @@ use std::{
     sync::Arc,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_consensus::TempoConsensus;
-use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus, evm::TempoEvm};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockExecutionResultOutput, BlockInput,
     BlockPayload, BlockResult, ChainSpecInput, ErrorClass, ExecutedBlockOutput,
@@ -51,6 +50,11 @@ struct DecodedBlock {
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `in_ptr` must point to `in_len` readable bytes. `out_written` must be valid
+/// for writes. If `out_ptr` is non-null, it must point to `out_len` writable
+/// bytes.
 pub unsafe extern "C" fn tempo_fuzz_execute_block_with_result_v1(
     out_ptr: *mut u8,
     out_len: usize,
@@ -79,6 +83,11 @@ pub unsafe extern "C" fn tempo_fuzz_execute_block_with_result_v1(
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `in_ptr` must point to `in_len` readable bytes. `out_written` must be valid
+/// for writes. If `out_ptr` is non-null, it must point to `out_len` writable
+/// bytes.
 pub unsafe extern "C" fn tempo_fuzz_execute_tx_with_result_v1(
     out_ptr: *mut u8,
     out_len: usize,
@@ -107,6 +116,10 @@ pub unsafe extern "C" fn tempo_fuzz_execute_tx_with_result_v1(
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+///
+/// `out_written` must be valid for writes. If `out_ptr` is non-null, it must
+/// point to `out_len` writable bytes.
 pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     out_ptr: *mut u8,
     out_len: usize,
@@ -1180,7 +1193,7 @@ mod tests {
     #[test]
     fn execute_block_input_runs_transactions() {
         let tx = legacy_tx(0, 0);
-        let request = block_input_with_txs(&[tx.clone()]);
+        let request = block_input_with_txs(std::slice::from_ref(&tx));
         let response = execute_block_result(&serialized_block_input_with_txs(&[tx]))
             .expect("block input executes");
 
