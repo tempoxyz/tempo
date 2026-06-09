@@ -27,6 +27,8 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+const USER_REWARD_INFO_PENDING_SLOT_OFFSET: U256 = U256::ONE;
+const USER_REWARD_INFO_ACCUMULATED_SLOT_OFFSET: U256 = U256::from_limbs([2, 0, 0, 0]);
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -575,8 +577,12 @@ fn add_tip20_allowance_touch(
 fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(touches, token, base_slot);
-    add_storage_touch(touches, token, base_slot + U256::from(1));
-    add_storage_touch(touches, token, base_slot + U256::from(2));
+    add_storage_touch(touches, token, base_slot + USER_REWARD_INFO_PENDING_SLOT_OFFSET);
+    add_storage_touch(
+        touches,
+        token,
+        base_slot + USER_REWARD_INFO_ACCUMULATED_SLOT_OFFSET,
+    );
 }
 
 fn add_fee_manager_touches(
