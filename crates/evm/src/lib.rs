@@ -129,15 +129,15 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let chain_spec = self.chain_spec();
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
-            self.chain_spec(),
-            self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(header.timestamp()),
+            chain_spec,
+            chain_spec.chain().id(),
+            chain_spec.blob_params_at_timestamp(header.timestamp()),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+        let spec = chain_spec.tempo_hardfork_at(header.timestamp());
 
         // Apply TIP-1000 gas params for T1 hardfork.
         //
@@ -171,6 +171,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let chain_spec = self.chain_spec();
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
@@ -180,16 +181,15 @@ impl ConfigureEvm for TempoEvmConfig {
                 gas_limit: attributes.gas_limit,
                 slot_number: attributes.slot_number,
             },
-            self.chain_spec()
+            chain_spec
                 .next_block_base_fee(parent, attributes.timestamp)
                 .unwrap_or_default(),
-            self.chain_spec(),
-            self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(attributes.timestamp),
+            chain_spec,
+            chain_spec.chain().id(),
+            chain_spec.blob_params_at_timestamp(attributes.timestamp),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+        let spec = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
