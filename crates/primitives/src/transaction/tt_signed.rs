@@ -1,10 +1,9 @@
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
-    unique_tx_identifier_from_signable,
 };
 use alloc::vec::Vec;
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
@@ -38,6 +37,8 @@ pub struct AASigned {
     hash: OnceLock<B256>,
     /// Cached transaction signing hash.
     signature_hash: OnceLock<B256>,
+    /// Cached transaction payload encoded for signing.
+    signing_payload: OnceLock<Bytes>,
     /// Cached sender-scoped replay hash for the first recovered sender.
     expiring_nonce_hash: OnceLock<(Address, B256)>,
 }
@@ -54,6 +55,7 @@ impl AASigned {
             signature,
             hash: value,
             signature_hash: OnceLock::new(),
+            signing_payload: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
         }
     }
@@ -66,6 +68,7 @@ impl AASigned {
             signature,
             hash: OnceLock::new(),
             signature_hash: OnceLock::new(),
+            signing_payload: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
         }
     }
@@ -113,6 +116,24 @@ impl AASigned {
             .get_or_init(|| self.tx.signature_hash().into())
     }
 
+    fn signing_payload(&self) -> &Bytes {
+        #[allow(clippy::useless_conversion)]
+        self.signing_payload.get_or_init(|| {
+            let mut buf = Vec::with_capacity(self.tx.payload_len_for_signature());
+            self.tx.encode_for_signing(&mut buf);
+            debug_assert_eq!(buf.len(), self.tx.payload_len_for_signature());
+            Bytes::from(buf).into()
+        })
+    }
+
+    fn sender_scoped_identifier(&self, sender: Address) -> B256 {
+        let payload = self.signing_payload();
+        let mut buf = Vec::with_capacity(payload.len() + sender.as_slice().len());
+        buf.extend_from_slice(payload);
+        buf.extend_from_slice(sender.as_slice());
+        alloy_primitives::keccak256(buf)
+    }
+
     /// Calculate the expiring nonce dedup hash for replay protection.
     ///
     /// This hash is `keccak256(encode_for_signing || sender)`. It is:
@@ -122,14 +143,14 @@ impl AASigned {
     ///   hash differs even for identical transaction payloads.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
         let cached = self.expiring_nonce_hash.get_or_init(|| {
-            let hash = unique_tx_identifier_from_signable(&self.tx, sender);
+            let hash = self.sender_scoped_identifier(sender);
             #[allow(clippy::useless_conversion)]
             (sender, hash).into()
         });
         if cached.0 == sender {
             cached.1
         } else {
-            unique_tx_identifier_from_signable(&self.tx, sender)
+            self.sender_scoped_identifier(sender)
         }
     }
 
