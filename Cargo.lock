@@ -13222,7 +13222,6 @@ dependencies = [
  "revm",
  "serde",
  "tempo-chainspec",
- "tempo-consensus",
  "tempo-contracts",
  "tempo-evm",
  "tempo-fuzz-types",
