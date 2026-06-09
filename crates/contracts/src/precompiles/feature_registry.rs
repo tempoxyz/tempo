@@ -19,6 +19,9 @@ crate::sol! {
         /// @notice Returns the highest active protocol feature ID.
         function featuresTip() external view returns (uint64);
 
+        /// @notice Returns the highest protocol feature tip with observed quorum support.
+        function highestQuorumFeaturesTip() external view returns (uint64 featuresTip);
+
         /// @notice Returns the scheduled feature tip and earliest activation epoch.
         function scheduledFeaturesTip() external view returns (uint64 featuresTip, uint64 activationEpoch);
 
@@ -81,5 +84,8 @@ crate::sol! {
 
         /// @notice Requested activation epoch is not strictly greater than the current epoch.
         error ActivationEpochNotFuture();
+
+        /// @notice Scheduled feature tip does not have quorum support.
+        error FeaturesTipQuorumNotReached();
     }
 }

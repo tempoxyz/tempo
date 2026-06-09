@@ -18,6 +18,9 @@ impl Precompile for FeatureRegistry {
             IFeatureRegistryCalls::abi_decode,
             |call| match call {
                 IFeatureRegistryCalls::featuresTip(call) => view(call, |_| self.features_tip()),
+                IFeatureRegistryCalls::highestQuorumFeaturesTip(call) => {
+                    view(call, |_| self.highest_quorum_features_tip())
+                }
                 IFeatureRegistryCalls::owner(call) => view(call, |_| self.owner()),
                 IFeatureRegistryCalls::activationQuorum(call) => {
                     view(call, |_| self.activation_quorum())
@@ -128,12 +131,50 @@ mod tests {
         Ok(public_key)
     }
 
+    fn add_test_validator_support(
+        registry: &mut FeatureRegistry,
+        owner: Address,
+        seed: u64,
+        features_tip: u64,
+    ) -> eyre::Result<()> {
+        let validator = Address::repeat_byte(seed as u8);
+        let public_key = add_test_validator(owner, validator, seed)?;
+        registry
+            .set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: features_tip,
+                    featuresDigest: protocol_features_digest(features_tip).unwrap(),
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    fn add_quorum_support(
+        registry: &mut FeatureRegistry,
+        owner: Address,
+        features_tip: u64,
+    ) -> eyre::Result<()> {
+        initialize_validator_config_owner(owner)?;
+        for seed in 1..=5 {
+            if seed <= 4 {
+                add_test_validator_support(registry, owner, seed, features_tip)?;
+            } else {
+                let validator = Address::repeat_byte(seed as u8);
+                add_test_validator(owner, validator, seed)?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn features_tip_defaults_to_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let registry = FeatureRegistry::new();
             assert_eq!(registry.features_tip()?, 0);
+            assert_eq!(registry.highest_quorum_features_tip()?, 0);
             Ok(())
         })
     }
@@ -463,15 +504,15 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             assert!(!registry.activate_scheduled_features_tip(20)?);
-            assert_eq!(registry.features_tip()?, 7);
+            assert_eq!(registry.features_tip()?, 0);
 
             let scheduled = registry.scheduled_features_tip()?;
-            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.featuresTip, 1);
             assert_eq!(scheduled.activationEpoch, 21);
 
             Ok(())
@@ -483,16 +524,39 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             assert!(registry.activate_scheduled_features_tip(21)?);
-            assert_eq!(registry.features_tip()?, 13);
+            assert_eq!(registry.features_tip()?, 1);
 
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 0);
             assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_features_tip_rejects_missing_quorum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_features_tip.write(1)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            let result = registry.activate_scheduled_features_tip(21);
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::features_tip_quorum_not_reached().into())
+            );
+            assert_eq!(registry.features_tip()?, 0);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 1);
+            assert_eq!(scheduled.activationEpoch, 21);
 
             Ok(())
         })
@@ -519,15 +583,15 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             let call = IFeatureRegistry::activateScheduledFeaturesTipCall { currentEpoch: 21 };
             let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
             assert!(!result.is_revert());
 
-            assert_eq!(registry.features_tip()?, 13);
+            assert_eq!(registry.features_tip()?, 1);
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 0);
             assert_eq!(scheduled.activationEpoch, 0);
@@ -718,6 +782,22 @@ mod tests {
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(u64::abi_decode(&result.bytes)?, 11);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn highest_quorum_features_tip_dispatch_returns_encoded_cursor() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.highest_quorum_features_tip.write(1)?;
+
+            let call = IFeatureRegistry::highestQuorumFeaturesTipCall {};
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(u64::abi_decode(&result.bytes)?, 1);
 
             Ok(())
         })
@@ -931,6 +1011,7 @@ mod tests {
             assert_eq!(support.support, U256::from(4));
             assert_eq!(support.required, U256::from(4));
             assert!(registry.has_features_tip_quorum(1)?);
+            assert_eq!(registry.highest_quorum_features_tip()?, 1);
 
             Ok(())
         })

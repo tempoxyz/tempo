@@ -31,6 +31,8 @@ pub struct FeatureRegistry {
     scheduled_features_tip: u64,
     /// Earliest activation epoch for the scheduled feature tip, or zero when none is scheduled.
     scheduled_activation_epoch: u64,
+    /// Highest protocol feature tip that has reached quorum support.
+    highest_quorum_features_tip: u64,
     /// Latest feature tip reported as supported by each validator.
     validator_supported_features_tip: Mapping<Address, u64>,
     /// Digest of each ordered feature registry prefix reported by each validator.
@@ -60,6 +62,11 @@ impl FeatureRegistry {
     /// Returns the highest active protocol feature ID.
     pub fn features_tip(&self) -> Result<u64> {
         self.features_tip.read()
+    }
+
+    /// Returns the highest protocol feature tip with observed quorum support.
+    pub fn highest_quorum_features_tip(&self) -> Result<u64> {
+        self.highest_quorum_features_tip.read()
     }
 
     /// Returns the fixed activation quorum threshold as an exact fraction: 4/5, or 80%.
@@ -174,7 +181,9 @@ impl FeatureRegistry {
             if let Some(old_digest) = old_counted_digest {
                 self.decrement_features_tip_support(call.featuresTip, old_digest)?;
             }
-            self.increment_features_tip_support(call.featuresTip, call.featuresDigest)?;
+            let support =
+                self.increment_features_tip_support(call.featuresTip, call.featuresDigest)?;
+            self.update_highest_quorum_features_tip(call.featuresTip, support)?;
         }
 
         Ok(())
@@ -194,14 +203,39 @@ impl FeatureRegistry {
         Ok((digest != B256::ZERO).then_some(digest))
     }
 
-    fn increment_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
+    fn increment_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<u64> {
         let support = self.features_tip_support_count[features_tip][digest].read()?;
-        self.features_tip_support_count[features_tip][digest].write(support + 1)
+        let support = support + 1;
+        self.features_tip_support_count[features_tip][digest].write(support)?;
+        Ok(support)
     }
 
     fn decrement_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
         let support = self.features_tip_support_count[features_tip][digest].read()?;
         self.features_tip_support_count[features_tip][digest].write(support.saturating_sub(1))
+    }
+
+    fn update_highest_quorum_features_tip(
+        &mut self,
+        features_tip: u64,
+        support: u64,
+    ) -> Result<()> {
+        if features_tip <= self.highest_quorum_features_tip.read()? {
+            return Ok(());
+        }
+
+        let required = self.required_support_count()?;
+        if support >= required {
+            self.highest_quorum_features_tip.write(features_tip)?;
+        }
+
+        Ok(())
+    }
+
+    fn required_support_count(&self) -> Result<u64> {
+        Ok(required_support_count(
+            ValidatorConfigV2::new().active_validator_count()?,
+        ))
     }
 
     pub fn features_tip_support(
@@ -210,12 +244,11 @@ impl FeatureRegistry {
     ) -> Result<IFeatureRegistry::featuresTipSupportReturn> {
         let expected_digest = protocol_features_digest(features_tip)
             .ok_or_else(|| FeatureRegistryError::invalid_features_tip())?;
-        let active_validator_count = ValidatorConfigV2::new().active_validator_count()?;
         let support = self.features_tip_support_count[features_tip][expected_digest].read()?;
 
         Ok((
             U256::from(support),
-            U256::from(required_support_count(active_validator_count)),
+            U256::from(self.required_support_count()?),
         )
             .into())
     }
@@ -282,10 +315,7 @@ impl FeatureRegistry {
         Ok(())
     }
 
-    /// Activates the scheduled feature tip if its target epoch has arrived.
-    ///
-    /// Quorum enforcement is intentionally not implemented in this scaffold. The full activation
-    /// path should enforce validator support once TIP-1070 lands.
+    /// Activates the scheduled feature tip if its target epoch has arrived and it has quorum.
     pub fn activate_scheduled_features_tip(&mut self, current_epoch: u64) -> Result<bool> {
         let scheduled_features_tip = self.scheduled_features_tip.read()?;
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
@@ -295,6 +325,10 @@ impl FeatureRegistry {
             || scheduled_activation_epoch > current_epoch
         {
             return Ok(false);
+        }
+
+        if !self.has_features_tip_quorum(scheduled_features_tip)? {
+            return Err(FeatureRegistryError::features_tip_quorum_not_reached().into());
         }
 
         let active_features_tip = self.features_tip.read()?;
@@ -310,5 +344,9 @@ impl FeatureRegistry {
 }
 
 fn required_support_count(active_validator_count: u64) -> u64 {
+    if active_validator_count == 0 {
+        return 1;
+    }
+
     (ACTIVATION_QUORUM_NUMERATOR * active_validator_count).div_ceil(ACTIVATION_QUORUM_DENOMINATOR)
 }
