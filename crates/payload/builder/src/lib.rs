@@ -426,10 +426,10 @@ where
         let payload_build_control = attributes.payload_build_control().cloned();
         let speculative_bal_build =
             cfg!(feature = "bal") && attributes.speculative_parent().is_some();
-        let speculative_sparse_trie_is_block_local = speculative_bal_build &&
-            trie_handle
-                .as_ref()
-                .is_some_and(|handle| handle.cached_trie_state_root() == parent_header.state_root());
+        let speculative_sparse_trie_is_block_local = speculative_bal_build
+            && trie_handle.as_ref().is_some_and(|handle| {
+                handle.cached_trie_state_root() == parent_header.state_root()
+            });
         let build_cancelled = || {
             cancel.is_cancelled()
                 || payload_build_control
@@ -1349,6 +1349,9 @@ where
             check_cancel!();
             finish_provider.hashed_post_state(&bundle_state)
         };
+        let trie_handle_cached_state_root = trie_handle
+            .as_ref()
+            .map(|handle| handle.cached_trie_state_root());
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
@@ -1373,21 +1376,38 @@ where
                         Some((outcome, elapsed))
                     }
                     CancelableRecv::Received(Err(err)) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
+                        if speculative_bal_build {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                %err,
+                                "sparse trie failed for speculative BAL payload"
+                            );
+                        } else {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                %err,
+                                "sparse trie failed, falling back to sync state root"
+                            );
+                        }
                         None
                     }
                     CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
                     CancelableRecv::Disconnected => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            "sparse trie state root channel disconnected, falling back to sync state root"
-                        );
+                        if speculative_bal_build {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                "sparse trie state root channel disconnected for speculative BAL payload"
+                            );
+                        } else {
+                            warn!(
+                                target: "payload_builder",
+                                id = %payload_id,
+                                "sparse trie state root channel disconnected, falling back to sync state root"
+                            );
+                        }
                         None
                     }
                 }
@@ -1398,10 +1418,10 @@ where
 
         check_cancel!();
 
-        let speculative_block_hashed_state = speculative_bal_build.then(|| {
-            HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
-        });
+        let speculative_block_hashed_state = speculative_bal_build
+            .then(|| HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state()));
 
+        let mut executed_block_fast_path_allowed = true;
         let (state_root, trie_updates) = match (
             speculative_block_hashed_state.as_ref(),
             state_root_outcome,
@@ -1409,46 +1429,22 @@ where
             (Some(_), Some(outcome)) if speculative_sparse_trie_is_block_local => {
                 (outcome.state_root, outcome.trie_updates)
             }
-            (Some(block_hashed_state), sparse_outcome) => {
-                check_cancel!();
-                let serial_root_start = Instant::now();
-                let (serial_state_root, serial_trie_updates) = finish_provider
-                    .state_root_with_updates(block_hashed_state.clone())
-                    .map_err(BlockExecutionError::other)?;
-                let serial_root_elapsed = serial_root_start.elapsed();
-
-                if let Some(outcome) = sparse_outcome {
-                    if outcome.state_root != serial_state_root {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            sparse_state_root = ?outcome.state_root,
-                            serial_state_root = ?serial_state_root,
-                            ?serial_root_elapsed,
-                            "speculative BAL sparse trie root differed from block-local serial root"
-                        );
-                    } else {
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?serial_state_root,
-                            speculative_sparse_trie_is_block_local,
-                            ?serial_root_elapsed,
-                            "computed block-local trie data for speculative BAL fast path"
-                        );
-                    }
-                } else {
-                    debug!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        state_root = ?serial_state_root,
-                        speculative_sparse_trie_is_block_local,
-                        ?serial_root_elapsed,
-                        "computed speculative BAL state root from block-local trie data"
-                    );
-                }
-
-                (serial_state_root, Arc::new(serial_trie_updates))
+            (Some(_), Some(outcome)) => {
+                executed_block_fast_path_allowed = false;
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    state_root = ?outcome.state_root,
+                    cached_trie_state_root = ?trie_handle_cached_state_root,
+                    parent_state_root = %parent_header.state_root(),
+                    "using cumulative sparse trie root for speculative BAL payload; disabled executed-block fast path"
+                );
+                (outcome.state_root, outcome.trie_updates)
+            }
+            (Some(_), None) => {
+                return Err(PayloadBuilderError::other(std::io::Error::other(
+                    "speculative BAL payload build requires sparse trie state root",
+                )));
             }
             (None, Some(outcome)) => (outcome.state_root, outcome.trie_updates),
             (None, None) => {
@@ -1662,42 +1658,58 @@ where
             state: bundle_state,
         };
 
-        let (fast_path_hashed_state, fast_path_trie_updates) = if speculative_bal_build {
-            let block_hashed_state = speculative_block_hashed_state
-                .expect("speculative BAL block hashed state was computed before state root");
+        let built_executed_block = if speculative_bal_build && !executed_block_fast_path_allowed {
             debug!(
                 target: "payload_builder",
                 id = %payload_id,
                 parent_hash = %block.parent_hash(),
                 number = block.number(),
-                root_hashed_accounts = root_hashed_state.accounts.len(),
-                root_hashed_storage_accounts = root_hashed_state.storages.len(),
-                block_hashed_accounts = block_hashed_state.accounts.len(),
-                block_hashed_storage_accounts = block_hashed_state.storages.len(),
                 speculative_sparse_trie_is_block_local,
-                fast_path_trie_updates_empty = trie_updates.is_empty(),
-                "using child-local trie data for speculative BAL executed-block fast path"
+                "skipping speculative BAL executed-block fast path because trie updates are not child-local"
             );
-            (block_hashed_state, trie_updates)
+            None
         } else {
-            (root_hashed_state, trie_updates)
-        };
+            let (fast_path_hashed_state, fast_path_trie_updates) = if speculative_bal_build {
+                let block_hashed_state = speculative_block_hashed_state
+                    .expect("speculative BAL block hashed state was computed before state root");
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %block.parent_hash(),
+                    number = block.number(),
+                    root_hashed_accounts = root_hashed_state.accounts.len(),
+                    root_hashed_storage_accounts = root_hashed_state.storages.len(),
+                    block_hashed_accounts = block_hashed_state.accounts.len(),
+                    block_hashed_storage_accounts = block_hashed_state.storages.len(),
+                    speculative_sparse_trie_is_block_local,
+                    fast_path_trie_updates_empty = trie_updates.is_empty(),
+                    "using child-local trie data for speculative BAL executed-block fast path"
+                );
+                (block_hashed_state, trie_updates)
+            } else {
+                (root_hashed_state, trie_updates)
+            };
 
-        let built_executed_block = BuiltPayloadExecutedBlock {
-            recovered_block: block,
-            execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(fast_path_hashed_state),
-            trie_updates: fast_path_trie_updates,
+            Some(BuiltPayloadExecutedBlock {
+                recovered_block: block,
+                execution_output: Arc::new(execution_output),
+                hashed_state: Arc::new(fast_path_hashed_state),
+                trie_updates: fast_path_trie_updates,
+            })
         };
-        let (executed_block, gated_executed_block) = if attributes.publish_executed_block() {
-            (Some(built_executed_block), None)
-        } else {
-            debug!(
-                block_number = %block_num_hash.number,
-                block_hash = %block_num_hash.hash,
-                "deferring executed-block fast path for built payload"
-            );
-            (None, Some(built_executed_block))
+        let (executed_block, gated_executed_block) = match built_executed_block {
+            Some(built_executed_block) if attributes.publish_executed_block() => {
+                (Some(built_executed_block), None)
+            }
+            Some(built_executed_block) => {
+                debug!(
+                    block_number = %block_num_hash.number,
+                    block_hash = %block_num_hash.hash,
+                    "deferring executed-block fast path for built payload"
+                );
+                (None, Some(built_executed_block))
+            }
+            None => (None, None),
         };
 
         let payload = TempoBuiltPayload::new(
