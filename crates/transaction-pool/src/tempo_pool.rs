@@ -48,6 +48,7 @@ use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
 
 static INSERTED_TEMPO_BATCH_LOG_TXS: AtomicU64 = AtomicU64::new(0);
+static AA_2D_INSERT_BREAKDOWN_LOG_TXS: AtomicU64 = AtomicU64::new(0);
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -516,6 +517,9 @@ where
                 authorities,
             } => {
                 if transaction.transaction().is_aa_2d() {
+                    let should_log =
+                        crate::should_log_tx_batch_metrics(&AA_2D_INSERT_BREAKDOWN_LOG_TXS, 1);
+                    let total_started_at = should_log.then(Instant::now);
                     let transaction = transaction.into_transaction();
                     let sender_id = self
                         .protocol_pool
@@ -542,14 +546,40 @@ where
                         .tip_timestamp();
                     let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-                    let added = self.aa_2d_pool.write().add_transaction(
-                        Arc::new(tx),
-                        state_nonce,
-                        hardfork,
-                    )?;
+                    let setup_us = total_started_at
+                        .as_ref()
+                        .map(|started_at| started_at.elapsed().as_micros());
+                    let lock_wait_started_at = should_log.then(Instant::now);
+                    let mut aa_2d_pool = self.aa_2d_pool.write();
+                    let lock_wait_us =
+                        lock_wait_started_at.map(|started_at| started_at.elapsed().as_micros());
+                    let insert_started_at = should_log.then(Instant::now);
+                    let added = aa_2d_pool.add_transaction(Arc::new(tx), state_nonce, hardfork)?;
+                    let insert_us =
+                        insert_started_at.map(|started_at| started_at.elapsed().as_micros());
+                    drop(aa_2d_pool);
+
                     let hash = *added.hash();
+                    let notify_started_at = should_log.then(Instant::now);
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
+                            if let Some(total_started_at) = total_started_at {
+                                tracing::info!(
+                                    target: "tempo_tx_batch_metrics",
+                                    batch_size = 1usize,
+                                    setup_us = setup_us.unwrap_or_default(),
+                                    lock_wait_us = lock_wait_us.unwrap_or_default(),
+                                    insert_us = insert_us.unwrap_or_default(),
+                                    notify_us = notify_started_at
+                                        .map(|started_at| started_at.elapsed().as_micros())
+                                        .unwrap_or_default(),
+                                    total_us = total_started_at.elapsed().as_micros(),
+                                    result_status = "discarded_on_insert",
+                                    sample_interval_txs =
+                                        crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                                    "inserted aa 2d transaction breakdown"
+                                );
+                            }
                             return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
                         }
                         self.protocol_pool
@@ -563,6 +593,23 @@ where
                     self.protocol_pool
                         .inner()
                         .on_new_transaction(added.into_new_transaction_event());
+
+                    if let Some(total_started_at) = total_started_at {
+                        tracing::info!(
+                            target: "tempo_tx_batch_metrics",
+                            batch_size = 1usize,
+                            setup_us = setup_us.unwrap_or_default(),
+                            lock_wait_us = lock_wait_us.unwrap_or_default(),
+                            insert_us = insert_us.unwrap_or_default(),
+                            notify_us = notify_started_at
+                                .map(|started_at| started_at.elapsed().as_micros())
+                                .unwrap_or_default(),
+                            total_us = total_started_at.elapsed().as_micros(),
+                            result_status = "ok",
+                            sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                            "inserted aa 2d transaction breakdown"
+                        );
+                    }
 
                     Ok(AddedTransactionOutcome { hash, state })
                 } else {

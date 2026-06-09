@@ -144,66 +144,66 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-chainspec = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb", default-features = false }
-reth-cli = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-cli-commands = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-cli-runner = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-cli-util = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
+reth-basic-payload-builder = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-chainspec = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd", default-features = false }
+reth-cli = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-cli-commands = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-cli-runner = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-cli-util = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
 reth-codecs = { version = "0.4.0", default-features = false }
-reth-consensus = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-consensus-common = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-db = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-discv5 = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-db-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-e2e-test-utils = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-engine-local = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-engine-tree = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-errors = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-eth-wire-types = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-etl = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-ethereum = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-ethereum-cli = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-ethereum-consensus = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-ethereum-engine-primitives = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-ethereum-primitives = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb", default-features = false }
-reth-execution-cache = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-execution-types = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-evm = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-evm-ethereum = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-metrics = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-network-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-network-peers = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb", default-features = false }
-reth-node-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-node-builder = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-node-core = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-node-ethereum = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-node-metrics = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-payload-builder = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-payload-primitives = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
+reth-consensus = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-consensus-common = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-db = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-discv5 = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-db-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-e2e-test-utils = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-engine-local = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-engine-tree = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-errors = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-eth-wire-types = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-etl = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-ethereum = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-ethereum-cli = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-ethereum-consensus = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-ethereum-engine-primitives = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-ethereum-primitives = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd", default-features = false }
+reth-execution-cache = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-execution-types = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-evm = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-evm-ethereum = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-metrics = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-network-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-network-peers = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd", default-features = false }
+reth-node-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-node-builder = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-node-core = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-node-ethereum = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-node-metrics = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-payload-builder = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-payload-primitives = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
 reth-primitives-traits = { version = "0.4.0", default-features = false }
-reth-config = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-downloaders = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-provider = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-prune-types = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-builder = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-convert = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-eth-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-eth-types = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-rpc-server-types = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-stages = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-static-file = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-storage-api = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-tasks = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-tracing = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-transaction-pool = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-trie = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-trie-common = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
-reth-trie-db = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb" }
+reth-config = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-downloaders = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-provider = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-prune-types = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-builder = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-convert = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-eth-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-eth-types = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-rpc-server-types = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-stages = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-static-file = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-storage-api = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-tasks = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-tracing = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-transaction-pool = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-trie = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-trie-common = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
+reth-trie-db = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd" }
 
-reth-revm = { git = "https://github.com/mattsse/reth", rev = "cb46facf7f5e783b04f997a8cf09b1a7e03929eb", features = [
+reth-revm = { git = "https://github.com/mattsse/reth", rev = "7e8d6afaf8f2eb1d7f8e9a5cce63a92270befbbd", features = [
   "std",
   "optional-checks",
 ] }
