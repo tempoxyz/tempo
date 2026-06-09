@@ -1018,6 +1018,39 @@ mod tests {
     }
 
     #[test]
+    fn highest_quorum_features_tip_drops_when_prefix_loses_quorum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            initialize_validator_config_owner(owner)?;
+            let digest1 = protocol_features_digest(1).unwrap();
+            let stale_digest1 = B256::repeat_byte(0xff);
+
+            for seed in 1..=5 {
+                let validator = Address::repeat_byte(seed as u8);
+                add_test_validator(owner, validator, seed)?;
+                if seed <= 4 {
+                    registry.validator_supported_features_tip[validator].write(1)?;
+                    registry.validator_supported_features_digest[validator][1].write(digest1)?;
+                    registry.features_tip_support_count[1][digest1].write(seed)?;
+                }
+            }
+            registry.highest_quorum_features_tip.write(1)?;
+
+            let validator = Address::repeat_byte(0x01);
+            registry.features_tip_support_count[1][digest1].write(3)?;
+            registry.validator_supported_features_digest[validator][1].write(stale_digest1)?;
+            registry.features_tip_support_count[1][stale_digest1].write(1)?;
+            registry.refresh_highest_quorum_features_tip(1)?;
+
+            assert_eq!(registry.highest_quorum_features_tip()?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn set_supported_features_tip_moves_cached_support_between_digests() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {

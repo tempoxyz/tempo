@@ -181,9 +181,8 @@ impl FeatureRegistry {
             if let Some(old_digest) = old_counted_digest {
                 self.decrement_features_tip_support(call.featuresTip, old_digest)?;
             }
-            let support =
-                self.increment_features_tip_support(call.featuresTip, call.featuresDigest)?;
-            self.update_highest_quorum_features_tip(call.featuresTip, support)?;
+            self.increment_features_tip_support(call.featuresTip, call.featuresDigest)?;
+            self.refresh_highest_quorum_features_tip(call.featuresTip)?;
         }
 
         Ok(())
@@ -203,11 +202,9 @@ impl FeatureRegistry {
         Ok((digest != B256::ZERO).then_some(digest))
     }
 
-    fn increment_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<u64> {
+    fn increment_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
         let support = self.features_tip_support_count[features_tip][digest].read()?;
-        let support = support + 1;
-        self.features_tip_support_count[features_tip][digest].write(support)?;
-        Ok(support)
+        self.features_tip_support_count[features_tip][digest].write(support + 1)
     }
 
     fn decrement_features_tip_support(&mut self, features_tip: u64, digest: B256) -> Result<()> {
@@ -215,21 +212,28 @@ impl FeatureRegistry {
         self.features_tip_support_count[features_tip][digest].write(support.saturating_sub(1))
     }
 
-    fn update_highest_quorum_features_tip(
-        &mut self,
-        features_tip: u64,
-        support: u64,
-    ) -> Result<()> {
-        if features_tip <= self.highest_quorum_features_tip.read()? {
-            return Ok(());
+    fn refresh_highest_quorum_features_tip(&mut self, changed_features_tip: u64) -> Result<()> {
+        let current = self.highest_quorum_features_tip.read()?;
+        let candidate = current.max(changed_features_tip);
+
+        for features_tip in (1..=candidate).rev() {
+            if self.has_contiguous_quorum(features_tip)? {
+                self.highest_quorum_features_tip.write(features_tip)?;
+                return Ok(());
+            }
         }
 
-        let required = self.required_support_count()?;
-        if support >= required {
-            self.highest_quorum_features_tip.write(features_tip)?;
+        self.highest_quorum_features_tip.write(0)
+    }
+
+    fn has_contiguous_quorum(&self, features_tip: u64) -> Result<bool> {
+        for prefix_tip in 1..=features_tip {
+            if !self.has_features_tip_quorum(prefix_tip)? {
+                return Ok(false);
+            }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn required_support_count(&self) -> Result<u64> {
