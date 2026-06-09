@@ -772,6 +772,7 @@ mod tests {
         };
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -808,5 +809,13 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.disable-prewarming"])
+                .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
     }
 }
