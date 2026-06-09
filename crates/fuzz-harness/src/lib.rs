@@ -533,9 +533,7 @@ fn supported_hardforks() -> Vec<u8> {
     // later 30M transaction cap, so it is not comparable with raw pre-T1A T1.
     #[cfg(tempo_fuzz_t1a)]
     hardforks.push(1);
-    hardforks.extend([2, 3, 4, 5]);
-    #[cfg(tempo_fuzz_max_t4)]
-    hardforks.retain(|hardfork| *hardfork <= 4);
+    hardforks.extend([2, 3, 4]);
     hardforks
 }
 
