@@ -1,3 +1,5 @@
+//! Checks generated conformance fixtures against the local fuzz harness.
+
 use std::{
     env,
     io::{self, IsTerminal, Write},

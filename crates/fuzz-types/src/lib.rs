@@ -23,8 +23,9 @@ pub const FUZZ_T6_TIMESTAMP: u64 = FUZZ_T5_TIMESTAMP + 1_000_000;
 pub const FUZZ_T7_TIMESTAMP: u64 = FUZZ_T6_TIMESTAMP + 1_000_000;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ErrorClass {
+    #[default]
     None = 0,
     InvalidInput = 1,
     RlpDecode = 2,
@@ -33,12 +34,6 @@ pub enum ErrorClass {
     Unimplemented = 5,
     Internal = 6,
     Invariant = 7,
-}
-
-impl Default for ErrorClass {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -178,18 +173,10 @@ pub struct TxResult {
     pub error: ErrorClass,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HarnessCapabilities {
     #[serde(default)]
     pub supported_hardforks: Vec<u8>,
-}
-
-impl Default for HarnessCapabilities {
-    fn default() -> Self {
-        Self {
-            supported_hardforks: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
