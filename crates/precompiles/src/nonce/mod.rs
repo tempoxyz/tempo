@@ -169,7 +169,7 @@ impl NonceManager {
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+        let next = if ptr >= EXPIRING_NONCE_SET_CAPACITY - 1 {
             0
         } else {
             ptr + 1
