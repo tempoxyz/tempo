@@ -8,6 +8,8 @@ use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
 #[cfg(feature = "bal")]
+use commonware_codec::BufsMut;
+#[cfg(feature = "bal")]
 use commonware_codec::RangeCfg;
 use commonware_codec::{EncodeSize, Read, Write};
 use commonware_consensus::{
@@ -228,7 +230,20 @@ impl Write for Block {
                 .block_access_list
                 .as_ref()
                 .expect("BAL bytes must be present when header contains a BAL hash");
-            block_access_list.write(buf);
+            write_block_access_list_inline(block_access_list, buf);
+        }
+    }
+
+    #[cfg(feature = "bal")]
+    fn write_bufs(&self, buf: &mut impl BufsMut) {
+        self.0.execution_block.encode(buf);
+        if self.0.execution_block.block_access_list_hash().is_some() {
+            let block_access_list = self
+                .0
+                .block_access_list
+                .as_ref()
+                .expect("BAL bytes must be present when header contains a BAL hash");
+            write_block_access_list_inline(block_access_list, buf);
         }
     }
 }
@@ -312,6 +327,11 @@ impl EncodeSize for Block {
         {
             execution_block_size
         }
+    }
+
+    #[cfg(feature = "bal")]
+    fn encode_inline_size(&self) -> usize {
+        self.encode_size()
     }
 }
 
@@ -421,6 +441,12 @@ fn validate_block_access_list_hash(
         (None, Some(_)) => Err(BlockAccessListError::Unexpected),
         (None, None) => Ok(()),
     }
+}
+
+#[cfg(feature = "bal")]
+fn write_block_access_list_inline(block_access_list: &Bytes, buf: &mut impl BufMut) {
+    block_access_list.len().write(buf);
+    buf.put_slice(block_access_list.as_ref());
 }
 
 // =======================================================================
