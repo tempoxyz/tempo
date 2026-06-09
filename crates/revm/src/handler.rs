@@ -80,6 +80,13 @@ const P256_VERIFY_GAS: u64 = 5_000;
 /// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
+/// Additional gas for native multisig validation.
+///
+/// This meters the protocol-side config/account validation as one cold storage read equivalent.
+/// Owner signature verification is charged separately, relative to the secp256k1 verification
+/// already covered by the base transaction stipend.
+const NATIVE_MULTISIG_VALIDATION_GAS: u64 = COLD_SLOAD_COST;
+
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
@@ -178,6 +185,16 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     }
 }
 
+/// Calculates full owner-signature verification gas.
+///
+/// Unlike transaction signatures, owner approvals are nested inside the multisig signature, so this
+/// returns the full verification cost before the native multisig schedule subtracts the one
+/// traditional secp256k1 verification already included in base transaction gas.
+#[inline]
+fn native_multisig_owner_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
+    ECRECOVER_GAS + primitive_signature_verification_gas(signature)
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For Keychain signatures, adds key validation overhead to the inner signature cost
@@ -191,16 +208,18 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
         TempoSignature::Multisig(multisig_sig) => {
-            KEYCHAIN_VALIDATION_GAS
-                + multisig_sig
-                    .signatures
-                    .iter()
-                    .map(|sig| match PrimitiveSignature::from_bytes(sig) {
-                        Ok(PrimitiveSignature::Secp256k1(_)) => ECRECOVER_GAS,
-                        Ok(ref primitive) => primitive_signature_verification_gas(primitive),
-                        Err(_) => P256_VERIFY_GAS,
-                    })
-                    .sum::<u64>()
+            let owner_signature_gas = multisig_sig
+                .signatures
+                .iter()
+                .map(|sig| match PrimitiveSignature::from_bytes(sig) {
+                    Ok(ref primitive) => {
+                        native_multisig_owner_signature_verification_gas(primitive)
+                    }
+                    Err(_) => ECRECOVER_GAS + P256_VERIFY_GAS,
+                })
+                .sum::<u64>();
+
+            NATIVE_MULTISIG_VALIDATION_GAS + owner_signature_gas.saturating_sub(ECRECOVER_GAS)
         }
     }
 }
@@ -3575,11 +3594,11 @@ mod tests {
         )
         .unwrap();
 
-        let expected_overhead = KEYCHAIN_VALIDATION_GAS + ECRECOVER_GAS;
+        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS;
         assert_eq!(
             multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
             expected_overhead,
-            "1-of-1 native multisig should add key validation plus one owner ecrecover"
+            "1-of-1 native multisig should add only native validation gas because base tx gas already covers one secp256k1 verification"
         );
         assert_eq!(
             multisig_gas.initial_state_gas, base_gas.initial_state_gas,
@@ -3588,6 +3607,86 @@ mod tests {
         assert_eq!(
             multisig_gas.initial_total_gas() - base_gas.initial_total_gas(),
             expected_overhead
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_native_multisig_extra_secp256k1_owner_overhead() {
+        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()).to_bytes();
+        let mut multisig_env = base_env.clone();
+        multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::from([0x44; 20]),
+            B256::from([0x55; 32]),
+            vec![owner_signature.clone(), owner_signature],
+            None,
+        ));
+
+        let base_gas = calculate_aa_batch_intrinsic_gas(
+            &base_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+        let multisig_gas = calculate_aa_batch_intrinsic_gas(
+            &multisig_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+
+        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + ECRECOVER_GAS;
+        assert_eq!(
+            multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+            expected_overhead,
+            "native multisig should charge extra owner signatures after subtracting the traditional secp256k1 verification covered by base tx gas"
+        );
+    }
+
+    #[test]
+    fn test_aa_gas_native_multisig_p256_owner_overhead() {
+        let gas_params = tempo_gas_params(TempoHardfork::T6);
+        let base_env = make_single_call_env(Bytes::from(vec![1, 2]));
+        let owner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            pre_hash: false,
+        })
+        .to_bytes();
+        let mut multisig_env = base_env.clone();
+        multisig_env.signature = TempoSignature::Multisig(MultisigSignature::new(
+            Address::from([0x44; 20]),
+            B256::from([0x55; 32]),
+            vec![owner_signature],
+            None,
+        ));
+
+        let base_gas = calculate_aa_batch_intrinsic_gas(
+            &base_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+        let multisig_gas = calculate_aa_batch_intrinsic_gas(
+            &multisig_env,
+            &gas_params,
+            None::<std::iter::Empty<&AccessListItem>>,
+            TempoHardfork::T6,
+        )
+        .unwrap();
+
+        let expected_overhead = NATIVE_MULTISIG_VALIDATION_GAS + P256_VERIFY_GAS;
+        assert_eq!(
+            multisig_gas.initial_regular_gas - base_gas.initial_regular_gas,
+            expected_overhead,
+            "1-of-1 P256 native multisig should pay validation plus P256 cost relative to the traditional secp256k1 tx baseline"
         );
     }
 
