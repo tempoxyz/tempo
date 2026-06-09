@@ -36,6 +36,10 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
     ) -> Result<()> {
+        if self.storage.spec().is_t7() {
+            return Ok(());
+        }
+
         self.check_not_paused()?;
         let token_address = self.address;
 
@@ -129,6 +133,10 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
+        if self.storage.spec().is_t7() {
+            return Ok(());
+        }
+
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
@@ -307,6 +315,13 @@ impl TIP20Token {
         // Start with the stored reward balance
         let mut pending = info.reward_balance;
 
+        // At T7 and later, reward hooks are disabled; only settled rewards are claimable.
+        if self.storage.spec().is_t7() {
+            return pending
+                .try_into()
+                .map_err(|_| TempoPrecompileError::under_overflow());
+        }
+
         // For the account's own accrued rewards (if self-delegated):
         if info.reward_recipient == account {
             let holder_balance = self.get_balance(account)?;
@@ -462,6 +477,65 @@ mod tests {
             let result =
                 token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO });
             assert!(result.is_err());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t7_reward_mutators_are_noops() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let admin = Address::random();
+        let alice = Address::random();
+        let amount = U256::from(1000);
+        let reward_amount = U256::from(100);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+            assert_eq!(token.get_balance(admin)?, reward_amount);
+            assert_eq!(token.get_balance(token.address)?, U256::ZERO);
+            assert_eq!(token.get_global_reward_per_token()?, U256::ZERO);
+            assert_eq!(token.get_opted_in_supply()?, 0);
+            assert_eq!(
+                token.get_user_reward_info(alice)?.reward_recipient,
+                Address::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t7_get_pending_rewards_returns_only_stored_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let admin = Address::random();
+        let alice = Address::random();
+        let alice_balance = U256::from(1000);
+        let stored_reward = U256::from(7);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .apply()?;
+
+            token.set_global_reward_per_token(U256::from(100) * ACC_PRECISION)?;
+            token.user_reward_info[alice].write(UserRewardInfo {
+                reward_recipient: alice,
+                reward_per_token: U256::ZERO,
+                reward_balance: stored_reward,
+            })?;
+
+            assert_eq!(U256::from(token.get_pending_rewards(alice)?), stored_reward);
 
             Ok(())
         })
