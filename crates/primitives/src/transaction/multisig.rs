@@ -91,6 +91,9 @@ pub struct MultisigSignature {
     pub signatures: Vec<Bytes>,
     /// Initial native multisig config for bootstrapping this account.
     pub init: Option<InitMultisig>,
+    /// Cached multisig digest for the transaction hash this signature approved.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    cached_digest: OnceLock<(B256, Address, B256, B256)>,
     /// Cached recovered owner addresses for the digest this multisig signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_recovered_owners: OnceLock<(B256, Vec<Address>)>,
@@ -108,6 +111,7 @@ impl MultisigSignature {
             config_id,
             signatures,
             init,
+            cached_digest: OnceLock::new(),
             cached_recovered_owners: OnceLock::new(),
         }
     }
@@ -140,6 +144,36 @@ impl MultisigSignature {
             return Err("multisig_init is only allowed when bootstrapping an account");
         }
         Ok(())
+    }
+
+    /// Returns the multisig owner-approval digest for this signature and caches it on first use.
+    pub fn digest(&self, inner_digest: B256) -> B256 {
+        if let Some((cached_inner, cached_account, cached_config_id, cached_digest)) =
+            self.cached_digest.get()
+            && *cached_inner == inner_digest
+            && *cached_account == self.account
+            && *cached_config_id == self.config_id
+        {
+            return *cached_digest;
+        }
+
+        let digest = multisig_digest(inner_digest, self.account, self.config_id);
+        if self.cached_digest.get().is_none() {
+            #[allow(clippy::useless_conversion)]
+            let _ = self
+                .cached_digest
+                .set((inner_digest, self.account, self.config_id, digest).into());
+        }
+        if let Some((cached_inner, cached_account, cached_config_id, cached_digest)) =
+            self.cached_digest.get()
+            && *cached_inner == inner_digest
+            && *cached_account == self.account
+            && *cached_config_id == self.config_id
+        {
+            return *cached_digest;
+        }
+
+        digest
     }
 
     /// Recovers owner addresses for the provided multisig digest and caches them on first use.
@@ -237,6 +271,7 @@ impl Decodable for MultisigSignature {
             } else {
                 Some(Decodable::decode(&mut payload)?)
             },
+            cached_digest: OnceLock::new(),
             cached_recovered_owners: OnceLock::new(),
         };
 
@@ -445,6 +480,18 @@ fn verify_recovered_multisig_owners(
         return Err("too many multisig signatures");
     }
 
+    if let ([owner], [configured_owner]) = (owners, config.owners.as_slice()) {
+        if *owner != configured_owner.owner {
+            return Err("multisig signer is not an owner");
+        }
+        let recovered_weight = u64::from(configured_owner.weight);
+        if recovered_weight < u64::from(config.threshold) {
+            return Err("multisig signature weight below threshold");
+        }
+
+        return Ok(configured_owner.weight);
+    }
+
     let mut recovered_weight = 0u64;
     let mut prev_owner = None;
     for &owner in owners {
@@ -455,9 +502,9 @@ fn verify_recovered_multisig_owners(
 
         let configured_owner = config
             .owners
-            .iter()
-            .find(|entry| entry.owner == owner)
-            .ok_or("multisig signer is not an owner")?;
+            .binary_search_by_key(&owner, |entry| entry.owner)
+            .map(|idx| &config.owners[idx])
+            .map_err(|_| "multisig signer is not an owner")?;
 
         recovered_weight = recovered_weight
             .checked_add(u64::from(configured_owner.weight))
