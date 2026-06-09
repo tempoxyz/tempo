@@ -98,6 +98,24 @@ impl StorageCtx {
         })
     }
 
+    /// Execute a fallible function when the caller has already entered storage context.
+    #[inline(always)]
+    fn try_with_entered_storage<F, R>(f: F) -> Result<R>
+    where
+        F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
+    {
+        debug_assert!(
+            STORAGE.is_set(),
+            "No storage context. 'StorageCtx::enter' must be called first"
+        );
+        STORAGE.with(|cell| {
+            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
+            // Holding the guard prevents re-entrant borrows.
+            let mut guard = cell.borrow_mut();
+            f(&mut **guard)
+        })
+    }
+
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)
 
     /// Executes a closure with access to the account info, returning the closure's result.
@@ -139,32 +157,32 @@ impl StorageCtx {
 
     /// Sets the bytecode at the given address.
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
-        Self::try_with_storage(|s| s.set_code(address, code))
+        Self::try_with_entered_storage(|s| s.set_code(address, code))
     }
 
     /// Performs an SLOAD operation (persistent storage read).
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
-        Self::try_with_storage(|s| s.sload(address, key))
+        Self::try_with_entered_storage(|s| s.sload(address, key))
     }
 
     /// Performs a TLOAD operation (transient storage read).
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
-        Self::try_with_storage(|s| s.tload(address, key))
+        Self::try_with_entered_storage(|s| s.tload(address, key))
     }
 
     /// Performs an SSTORE operation (persistent storage write).
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.sstore(address, key, value))
+        Self::try_with_entered_storage(|s| s.sstore(address, key, value))
     }
 
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
-        Self::try_with_storage(|s| s.tstore(address, key, value))
+        Self::try_with_entered_storage(|s| s.tstore(address, key, value))
     }
 
     /// Emits an event from the given contract address.
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
-        Self::try_with_storage(|s| s.emit_event(address, event))
+        Self::try_with_entered_storage(|s| s.emit_event(address, event))
     }
 
     /// Adds refund to the gas refund counter.
@@ -237,14 +255,14 @@ impl StorageCtx {
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
     pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
-        Self::try_with_storage(|s| s.deduct_gas(gas))
+        Self::try_with_entered_storage(|s| s.deduct_gas(gas))
     }
 
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Prefer this over naked `keccak256` to ensure gas is accounted for.
     pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
-        Self::try_with_storage(|s| s.keccak256(data))
+        Self::try_with_entered_storage(|s| s.keccak256(data))
     }
 
     /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
@@ -254,7 +272,7 @@ impl StorageCtx {
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
     pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
-        Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
+        Self::try_with_entered_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
 
     /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Success`] and the current gas values.
