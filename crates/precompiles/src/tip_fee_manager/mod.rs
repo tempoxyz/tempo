@@ -18,6 +18,7 @@ pub use tempo_contracts::precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
 use tempo_precompiles_macros::contract;
+use tempo_primitives::TempoAddressExt;
 
 /// Fee manager precompile that handles transaction fee collection and distribution.
 ///
@@ -165,7 +166,52 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
+        let tip20_token = TIP20Token::from_address(user_token)?;
+
+        self.collect_fee_pre_tx_with_token(
+            fee_payer,
+            user_token,
+            max_amount,
+            skip_liquidity_check,
+            validator_token,
+            tip20_token,
+        )
+    }
+
+    /// Collects fees when the caller has already validated `user_token` as a TIP-20 token.
+    pub fn collect_validated_fee_pre_tx(
+        &mut self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> Result<Address> {
+        // Get the validator's token preference
+        let validator_token = self.get_validator_token(beneficiary)?;
+
+        let tip20_token = TIP20Token::from_address_unchecked(user_token);
+
+        self.collect_fee_pre_tx_with_token(
+            fee_payer,
+            user_token,
+            max_amount,
+            skip_liquidity_check,
+            validator_token,
+            tip20_token,
+        )
+    }
+
+    fn collect_fee_pre_tx_with_token(
+        &mut self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        skip_liquidity_check: bool,
+        validator_token: Address,
+        mut tip20_token: TIP20Token,
+    ) -> Result<Address> {
+        debug_assert!(user_token.is_tip20(), "fee token must have TIP-20 prefix");
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -235,7 +281,48 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
+        let tip20_token = TIP20Token::from_address(fee_token)?;
+        self.collect_fee_post_tx_with_token(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            tip20_token,
+        )
+    }
+
+    /// Finalizes fee collection when the caller has already validated `fee_token` as TIP-20.
+    pub fn collect_validated_fee_post_tx(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> Result<U256> {
+        let tip20_token = TIP20Token::from_address_unchecked(fee_token);
+        self.collect_fee_post_tx_with_token(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            tip20_token,
+        )
+    }
+
+    fn collect_fee_post_tx_with_token(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+        mut tip20_token: TIP20Token,
+    ) -> Result<U256> {
+        debug_assert!(fee_token.is_tip20(), "fee token must have TIP-20 prefix");
+
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
