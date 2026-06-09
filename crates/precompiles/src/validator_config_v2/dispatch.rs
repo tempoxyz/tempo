@@ -8,13 +8,13 @@ use tempo_contracts::precompiles::IValidatorConfigV2::IValidatorConfigV2Calls;
 
 impl Precompile for ValidatorConfigV2 {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
-            return err;
-        }
-
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
         if !self.storage.spec().is_t2() {
             return Ok(self.storage.success_output(Default::default()));
+        }
+
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
         }
 
         dispatch_call(
