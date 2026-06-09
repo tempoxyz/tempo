@@ -321,9 +321,12 @@ mod tests {
     use alloy_primitives::U256;
     use alloy_sol_types::SolCall;
     use revm::{
-        context::{BlockEnv, CfgEnv, TxEnv},
+        DatabaseCommit,
+        context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
+        state::EvmState,
     };
+    use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -331,7 +334,7 @@ mod tests {
         test_util::TIP20Setup,
         tip_fee_manager::slots as fee_manager_slots,
         tip20::{
-            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
+            ITIP20, USD_CURRENCY, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
@@ -494,6 +497,68 @@ mod tests {
         assert!(result.result.is_success());
     }
 
+    fn assert_storage_actions_reconstruct_evm_state(
+        actions: &[StorageAction],
+        state: &EvmState,
+        hardfork: TempoHardfork,
+    ) {
+        let mut first_loads = BTreeMap::<(Address, U256), U256>::new();
+        let mut reconstructed = BTreeMap::<(Address, U256), U256>::new();
+
+        for action in actions {
+            match *action {
+                StorageAction::Sload(address, slot, value) => {
+                    let key = (address, slot);
+                    match reconstructed.get(&key) {
+                        Some(previous) => assert_eq!(
+                            *previous, value,
+                            "SLOAD must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
+                        ),
+                        None => {
+                            first_loads.insert(key, value);
+                            reconstructed.insert(key, value);
+                        }
+                    }
+                }
+                StorageAction::Sstore(address, slot, value) => {
+                    let key = (address, slot);
+                    assert!(
+                        reconstructed.contains_key(&key),
+                        "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
+                    );
+                    reconstructed.insert(key, value);
+                }
+            }
+        }
+
+        for (address, account) in state {
+            for (slot, storage_slot) in &account.storage {
+                let key = (*address, *slot);
+                let original_value = first_loads.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
+                    )
+                });
+                assert_eq!(
+                    *original_value,
+                    storage_slot.original_value(),
+                    "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+                );
+
+                let reconstructed_value = reconstructed.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
+                    )
+                });
+                assert_eq!(
+                    *reconstructed_value,
+                    storage_slot.present_value(),
+                    "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
+                );
+            }
+        }
+    }
+
     fn short_string_word(bytes: &[u8]) -> U256 {
         assert!(bytes.len() <= 31);
 
@@ -575,6 +640,8 @@ mod tests {
                     .apply()
             })
             .expect("TIP20 setup should succeed");
+            let setup_state = evm.ctx_mut().journaled_state.finalize();
+            evm.db_mut().commit(setup_state);
 
             let mut evm = evm.with_actions();
             assert_eq!(evm.take_actions(), Some(vec![]));
@@ -628,7 +695,7 @@ mod tests {
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
             let collected_fees_slot = PATH_USD_ADDRESS
                 .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
-            let currency_word = short_string_word(b"USD");
+            let currency_word = short_string_word(USD_CURRENCY.as_bytes());
 
             let sender_after_fee = starting_balance - max_fee_spending;
             let sender_after_transfer = sender_after_fee - transfer_amount;
@@ -807,6 +874,7 @@ mod tests {
             }
 
             assert_eq!(actions, expected, "hardfork: {hardfork:?}");
+            assert_storage_actions_reconstruct_evm_state(&actions, &result.state, hardfork);
         }
     }
 
