@@ -28,7 +28,10 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::Instant,
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -43,6 +46,8 @@ use tempo_precompiles::{
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
+
+static INSERTED_TEMPO_BATCH_LOG_TXS: AtomicU64 = AtomicU64::new(0);
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -671,6 +676,7 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
+        let batch_size = transactions.len();
 
         // Fully delegate to protocol pool for non-2D transactions
         if !transactions.iter().any(|tx| tx.is_aa_2d()) {
@@ -680,13 +686,31 @@ where
                 .await;
         }
 
-        self.protocol_pool
+        let validated = self
+            .protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
-            .await
+            .await;
+        let validated_count = validated.len();
+        let should_log =
+            crate::should_log_tx_batch_metrics(&INSERTED_TEMPO_BATCH_LOG_TXS, batch_size);
+        let started_at = should_log.then(Instant::now);
+        let results = validated
             .into_iter()
             .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(started_at) = started_at {
+            tracing::info!(
+                target: "tempo_tx_batch_metrics",
+                batch_size,
+                validated_count,
+                result_count = results.len(),
+                duration_us = started_at.elapsed().as_micros(),
+                sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                "inserted validated tempo transaction batch"
+            );
+        }
+        results
     }
 
     async fn add_transactions_with_origins(
@@ -696,6 +720,7 @@ where
         if transactions.is_empty() {
             return Vec::new();
         }
+        let batch_size = transactions.len();
 
         // Fully delegate to protocol pool for non-2D transactions
         if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
@@ -710,14 +735,32 @@ where
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
+        let validated = self
+            .protocol_pool
             .validator()
             .validate_transactions(transactions)
-            .await
+            .await;
+        let validated_count = validated.len();
+        let should_log =
+            crate::should_log_tx_batch_metrics(&INSERTED_TEMPO_BATCH_LOG_TXS, batch_size);
+        let started_at = should_log.then(Instant::now);
+        let results = validated
             .into_iter()
             .zip(origins)
             .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(started_at) = started_at {
+            tracing::info!(
+                target: "tempo_tx_batch_metrics",
+                batch_size,
+                validated_count,
+                result_count = results.len(),
+                duration_us = started_at.elapsed().as_micros(),
+                sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                "inserted validated tempo transaction batch"
+            );
+        }
+        results
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
