@@ -389,7 +389,11 @@ impl StorageTouch {
                         nonce_slots::EXPIRING_NONCE_RING_PTR,
                     )?
                     .to::<u32>();
-                let offset = (ring_offset % EXPIRING_NONCE_SET_CAPACITY as usize) as u32;
+                let offset = if ring_offset < EXPIRING_NONCE_SET_CAPACITY as usize {
+                    ring_offset as u32
+                } else {
+                    (ring_offset % EXPIRING_NONCE_SET_CAPACITY as usize) as u32
+                };
                 let idx = (ptr + offset) % EXPIRING_NONCE_SET_CAPACITY;
                 let old_hash = db.storage(
                     NONCE_PRECOMPILE_ADDRESS,
