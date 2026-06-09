@@ -211,7 +211,7 @@ jobs:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
     # Skip for forked repos
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
