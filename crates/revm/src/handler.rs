@@ -2123,21 +2123,23 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_regular_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
-    let num_auths = authorization_list.len() as u64;
-    gas.initial_regular_gas +=
-        num_auths * gas_params.get(GasId::tx_eip7702_per_empty_account_cost());
-    // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
-    gas.initial_state_gas += num_auths * gas_params.tx_eip7702_state_gas();
+    if !authorization_list.is_empty() {
+        let num_auths = authorization_list.len() as u64;
+        gas.initial_regular_gas +=
+            num_auths * gas_params.get(GasId::tx_eip7702_per_empty_account_cost());
+        // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
+        gas.initial_state_gas += num_auths * gas_params.tx_eip7702_state_gas();
 
-    // Add signature verification costs for each authorization
-    // No need for v1 fork check as gas_params would be zero
-    for auth in authorization_list {
-        gas.initial_regular_gas += tempo_signature_verification_gas(auth.signature());
-        // TIP-1000: Storage pricing updates for launch
-        // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-        if spec.is_t1() && auth.nonce == 0 {
-            gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-            gas.initial_state_gas += gas_params.new_account_state_gas();
+        // Add signature verification costs for each authorization
+        // No need for v1 fork check as gas_params would be zero
+        for auth in authorization_list {
+            gas.initial_regular_gas += tempo_signature_verification_gas(auth.signature());
+            // TIP-1000: Storage pricing updates for launch
+            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+            if spec.is_t1() && auth.nonce == 0 {
+                gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+                gas.initial_state_gas += gas_params.new_account_state_gas();
+            }
         }
     }
 
@@ -2232,8 +2234,8 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let mut batch_gas =
-        calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
+    let access_list = (!tx.inner.access_list.is_empty()).then(|| tx.inner.access_list.iter());
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, access_list, spec)?;
 
     let mut nonce_2d_gas = 0;
 
