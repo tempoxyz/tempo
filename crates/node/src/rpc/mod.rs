@@ -457,11 +457,11 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
-        let txs = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
+        let receipt_context = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
-            .zip(txs)
+            .zip(receipt_context)
             .map(|(inner, tx)| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
