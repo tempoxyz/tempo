@@ -2175,11 +2175,6 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
             return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
 
-        // 4c. Value transfer cost using revm constant
-        // left here for future reference.
-        if !call.value.is_zero() && call.to.is_call() {
-            gas.initial_regular_gas += gas_params.get(GasId::transfer_value_cost()); // 9000 gas
-        }
     }
 
     gas.initial_regular_gas += total_tokens * gas_params.tx_token_cost();
