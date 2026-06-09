@@ -10,7 +10,8 @@ type ExtractedAttributes = (Option<U256>, Option<U256>);
 ///
 /// Supports:
 /// - Integer literals: decimal (`42`) or hexadecimal (`0x2a`)
-/// - String literals: computes the BLAKE3 hash of the string
+/// - String literals up to 32 bytes: uses the raw string bytes as the slot key
+/// - Longer string literals: computes the BLAKE3 hash of the string
 fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
     match value {
         Lit::Int(int) => {
@@ -23,9 +24,15 @@ fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
             .map_err(|_| syn::Error::new_spanned(int, "Invalid slot number"))?;
             Ok(slot)
         }
-        Lit::Str(lit) => Ok(U256::from_be_bytes(
-            *blake3::hash(lit.value().as_bytes()).as_bytes(),
-        )),
+        Lit::Str(lit) => {
+            let value = lit.value();
+            let bytes = value.as_bytes();
+            if bytes.len() <= 32 {
+                Ok(U256::from_be_slice(bytes))
+            } else {
+                Ok(U256::from_be_bytes(*blake3::hash(bytes).as_bytes()))
+            }
+        }
         _ => Err(syn::Error::new_spanned(
             value,
             "slot attribute must be an integer or a string literal",

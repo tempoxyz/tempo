@@ -205,7 +205,7 @@ fn test_string_literal_slots() {
     #[contract]
     pub struct Layout {
         #[slot("id")]
-        pub field: U256, // slot: blake3("id")
+        pub field: U256, // slot: raw "id" bytes
     }
 
     let (mut storage, address) = setup_storage();
@@ -219,7 +219,7 @@ fn test_string_literal_slots() {
         assert_eq!(layout.field.read().unwrap(), U256::ONE);
 
         // Verify slot assignment
-        let slot = U256::from_be_bytes(*blake3::hash(b"id").as_bytes());
+        let slot = U256::from_be_slice(b"id");
         assert_eq!(layout.field.slot(), slot);
         assert_eq!(slots::FIELD, slot);
 
