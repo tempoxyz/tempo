@@ -33,7 +33,6 @@ use revm::{
     },
     precompile::PrecompileError,
 };
-use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -1543,18 +1542,13 @@ where
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
-        let mut effective_gas_price = tx.effective_gas_price(basefee);
+        let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
-        let gas_used = gas.used().saturating_sub(gas.reservoir());
-        if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
-            // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
-            // component remains payable.
-            // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
-            effective_gas_price =
-                tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
-        }
 
-        let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
+        let actual_spending = calc_gas_balance_spending(
+            gas.used().saturating_sub(gas.reservoir()),
+            effective_gas_price,
+        );
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),
@@ -1624,7 +1618,8 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
-        // Reset per-tx validator fee.
+        // Reset per-tx fee state.
+        evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
 
         // Validate the fee payer signature
@@ -5756,6 +5751,51 @@ mod tests {
                     .all(|log| log.address != ACCOUNT_KEYCHAIN_ADDRESS),
                 "fee-limit rejection must happen before key authorization emits events"
             );
+        }
+
+        #[test]
+        fn test_stale_collected_fee_not_charged_to_zero_fee_same_tx_auth_use() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let stale_fee = U256::from(100_000);
+            let spending_limit = stale_fee - U256::ONE;
+
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_limits(vec![
+                    PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: spending_limit,
+                        period: 60,
+                    },
+                ]),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T3, None, false);
+            evm.collected_fee = stale_fee;
+            evm.inner.ctx.tx.inner.gas_limit = 100_000;
+            evm.inner.ctx.tx.inner.gas_price = 0;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(0);
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, stale_fee * U256::from(2))
+                    .apply()
+                    .expect("pathUSD setup succeeds");
+            });
+
+            h.validate_env(&mut evm)
+                .expect("zero-fee same-tx auth/use env validation should pass");
+            assert_eq!(evm.collected_fee, U256::ZERO);
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+
+            assert!(
+                result.is_ok(),
+                "zero-fee same-tx auth/use must not charge stale fee, got: {result:?}"
+            );
+            assert_eq!(evm.collected_fee, U256::ZERO);
         }
     }
 

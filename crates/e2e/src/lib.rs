@@ -35,7 +35,7 @@ use futures::future::join_all;
 use itertools::Itertools as _;
 use rand_core::CryptoRngCore;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::{consensus, feed::FeedStateHandle};
+use tempo_consensus::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;

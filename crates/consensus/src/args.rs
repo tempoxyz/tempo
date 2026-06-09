@@ -11,7 +11,7 @@ use std::{
 use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
-use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase};
+use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -410,7 +410,7 @@ async fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphra
     let path = path.as_ref().to_path_buf();
     let task_path = path.clone();
     let mut read =
-        tokio::task::spawn_blocking(move || tempo_commonware_node_config::read_secret(&task_path));
+        tokio::task::spawn_blocking(move || tempo_consensus_config::read_secret(&task_path));
     let mut warning_interval = tokio::time::interval_at(
         tokio::time::Instant::now() + PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL,
         PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL,
@@ -470,7 +470,7 @@ mod tests {
     const PASSPHRASE: &str = "correct horse battery staple";
 
     fn raw_private_key_bytes() -> Vec<u8> {
-        tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX)
+        tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX)
             .unwrap()
             .into_inner()
             .encode()
@@ -512,7 +512,7 @@ mod tests {
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
         let mut ct = Vec::new();
         let mut w = age::Encryptor::with_user_passphrase(
-            tempo_commonware_node_config::SigningKeyPassphrase::from(passphrase),
+            tempo_consensus_config::SigningKeyPassphrase::from(passphrase),
         )
         .wrap_output(&mut ct)
         .unwrap();
@@ -565,8 +565,7 @@ mod tests {
             .expect("signing key must be Some when --consensus.signing-key is set");
         writer.join().unwrap();
 
-        let expected =
-            tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key.public_key(), expected.public_key());
     }
 
@@ -592,8 +591,7 @@ mod tests {
             .expect("signing key must load")
             .expect("signing key must be Some when --consensus.signing-key is set");
 
-        let expected =
-            tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key.public_key(), expected.public_key());
     }
 
@@ -639,8 +637,7 @@ mod tests {
             .expect("second signing key must load")
             .expect("second signing key must be Some");
 
-        let expected =
-            tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key_a.public_key(), expected.public_key());
         assert_eq!(key_b.public_key(), expected.public_key());
     }

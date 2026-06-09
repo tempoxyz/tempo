@@ -46,7 +46,7 @@ use reth_node_core::{
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node::feed::FeedStateHandle;
+use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
