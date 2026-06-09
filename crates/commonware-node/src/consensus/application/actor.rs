@@ -1163,7 +1163,7 @@ async fn fetch_block_from_el_or_subscribe(
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(parent.seal(), None)
+        Block::from_execution_block_unchecked(block.seal(), None)
     } else {
         marshal
             .subscribe_by_digest(Some(round), digest)
