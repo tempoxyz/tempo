@@ -20,9 +20,9 @@ use crate::{
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
-use alloy_eip7928::compute_block_access_list_hash;
+use alloy_eip7928::bal::Bal;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -36,7 +36,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -48,7 +48,7 @@ use reth_primitives_traits::{
 };
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention,
+    db::states::bundle_state::BundleRetention, state::EvmState,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -60,6 +60,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -370,7 +371,6 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
-            .with_bal_builder_if(self.enable_bal)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -488,18 +488,31 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        if let Some(ref handle) = trie_handle {
+        let bal_task_handle = if self.enable_bal {
+            let sparse_trie_state_hook = trie_handle.as_ref().unwrap().state_hook();
+            let bal_task_handle = self.spawn_bal_task(sparse_trie_state_hook);
             executor
                 .evm_mut()
                 .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
-        }
+                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
+            Some(bal_task_handle)
+        } else {
+            if let Some(ref handle) = trie_handle {
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .set_state_hook(Some(Box::new(handle.state_hook())));
+            }
+            None
+        };
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        executor.evm_mut().db_mut().bump_bal_index();
+        if let Some(bal_task_handle) = &bal_task_handle {
+            bal_task_handle.bump_bal_index();
+        }
 
         check_cancel!();
 
@@ -733,7 +746,9 @@ where
                 }
             };
             trace!("Transaction executed");
-            executor.evm_mut().db_mut().bump_bal_index();
+            if let Some(bal_task_handle) = &bal_task_handle {
+                bal_task_handle.bump_bal_index();
+            }
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
@@ -810,7 +825,9 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
-                executor.evm_mut().db_mut().bump_bal_index();
+                if let Some(bal_task_handle) = &bal_task_handle {
+                    bal_task_handle.bump_bal_index();
+                }
 
                 subblock_tx_count += 1.0;
                 let _ = roots_tx.send((
@@ -849,7 +866,9 @@ where
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
-            executor.evm_mut().db_mut().bump_bal_index();
+            if let Some(bal_task_handle) = &bal_task_handle {
+                bal_task_handle.bump_bal_index();
+            }
 
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
@@ -893,6 +912,9 @@ where
         // finalize the state root.
         db.set_state_hook(None);
 
+        // Drop the BAL task sender to trigger finalization.
+        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
@@ -935,10 +957,12 @@ where
             }
             .unzip();
 
-        let block_access_list = db.take_built_alloy_bal();
-        let block_access_list_hash = block_access_list
-            .as_ref()
-            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
+            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
+            (Some(bal), Some(bal_hash))
+        } else {
+            (None, None)
+        };
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -1113,8 +1137,6 @@ where
         );
 
         let block = Arc::new(block);
-        let block_access_list: Option<Bytes> =
-            block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
@@ -1198,6 +1220,66 @@ where
 
         (transactions_tx, result_rx)
     }
+
+    fn spawn_bal_task(&self, mut state_root_task_hook: impl OnStateHook) -> BalTaskHandle {
+        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+        let (bal_tx, bal_rx) = oneshot::channel();
+        self.executor.spawn_blocking_named("builder-bal-task", || {
+            let mut bal_state =
+                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+            for msg in task_rx {
+                match msg {
+                    BalMessage::BumpIndex => {
+                        bal_state.bump_bal_index();
+                    }
+                    BalMessage::State(state) => {
+                        bal_state.commit(&state);
+                        state_root_task_hook.on_state(&state);
+                    }
+                }
+            }
+
+            drop(state_root_task_hook);
+            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+            let mut encoded = Vec::new();
+            bal.encode(&mut encoded);
+            let bal_hash = keccak256(&encoded);
+
+            let _ = bal_tx.send((encoded.into(), bal_hash));
+        });
+
+        BalTaskHandle {
+            msg_tx: task_tx,
+            bal_rx,
+        }
+    }
+}
+
+struct BalTaskHandle {
+    msg_tx: mpsc::Sender<BalMessage>,
+    bal_rx: oneshot::Receiver<(Bytes, B256)>,
+}
+
+impl BalTaskHandle {
+    fn state_hook(&self) -> impl OnStateHook {
+        let msg_tx = self.msg_tx.clone();
+        move |state: &EvmState| {
+            let _ = msg_tx.send(BalMessage::State(state.clone()));
+        }
+    }
+
+    fn bump_bal_index(&self) {
+        let _ = self.msg_tx.send(BalMessage::BumpIndex);
+    }
+
+    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
+        self.bal_rx
+    }
+}
+
+enum BalMessage {
+    State(EvmState),
+    BumpIndex,
 }
 
 pub fn is_more_subblocks(
