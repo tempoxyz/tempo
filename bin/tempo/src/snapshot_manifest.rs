@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -10,17 +11,25 @@ use commonware_codec::Encode as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::Runner as _;
-use eyre::{Context as _, OptionExt};
+use eyre::{Context as _, OptionExt, ensure};
+use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
     manifest::SnapshotManifest, manifest_cmd::SnapshotManifestCommand,
 };
+use reth_cli_runner::CliRunner;
+use reth_db::DatabaseEnv;
+use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_provider::providers::{BlockchainProvider, ReadOnlyConfig};
 use serde::{Deserialize, Serialize};
-use tempo_commonware_node::consensus::Digest;
+use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
+use tempo_commonware_node::{consensus::Digest, find_last_finalized_marker};
+use tempo_node::node::TempoNode;
 use tempo_telemetry_util::display_duration;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
 
 type TempoFinalization = Finalization<Scheme<PublicKey, MinSig>, Digest>;
+type TempoExecutionProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TempoConsensusManifest {
@@ -42,9 +51,17 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = true)]
     skip_consensus: bool,
 
+    /// Chain spec override for local/unknown chains.
+    #[arg(long, short, value_parser = chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
+
     /// Consensus storage directory. If not set, this will be derived from --datadir.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     consensus_datadir: Option<PathBuf>,
+
+    /// Maximum blocks behind the finalized execution tip to inspect.
+    #[arg(long = "consensus.finalization-search-depth", default_value_t = 100)]
+    finalization_search_depth: u64,
 }
 
 pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
@@ -69,6 +86,8 @@ impl Args {
             inner,
             skip_consensus,
             consensus_datadir,
+            finalization_search_depth,
+            chain,
         } = self;
 
         fs::create_dir_all(output_dir)
@@ -95,14 +114,22 @@ impl Args {
         let manifest = read_manifest(&manifest_path)
             .wrap_err_with(|| format!("failed reading manifest: {}", manifest_path.display()))?;
 
+        let chainspec = resolve_chainspec(chain, manifest.chain_id)?;
+        let execution_provider = execution_provider(chainspec, source_datadir)?;
+
         let consensus_dir = consensus_datadir.unwrap_or_else(|| source_datadir.join("consensus"));
         eprintln!(
-            "reading latest finalization. consensus dir: {}",
-            consensus_dir.display()
+            "reading snapshot finalization. consensus dir: {}, search depth: {}",
+            consensus_dir.display(),
+            finalization_search_depth,
         );
 
-        let (height, finalization) = read_latest_finalization(&consensus_dir)
-            .wrap_err("failed to read finalization state")?;
+        let (height, finalization) = find_snapshot_finalization(
+            &consensus_dir,
+            execution_provider,
+            finalization_search_depth,
+        )
+        .wrap_err("failed to read finalization state")?;
 
         let digest = finalization.proposal.payload;
         let consensus_manifest = TempoConsensusManifest {
@@ -110,6 +137,12 @@ impl Args {
             digest: digest.0,
             finalization: finalization.encode().into(),
         };
+
+        let manifest_height = manifest.block;
+        ensure!(
+            manifest_height >= height,
+            "finalization marker must be at or below execution"
+        );
 
         let mut manifest_json =
             serde_json::to_value(&manifest).wrap_err("failed to serialize merged manifest")?;
@@ -128,7 +161,7 @@ impl Args {
         fs::write(&manifest_path, manifest_json)
             .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
 
-        eprintln!("embedded finalization for height `{height}`, digest `{digest}`");
+        eprintln!("embedded finalization for height `{height}`; execution=`{manifest_height}`",);
         Ok(())
     }
 }
@@ -138,19 +171,53 @@ fn read_manifest(manifest_path: &Path) -> eyre::Result<SnapshotManifest> {
     serde_json::from_slice(&manifest_bytes).wrap_err("failed to parse manifest")
 }
 
-fn read_latest_finalization(consensus_dir: &Path) -> eyre::Result<(u64, TempoFinalization)> {
+fn resolve_chainspec(
+    chain: Option<Arc<TempoChainSpec>>,
+    manifest_chain_id: u64,
+) -> eyre::Result<Arc<TempoChainSpec>> {
+    match chain {
+        None => chainspec_from_chain_id(manifest_chain_id).ok_or_eyre(format!(
+            "unknown chain id `{manifest_chain_id}`; pass --chain explicitly"
+        )),
+        Some(spec) => {
+            let chain_id = spec.chain_id();
+            ensure!(
+                chain_id == manifest_chain_id,
+                "mismatch in --chain id `{chain_id}` and manifest chain id `{manifest_chain_id}`",
+            );
+            Ok(spec)
+        }
+    }
+}
+
+fn find_snapshot_finalization(
+    consensus_dir: &Path,
+    execution_provider: TempoExecutionProvider,
+    max_depth: u64,
+) -> eyre::Result<(u64, TempoFinalization)> {
     let runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
     let runner = commonware_runtime::tokio::Runner::new(runtime_config);
-    let finalization =
-        runner
-            .start(|context| async move {
-                tempo_commonware_node::read_latest_finalization(&context).await
-            })
-            .wrap_err("failed to read finalizations")?;
+    runner.start(|context| async move {
+        find_last_finalized_marker(&context, &execution_provider, max_depth)
+            .await?
+            .ok_or_eyre("no finalization marker found")
+    })
+}
 
-    finalization.ok_or_eyre("no persisted finalizations")
+fn execution_provider(
+    chainspec: Arc<TempoChainSpec>,
+    source_datadir: &Path,
+) -> eyre::Result<TempoExecutionProvider> {
+    let runner = CliRunner::try_default_runtime().wrap_err("failed to fetch execution runtime")?;
+
+    let read_cfg = ReadOnlyConfig::from_datadir(source_datadir);
+    let factory = TempoNode::provider_factory_builder()
+        .open_read_only(chainspec, read_cfg, runner.runtime())
+        .wrap_err("failed to open execution provider")?;
+
+    BlockchainProvider::new(factory).wrap_err("failed to create execution provider")
 }
 
 #[cfg(test)]

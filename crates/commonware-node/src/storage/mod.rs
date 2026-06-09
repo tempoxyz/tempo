@@ -16,6 +16,7 @@
 
 use std::time::Instant;
 
+use alloy_consensus::Sealable as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as _, ed25519::PublicKey,
@@ -27,6 +28,7 @@ use commonware_storage::{
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{WrapErr as _, ensure};
+use reth_provider::{BlockIdReader, BlockReader};
 use tracing::{info, instrument};
 
 use crate::{
@@ -216,49 +218,64 @@ where
     archive
 }
 
-/// Reads the finalization certificate stored at `height`
-pub async fn read_finalization_at_height<TContext>(
+/// Finds the latest finalization certificate backed by finalized execution storage.
+///
+/// Searches backwards from the execution provider's finalized tip. At
+/// most `max_depth` blocks behind that starting height are inspected.
+///
+/// Returns `None` if no persisted finalization certificate has a matching
+/// finalized execution block.
+pub async fn find_last_finalized_marker<TContext, P>(
     context: &TContext,
-    height: u64,
-) -> eyre::Result<Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-{
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-
-    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
-        .await
-        .wrap_err("failed to open finalizations-by-height archive")?;
-
-    archive
-        .get(Identifier::Index(height))
-        .await
-        .wrap_err_with(|| format!("failed reading finalization certificate at height {height}"))
-}
-
-/// Reads the latest finalization certificate stored by height.
-pub async fn read_latest_finalization<TContext>(
-    context: &TContext,
+    execution_provider: &P,
+    max_depth: u64,
 ) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-
     let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
         .await
         .wrap_err("failed to open finalizations-by-height archive")?;
 
-    let Some(height) = archive.last_index() else {
+    if archive.last_index().is_none() {
+        return Ok(None);
+    }
+    let Some(finalized_tip) = execution_provider
+        .finalized_block_num_hash()
+        .wrap_err("failed reading finalized block from execution provider")?
+        .map(|finalized| finalized.number)
+    else {
         return Ok(None);
     };
 
-    let finalization = archive
-        .get(Identifier::Index(height))
-        .await
-        .wrap_err_with(|| {
-            format!("failed reading latest finalization certificate at height {height}")
-        })?;
+    let search_end = finalized_tip.saturating_sub(max_depth);
+    for height in (search_end..=finalized_tip).rev() {
+        let Some(finalization) = archive
+            .get(Identifier::Index(height))
+            .await
+            .wrap_err_with(|| format!("failed reading finalization at height {height}"))?
+        else {
+            continue;
+        };
 
-    Ok(finalization.map(|finalization| (height, finalization)))
+        let Some(block) = execution_provider
+            .block_by_number(height)
+            .wrap_err_with(|| format!("failed reading block at height {height}"))?
+        else {
+            continue;
+        };
+
+        let finalization_digest = finalization.proposal.payload;
+        let block_digest = Digest(block.header.hash_slow());
+        ensure!(
+            finalization_digest == block_digest,
+            "digest mismatch at height `{height}`. finalization: {finalization_digest}, execution: {block_digest}",
+        );
+
+        return Ok(Some((height, finalization)));
+    }
+
+    Ok(None)
 }
