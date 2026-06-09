@@ -728,7 +728,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     );
     await_receipts(&mut pending).await?;
 
-    // Rewards are disabled. Distribution is a no-op and should not emit reward events.
+    // Distribute reward (immediate distribution)
     let distribute_receipt = token
         .distributeReward(reward_amount)
         .gas(gas)
@@ -738,16 +738,14 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    assert!(
-        distribute_receipt
-            .logs()
-            .iter()
-            .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
-            .next()
-            .is_none()
-    );
+    distribute_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
+        .next()
+        .expect("RewardDistributed event should be emitted");
 
-    // Transfer should not settle rewards now that reward accounting is disabled.
+    // Transfer to trigger reward update (use authorized address, not random)
     pending.push(
         alice_token
             .transfer(admin, U256::from(100e18))
@@ -760,8 +758,10 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
     assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
-    assert_eq!(token.balanceOf(*token.address()).call().await?, U256::ZERO);
-    assert_eq!(token.getPendingRewards(bob).call().await?, 0);
+    assert_eq!(
+        token.balanceOf(*token.address()).call().await?,
+        reward_amount
+    );
 
     bob_token
         .claimRewards()
@@ -771,7 +771,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
+    assert_eq!(token.balanceOf(bob).call().await?, reward_amount);
 
     Ok(())
 }
