@@ -15,7 +15,10 @@ use commonware_codec::Encode;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey as Ed25519PrivateKey};
 use reth_node_api::BuiltPayload;
 use std::net::{IpAddr, SocketAddr};
-use tempo_chainspec::{features::highest_supported_protocol_feature_id, spec::TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    features::{highest_supported_protocol_feature_id, protocol_features_digest},
+    spec::TEMPO_T1_BASE_FEE,
+};
 use tempo_contracts::precompiles::{
     IFeatureRegistry, IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory,
     ITIPFeeAMM, IValidatorConfigV2,
@@ -362,13 +365,19 @@ async fn test_block_building_reports_supported_features_tip_once() -> eyre::Resu
 
     let feature_registry = IFeatureRegistry::new(FEATURE_REGISTRY_ADDRESS, provider);
     let expected_features_tip = highest_supported_protocol_feature_id();
+    let expected_features_digest = protocol_features_digest(expected_features_tip).unwrap();
     assert!(expected_features_tip > 0);
+    let initial_report = feature_registry
+        .validatorSupportedFeaturesTip(validator.validatorAddress)
+        .call()
+        .await?;
+    assert_eq!(initial_report, 0);
     assert_eq!(
         feature_registry
-            .validatorSupportedFeaturesTip(validator.validatorAddress)
+            .validatorSupportedFeaturesDigest(validator.validatorAddress, expected_features_tip)
             .call()
             .await?,
-        0
+        B256::ZERO
     );
 
     let first_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
@@ -376,12 +385,18 @@ async fn test_block_building_reports_supported_features_tip_once() -> eyre::Resu
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].publicKey, validator.publicKey);
     assert_eq!(reports[0].featuresTip, expected_features_tip);
+    assert_eq!(reports[0].featuresDigest, expected_features_digest);
+    let stored_report = feature_registry
+        .validatorSupportedFeaturesTip(validator.validatorAddress)
+        .call()
+        .await?;
+    assert_eq!(stored_report, expected_features_tip);
     assert_eq!(
         feature_registry
-            .validatorSupportedFeaturesTip(validator.validatorAddress)
+            .validatorSupportedFeaturesDigest(validator.validatorAddress, expected_features_tip)
             .call()
             .await?,
-        expected_features_tip
+        expected_features_digest
     );
 
     let second_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;

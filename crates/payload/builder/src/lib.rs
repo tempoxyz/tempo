@@ -67,7 +67,7 @@ use std::{
 use tempo_chainspec::{
     TempoChainSpec, features::highest_supported_protocol_feature_id, hardfork::TempoHardforks,
 };
-use tempo_contracts::precompiles::{FEATURE_REGISTRY_ADDRESS, IFeatureRegistry};
+use tempo_contracts::precompiles::FEATURE_REGISTRY_ADDRESS;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::{
@@ -246,37 +246,27 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         if supported_features_tip == 0 {
             return None;
         }
-
         let public_key = attributes.proposer_public_key()?;
 
         let spec = evm.cfg.spec;
-        let should_report = match evm
+        let report = match evm
             .ctx_mut()
             .journaled_state
             .database
-            .with_read_only_storage_ctx(spec, || -> Result<bool, PayloadBuilderError> {
-                let reported_features_tip = FeatureRegistry::new()
-                    .validator_supported_features_tip_by_public_key(*public_key)
+            .with_read_only_storage_ctx(spec, || -> Result<_, PayloadBuilderError> {
+                let report = FeatureRegistry::new()
+                    .next_validator_support_update(*public_key, supported_features_tip)
                     .map_err(PayloadBuilderError::other)?;
-                Ok(reported_features_tip < supported_features_tip)
+                Ok(report)
             }) {
-            Ok(should_report) => should_report,
+            Ok(report) => report,
             Err(err) => {
                 debug!(%err, "skipping supported feature tip report");
-                false
+                None
             }
         };
 
-        if !should_report {
-            return None;
-        }
-
-        let input = IFeatureRegistry::setSupportedFeaturesTipCall {
-            publicKey: *public_key,
-            featuresTip: supported_features_tip,
-        }
-        .abi_encode()
-        .into();
+        let input = report?.abi_encode().into();
         Some(Self::system_tx(chain_id, FEATURE_REGISTRY_ADDRESS, input))
     }
 

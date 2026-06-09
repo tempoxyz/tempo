@@ -1,20 +1,10 @@
 //! ABI dispatch for the [`FeatureRegistry`] precompile.
 
 use super::*;
-use crate::{
-    Precompile, charge_input_cost, dispatch_call, error::TempoPrecompileError, mutate_void,
-    storage::StorageCtx, view,
-};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use crate::{Precompile, charge_input_cost, dispatch_call, mutate_void, view};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IFeatureRegistry::{self, IFeatureRegistryCalls};
-
-fn unsupported<T: SolCall>() -> PrecompileResult {
-    StorageCtx.error_result(TempoPrecompileError::UnknownFunctionSelector(T::SELECTOR))
-}
+use tempo_contracts::precompiles::IFeatureRegistry::IFeatureRegistryCalls;
 
 impl Precompile for FeatureRegistry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -28,6 +18,9 @@ impl Precompile for FeatureRegistry {
             IFeatureRegistryCalls::abi_decode,
             |call| match call {
                 IFeatureRegistryCalls::featuresTip(call) => view(call, |_| self.features_tip()),
+                IFeatureRegistryCalls::highestQuorumFeaturesTip(call) => {
+                    view(call, |_| self.highest_quorum_features_tip())
+                }
                 IFeatureRegistryCalls::owner(call) => view(call, |_| self.owner()),
                 IFeatureRegistryCalls::activationQuorum(call) => {
                     view(call, |_| self.activation_quorum())
@@ -58,11 +51,16 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::validatorSupportedFeaturesTip(call) => view(call, |call| {
                     self.validator_supported_features_tip(call.validator)
                 }),
-                IFeatureRegistryCalls::featuresTipSupport(_) => {
-                    unsupported::<IFeatureRegistry::featuresTipSupportCall>()
+                IFeatureRegistryCalls::validatorSupportedFeaturesDigest(call) => {
+                    view(call, |call| {
+                        self.validator_supported_features_digest(call.validator, call.featuresTip)
+                    })
                 }
-                IFeatureRegistryCalls::hasFeaturesTipQuorum(_) => {
-                    unsupported::<IFeatureRegistry::hasFeaturesTipQuorumCall>()
+                IFeatureRegistryCalls::featuresTipSupport(call) => {
+                    view(call, |call| self.features_tip_support(call.featuresTip))
+                }
+                IFeatureRegistryCalls::hasFeaturesTipQuorum(call) => {
+                    view(call, |call| self.has_features_tip_quorum(call.featuresTip))
                 }
             },
         )
@@ -79,16 +77,16 @@ mod tests {
     };
     use alloy::{
         primitives::{B256, Keccak256, U256},
-        sol_types::{SolCall, SolError, SolValue},
+        sol_types::{SolCall, SolValue},
     };
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::{
-        epoch::EPOCH_LENGTH_BLOCKS, features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT,
+        epoch::EPOCH_LENGTH_BLOCKS,
+        features::{HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT, protocol_features_digest},
     };
     use tempo_contracts::precompiles::{
-        FeatureRegistryError, IValidatorConfigV2, UnknownFunctionSelector,
-        VALIDATOR_CONFIG_V2_ADDRESS,
+        FeatureRegistryError, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
     };
 
     fn initialize_validator_config_owner(owner: Address) -> eyre::Result<()> {
@@ -133,12 +131,50 @@ mod tests {
         Ok(public_key)
     }
 
+    fn add_test_validator_support(
+        registry: &mut FeatureRegistry,
+        owner: Address,
+        seed: u64,
+        features_tip: u64,
+    ) -> eyre::Result<()> {
+        let validator = Address::repeat_byte(seed as u8);
+        let public_key = add_test_validator(owner, validator, seed)?;
+        registry
+            .set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: features_tip,
+                    featuresDigest: protocol_features_digest(features_tip).unwrap(),
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    fn add_quorum_support(
+        registry: &mut FeatureRegistry,
+        owner: Address,
+        features_tip: u64,
+    ) -> eyre::Result<()> {
+        initialize_validator_config_owner(owner)?;
+        for seed in 1..=5 {
+            if seed <= 4 {
+                add_test_validator_support(registry, owner, seed, features_tip)?;
+            } else {
+                let validator = Address::repeat_byte(seed as u8);
+                add_test_validator(owner, validator, seed)?;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn features_tip_defaults_to_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let registry = FeatureRegistry::new();
             assert_eq!(registry.features_tip()?, 0);
+            assert_eq!(registry.highest_quorum_features_tip()?, 0);
             Ok(())
         })
     }
@@ -468,15 +504,15 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             assert!(!registry.activate_scheduled_features_tip(20)?);
-            assert_eq!(registry.features_tip()?, 7);
+            assert_eq!(registry.features_tip()?, 0);
 
             let scheduled = registry.scheduled_features_tip()?;
-            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.featuresTip, 1);
             assert_eq!(scheduled.activationEpoch, 21);
 
             Ok(())
@@ -488,16 +524,39 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             assert!(registry.activate_scheduled_features_tip(21)?);
-            assert_eq!(registry.features_tip()?, 13);
+            assert_eq!(registry.features_tip()?, 1);
 
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 0);
             assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_features_tip_rejects_missing_quorum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_features_tip.write(1)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            let result = registry.activate_scheduled_features_tip(21);
+            assert_eq!(
+                result,
+                Err(FeatureRegistryError::features_tip_quorum_not_reached().into())
+            );
+            assert_eq!(registry.features_tip()?, 0);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 1);
+            assert_eq!(scheduled.activationEpoch, 21);
 
             Ok(())
         })
@@ -524,15 +583,15 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            registry.features_tip.write(7)?;
-            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_features_tip.write(1)?;
             registry.scheduled_activation_epoch.write(21)?;
+            add_quorum_support(&mut registry, Address::repeat_byte(0xaa), 1)?;
 
             let call = IFeatureRegistry::activateScheduledFeaturesTipCall { currentEpoch: 21 };
             let result = registry.call(&call.abi_encode(), SYSTEM_CALLER_ADDRESS)?;
             assert!(!result.is_revert());
 
-            assert_eq!(registry.features_tip()?, 13);
+            assert_eq!(registry.features_tip()?, 1);
             let scheduled = registry.scheduled_features_tip()?;
             assert_eq!(scheduled.featuresTip, 0);
             assert_eq!(scheduled.activationEpoch, 0);
@@ -549,6 +608,10 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
 
             assert_eq!(registry.validator_supported_features_tip(validator)?, 0);
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 1)?,
+                B256::ZERO
+            );
 
             Ok(())
         })
@@ -561,9 +624,15 @@ mod tests {
             let mut registry = FeatureRegistry::new();
             let validator = Address::repeat_byte(0x01);
 
-            registry.validator_supported_features_tip[validator].write(13)?;
+            let digest = protocol_features_digest(1).unwrap();
+            registry.validator_supported_features_tip[validator].write(1)?;
+            registry.validator_supported_features_digest[validator][1].write(digest)?;
 
-            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 1)?,
+                digest
+            );
 
             Ok(())
         })
@@ -583,11 +652,89 @@ mod tests {
                 Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
                     publicKey: public_key,
-                    featuresTip: 13,
+                    featuresTip: 1,
+                    featuresDigest: protocol_features_digest(1).unwrap(),
                 },
             )?;
 
-            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 1)?,
+                protocol_features_digest(1).unwrap()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_only_writes_reported_height_digest() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+
+            registry.set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: 1,
+                    featuresDigest: protocol_features_digest(1).unwrap(),
+                },
+            )?;
+
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 1)?,
+                protocol_features_digest(1).unwrap()
+            );
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 0)?,
+                B256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn next_validator_support_update_returns_missing_or_stale_height() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+
+            let update = registry
+                .next_validator_support_update(public_key, 1)?
+                .expect("missing high-water report should need update");
+            assert_eq!(update.publicKey, public_key);
+            assert_eq!(update.featuresTip, 1);
+            assert_eq!(update.featuresDigest, protocol_features_digest(1).unwrap());
+
+            registry.validator_supported_features_tip[validator].write(1)?;
+            let update = registry
+                .next_validator_support_update(public_key, 1)?
+                .expect("missing digest should need update");
+            assert_eq!(update.featuresTip, 1);
+            assert_eq!(update.featuresDigest, protocol_features_digest(1).unwrap());
+
+            registry.validator_supported_features_digest[validator][1]
+                .write(B256::repeat_byte(0xff))?;
+            let update = registry
+                .next_validator_support_update(public_key, 1)?
+                .expect("stale digest should need update");
+            assert_eq!(update.featuresTip, 1);
+            assert_eq!(update.featuresDigest, protocol_features_digest(1).unwrap());
+
+            registry.validator_supported_features_digest[validator][1]
+                .write(protocol_features_digest(1).unwrap())?;
+            assert_eq!(registry.next_validator_support_update(public_key, 1)?, None);
 
             Ok(())
         })
@@ -602,20 +749,23 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
             let public_key = add_test_validator(owner, validator, 1)?;
-            registry.validator_supported_features_tip[validator].write(13)?;
+            registry.validator_supported_features_tip[validator].write(1)?;
+            registry.validator_supported_features_digest[validator][1]
+                .write(protocol_features_digest(1).unwrap())?;
 
             let result = registry.set_supported_features_tip(
                 Address::ZERO,
                 IFeatureRegistry::setSupportedFeaturesTipCall {
                     publicKey: public_key,
-                    featuresTip: 12,
+                    featuresTip: 0,
+                    featuresDigest: protocol_features_digest(0).unwrap(),
                 },
             );
             assert_eq!(
                 result,
                 Err(FeatureRegistryError::supported_features_tip_decreased().into())
             );
-            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
 
             Ok(())
         })
@@ -632,6 +782,22 @@ mod tests {
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(u64::abi_decode(&result.bytes)?, 11);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn highest_quorum_features_tip_dispatch_returns_encoded_cursor() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.highest_quorum_features_tip.write(1)?;
+
+            let call = IFeatureRegistry::highestQuorumFeaturesTipCall {};
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(u64::abi_decode(&result.bytes)?, 1);
 
             Ok(())
         })
@@ -686,7 +852,8 @@ mod tests {
                 Address::repeat_byte(0x02),
                 IFeatureRegistry::setSupportedFeaturesTipCall {
                     publicKey: B256::repeat_byte(0x03),
-                    featuresTip: 13,
+                    featuresTip: 1,
+                    featuresDigest: protocol_features_digest(1).unwrap(),
                 },
             );
             assert_eq!(result, Err(FeatureRegistryError::unauthorized().into()));
@@ -709,11 +876,16 @@ mod tests {
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
                 publicKey: public_key,
-                featuresTip: 34,
+                featuresTip: 1,
+                featuresDigest: protocol_features_digest(1).unwrap(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
-            assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
+            assert_eq!(
+                registry.validator_supported_features_digest(validator, 1)?,
+                protocol_features_digest(1).unwrap()
+            );
 
             Ok(())
         })
@@ -728,7 +900,8 @@ mod tests {
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
                 publicKey: B256::repeat_byte(0x03),
-                featuresTip: 34,
+                featuresTip: 1,
+                featuresDigest: protocol_features_digest(1).unwrap(),
             };
             let result = registry.call(&call.abi_encode(), Address::repeat_byte(0x02))?;
             assert!(result.is_revert());
@@ -750,11 +923,14 @@ mod tests {
             let validator = Address::repeat_byte(0x01);
             initialize_validator_config_owner(owner)?;
             let public_key = add_test_validator(owner, validator, 1)?;
-            registry.validator_supported_features_tip[validator].write(34)?;
+            registry.validator_supported_features_tip[validator].write(1)?;
+            registry.validator_supported_features_digest[validator][1]
+                .write(protocol_features_digest(1).unwrap())?;
 
             let call = IFeatureRegistry::setSupportedFeaturesTipCall {
                 publicKey: public_key,
-                featuresTip: 33,
+                featuresTip: 0,
+                featuresDigest: protocol_features_digest(0).unwrap(),
             };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(result.is_revert());
@@ -763,7 +939,7 @@ mod tests {
                 decoded,
                 FeatureRegistryError::supported_features_tip_decreased()
             );
-            assert_eq!(registry.validator_supported_features_tip(validator)?, 34);
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 1);
 
             Ok(())
         })
@@ -775,30 +951,184 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             let validator = Address::repeat_byte(0x01);
-            registry.validator_supported_features_tip[validator].write(34)?;
+            registry.validator_supported_features_tip[validator].write(1)?;
 
             let call = IFeatureRegistry::validatorSupportedFeaturesTipCall { validator };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
-            assert_eq!(u64::abi_decode(&result.bytes)?, 34);
+            assert_eq!(u64::abi_decode(&result.bytes)?, 1);
 
             Ok(())
         })
     }
 
     #[test]
-    fn unimplemented_selectors_remain_unknown() -> eyre::Result<()> {
+    fn validator_supported_features_digest_dispatch_returns_encoded_digest() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            let call = IFeatureRegistry::hasFeaturesTipQuorumCall { featuresTip: 1 };
+            let validator = Address::repeat_byte(0x01);
+            let digest = protocol_features_digest(1).unwrap();
+            registry.validator_supported_features_digest[validator][1].write(digest)?;
+
+            let call = IFeatureRegistry::validatorSupportedFeaturesDigestCall {
+                validator,
+                featuresTip: 1,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(B256::abi_decode(&result.bytes)?, digest);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn features_tip_support_uses_cached_digest_count() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            initialize_validator_config_owner(owner)?;
+            let digest = protocol_features_digest(1).unwrap();
+
+            for seed in 1..=5 {
+                let validator = Address::repeat_byte(seed as u8);
+                let public_key = add_test_validator(owner, validator, seed)?;
+                if seed <= 4 {
+                    registry.set_supported_features_tip(
+                        Address::ZERO,
+                        IFeatureRegistry::setSupportedFeaturesTipCall {
+                            publicKey: public_key,
+                            featuresTip: 1,
+                            featuresDigest: digest,
+                        },
+                    )?;
+                }
+            }
+
+            let support = registry.features_tip_support(1)?;
+            assert_eq!(support.support, U256::from(4));
+            assert_eq!(support.required, U256::from(4));
+            assert!(registry.has_features_tip_quorum(1)?);
+            assert_eq!(registry.highest_quorum_features_tip()?, 1);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn highest_quorum_features_tip_drops_when_prefix_loses_quorum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            initialize_validator_config_owner(owner)?;
+            let digest1 = protocol_features_digest(1).unwrap();
+            let stale_digest1 = B256::repeat_byte(0xff);
+
+            for seed in 1..=5 {
+                let validator = Address::repeat_byte(seed as u8);
+                add_test_validator(owner, validator, seed)?;
+                if seed <= 4 {
+                    registry.validator_supported_features_tip[validator].write(1)?;
+                    registry.validator_supported_features_digest[validator][1].write(digest1)?;
+                    registry.features_tip_support_count[1][digest1].write(seed)?;
+                }
+            }
+            registry.highest_quorum_features_tip.write(1)?;
+
+            let validator = Address::repeat_byte(0x01);
+            registry.features_tip_support_count[1][digest1].write(3)?;
+            registry.validator_supported_features_digest[validator][1].write(stale_digest1)?;
+            registry.features_tip_support_count[1][stale_digest1].write(1)?;
+            registry.refresh_highest_quorum_features_tip(1)?;
+
+            assert_eq!(registry.highest_quorum_features_tip()?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_moves_cached_support_between_digests() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let stale_digest = B256::repeat_byte(0xff);
+            let expected_digest = protocol_features_digest(1).unwrap();
+
+            registry.validator_supported_features_tip[validator].write(1)?;
+            registry.validator_supported_features_digest[validator][1].write(stale_digest)?;
+            registry.features_tip_support_count[1][stale_digest].write(1)?;
+
+            registry.set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: 1,
+                    featuresDigest: expected_digest,
+                },
+            )?;
+
+            assert_eq!(
+                registry.features_tip_support_count[1][stale_digest].read()?,
+                0
+            );
+            assert_eq!(
+                registry.features_tip_support_count[1][expected_digest].read()?,
+                1
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn set_supported_features_tip_counts_existing_digest_when_tip_increases() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let owner = Address::repeat_byte(0xaa);
+            let validator = Address::repeat_byte(0x01);
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let expected_digest = protocol_features_digest(1).unwrap();
+
+            registry.validator_supported_features_digest[validator][1].write(expected_digest)?;
+
+            registry.set_supported_features_tip(
+                Address::ZERO,
+                IFeatureRegistry::setSupportedFeaturesTipCall {
+                    publicKey: public_key,
+                    featuresTip: 1,
+                    featuresDigest: expected_digest,
+                },
+            )?;
+
+            assert_eq!(
+                registry.features_tip_support_count[1][expected_digest].read()?,
+                1
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn has_features_tip_quorum_rejects_unknown_feature_tip() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let call = IFeatureRegistry::hasFeaturesTipQuorumCall { featuresTip: 2 };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(result.is_revert());
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-            assert_eq!(
-                decoded.selector.0,
-                IFeatureRegistry::hasFeaturesTipQuorumCall::SELECTOR
-            );
+            let decoded = FeatureRegistryError::abi_decode(&result.bytes)?;
+            assert_eq!(decoded, FeatureRegistryError::invalid_features_tip());
 
             Ok(())
         })

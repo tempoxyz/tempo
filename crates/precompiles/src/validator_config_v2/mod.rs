@@ -221,6 +221,11 @@ impl ValidatorConfigV2 {
         Ok(self.validators.len()? as u64)
     }
 
+    /// Returns the number of currently active validators.
+    pub(crate) fn active_validator_count(&self) -> Result<u64> {
+        Ok(self.active_indices.len()? as u64)
+    }
+
     /// Returns the validator at the given global index, or errors if the index
     /// is out of bounds or the validator has been deactivated.
     fn get_active_validator(&self, idx: u64) -> Result<ValidatorRecord> {
@@ -294,7 +299,7 @@ impl ValidatorConfigV2 {
     ///
     /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
-        let count = self.active_indices.len()?;
+        let count = self.active_validator_count()? as usize;
         let mut out = Vec::new();
         for i in 0..count {
             let global_idx1 = self.active_indices[i].read()?;

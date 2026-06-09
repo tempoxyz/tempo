@@ -19,11 +19,14 @@ crate::sol! {
         /// @notice Returns the highest active protocol feature ID.
         function featuresTip() external view returns (uint64);
 
+        /// @notice Returns the highest protocol feature tip with observed quorum support.
+        function highestQuorumFeaturesTip() external view returns (uint64 featuresTip);
+
         /// @notice Returns the scheduled feature tip and earliest activation epoch.
         function scheduledFeaturesTip() external view returns (uint64 featuresTip, uint64 activationEpoch);
 
-        /// @notice Records the highest protocol feature tip reported by a validator public key. System caller only.
-        function setSupportedFeaturesTip(bytes32 publicKey, uint64 featuresTip) external;
+        /// @notice Records the highest protocol feature tip and registry digest reported by a validator public key. System caller only.
+        function setSupportedFeaturesTip(bytes32 publicKey, uint64 featuresTip, bytes32 featuresDigest) external;
 
         /// @notice Schedules a higher feature tip for activation at the target epoch.
         function scheduleFeaturesTip(uint64 featuresTip, uint64 activationEpoch) external;
@@ -35,7 +38,10 @@ crate::sol! {
         function cancelScheduledFeaturesTip() external;
 
         /// @notice Returns the latest feature tip reported by a validator.
-        function validatorSupportedFeaturesTip(address validator) external view returns (uint64);
+        function validatorSupportedFeaturesTip(address validator) external view returns (uint64 featuresTip);
+
+        /// @notice Returns the registry digest reported by a validator for a feature tip.
+        function validatorSupportedFeaturesDigest(address validator, uint64 featuresTip) external view returns (bytes32 featuresDigest);
 
         /// @notice Returns current active-validator support for a feature tip.
         function featuresTipSupport(uint64 featuresTip) external view returns (uint256 support, uint256 required);
@@ -44,7 +50,7 @@ crate::sol! {
         function hasFeaturesTipQuorum(uint64 featuresTip) external view returns (bool);
 
         /// @notice Emitted when a validator reports support for a feature tip.
-        event SupportedFeaturesTipSet(address indexed validator, uint64 featuresTip, uint256 supportCount);
+        event SupportedFeaturesTipSet(address indexed validator, uint64 featuresTip, bytes32 featuresDigest, uint256 supportCount);
 
         /// @notice Emitted when a higher feature tip is scheduled for activation.
         event FeaturesTipScheduled(uint64 featuresTip, uint64 activationEpoch);
@@ -78,5 +84,8 @@ crate::sol! {
 
         /// @notice Requested activation epoch is not strictly greater than the current epoch.
         error ActivationEpochNotFuture();
+
+        /// @notice Scheduled feature tip does not have quorum support.
+        error FeaturesTipQuorumNotReached();
     }
 }
