@@ -142,6 +142,9 @@ pub struct StateAwareBestTransactions<I> {
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
+    /// Last decreased balance lookup result, kept as a small direct-mapped cache
+    /// for runs of pending transactions that share a fee payer.
+    last_decreased_balance: Option<((Address, U256), U256)>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -153,6 +156,7 @@ where
         Self {
             inner,
             decreased_balances: HashMap::default(),
+            last_decreased_balance: None,
         }
     }
 
@@ -169,10 +173,12 @@ where
                 let present_balance = decode_tip20_balance(storage_slot.present_value);
                 let original_balance = decode_tip20_balance(storage_slot.original_value);
                 if present_balance < original_balance {
-                    self.decreased_balances
-                        .insert((address, slot), present_balance);
+                    let key = (address, slot);
+                    self.decreased_balances.insert(key, present_balance);
+                    self.last_decreased_balance = Some((key, present_balance));
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
                     *balance = present_balance;
+                    self.last_decreased_balance = Some(((address, slot), present_balance));
                 }
             }
         }
@@ -194,7 +200,12 @@ where
                 continue;
             };
 
-            if let Some(&balance) = self.decreased_balances.get(&key)
+            let decreased_balance = self
+                .last_decreased_balance
+                .and_then(|(cached_key, balance)| (cached_key == key).then_some(balance))
+                .or_else(|| self.decreased_balances.get(&key).copied());
+
+            if let Some(balance) = decreased_balance
                 && balance < tx.transaction.fee_token_cost()
             {
                 self.inner.mark_invalid(
