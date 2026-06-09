@@ -11,7 +11,7 @@ pub mod dispatch;
 pub use slots as tip403_registry_slots;
 
 use crate::{
-    StorageCtx, SystemPrecompileActivation,
+    StorageCtx, is_precompile_address,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -425,7 +425,7 @@ impl TIP403Registry {
         let recovery_address = call.recoveryAuthority;
         let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
 
-        if recovery_address.is_precompile(system_precompile_activation(self.storage.spec()))
+        if is_precompile_address(recovery_address, self.storage.spec())
             || recovery_address.is_virtual()
         {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
@@ -869,18 +869,6 @@ impl TIP403Registry {
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
         self.policy_set[policy_id][account].write(value)
-    }
-}
-
-fn system_precompile_activation(spec: TempoHardfork) -> SystemPrecompileActivation {
-    if spec.is_t6() {
-        SystemPrecompileActivation::T6
-    } else if spec.is_t5() {
-        SystemPrecompileActivation::T5
-    } else if spec.is_t3() {
-        SystemPrecompileActivation::T3
-    } else {
-        SystemPrecompileActivation::Genesis
     }
 }
 

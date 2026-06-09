@@ -54,15 +54,23 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, SYSTEM_PRECOMPILES,
-    SystemPrecompileActivation, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    GENESIS_SYSTEM_PRECOMPILES, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    SYSTEM_PRECOMPILES, T3_SYSTEM_PRECOMPILES, T5_SYSTEM_PRECOMPILES, T6_SYSTEM_PRECOMPILES,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
+
+pub fn is_precompile_address(address: Address, spec: TempoHardfork) -> bool {
+    address.is_tip20()
+        || address.is_precompile(GENESIS_SYSTEM_PRECOMPILES)
+        || (spec.is_t3() && address.is_precompile(T3_SYSTEM_PRECOMPILES))
+        || (spec.is_t5() && address.is_precompile(T5_SYSTEM_PRECOMPILES))
+        || (spec.is_t6() && address.is_precompile(T6_SYSTEM_PRECOMPILES))
+}
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -1217,18 +1225,20 @@ mod tests {
 
     #[test]
     fn test_is_precompile_address() {
-        for &(address, activated) in SYSTEM_PRECOMPILES {
-            assert!(address.is_precompile(activated));
-            assert!(address.is_precompile(SystemPrecompileActivation::T6));
+        for &address in SYSTEM_PRECOMPILES {
+            assert!(is_precompile_address(address, TempoHardfork::T7));
+        }
 
-            if activated != SystemPrecompileActivation::Genesis {
-                assert!(!address.is_precompile(SystemPrecompileActivation::Genesis));
-            }
+        for &address in T3_SYSTEM_PRECOMPILES {
+            assert!(!is_precompile_address(address, TempoHardfork::Genesis));
         }
 
         // Assert TIP20 prefixed addresses are classified as precompiles
         assert!(PATH_USD_ADDRESS.is_tip20());
-        assert!(PATH_USD_ADDRESS.is_precompile(SystemPrecompileActivation::Genesis));
+        assert!(is_precompile_address(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use alloy_primitives::{Address, FixedBytes, hex};
-use tempo_contracts::precompiles::{SYSTEM_PRECOMPILES, SystemPrecompileActivation};
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
@@ -41,7 +40,7 @@ pub trait TempoAddressExt {
 
     /// Returns `true` if the address is any precompile active at `spec`: a TIP-20 token (matched
     /// by prefix) or a fixed system precompile.
-    fn is_precompile(&self, spec: impl SystemPrecompileSpec) -> bool;
+    fn is_precompile(&self, system_precompiles: &[Address]) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
     /// (bytes `[4:14]` == [`Self::VIRTUAL_MAGIC`]).
@@ -71,11 +70,8 @@ impl TempoAddressExt for Address {
         is_tip20_prefix(*self)
     }
 
-    fn is_precompile(&self, spec: impl SystemPrecompileSpec) -> bool {
-        self.is_tip20()
-            || SYSTEM_PRECOMPILES
-                .iter()
-                .any(|&(addr, activation)| addr == *self && spec.is_active(activation))
+    fn is_precompile(&self, system_precompiles: &[Address]) -> bool {
+        self.is_tip20() || system_precompiles.contains(self)
     }
 
     fn is_virtual(&self) -> bool {
@@ -103,17 +99,6 @@ impl TempoAddressExt for Address {
         bytes[4..14].copy_from_slice(&Self::VIRTUAL_MAGIC);
         bytes[14..20].copy_from_slice(user_tag.as_slice());
         Self::from(bytes)
-    }
-}
-
-/// Hardfork activation check for fixed system precompile addresses.
-pub trait SystemPrecompileSpec: Copy {
-    fn is_active(self, activation: SystemPrecompileActivation) -> bool;
-}
-
-impl SystemPrecompileSpec for SystemPrecompileActivation {
-    fn is_active(self, activation: SystemPrecompileActivation) -> bool {
-        self >= activation
     }
 }
 
