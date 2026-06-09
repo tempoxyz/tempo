@@ -26,7 +26,6 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -34,10 +33,6 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 
 /// Built-in policy ID that always allows authorization.
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
-
-/// System addresses that cannot be policed.
-pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
-    &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -716,11 +711,8 @@ impl TIP403Registry {
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
         let hardfork = self.storage.spec();
 
-        // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
+        // (spec: +T6) the receive-policy guard can't be policed and is always authorized.
+        if hardfork.is_t6() && user == RECEIVE_POLICY_GUARD_ADDRESS {
             return Ok(true);
         }
 
@@ -954,6 +946,7 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
