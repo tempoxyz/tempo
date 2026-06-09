@@ -236,6 +236,31 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
+    /// Native multisig transactions are not active on this hardfork.
+    #[error("native multisig transactions are not active")]
+    NativeMultisigNotActive,
+
+    /// Native multisig validation failed.
+    #[error("native multisig validation failed: {reason}")]
+    NativeMultisigValidationFailed {
+        /// Validation error details.
+        reason: String,
+    },
+
+    /// Registered native multisig accounts must use a native multisig signature.
+    #[error("registered native multisig account {account} requires a native multisig signature")]
+    NativeMultisigRequiresMultisigSignature {
+        /// Native multisig account.
+        account: Address,
+    },
+
+    /// Native multisig accounts cannot sponsor other transactions via fee-payer signatures.
+    #[error("native multisig account {account} cannot be used as a fee payer")]
+    NativeMultisigFeePayerNotAllowed {
+        /// Native multisig account.
+        account: Address,
+    },
+
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -312,6 +337,7 @@ impl TempoInvalidTransaction {
             | Self::ExpiringNonceNonceNotZero
             | Self::SubblockTransactionMustHaveZeroFee
             | Self::KeychainOpInSubblockTransaction
+            | Self::NativeMultisigNotActive
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
@@ -325,6 +351,9 @@ impl TempoInvalidTransaction {
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
+            | Self::NativeMultisigValidationFailed { .. }
+            | Self::NativeMultisigRequiresMultisigSignature { .. }
+            | Self::NativeMultisigFeePayerNotAllowed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,

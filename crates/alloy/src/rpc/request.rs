@@ -1,7 +1,7 @@
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError};
 use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
 use core::num::NonZeroU64;
@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, InitMultisig, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
@@ -79,6 +79,18 @@ pub struct TempoTransactionRequest {
     /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Initial native multisig config for bootstrapping a derived account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_init: Option<InitMultisig>,
+
+    /// Native multisig config ID for simulating an already-initialized multisig account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_config_id: Option<B256>,
+
+    /// Number of native multisig owner signatures to model during RPC simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_signature_count: Option<usize>,
 
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
@@ -188,6 +200,39 @@ impl TempoTransactionRequest {
     /// Builder-pattern method for setting the key authorization.
     pub fn with_key_authorization(mut self, key_authorization: SignedKeyAuthorization) -> Self {
         self.key_authorization = Some(key_authorization);
+        self
+    }
+
+    /// Set the native multisig initialization config attached to this transaction.
+    pub fn set_multisig_init(&mut self, multisig_init: InitMultisig) {
+        self.multisig_init = Some(multisig_init);
+    }
+
+    /// Builder-pattern method for setting the native multisig initialization config.
+    pub fn with_multisig_init(mut self, multisig_init: InitMultisig) -> Self {
+        self.multisig_init = Some(multisig_init);
+        self
+    }
+
+    /// Set the native multisig config ID for an already-initialized account.
+    pub fn set_multisig_config_id(&mut self, multisig_config_id: B256) {
+        self.multisig_config_id = Some(multisig_config_id);
+    }
+
+    /// Builder-pattern method for setting the native multisig config ID.
+    pub fn with_multisig_config_id(mut self, multisig_config_id: B256) -> Self {
+        self.multisig_config_id = Some(multisig_config_id);
+        self
+    }
+
+    /// Set the number of native multisig owner signatures to model during RPC simulation.
+    pub fn set_multisig_signature_count(&mut self, multisig_signature_count: usize) {
+        self.multisig_signature_count = Some(multisig_signature_count);
+    }
+
+    /// Builder-pattern method for setting the native multisig owner signature count.
+    pub fn with_multisig_signature_count(mut self, multisig_signature_count: usize) -> Self {
+        self.multisig_signature_count = Some(multisig_signature_count);
         self
     }
 
@@ -412,6 +457,9 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_init: None,
+            multisig_config_id: None,
+            multisig_signature_count: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -421,7 +469,17 @@ impl From<TempoTransaction> for TempoTransactionRequest {
 
 impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
-        value.into_parts().0.into()
+        let (tx, signature, _) = value.into_parts();
+        let multisig = signature.as_multisig();
+        let multisig_init = multisig.and_then(|multisig| multisig.init.clone());
+        let multisig_config_id = multisig.map(|multisig| multisig.config_id);
+        let multisig_signature_count = multisig.map(|multisig| multisig.signatures.len());
+        Self {
+            multisig_init,
+            multisig_config_id,
+            multisig_signature_count,
+            ..tx.into()
+        }
     }
 }
 
@@ -478,6 +536,15 @@ pub trait TempoCallBuilderExt {
 
     /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
+
+    /// Sets the native multisig initialization config for request building and simulation.
+    fn multisig_init(self, multisig_init: InitMultisig) -> Self;
+
+    /// Sets the native multisig config ID for request building and simulation.
+    fn multisig_config_id(self, multisig_config_id: B256) -> Self;
+
+    /// Sets the native multisig owner signature count for simulation.
+    fn multisig_signature_count(self, multisig_signature_count: usize) -> Self;
 }
 
 impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
@@ -513,6 +580,18 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self {
         self.map(|request| request.with_key_authorization(key_authorization))
+    }
+
+    fn multisig_init(self, multisig_init: InitMultisig) -> Self {
+        self.map(|request| request.with_multisig_init(multisig_init))
+    }
+
+    fn multisig_config_id(self, multisig_config_id: B256) -> Self {
+        self.map(|request| request.with_multisig_config_id(multisig_config_id))
+    }
+
+    fn multisig_signature_count(self, multisig_signature_count: usize) -> Self {
+        self.map(|request| request.with_multisig_signature_count(multisig_signature_count))
     }
 }
 
