@@ -1240,6 +1240,25 @@ mod tests {
     }
 
     #[test]
+    fn test_is_precompile_address() {
+        for &(address, activated) in SYSTEM_PRECOMPILES {
+            assert!(is_precompile_address(address, activated));
+            assert!(is_precompile_address(address, TempoHardfork::T7));
+
+            if activated != TempoHardfork::Genesis {
+                assert!(!is_precompile_address(address, TempoHardfork::Genesis));
+            }
+        }
+
+        // Assert TIP20 prefixed addresses are classified as precompiles
+        assert!(PATH_USD_ADDRESS.is_tip20());
+        assert!(is_precompile_address(
+            PATH_USD_ADDRESS,
+            TempoHardfork::Genesis
+        ));
+    }
+
+    #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
         let has_p256 = |spec: TempoHardfork| -> bool {
             // P256VERIFY lives at address 0x100 (256), added in Osaka
