@@ -39,6 +39,18 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StorageCtx;
 
+#[cold]
+fn no_storage_context_error() -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(
+        "No storage context. 'StorageCtx::enter' must be called first".to_string(),
+    )
+}
+
+#[cold]
+fn panic_no_storage_context() -> ! {
+    panic!("No storage context. 'StorageCtx::enter' must be called first")
+}
+
 impl StorageCtx {
     /// Enter storage context. All storage operations must happen within the closure.
     ///
@@ -68,10 +80,9 @@ impl StorageCtx {
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
     {
-        assert!(
-            STORAGE.is_set(),
-            "No storage context. 'StorageCtx::enter' must be called first"
-        );
+        if !STORAGE.is_set() {
+            panic_no_storage_context();
+        }
         STORAGE.with(|cell| {
             // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
             // Holding the guard prevents re-entrant borrows.
@@ -86,9 +97,7 @@ impl StorageCtx {
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
     {
         if !STORAGE.is_set() {
-            return Err(TempoPrecompileError::Fatal(
-                "No storage context. 'StorageCtx::enter' must be called first".to_string(),
-            ));
+            return Err(no_storage_context_error());
         }
         STORAGE.with(|cell| {
             // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
