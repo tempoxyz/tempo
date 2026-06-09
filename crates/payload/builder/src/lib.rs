@@ -1647,42 +1647,41 @@ where
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
 
-        self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+        let _ = self.executor.spawn_blocking(|| {
+            let mut transactions = Vec::new();
+            let mut senders = Vec::new();
 
-                let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
+            let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_bloom = Bloom::ZERO;
 
-                let mut buf = Vec::new();
+            let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
-                    buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    transactions.push(tx);
-                    senders.push(sender);
+            for (tx, receipt) in transactions_rx.into_iter() {
+                let (tx, sender) = tx.into_parts();
+                buf.clear();
+                tx.encode_2718(&mut buf);
+                transactions_root.push_next(&buf);
+                transactions.push(tx);
+                senders.push(sender);
 
-                    let receipt = receipt.with_bloom_ref();
+                let receipt = receipt.with_bloom_ref();
 
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
-                }
-                let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send((
-                    transactions_root,
-                    receipts_root,
-                    receipts_bloom,
-                    transactions,
-                    senders,
-                ));
-            });
+                buf.clear();
+                receipt.encode_2718(&mut buf);
+                receipts_root.push_next(&buf);
+                receipts_bloom |= receipt.bloom();
+            }
+            let transactions_root = transactions_root.finalize();
+            let receipts_root = receipts_root.finalize();
+            let _ = result_tx.send((
+                transactions_root,
+                receipts_root,
+                receipts_bloom,
+                transactions,
+                senders,
+            ));
+        });
 
         (transactions_tx, result_rx)
     }

@@ -41,6 +41,8 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    #[cfg(test)]
+    done_rx: Receiver<()>,
 }
 
 /// State-provider inputs for transaction prewarming.
@@ -109,6 +111,8 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        #[cfg(test)]
+        let (done_tx, done_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
             config,
@@ -119,10 +123,14 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop,
+            #[cfg(test)]
+            done_rx,
         };
 
         let prewarm_executor = executor.clone();
-        executor.spawn_blocking_named("builder-prewarm", move || {
+        // Builder prewarm waits on command and transaction channels; avoid serializing all
+        // speculative jobs behind one named worker.
+        let _ = executor.spawn_blocking(move || {
             Self::start_prewarming(
                 prewarm_executor,
                 BestTransactionsPrewarmingContext {
@@ -134,6 +142,8 @@ impl BestTransactionsPrewarming {
                     next_expiring_nonce_offset: 0,
                 },
             );
+            #[cfg(test)]
+            let _ = done_tx.send(());
         });
 
         this
@@ -325,6 +335,8 @@ impl Drop for BestTransactionsPrewarming {
         let _ = self
             .commands_tx
             .send(BestTransactionsCommand::Stop { drain_rx });
+        #[cfg(test)]
+        let _ = self.done_rx.recv_timeout(std::time::Duration::from_secs(1));
     }
 }
 
@@ -912,15 +924,11 @@ mod tests {
 
     struct TestPrewarming {
         prewarming: Option<BestTransactionsPrewarming>,
-        executor: TaskExecutor,
     }
 
     impl Drop for TestPrewarming {
         fn drop(&mut self) {
             drop(self.prewarming.take());
-            self.executor
-                .spawn_blocking_named("builder-prewarm", || {})
-                .get();
         }
     }
 
@@ -991,10 +999,7 @@ mod tests {
             config,
             TestBestTransactions::new(txs, log),
         );
-        TestPrewarming {
-            prewarming: Some(prewarming),
-            executor,
-        }
+        TestPrewarming { prewarming: Some(prewarming) }
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
