@@ -134,7 +134,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let (hash_tx, hash_rx) = mpsc::sync_channel::<
             Vec<(alloy_primitives::Address, B256, CompactU256)>,
         >(HASH_WORKER_QUEUE_DEPTH);
-        let hashed_etl_dir = etl_dir.clone();
+        let hashed_etl_dir = etl_dir;
         let hash_worker =
             thread::spawn(move || -> eyre::Result<Collector<Vec<u8>, CompactU256>> {
                 let mut hashed_collector: Collector<Vec<u8>, CompactU256> =
@@ -321,7 +321,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             write_storage_changesets(storage_changeset_factory, storage_changeset_collector)
         });
 
-        let storage_history_factory = provider_factory.clone();
+        let storage_history_factory = provider_factory;
         let storage_history_worker = thread::spawn(move || {
             write_storage_history(storage_history_factory, storage_history_collector)
         });

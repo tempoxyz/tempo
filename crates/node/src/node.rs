@@ -387,6 +387,7 @@ pub struct TempoConsensusBuilder {
     pub allow_bal_hashes: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TempoConsensusBuilder {
     fn default() -> Self {
         Self {
