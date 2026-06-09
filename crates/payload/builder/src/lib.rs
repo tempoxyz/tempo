@@ -13,7 +13,9 @@ mod prewarming;
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
 pub use job::TempoPayloadJobGenerator;
-use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use reth_trie_common::{
+    HashedPostState, KeccakKeyHasher, ordered_root::OrderedTrieRootEncodedBuilder,
+};
 
 use crate::{
     budget::{
@@ -1324,7 +1326,7 @@ where
             metrics: self.metrics.clone(),
         };
 
-        let hashed_state = if let Some(hashed_state_rx) = trie_handle
+        let root_hashed_state = if let Some(hashed_state_rx) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx())
         {
@@ -1394,7 +1396,7 @@ where
         } else {
             check_cancel!();
             let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
+                .state_root_with_updates(root_hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
 
             (state_root, Arc::new(trie_updates))
@@ -1601,11 +1603,32 @@ where
             state: bundle_state,
         };
 
+        let (fast_path_hashed_state, fast_path_trie_updates) = if speculative_bal_build {
+            let block_hashed_state =
+                HashedPostState::from_bundle_state::<KeccakKeyHasher>(
+                    execution_output.state.state(),
+                );
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                parent_hash = %block.parent_hash(),
+                number = block.number(),
+                root_hashed_accounts = root_hashed_state.accounts.len(),
+                root_hashed_storage_accounts = root_hashed_state.storages.len(),
+                block_hashed_accounts = block_hashed_state.accounts.len(),
+                block_hashed_storage_accounts = block_hashed_state.storages.len(),
+                "using child-local trie data for speculative BAL executed-block fast path"
+            );
+            (block_hashed_state, Arc::new(Default::default()))
+        } else {
+            (root_hashed_state, trie_updates)
+        };
+
         let built_executed_block = BuiltPayloadExecutedBlock {
             recovered_block: block,
             execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
-            trie_updates,
+            hashed_state: Arc::new(fast_path_hashed_state),
+            trie_updates: fast_path_trie_updates,
         };
         let (executed_block, gated_executed_block) = if attributes.publish_executed_block() {
             (Some(built_executed_block), None)
