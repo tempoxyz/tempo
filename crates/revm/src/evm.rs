@@ -38,6 +38,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Last fee token whose USD currency was validated in this EVM instance.
+    pub(crate) validated_usd_fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +86,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            validated_usd_fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -954,7 +957,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(100_000));
+        assert_eq!(slot, U256::from(100_000));
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
@@ -970,7 +973,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(97_132));
+        assert_eq!(slot, U256::from(97_132));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -999,7 +1002,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(94_003));
+        assert_eq!(slot, U256::from(94_003));
 
         Ok(())
     }
