@@ -10,6 +10,7 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
+use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// The Tempo EVM context type.
@@ -51,6 +52,12 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Block-scoped cache for native multisig account markers.
+    ///
+    /// The marker is stateful account metadata, not transaction signature metadata. It is cached on
+    /// the EVM so repeated transactions from the same accounts do not repeatedly read the native
+    /// multisig marker storage slot. The cache is cleared when the EVM moves to a new block.
+    pub(crate) native_multisig_account_cache: HashMap<Address, bool>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -87,6 +94,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            native_multisig_account_cache: HashMap::new(),
         }
     }
 
@@ -127,6 +135,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.fee_token = None;
         self.key_expiry = None;
+    }
+
+    /// Clears block-scoped execution caches.
+    pub fn clear_block_caches(&mut self) {
+        self.native_multisig_account_cache.clear();
     }
 }
 

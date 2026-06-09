@@ -2,6 +2,7 @@
 
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
@@ -117,6 +118,22 @@ fn native_multisig_validation_error<DB: Database>(
         reason: reason.into(),
     }
     .into()
+}
+
+fn cached_is_native_multisig_account<DB: Database>(
+    cache: &mut HashMap<Address, bool>,
+    multisig: &NativeMultisig,
+    account: Address,
+) -> Result<bool, EVMError<DB::Error, TempoInvalidTransaction>> {
+    if let Some(is_multisig) = cache.get(&account) {
+        return Ok(*is_multisig);
+    }
+
+    let is_multisig = multisig
+        .is_multisig_account(account)
+        .map_err(map_native_multisig_error::<DB>)?;
+    cache.insert(account, is_multisig);
+    Ok(is_multisig)
 }
 
 fn validate_rpc_multisig_mock_signatures(
@@ -995,6 +1012,7 @@ where
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
+        let native_multisig_account_cache = &mut evm.native_multisig_account_cache;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
@@ -1018,15 +1036,6 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller account info before any native-multisig precompile access. We need the
-        // code/delegation and nonce facts for multisig bootstrap checks, but cannot hold a
-        // mutable account borrow while entering precompile storage.
-        let caller_account_info = journal
-            .load_account_with_code(tx.caller())?
-            .data
-            .info
-            .clone();
-
         let nonce_key = tx
             .tempo_tx_env
             .as_ref()
@@ -1041,11 +1050,19 @@ where
             let multisig_signature = tempo_tx_env.and_then(|aa| aa.signature.as_multisig());
             let is_rpc_simulation =
                 tx.unique_tx_identifier() == Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
-            let account_has_code_or_delegation = !caller_account_info.is_empty_code_hash()
-                || caller_account_info
-                    .code
-                    .as_ref()
-                    .is_some_and(|code| code.eip7702_address().is_some());
+            let caller_account_info = if multisig_signature.is_some() {
+                // Native multisig validation needs code/delegation and nonce facts, but K1 and
+                // keychain transactions only need the account marker check below.
+                Some(
+                    journal
+                        .load_account_with_code(tx.caller())?
+                        .data
+                        .info
+                        .clone(),
+                )
+            } else {
+                None
+            };
 
             StorageCtx::enter_precompile(
                 journal,
@@ -1056,14 +1073,18 @@ where
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
-                    let caller_is_multisig = multisig
-                        .is_multisig_account(tx.caller())
-                        .map_err(map_native_multisig_error::<DB>)?;
+                    let caller_is_multisig = cached_is_native_multisig_account::<DB>(
+                        native_multisig_account_cache,
+                        &multisig,
+                        tx.caller(),
+                    )?;
 
                     if tx.has_fee_payer_signature()
-                        && multisig
-                            .is_multisig_account(fee_payer)
-                            .map_err(map_native_multisig_error::<DB>)?
+                        && cached_is_native_multisig_account::<DB>(
+                            native_multisig_account_cache,
+                            &multisig,
+                            fee_payer,
+                        )?
                     {
                         return Err(TempoInvalidTransaction::NativeMultisigFeePayerNotAllowed {
                             account: fee_payer,
@@ -1071,13 +1092,18 @@ where
                         .into());
                     }
 
-                    let validate_authorization_authority = |authority| {
-                        let current_tx_multisig_authority =
-                            multisig_signature.map(|sig| sig.account) == Some(authority);
-                        let registered_multisig_authority = multisig
-                            .is_multisig_account(authority)
-                            .map_err(map_native_multisig_error::<DB>)?;
-                        if current_tx_multisig_authority || registered_multisig_authority {
+                    let mut validate_authorization_authority = |authority| {
+                        if multisig_signature.map(|sig| sig.account) == Some(authority) {
+                            return Err(native_multisig_validation_error::<DB>(format!(
+                                "native multisig account {authority} cannot be used as an authorization-list authority"
+                            )));
+                        }
+
+                        if cached_is_native_multisig_account::<DB>(
+                            native_multisig_account_cache,
+                            &multisig,
+                            authority,
+                        )? {
                             return Err(native_multisig_validation_error::<DB>(format!(
                                 "native multisig account {authority} cannot be used as an authorization-list authority"
                             )));
@@ -1123,6 +1149,15 @@ where
                         }
                         .into());
                     };
+
+                    let caller_account_info = caller_account_info
+                        .as_ref()
+                        .expect("loaded for native multisig signatures");
+                    let account_has_code_or_delegation = !caller_account_info.is_empty_code_hash()
+                        || caller_account_info
+                            .code
+                            .as_ref()
+                            .is_some_and(|code| code.eip7702_address().is_some());
 
                     if multisig_signature.account != tx.caller() {
                         return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
@@ -1698,6 +1733,7 @@ where
                         .map_err(map_native_multisig_error::<DB>)
                 },
             )?;
+            native_multisig_account_cache.insert(account, true);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
