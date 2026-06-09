@@ -36,7 +36,8 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+    IAccountKeychain::SignatureType as PrecompileSignatureType, NATIVE_MULTISIG_ADDRESS,
+    TIPFeeAMMError,
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -134,6 +135,29 @@ fn cached_is_native_multisig_account<DB: Database>(
         .map_err(map_native_multisig_error::<DB>)?;
     cache.insert(account, is_multisig);
     Ok(is_multisig)
+}
+
+fn cached_native_multisig_config<DB: Database>(
+    cache: &mut HashMap<(Address, B256), InitMultisig>,
+    multisig: &NativeMultisig,
+    account: Address,
+    config_id: B256,
+) -> Result<InitMultisig, EVMError<DB::Error, TempoInvalidTransaction>> {
+    if let Some(config) = cache.get(&(account, config_id)) {
+        return Ok(config.clone());
+    }
+
+    let config = multisig
+        .load_registered_config(account, config_id)
+        .map_err(map_native_multisig_error::<DB>)?;
+    cache.insert((account, config_id), config.clone());
+    Ok(config)
+}
+
+fn tx_touches_native_multisig_precompile(tx: &TempoTxEnv) -> bool {
+    tx.calls().any(
+        |(kind, _)| matches!(kind, TxKind::Call(address) if *address == NATIVE_MULTISIG_ADDRESS),
+    )
 }
 
 fn validate_rpc_multisig_mock_signatures(
@@ -940,7 +964,11 @@ where
         result: <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
         result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        let clear_native_multisig_config_cache = tx_touches_native_multisig_precompile(evm.tx());
         evm.clear();
+        if clear_native_multisig_config_cache {
+            evm.native_multisig_config_cache.clear();
+        }
 
         MainnetHandler::default()
             .execution_result(evm, result, result_gas)
@@ -1013,6 +1041,7 @@ where
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
         let native_multisig_account_cache = &mut evm.native_multisig_account_cache;
+        let native_multisig_config_cache = &mut evm.native_multisig_config_cache;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
@@ -1197,12 +1226,12 @@ where
                     let digest = multisig_signature.digest(tempo_tx_env.signature_hash);
 
                     if caller_is_multisig {
-                        let config = multisig
-                            .load_current_config(
-                                multisig_signature.account,
-                                multisig_signature.config_id,
-                            )
-                            .map_err(map_native_multisig_error::<DB>)?;
+                        let config = cached_native_multisig_config::<DB>(
+                            native_multisig_config_cache,
+                            &multisig,
+                            multisig_signature.account,
+                            multisig_signature.config_id,
+                        )?;
                         if is_rpc_simulation {
                             validate_rpc_multisig_mock_signatures(
                                 &config,
@@ -1734,6 +1763,7 @@ where
                 },
             )?;
             native_multisig_account_cache.insert(account, true);
+            native_multisig_config_cache.insert((account, config_id), config);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -3296,6 +3326,13 @@ mod tests {
 
         test.validate_against_state_and_deduct_caller()
             .expect("RPC simulation should accept mock native multisig signatures");
+        assert_eq!(
+            test.evm
+                .native_multisig_config_cache
+                .get(&(account, config_id)),
+            Some(&config),
+            "registered multisig validation should cache the validated config"
+        );
     }
 
     #[test]

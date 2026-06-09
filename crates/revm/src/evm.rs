@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -12,6 +12,7 @@ use revm::{
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::transaction::InitMultisig;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -58,6 +59,13 @@ pub struct TempoEvm<DB: Database, I> {
     /// the EVM so repeated transactions from the same accounts do not repeatedly read the native
     /// multisig marker storage slot. The cache is cleared when the EVM moves to a new block.
     pub(crate) native_multisig_account_cache: HashMap<Address, bool>,
+    /// Block-scoped cache for validated native multisig configs.
+    ///
+    /// Values are inserted only after the native multisig storage path has loaded and validated the
+    /// config. The cache is cleared when the EVM moves to a new block or when a transaction directly
+    /// touches the native multisig precompile, because config updates use the same `(account,
+    /// config_id)` key.
+    pub(crate) native_multisig_config_cache: HashMap<(Address, B256), InitMultisig>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -95,6 +103,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             native_multisig_account_cache: HashMap::new(),
+            native_multisig_config_cache: HashMap::new(),
         }
     }
 
@@ -140,6 +149,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Clears block-scoped execution caches.
     pub fn clear_block_caches(&mut self) {
         self.native_multisig_account_cache.clear();
+        self.native_multisig_config_cache.clear();
     }
 }
 
