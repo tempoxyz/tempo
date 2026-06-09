@@ -216,6 +216,37 @@ impl PrimitiveSignature {
         }
     }
 
+    /// Encode signature bytes without the outer RLP byte-string header.
+    fn encode_raw(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self {
+            Self::Secp256k1(sig) => {
+                let sig_bytes = sig.as_bytes();
+                assert_eq!(
+                    sig_bytes.len(),
+                    SECP256K1_SIGNATURE_LENGTH,
+                    "Secp256k1 signature must be exactly 65 bytes"
+                );
+                out.put_slice(&sig_bytes);
+            }
+            Self::P256(p256_sig) => {
+                out.put_u8(SIGNATURE_TYPE_P256);
+                out.put_slice(p256_sig.r.as_slice());
+                out.put_slice(p256_sig.s.as_slice());
+                out.put_slice(p256_sig.pub_key_x.as_slice());
+                out.put_slice(p256_sig.pub_key_y.as_slice());
+                out.put_u8(if p256_sig.pre_hash { 1 } else { 0 });
+            }
+            Self::WebAuthn(webauthn_sig) => {
+                out.put_u8(SIGNATURE_TYPE_WEBAUTHN);
+                out.put_slice(&webauthn_sig.webauthn_data);
+                out.put_slice(webauthn_sig.r.as_slice());
+                out.put_slice(webauthn_sig.s.as_slice());
+                out.put_slice(webauthn_sig.pub_key_x.as_slice());
+                out.put_slice(webauthn_sig.pub_key_y.as_slice());
+            }
+        }
+    }
+
     /// Get the length of the encoded signature in bytes
     ///
     /// For backward compatibility:
@@ -322,8 +353,12 @@ impl Default for PrimitiveSignature {
 
 impl alloy_rlp::Encodable for PrimitiveSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let bytes = self.to_bytes();
-        alloy_rlp::Encodable::encode(&bytes, out);
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_raw(out);
     }
 
     fn length(&self) -> usize {
@@ -613,6 +648,22 @@ impl TempoSignature {
         }
     }
 
+    /// Encode signature bytes without the outer RLP byte-string header.
+    fn encode_raw(&self, out: &mut dyn alloy_rlp::BufMut) {
+        match self {
+            Self::Primitive(primitive_sig) => primitive_sig.encode_raw(out),
+            Self::Keychain(keychain_sig) => {
+                let type_byte = match keychain_sig.version {
+                    KeychainVersion::V1 => SIGNATURE_TYPE_KEYCHAIN,
+                    KeychainVersion::V2 => SIGNATURE_TYPE_KEYCHAIN_V2,
+                };
+                out.put_u8(type_byte);
+                out.put_slice(keychain_sig.user_address.as_slice());
+                keychain_sig.signature.encode_raw(out);
+            }
+        }
+    }
+
     /// Get the length of the encoded signature in bytes
     ///
     /// For backward compatibility:
@@ -723,8 +774,12 @@ impl Default for TempoSignature {
 
 impl alloy_rlp::Encodable for TempoSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let bytes = self.to_bytes();
-        alloy_rlp::Encodable::encode(&bytes, out);
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .encode(out);
+        self.encode_raw(out);
     }
 
     fn length(&self) -> usize {
