@@ -188,10 +188,18 @@ impl AA2dPool {
         }
 
         self.expiring_nonce_eviction_order.clear();
-        for tx in self.expiring_nonce_txs.values() {
-            self.expiring_nonce_eviction_order.insert(
-                ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee),
+        for tx in self.expiring_nonce_txs.values_mut() {
+            let order = ExpiringNonceEvictionOrderKey::with_base_fee(
+                &tx.transaction.transaction,
+                tx.submission_id,
+                self.base_fee,
             );
+            tx.expiring_nonce_eviction_order = Some(order.clone());
+            self.expiring_nonce_eviction_order
+                .insert(ExpiringNonceEvictionKey::from_order(
+                    order,
+                    tx.transaction.clone(),
+                ));
         }
     }
 
@@ -427,16 +435,16 @@ impl AA2dPool {
         }
 
         // Create pending transaction
-        let pending_tx = AA2dStoredTransaction {
-            submission_id: {
-                let id = self.submission_id;
-                self.submission_id = self.submission_id.wrapping_add(1);
-                id
-            },
-            transaction: transaction.clone(),
+        let submission_id = {
+            let id = self.submission_id;
+            self.submission_id = self.submission_id.wrapping_add(1);
+            id
         };
-        let eviction_key =
-            ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee);
+        let (pending_tx, eviction_key) = AA2dStoredTransaction::new_expiring_nonce(
+            submission_id,
+            transaction.clone(),
+            self.base_fee,
+        );
         let pending_tx_update = if self.new_transaction_notifier.receiver_count() > 0 {
             Some(pending_tx.clone())
         } else {
@@ -1242,9 +1250,8 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        self.expiring_nonce_eviction_order.remove(
-            &ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee),
-        );
+        let order = pending_tx.expiring_nonce_eviction_order(self.base_fee);
+        self.expiring_nonce_eviction_order.remove(&order);
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
@@ -1620,6 +1627,7 @@ impl Default for AA2dPoolConfig {
 struct AA2dStoredTransaction {
     submission_id: u64,
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    expiring_nonce_eviction_order: Option<ExpiringNonceEvictionOrderKey>,
 }
 
 impl AA2dStoredTransaction {
@@ -1630,7 +1638,40 @@ impl AA2dStoredTransaction {
         Self {
             submission_id,
             transaction,
+            expiring_nonce_eviction_order: None,
         }
+    }
+
+    fn new_expiring_nonce(
+        submission_id: u64,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        base_fee: u64,
+    ) -> (Self, ExpiringNonceEvictionKey) {
+        let order = ExpiringNonceEvictionOrderKey::with_base_fee(
+            &transaction.transaction,
+            submission_id,
+            base_fee,
+        );
+        let tx = Self {
+            submission_id,
+            transaction: transaction.clone(),
+            expiring_nonce_eviction_order: Some(order.clone()),
+        };
+        let eviction_key = ExpiringNonceEvictionKey::from_order(order, transaction);
+
+        (tx, eviction_key)
+    }
+
+    fn expiring_nonce_eviction_order(&self, base_fee: u64) -> ExpiringNonceEvictionOrderKey {
+        self.expiring_nonce_eviction_order
+            .clone()
+            .unwrap_or_else(|| {
+                ExpiringNonceEvictionOrderKey::with_base_fee(
+                    &self.transaction.transaction,
+                    self.submission_id,
+                    base_fee,
+                )
+            })
     }
 
     fn clone_into_pending(&self, base_fee: u64) -> PendingTransaction<TxOrdering> {
@@ -1686,6 +1727,13 @@ impl ExpiringNonceEvictionOrderKey {
             submission_id,
         }
     }
+
+    fn with_base_fee(tx: &TempoPooledTransaction, submission_id: u64, base_fee: u64) -> Self {
+        Self::new(
+            TempoTipOrdering::default().priority(tx, base_fee),
+            submission_id,
+        )
+    }
 }
 
 impl Ord for ExpiringNonceEvictionOrderKey {
@@ -1723,9 +1771,10 @@ struct ExpiringNonceEvictionKey {
 impl ExpiringNonceEvictionKey {
     fn from_pending_with_base_fee(tx: &AA2dStoredTransaction, base_fee: u64) -> Self {
         Self {
-            order: ExpiringNonceEvictionOrderKey::new(
-                TempoTipOrdering::default().priority(&tx.transaction.transaction, base_fee),
+            order: ExpiringNonceEvictionOrderKey::with_base_fee(
+                &tx.transaction.transaction,
                 tx.submission_id,
+                base_fee,
             ),
             transaction: tx.transaction.clone(),
         }
@@ -1736,6 +1785,13 @@ impl ExpiringNonceEvictionKey {
             order: ExpiringNonceEvictionOrderKey::new(tx.priority, tx.submission_id),
             transaction: tx.transaction,
         }
+    }
+
+    fn from_order(
+        order: ExpiringNonceEvictionOrderKey,
+        transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    ) -> Self {
+        Self { order, transaction }
     }
 
     fn into_transaction(self) -> PendingTransaction<TxOrdering> {
@@ -2017,6 +2073,7 @@ impl BestAA2dTransactions {
                         AA2dStoredTransaction {
                             submission_id: tx.submission_id,
                             transaction: tx.transaction,
+                            expiring_nonce_eviction_order: None,
                         },
                     );
                 }
