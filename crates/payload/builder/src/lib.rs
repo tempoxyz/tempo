@@ -1171,10 +1171,11 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
+
+                    let (tx, sender) = tx.into_parts();
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1282,6 +1283,13 @@ enum BuilderTx {
 }
 
 impl BuilderTx {
+    fn encode_2718(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Pooled(tx) => out.extend_from_slice(tx.transaction.encoded_2718_bytes()),
+            Self::Owned(tx) => tx.encode_2718(out),
+        }
+    }
+
     fn into_parts(self) -> (TempoTxEnvelope, Address) {
         match self {
             Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),

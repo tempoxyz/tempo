@@ -43,6 +43,8 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached EIP-2718 encoding for payload roots and other hot re-encoding paths.
+    encoded_2718: Bytes,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
     /// Cached T5+ payment classification for efficient block building.
@@ -81,6 +83,11 @@ impl TempoPooledTransaction {
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
         let sender = transaction.signer();
+        let encoded_length = transaction.encode_2718_len();
+        let mut encoded_2718 = Vec::with_capacity(encoded_length);
+        transaction.encode_2718(&mut encoded_2718);
+        debug_assert_eq!(encoded_2718.len(), encoded_length);
+        let encoded_2718 = Bytes::from(encoded_2718);
         let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
             tx.tx()
                 .is_expiring_nonce_tx()
@@ -94,10 +101,11 @@ impl TempoPooledTransaction {
         Self {
             inner: EthPooledTransaction {
                 cost,
-                encoded_length: transaction.encode_2718_len(),
+                encoded_length,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            encoded_2718,
             fee_token_cost,
             is_payment,
             expiring_nonce_hash,
@@ -121,6 +129,11 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Returns the cached EIP-2718 encoded transaction bytes.
+    pub fn encoded_2718_bytes(&self) -> &Bytes {
+        &self.encoded_2718
     }
 
     /// Resolves the transaction fee payer.
@@ -696,11 +709,11 @@ impl Encodable2718 for TempoPooledTransaction {
     }
 
     fn encode_2718_len(&self) -> usize {
-        self.inner.transaction.encode_2718_len()
+        self.encoded_2718.len()
     }
 
     fn encode_2718(&self, out: &mut dyn bytes::BufMut) {
-        self.inner.transaction.encode_2718(out)
+        out.put_slice(&self.encoded_2718)
     }
 }
 
