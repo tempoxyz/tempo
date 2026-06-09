@@ -49,3 +49,43 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
+
+/// Activation hardfork for a fixed Tempo system precompile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SystemPrecompileActivation {
+    Genesis,
+    T3,
+    T5,
+    T6,
+}
+
+/// Fixed system precompile addresses and corresponding activation hardfork.
+pub const SYSTEM_PRECOMPILES: &[(Address, SystemPrecompileActivation)] = &[
+    (TIP403_REGISTRY_ADDRESS, SystemPrecompileActivation::Genesis),
+    (TIP_FEE_MANAGER_ADDRESS, SystemPrecompileActivation::Genesis),
+    (STABLECOIN_DEX_ADDRESS, SystemPrecompileActivation::Genesis),
+    (
+        NONCE_PRECOMPILE_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        VALIDATOR_CONFIG_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (
+        VALIDATOR_CONFIG_V2_ADDRESS,
+        SystemPrecompileActivation::Genesis,
+    ),
+    (TIP20_FACTORY_ADDRESS, SystemPrecompileActivation::Genesis),
+    (ADDRESS_REGISTRY_ADDRESS, SystemPrecompileActivation::T3),
+    (SIGNATURE_VERIFIER_ADDRESS, SystemPrecompileActivation::T3),
+    (
+        TIP20_CHANNEL_RESERVE_ADDRESS,
+        SystemPrecompileActivation::T5,
+    ),
+    (RECEIVE_POLICY_GUARD_ADDRESS, SystemPrecompileActivation::T6),
+];
