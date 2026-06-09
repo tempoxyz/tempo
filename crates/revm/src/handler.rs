@@ -2223,10 +2223,17 @@ where
 
     let calls = &aa_env.aa_calls;
 
-    // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+    // Validate CREATE calls' initcode size upfront (EIP-3860).
+    // Most payload AA calls are not creates, so defer reading the limit until needed.
+    let mut max_initcode_size = None;
     for call in calls {
-        if call.to.is_create() && call.input.len() > max_initcode_size {
+        if !call.to.is_create() {
+            continue;
+        }
+
+        let max_initcode_size =
+            *max_initcode_size.get_or_insert_with(|| evm.ctx_ref().cfg().max_initcode_size());
+        if call.input.len() > max_initcode_size {
             return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
         }
     }
