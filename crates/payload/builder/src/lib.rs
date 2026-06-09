@@ -426,6 +426,10 @@ where
         let payload_build_control = attributes.payload_build_control().cloned();
         let speculative_bal_build =
             cfg!(feature = "bal") && attributes.speculative_parent().is_some();
+        let speculative_sparse_trie_is_block_local = speculative_bal_build &&
+            trie_handle
+                .as_ref()
+                .is_some_and(|handle| handle.cached_trie_state_root() == parent_header.state_root());
         let build_cancelled = || {
             cancel.is_cancelled()
                 || payload_build_control
@@ -695,6 +699,9 @@ where
                 parent_hash = %parent_header.hash(),
                 parent_number = parent_header.number(),
                 deferred_parent_pending = handle.is_deferred_parent_pending(),
+                cached_trie_state_root = %handle.cached_trie_state_root(),
+                parent_state_root = %parent_header.state_root(),
+                speculative_sparse_trie_is_block_local,
                 "streaming payload-builder sparse-trie updates; final state root remains gated"
             );
             executor
@@ -1391,15 +1398,67 @@ where
 
         check_cancel!();
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
-        } else {
-            check_cancel!();
-            let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(root_hashed_state.clone())
-                .map_err(BlockExecutionError::other)?;
+        let speculative_block_hashed_state = speculative_bal_build.then(|| {
+            HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
+        });
 
-            (state_root, Arc::new(trie_updates))
+        let (state_root, trie_updates) = match (
+            speculative_block_hashed_state.as_ref(),
+            state_root_outcome,
+        ) {
+            (Some(_), Some(outcome)) if speculative_sparse_trie_is_block_local => {
+                (outcome.state_root, outcome.trie_updates)
+            }
+            (Some(block_hashed_state), sparse_outcome) => {
+                check_cancel!();
+                let serial_root_start = Instant::now();
+                let (serial_state_root, serial_trie_updates) = finish_provider
+                    .state_root_with_updates(block_hashed_state.clone())
+                    .map_err(BlockExecutionError::other)?;
+                let serial_root_elapsed = serial_root_start.elapsed();
+
+                if let Some(outcome) = sparse_outcome {
+                    if outcome.state_root != serial_state_root {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            sparse_state_root = ?outcome.state_root,
+                            serial_state_root = ?serial_state_root,
+                            ?serial_root_elapsed,
+                            "speculative BAL sparse trie root differed from block-local serial root"
+                        );
+                    } else {
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            state_root = ?serial_state_root,
+                            speculative_sparse_trie_is_block_local,
+                            ?serial_root_elapsed,
+                            "computed block-local trie data for speculative BAL fast path"
+                        );
+                    }
+                } else {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?serial_state_root,
+                        speculative_sparse_trie_is_block_local,
+                        ?serial_root_elapsed,
+                        "computed speculative BAL state root from block-local trie data"
+                    );
+                }
+
+                (serial_state_root, Arc::new(serial_trie_updates))
+            }
+            (None, Some(outcome)) => (outcome.state_root, outcome.trie_updates),
+            (None, None) => {
+                check_cancel!();
+                let (state_root, trie_updates) = finish_provider
+                    .state_root_with_updates(root_hashed_state.clone())
+                    .map_err(BlockExecutionError::other)?;
+
+                (state_root, Arc::new(trie_updates))
+            }
         };
 
         check_cancel!();
@@ -1604,10 +1663,8 @@ where
         };
 
         let (fast_path_hashed_state, fast_path_trie_updates) = if speculative_bal_build {
-            let block_hashed_state =
-                HashedPostState::from_bundle_state::<KeccakKeyHasher>(
-                    execution_output.state.state(),
-                );
+            let block_hashed_state = speculative_block_hashed_state
+                .expect("speculative BAL block hashed state was computed before state root");
             debug!(
                 target: "payload_builder",
                 id = %payload_id,
@@ -1617,9 +1674,11 @@ where
                 root_hashed_storage_accounts = root_hashed_state.storages.len(),
                 block_hashed_accounts = block_hashed_state.accounts.len(),
                 block_hashed_storage_accounts = block_hashed_state.storages.len(),
+                speculative_sparse_trie_is_block_local,
+                fast_path_trie_updates_empty = trie_updates.is_empty(),
                 "using child-local trie data for speculative BAL executed-block fast path"
             );
-            (block_hashed_state, Arc::new(Default::default()))
+            (block_hashed_state, trie_updates)
         } else {
             (root_hashed_state, trie_updates)
         };
