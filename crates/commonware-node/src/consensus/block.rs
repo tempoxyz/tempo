@@ -595,6 +595,10 @@ mod tests {
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
+    #[cfg(feature = "bal")]
+    use commonware_runtime::{
+        Buf as _, BufferPooler as _, Runner as _, deterministic, iobuf::EncodeExt as _,
+    };
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
@@ -754,6 +758,25 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn pooled_encoding_includes_block_access_list_bytes() {
+        let block_access_list = bytes!("0x000102030405060708090a0b0c0d0e0f10111213");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let block =
+            Block::from_execution_block(execution_block, Some(block_access_list.clone())).unwrap();
+
+        let flat = block.encode();
+        deterministic::Runner::default().start(|context| async move {
+            let mut pooled = block.encode_with_pool(context.network_buffer_pool());
+
+            assert_eq!(pooled.remaining(), flat.len());
+            assert_eq!(pooled.copy_to_bytes(pooled.remaining()), flat);
+            assert!(flat.ends_with(block_access_list.as_ref()));
+        });
     }
 
     #[cfg(feature = "bal")]
