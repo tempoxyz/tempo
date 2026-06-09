@@ -9,7 +9,7 @@ use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
 #[cfg(feature = "bal")]
 use commonware_codec::RangeCfg;
-use commonware_codec::{EncodeSize, Read, Write};
+use commonware_codec::{BufsMut, EncodeSize, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -223,15 +223,25 @@ impl Write for Block {
         self.0.execution_block.encode(buf);
         #[cfg(feature = "bal")]
         if self.0.execution_block.block_access_list_hash().is_some() {
-            // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
-            // without the commonware BAL sidecar. Encoding one will panic here, which
-            // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
                 .0
                 .block_access_list
                 .as_ref()
                 .expect("BAL bytes must be present when header contains a BAL hash");
             block_access_list.write(buf);
+        }
+    }
+
+    #[cfg(feature = "bal")]
+    fn write_bufs(&self, buf: &mut impl BufsMut) {
+        self.0.execution_block.encode(buf);
+        if self.0.execution_block.block_access_list_hash().is_some() {
+            let block_access_list = self
+                .0
+                .block_access_list
+                .as_ref()
+                .expect("BAL bytes must be present when header contains a BAL hash");
+            block_access_list.write_bufs(buf);
         }
     }
 }
@@ -315,6 +325,25 @@ impl EncodeSize for Block {
         {
             execution_block_size
         }
+    }
+
+    #[cfg(feature = "bal")]
+    fn encode_inline_size(&self) -> usize {
+        let execution_block_size = *self
+            .0
+            .execution_block_encoded_size
+            .get_or_init(|| self.0.execution_block.length());
+
+        execution_block_size
+            + if self.0.execution_block.block_access_list_hash().is_some() {
+                self.0
+                    .block_access_list
+                    .as_ref()
+                    .expect("BAL bytes must be present when header contains a BAL hash")
+                    .encode_inline_size()
+            } else {
+                0
+            }
     }
 }
 
@@ -594,10 +623,18 @@ fn validate_block_access_list_hash(
 mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
+    #[cfg(feature = "bal")]
+    use alloy_primitives::Bytes;
     use alloy_primitives::{B256, bytes, keccak256};
+    #[cfg(feature = "bal")]
+    use alloy_rlp::Encodable as _;
+    #[cfg(feature = "bal")]
+    use bytes::Buf as _;
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
-    use commonware_codec::{Encode, Read as _};
+    use commonware_codec::{Encode, EncodeSize as _, Read as _};
+    #[cfg(feature = "bal")]
+    use commonware_runtime::{BufferPooler as _, Runner as _, deterministic, iobuf::EncodeExt as _};
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
@@ -757,6 +794,43 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn block_access_list_pool_encoding_matches_standard_encoding() {
+        let block_access_list = Bytes::from(vec![0xAB; 141]);
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let execution_block_size = execution_block.length();
+        let block_access_list_size = block_access_list.encode_size();
+        let block_access_list_inline_size = block_access_list.encode_inline_size();
+        let block =
+            Block::from_execution_block_with_encoded_size(
+                execution_block,
+                Some(block_access_list),
+                execution_block_size,
+            )
+            .unwrap();
+        let encoded = block.encode();
+        assert_eq!(
+            block.encode_size(),
+            execution_block_size + block_access_list_size
+        );
+        assert_eq!(
+            block.encode_inline_size(),
+            execution_block_size + block_access_list_inline_size
+        );
+        assert_eq!(encoded.len(), block.encode_size());
+
+        deterministic::Runner::default().start(|context| async move {
+            let mut encoded_pool = block.encode_with_pool(context.network_buffer_pool());
+            assert_eq!(encoded_pool.remaining(), block.encode_size());
+            let mut encoded_pool_bytes = vec![0u8; encoded_pool.remaining()];
+            encoded_pool.copy_to_slice(&mut encoded_pool_bytes);
+
+            assert_eq!(encoded_pool_bytes, encoded.as_ref());
+        });
     }
 
     #[cfg(feature = "bal")]
