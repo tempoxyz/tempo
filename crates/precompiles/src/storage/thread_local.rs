@@ -213,6 +213,18 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// Returns the fields needed to finish a precompile output.
+    pub(crate) fn output_accounting(&self) -> (i64, bool, u64, u64) {
+        Self::with_storage(|s| {
+            (
+                s.gas_refunded(),
+                s.amsterdam_eip8037_enabled(),
+                s.reservoir(),
+                s.state_gas_used(),
+            )
+        })
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically
