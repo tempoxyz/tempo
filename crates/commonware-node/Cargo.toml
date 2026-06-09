@@ -3,8 +3,13 @@ name = "tempo-commonware-node"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -67,12 +72,21 @@ reth-provider.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+
+age.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
 
 # `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.
 tracing-subscriber.workspace = true
+
+[features]
+default = []
+bal = []

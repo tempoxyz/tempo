@@ -169,7 +169,7 @@ fn init_download_urls() {
 fn init_payload_builder_defaults() {
     DefaultPayloadBuilderValues::default()
         .with_interval(Duration::from_millis(100))
-        .with_max_payload_tasks(16)
+        .with_max_payload_tasks(1)
         .with_deadline(4)
         .try_init()
         .expect("failed to initialize payload builder defaults");
@@ -211,6 +211,7 @@ fn init_engine_defaults() {
         .with_always_process_payload_attributes_on_canonical_head(true)
         // Defer persistence I/O during active payload builds.
         .with_suppress_persistence_during_build(true)
+        .with_share_sparse_trie_with_payload_builder(true)
         .try_init()
         .expect("failed to initialize engine defaults");
 }

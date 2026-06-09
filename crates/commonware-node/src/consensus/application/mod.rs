@@ -57,11 +57,12 @@ pub(super) struct Config<TContext> {
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: Option<subblocks::Mailbox>,
 
-    /// The minimum amount of time to wait before resolving a new payload from the builder.
-    pub(super) payload_resolve_time: Duration,
-
-    /// The minimum amount of time to wait before returning the built payload back to consensus for proposal.
-    pub(super) payload_return_time: Duration,
+    /// Local proposal return budget, excluding the network propagation allowance.
+    ///
+    /// Starts at `target_block_time - network_budget`; `handle_propose`
+    /// subtracts time already spent in the view before handing the remaining
+    /// budget to the payload builder.
+    pub(super) proposal_return_budget: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

@@ -320,7 +320,14 @@ where
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
-        evm.validate_transaction(transaction.tx_env().clone())
+
+        if let Some(tx_env) = transaction.cached_tx_env() {
+            evm.validate_transaction(tx_env.clone())
+        } else {
+            let result = evm.validate_transaction(transaction.tx_env_slow());
+            transaction.cache_tx_env(evm.into_ctx().tx);
+            result
+        }
     }
 
     fn validate_one(
@@ -445,7 +452,7 @@ where
         match self.amm_liquidity_cache.has_enough_liquidity(
             validation_ctx.fee_token,
             fee,
-            &mut state_provider,
+            &state_provider,
         ) {
             Ok(true) => {}
             Ok(false) => {
@@ -550,6 +557,16 @@ where
                     }
                 }
 
+                // Precompute the fee balance slot after validation has resolved the fee token.
+                transaction.transaction().fee_balance_slot();
+
+                // Precompute nonce storage slots for this transaction.
+                let _ = transaction.transaction().expiring_nonce_slot();
+                let _ = transaction.transaction().nonce_key_slot();
+
+                // Warm the global keccak cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_keccak_slots();
+
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,
@@ -591,7 +608,6 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let transactions: Vec<_> = transactions.into_iter().collect();
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
@@ -750,7 +766,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("PATH_USD_ADDRESS is a valid TIP20 token")
             .balances[transaction.sender()]
-        .slot();
+        .base_slot();
         // Give the sender enough balance to cover the transaction cost
         let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
         provider.add_account(
@@ -2439,7 +2455,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"

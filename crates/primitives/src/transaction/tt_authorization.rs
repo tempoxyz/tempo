@@ -1,8 +1,11 @@
 use alloc::vec::Vec;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, U256, keccak256};
+#[cfg(feature = "evm")]
+use alloy_primitives::U256;
+use alloy_primitives::{Address, B256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
+#[cfg(feature = "evm")]
 use revm::context::transaction::AuthorizationTr;
 
 #[cfg(not(feature = "std"))]
@@ -286,6 +289,7 @@ impl Deref for RecoveredTempoAuthorization {
     }
 }
 
+#[cfg(feature = "evm")]
 impl AuthorizationTr for RecoveredTempoAuthorization {
     fn chain_id(&self) -> U256 {
         self.chain_id

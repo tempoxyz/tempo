@@ -2078,7 +2078,7 @@ mod tests {
 mod compact_tests {
     use super::*;
     use crate::transaction::{
-        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        KeyAuthorization, TempoSignedAuthorization, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, PrimitiveSignature, TempoSignature},
     };
     use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
@@ -2147,8 +2147,8 @@ mod compact_tests {
             fee_payer_signature: Some(Signature::new(U256::from(1u64), U256::from(2u64), false)),
             valid_before: Some(NonZeroU64::new(1_700_001_000).unwrap()),
             valid_after: Some(NonZeroU64::new(1_700_000_000).unwrap()),
-            key_authorization: Some(SignedKeyAuthorization {
-                authorization: KeyAuthorization {
+            key_authorization: Some(
+                KeyAuthorization {
                     chain_id: 42170,
                     key_type: SignatureType::P256,
                     key_id: address!("0x000000000000000000000000000000000000dead"),
@@ -2160,8 +2160,10 @@ mod compact_tests {
                     }]),
                     allowed_calls: None,
                     witness: None,
-                },
-                signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    is_admin: false,
+                    account: None,
+                }
+                .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
                     s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
                     pub_key_x: b256!(
@@ -2171,8 +2173,8 @@ mod compact_tests {
                         "0x4444444444444444444444444444444444444444444444444444444444444444"
                     ),
                     pre_hash: false,
-                }),
-            }),
+                })),
+            ),
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 Authorization {
                     chain_id: U256::from(42170u64),

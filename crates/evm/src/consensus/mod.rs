@@ -1,8 +1,5 @@
 //! Tempo consensus implementation.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
 mod error;
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
@@ -46,9 +43,15 @@ pub struct TempoConsensus {
 impl TempoConsensus {
     /// Creates a new [`TempoConsensus`] with the given chain spec.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        Self::new_with_bal_hashes(chain_spec, false)
+    }
+
+    /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
+    pub fn new_with_bal_hashes(chain_spec: Arc<TempoChainSpec>, allow_bal_hashes: bool) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
-                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
+                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
+                .with_allow_bal_hashes(allow_bal_hashes),
         }
     }
 

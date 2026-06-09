@@ -27,7 +27,6 @@ use reth_evm::{
         DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
-        inspector::JournalExt,
         state::{AccountInfo, Bytecode},
     },
 };
@@ -52,6 +51,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     nonce::NonceManager,
+    receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
@@ -185,6 +185,10 @@ pub(crate) struct GenesisArgs {
     /// T6 hardfork activation time.
     #[arg(long, default_value = "0")]
     t6_time: u64,
+
+    /// T7 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t7_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -231,6 +235,37 @@ impl Validator {
 }
 
 impl GenesisArgs {
+    pub(crate) fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub(crate) fn set_chain_id(&mut self, chain_id: u64) {
+        self.chain_id = chain_id;
+    }
+
+    pub(crate) fn validator_onchain_addresses(&self) -> eyre::Result<Vec<Address>> {
+        if self.validator_addresses.is_empty() {
+            let validator_count = u32::try_from(self.validators.len())
+                .map_err(|_| eyre!("too many validators to derive account addresses"))?;
+            if self.accounts < validator_count.saturating_add(1) {
+                return Err(eyre!("not enough accounts created for validators"));
+            }
+
+            (1..=validator_count)
+                .map(|worker_id| {
+                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    Ok(secret_key_to_address(signer.credential()))
+                })
+                .collect()
+        } else {
+            if self.validator_addresses.len() < self.validators.len() {
+                return Err(eyre!("not enough addresses provided for validators"));
+            }
+
+            Ok(self.validator_addresses[0..self.validators.len()].to_vec())
+        }
+    }
+
     /// Generates a genesis json file.
     ///
     /// It creates a new genesis allocation for the configured accounts.
@@ -418,6 +453,11 @@ impl GenesisArgs {
             initialize_signature_verifier(&mut evm)?;
         }
 
+        if self.t6_time == 0 {
+            println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
+            initialize_receive_policy_guard(&mut evm)?;
+        }
+
         if !self.no_pairwise_liquidity {
             if let (Some(alpha), Some(beta), Some(theta)) =
                 (alpha_token_address, beta_token_address, theta_token_address)
@@ -555,6 +595,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t6Time".to_string(), self.t6_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t7Time".to_string(), self.t7_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -925,6 +968,19 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.cfg,
         &ctx.tx,
         || SignatureVerifier::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || ReceivePolicyGuard::new().initialize(),
     )?;
 
     Ok(())

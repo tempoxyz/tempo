@@ -3,16 +3,11 @@
 //! - [`Blocks`] semantics (`put`, `get`, `sync`, `prune`, `missing_items`,
 //!   `next_gap`, `last_index`),
 //! - the prunable → reth fallback on the read path,
-//! - the rollback-safety contract: legacy is dual-written before prunable,
-//!   never read from on `get`, and a legacy write failure must abort the
-//!   put before the prunable archive is advanced,
 //! - retention pruning kicks in once enough blocks have been put.
 //!
 //! Tests use [`commonware_runtime::deterministic`] for reproducible runs
 //! and a hand-rolled [`StubProvider`] (see [`utils`]) to isolate [`Hybrid`]
-//! from reth's full provider stack. The same helpers are also reused by
-//! [`crate::storage::legacy`]'s tests, hence the `pub(in crate::storage)`
-//! visibility on the [`utils`] module.
+//! from reth's full provider stack.
 
 pub(in crate::storage) mod utils;
 
@@ -22,7 +17,7 @@ use commonware_utils::NZU64;
 
 use super::*;
 use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
-use utils::{StubProvider, fresh_legacy, fresh_prunable_with_section_size, make_block, make_chain};
+use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
 /// Force every height into its own section so the prunable archive's
 /// `prune(min)` (which rounds down to the nearest section boundary) acts
@@ -59,11 +54,9 @@ impl SetupHybrid {
             BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
     {
         let prunable = fresh_prunable_with_section_size(context, self.section_size).await;
-        let legacy = Some(fresh_legacy(context).await);
         let provider = StubProvider::new();
         let hybrid = Hybrid::new(Config {
             prunable,
-            legacy,
             execution_block_provider: provider.clone(),
             retention_blocks: self.retention,
         });
@@ -298,63 +291,7 @@ fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
 }
 
 #[test_traced]
-fn put_dual_writes_to_legacy_and_get_skips_legacy() {
-    let executor = deterministic::Runner::default();
-    executor.start(|context| async move {
-        let (mut hybrid, provider) = SetupHybrid {
-            section_size: PER_HEIGHT_SECTION,
-            ..Default::default()
-        }
-        .build(&context)
-        .await;
-
-        let blocks = make_chain(1, 3);
-        for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
-        }
-
-        // The dual-write put-into-legacy is observable through the
-        // hybrid's own legacy field.
-        let legacy = hybrid
-            .legacy
-            .as_ref()
-            .expect("SetupHybrid initializes legacy as Some");
-        for block in &blocks {
-            let stored = archive::Archive::get(legacy, Identifier::Index(block.height().get()))
-                .await
-                .expect("legacy get");
-            assert_eq!(stored.as_ref(), Some(block));
-        }
-
-        // Now blow the seeded heights out of the prunable cache by
-        // advancing reth's finalized watermark far past them and
-        // triggering eviction with one more put. With PER_HEIGHT_SECTION
-        // the section-rounding overshoot is zero, so heights 1..=3 are
-        // dropped cleanly. Because reads go prunable → reth (NOT
-        // legacy), every height should now miss even though they
-        // remain in legacy.
-        let last = blocks.last().unwrap();
-        provider.set_reth_finalized(last.height().get() + 100);
-        let trigger = make_block(last.height().get() + 1, last.block_hash());
-        hybrid.put(trigger).await.expect("put trigger");
-
-        for block in &blocks {
-            let result = hybrid
-                .get(Identifier::Index(block.height().get()))
-                .await
-                .expect("get after evict");
-            assert!(
-                result.is_none(),
-                "legacy must not be consulted on get; height {} should miss \
-                 once prunable is evicted and reth is empty",
-                block.height().get()
-            );
-        }
-    });
-}
-
-#[test_traced]
-fn sync_flushes_both_archives() {
+fn sync_flushes_prunable_archive() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
         let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
@@ -366,7 +303,7 @@ fn sync_flushes_both_archives() {
         hybrid
             .sync()
             .await
-            .expect("sync should flush both archives");
+            .expect("sync should flush prunable archive");
     });
 }
 
