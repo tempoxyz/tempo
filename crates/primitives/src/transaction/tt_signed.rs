@@ -36,6 +36,8 @@ pub struct AASigned {
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     hash: OnceLock<B256>,
+    /// Cached EIP-2718 encoding.
+    encoded_2718: OnceLock<Bytes>,
     /// Cached transaction signing hash.
     signature_hash: OnceLock<B256>,
     /// Cached sender-scoped replay hash for the first recovered sender.
@@ -53,6 +55,7 @@ impl AASigned {
             tx,
             signature,
             hash: value,
+            encoded_2718: OnceLock::new(),
             signature_hash: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
         }
@@ -65,6 +68,7 @@ impl AASigned {
             tx,
             signature,
             hash: OnceLock::new(),
+            encoded_2718: OnceLock::new(),
             signature_hash: OnceLock::new(),
             expiring_nonce_hash: OnceLock::new(),
         }
@@ -100,9 +104,7 @@ impl AASigned {
 
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
-        let mut buf = Vec::new();
-        self.eip2718_encode(&mut buf);
-        alloy_primitives::keccak256(&buf)
+        alloy_primitives::keccak256(self.encoded_2718())
     }
 
     /// Calculate the signing hash for the transaction.
@@ -188,8 +190,22 @@ impl AASigned {
         1 + self.rlp_encoded_length()
     }
 
+    fn encoded_2718(&self) -> &Bytes {
+        #[allow(clippy::useless_conversion)]
+        self.encoded_2718.get_or_init(|| {
+            let mut buf = Vec::with_capacity(self.eip2718_encoded_length());
+            self.eip2718_encode_uncached(&mut buf);
+            debug_assert_eq!(buf.len(), self.eip2718_encoded_length());
+            Bytes::from(buf).into()
+        })
+    }
+
     /// EIP-2718 encode the signed transaction.
     pub fn eip2718_encode(&self, out: &mut dyn BufMut) {
+        out.put_slice(self.encoded_2718());
+    }
+
+    fn eip2718_encode_uncached(&self, out: &mut dyn BufMut) {
         // Type byte
         out.put_u8(TEMPO_TX_TYPE_ID);
         // RLP fields
