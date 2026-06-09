@@ -2222,6 +2222,7 @@ where
         .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
     let calls = &aa_env.aa_calls;
+    let nonce_key = aa_env.nonce_key;
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
@@ -2240,7 +2241,7 @@ where
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
     if spec.is_t1() {
-        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
             // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
@@ -2251,14 +2252,12 @@ where
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
             batch_gas.initial_state_gas += gas_params.new_account_state_gas();
-        } else if !aa_env.nonce_key.is_zero() {
+        } else if !nonce_key.is_zero() {
             // Existing 2D nonce key usage (nonce > 0)
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
             batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
         }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
+    } else if !nonce_key.is_zero() {
         nonce_2d_gas = if tx.nonce() == 0 {
             spec.gas_new_nonce_key()
         } else {
