@@ -743,11 +743,7 @@ impl TempoSignature {
                 let account = multisig_sig
                     .recover_account()
                     .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
-                let digest = super::multisig::multisig_digest(
-                    *sig_hash,
-                    multisig_sig.account,
-                    multisig_sig.config_id,
-                );
+                let digest = multisig_sig.digest(*sig_hash);
                 let _ = multisig_sig.with_recovered_owners(digest, |_| Ok(()));
                 Ok(account)
             }
