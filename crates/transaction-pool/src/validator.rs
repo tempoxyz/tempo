@@ -16,6 +16,7 @@ use reth_transaction_pool::{
     TransactionValidator, error::InvalidPoolTransactionError,
 };
 use revm::context::result::{EVMError, InvalidTransaction};
+use std::{sync::atomic::AtomicU64, time::Instant};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -34,6 +35,8 @@ use tempo_revm::{
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
+
+static VALIDATED_TEMPO_BATCH_LOG_TXS: AtomicU64 = AtomicU64::new(0);
 
 /// Default maximum number of authorizations allowed in an AA transaction's authorization list.
 pub const DEFAULT_MAX_TEMPO_AUTHORIZATIONS: usize = 16;
@@ -593,14 +596,35 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        let should_log = crate::should_log_tx_batch_metrics(&VALIDATED_TEMPO_BATCH_LOG_TXS, 1);
+        let started_at = should_log.then(Instant::now);
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
+                if let Some(started_at) = started_at {
+                    tracing::info!(
+                        target: "tempo_tx_batch_metrics",
+                        batch_size = 1usize,
+                        duration_us = started_at.elapsed().as_micros(),
+                        sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                        "validated tempo transaction batch"
+                    );
+                }
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
 
-        self.validate_one(origin, transaction, state_provider)
+        let outcome = self.validate_one(origin, transaction, state_provider);
+        if let Some(started_at) = started_at {
+            tracing::info!(
+                target: "tempo_tx_batch_metrics",
+                batch_size = 1usize,
+                duration_us = started_at.elapsed().as_micros(),
+                sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                "validated tempo transaction batch"
+            );
+        }
+        outcome
     }
 
     async fn validate_transactions(
@@ -608,22 +632,47 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions = transactions.into_iter();
+        let batch_size = transactions.size_hint().0;
+        let should_log =
+            crate::should_log_tx_batch_metrics(&VALIDATED_TEMPO_BATCH_LOG_TXS, batch_size);
+        let started_at = should_log.then(Instant::now);
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
-                return transactions
+                let outcomes = transactions
                     .into_iter()
                     .map(|(_, tx)| {
                         TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
                     })
                     .collect();
+                if let Some(started_at) = started_at {
+                    tracing::info!(
+                        target: "tempo_tx_batch_metrics",
+                        batch_size,
+                        duration_us = started_at.elapsed().as_micros(),
+                        sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                        "validated tempo transaction batch"
+                    );
+                }
+                return outcomes;
             }
         };
 
-        transactions
+        let outcomes = transactions
             .into_iter()
             .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider))
-            .collect()
+            .collect();
+        if let Some(started_at) = started_at {
+            tracing::info!(
+                target: "tempo_tx_batch_metrics",
+                batch_size,
+                duration_us = started_at.elapsed().as_micros(),
+                sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                "validated tempo transaction batch"
+            );
+        }
+        outcomes
     }
 
     async fn validate_transactions_with_origin(
@@ -631,22 +680,47 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions = transactions.into_iter();
+        let batch_size = transactions.size_hint().0;
+        let should_log =
+            crate::should_log_tx_batch_metrics(&VALIDATED_TEMPO_BATCH_LOG_TXS, batch_size);
+        let started_at = should_log.then(Instant::now);
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
-                return transactions
+                let outcomes = transactions
                     .into_iter()
                     .map(|tx| {
                         TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
                     })
                     .collect();
+                if let Some(started_at) = started_at {
+                    tracing::info!(
+                        target: "tempo_tx_batch_metrics",
+                        batch_size,
+                        duration_us = started_at.elapsed().as_micros(),
+                        sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                        "validated tempo transaction batch"
+                    );
+                }
+                return outcomes;
             }
         };
 
-        transactions
+        let outcomes = transactions
             .into_iter()
             .map(|tx| self.validate_one(origin, tx, &state_provider))
-            .collect()
+            .collect();
+        if let Some(started_at) = started_at {
+            tracing::info!(
+                target: "tempo_tx_batch_metrics",
+                batch_size,
+                duration_us = started_at.elapsed().as_micros(),
+                sample_interval_txs = crate::TX_BATCH_METRICS_SAMPLE_TX_INTERVAL,
+                "validated tempo transaction batch"
+            );
+        }
+        outcomes
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {

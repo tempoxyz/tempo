@@ -28,5 +28,18 @@ pub use maintain::TempoPoolUpdates;
 pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId, DEFAULT_MAX_TXS_PER_SENDER};
 
+pub(crate) const TX_BATCH_METRICS_SAMPLE_TX_INTERVAL: u64 = 10_000;
+
+pub(crate) fn should_log_tx_batch_metrics(
+    counter: &std::sync::atomic::AtomicU64,
+    batch_size: usize,
+) -> bool {
+    let batch_size = u64::try_from(batch_size).unwrap_or(u64::MAX).max(1);
+    let previous = counter.fetch_add(batch_size, std::sync::atomic::Ordering::Relaxed);
+    previous == 0
+        || previous / TX_BATCH_METRICS_SAMPLE_TX_INTERVAL
+            != previous.saturating_add(batch_size) / TX_BATCH_METRICS_SAMPLE_TX_INTERVAL
+}
+
 #[cfg(test)]
 pub(crate) mod test_utils;
