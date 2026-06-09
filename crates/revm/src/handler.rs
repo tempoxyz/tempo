@@ -295,20 +295,23 @@ fn translate_allowed_calls_for_precompile(
         return Vec::new();
     };
 
-    scopes
-        .iter()
-        .map(|scope| PrecompileCallScope {
+    let mut translated_scopes = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        let mut selector_rules = Vec::with_capacity(scope.selector_rules.len());
+        for rule in &scope.selector_rules {
+            selector_rules.push(PrecompileSelectorRule {
+                selector: rule.selector.into(),
+                recipients: rule.recipients.clone(),
+            });
+        }
+
+        translated_scopes.push(PrecompileCallScope {
             target: scope.target,
-            selectorRules: scope
-                .selector_rules
-                .iter()
-                .map(|rule| PrecompileSelectorRule {
-                    selector: rule.selector.into(),
-                    recipients: rule.recipients.clone(),
-                })
-                .collect(),
-        })
-        .collect()
+            selectorRules: selector_rules,
+        });
+    }
+
+    translated_scopes
 }
 
 /// Calculates the intrinsic gas cost for a KeyAuthorization.
