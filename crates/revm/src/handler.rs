@@ -38,6 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS,
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
@@ -108,6 +109,20 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+
+#[inline]
+fn tx_needs_tx_origin_context(tx: &TempoTxEnv) -> bool {
+    if tx
+        .tempo_tx_env
+        .as_ref()
+        .is_some_and(|aa| aa.key_authorization.is_some() || aa.signature.is_keychain())
+    {
+        return true;
+    }
+
+    tx.calls()
+        .any(|(kind, _)| kind.to() == Some(&ACCOUNT_KEYCHAIN_ADDRESS))
+}
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -423,6 +438,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let seed_tx_origin = tx_needs_tx_origin_context(&ctx.tx);
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
@@ -432,8 +448,10 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                if seed_tx_origin {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.set_tx_origin(ctx.tx.caller())?;
+                }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
