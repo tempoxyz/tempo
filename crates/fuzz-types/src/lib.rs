@@ -15,12 +15,6 @@ pub const MODERATO_T4_TIMESTAMP: u64 = 1_778_767_200;
 /// Synthetic T5 activation used by fuzz harnesses. T5 is not scheduled on
 /// Moderato yet, but fuzzing needs a deterministic activation boundary.
 pub const FUZZ_T5_TIMESTAMP: u64 = MODERATO_T4_TIMESTAMP + 1_000_000;
-/// Synthetic T6 activation used by fuzz harnesses. T6 is not scheduled on
-/// Moderato yet, but fuzzing needs a deterministic activation boundary.
-pub const FUZZ_T6_TIMESTAMP: u64 = FUZZ_T5_TIMESTAMP + 1_000_000;
-/// Synthetic T7 activation used by fuzz harnesses. T7 is not scheduled on
-/// Moderato yet, but fuzzing needs a deterministic activation boundary.
-pub const FUZZ_T7_TIMESTAMP: u64 = FUZZ_T6_TIMESTAMP + 1_000_000;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -114,14 +108,6 @@ impl Default for ChainSpecInput {
                 HardforkActivationInput {
                     hardfork: 5,
                     timestamp: FUZZ_T5_TIMESTAMP,
-                },
-                HardforkActivationInput {
-                    hardfork: 6,
-                    timestamp: FUZZ_T6_TIMESTAMP,
-                },
-                HardforkActivationInput {
-                    hardfork: 7,
-                    timestamp: FUZZ_T7_TIMESTAMP,
                 },
             ],
         }

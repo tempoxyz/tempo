@@ -608,7 +608,7 @@ fn context_for_hardfork(
 }
 
 fn supported_hardforks() -> Vec<u8> {
-    vec![0, 1, 2, 3, 4, 5, 6]
+    vec![0, 1, 2, 3, 4, 5]
 }
 
 fn fuzz_moderato_chainspec(input: &ChainSpecInput) -> TempoChainSpec {
@@ -738,7 +738,6 @@ fn hardfork_from_u8(value: u8) -> Result<TempoHardfork, ErrorClass> {
         3 => TempoHardfork::T3,
         4 => TempoHardfork::T4,
         5 => TempoHardfork::T5,
-        6 => TempoHardfork::T6,
         _ => return Err(ErrorClass::InvalidInput),
     })
 }
@@ -1195,7 +1194,7 @@ mod tests {
     fn context_for_hardfork_caps_timestamp_before_next_fork() {
         let chain_spec = tempo_fuzz_types::ChainSpecInput::default();
         let mut context = BlockContextInput {
-            hardfork: 7,
+            hardfork: 5,
             timestamp: TempoHardfork::T4
                 .moderato_activation_timestamp()
                 .expect("T4 has a moderato activation"),
