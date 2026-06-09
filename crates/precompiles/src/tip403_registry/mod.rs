@@ -704,7 +704,7 @@ impl TIP403Registry {
 
     /// Core role-based authorization check ([TIP-1015]). Resolves built-in policies (0 = reject,
     /// 1 = allow) immediately, delegates compound policies to their sub-policies, and evaluates
-    /// simple policies via `is_authorized_simple`. (T6+) introduces protocol addresses that can't be policed.
+    /// simple policies via `is_authorized_simple_inner`. (T6+) introduces protocol addresses that can't be policed.
     ///
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
@@ -756,7 +756,7 @@ impl TIP403Registry {
             };
         }
 
-        self.is_authorized_simple(policy_id, user, Some(data))
+        self.is_authorized_simple_inner(policy_id, user, &data)
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
@@ -770,10 +770,9 @@ impl TIP403Registry {
         }
     }
 
-    /// Returns whether `user` is authorized by a simple (non-compound) policy.
+    /// Authorization for simple (non-compound) policies only.
     ///
-    /// Built-in policies short-circuit. User-created policies evaluate whitelist/blacklist
-    /// membership and return `IncompatiblePolicyType` for compound policies.
+    /// **WARNING:** skips compound check - caller must guarantee policy is simple.
     fn is_authorized_simple(
         &self,
         policy_id: u64,
@@ -787,6 +786,16 @@ impl TIP403Registry {
             Some(data) => data,
             None => self.get_policy_data(policy_id)?,
         };
+        self.is_authorized_simple_inner(policy_id, user, &data)
+    }
+
+    /// Authorization check for simple (non-compound) policies.
+    fn is_authorized_simple_inner(
+        &self,
+        policy_id: u64,
+        user: Address,
+        data: &PolicyData,
+    ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
@@ -2413,8 +2422,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_authorized_simple_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
-        // This test verifies that the simple authorization path explicitly errors for __Invalid
+    fn test_is_authorized_simple_inner_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
+        // This test verifies that is_authorized_simple_inner explicitly errors for __Invalid
         // rather than returning false. We need to manually create a policy
         // with an invalid type to test this edge case.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
