@@ -24,7 +24,7 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: DownloadCommand<TempoChainSpecParser>,
 
-    /// Skip consensus bootstrap
+    /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(long, default_value_t = true)]
     skip_consensus: bool,
 

@@ -214,9 +214,8 @@ where
         return Ok(None);
     }
     let Some(finalized_tip) = execution_provider
-        .finalized_block_num_hash()
-        .wrap_err("failed reading finalized block from execution provider")?
-        .map(|finalized| finalized.number)
+        .finalized_block_number()
+        .wrap_err("failed reading finalized block number from execution provider")?
     else {
         return Ok(None);
     };

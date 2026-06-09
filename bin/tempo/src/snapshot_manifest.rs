@@ -19,7 +19,10 @@ use reth_cli_commands::download::{
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_node_builder::NodeTypesWithDBAdapter;
-use reth_provider::providers::{BlockchainProvider, ReadOnlyConfig};
+use reth_provider::{
+    BlockIdReader,
+    providers::{BlockchainProvider, ReadOnlyConfig},
+};
 use serde::{Deserialize, Serialize};
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
 use tempo_commonware_node::{consensus::Digest, find_last_finalized_marker};
@@ -47,7 +50,7 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: SnapshotManifestCommand,
 
-    /// Skip encoding consensus state
+    /// Skip encoding consensus state. This will pass-through directly to Reth.
     #[arg(long, default_value_t = true)]
     skip_consensus: bool,
 
@@ -198,11 +201,18 @@ fn find_snapshot_finalization(
     let runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
+    let tip = execution_provider
+        .finalized_block_number()
+        .wrap_err("failed to read finalized block number")?
+        .ok_or_eyre("no finalized execution state")?;
+
     let runner = commonware_runtime::tokio::Runner::new(runtime_config);
     runner.start(|context| async move {
         find_last_finalized_marker(&context, &execution_provider, max_depth)
             .await?
-            .ok_or_eyre("no finalization marker found")
+            .ok_or_eyre(format!(
+                "no finalization marker found; finalized tip `{tip}` with {max_depth} block lookback"
+            ))
     })
 }
 
