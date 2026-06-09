@@ -7,7 +7,6 @@ dependent_bump = "patch"
 # Ignore all workspace-only crates (not published to crates.io).
 ignore = [
     "tempo",
-    "tempo-chainspec",
     "tempo-commonware-node",
     "tempo-commonware-node-config",
     "tempo-consensus",
@@ -35,4 +34,4 @@ format = "per-crate"
 
 # The published SDK crates release together and share one version.
 [[fixed]]
-members = ["tempo-contracts", "tempo-primitives", "tempo-alloy"]
+members = ["tempo-contracts", "tempo-primitives", "tempo-alloy", "tempo-chainspec"]
