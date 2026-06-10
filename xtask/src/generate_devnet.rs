@@ -177,8 +177,8 @@ pub(crate) struct ConfigOutput {
 }
 
 /// Stopgap: serialize the signing key to its on-disk hex representation
-/// via [`tempo_commonware_node_config::SigningKey::to_writer_unencrypted`].
-fn signing_key_to_hex(key: &tempo_commonware_node_config::SigningKey) -> String {
+/// via [`tempo_consensus_config::SigningKey::to_writer_unencrypted`].
+fn signing_key_to_hex(key: &tempo_consensus_config::SigningKey) -> String {
     let mut buf = Vec::new();
     key.to_writer_unencrypted(&mut buf)
         .expect("writing to Vec cannot fail");

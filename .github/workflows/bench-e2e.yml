@@ -58,6 +58,7 @@ on:
         default: tip20
         options:
           - tip20
+          - tip20_2d_nonces
           - tip20_random_recipients
           - tip20_existing_recipients
           - mpp
@@ -73,6 +74,7 @@ on:
         required: true
         default: "100"
         options:
+          - "0"
           - "1"
           - "10"
           - "100"
@@ -285,6 +287,10 @@ on:
         type: string
         required: false
         default: "true"
+      metrics:
+        type: string
+        required: false
+        default: "false"
       bench-args:
         type: string
         required: false
@@ -390,6 +396,7 @@ jobs:
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
+      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
@@ -403,7 +410,7 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
@@ -797,7 +804,7 @@ jobs:
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
-          [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
+          [ "$BENCH_METRICS" = "true" ] && [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
@@ -850,6 +857,7 @@ jobs:
             gas-limit="$BENCH_GAS_LIMIT"
             run-pairs="$BENCH_RUN_PAIRS"
             otlp="$BENCH_OTLP"
+            metrics="$BENCH_METRICS"
             no-cache="$BENCH_NO_CACHE"
             force-bloat="$BENCH_FORCE_BLOAT"
           )
@@ -999,7 +1007,8 @@ jobs:
                 });
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
                 const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
-                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Grafana](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n${valscopeLine}`;
+                const grafanaLine = process.env.BENCH_METRICS === 'true' ? `- [Grafana](${grafanaUrl})\n` : '';
+                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}${grafanaLine}- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n${valscopeLine}`;
               }
             } catch (e) {}
 

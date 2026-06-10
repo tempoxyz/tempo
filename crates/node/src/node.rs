@@ -38,8 +38,7 @@ use reth_transaction_pool::{
     Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
 };
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_consensus::TempoConsensus;
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
@@ -158,7 +157,11 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(
+                BasicPayloadServiceBuilder::new(payload_builder_builder)
+                    // we can disable basic parent state caching because tempo builder always uses execution cache
+                    .with_pre_cache_state(false),
+            )
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -383,6 +386,7 @@ pub struct TempoConsensusBuilder {
     pub allow_bal_hashes: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TempoConsensusBuilder {
     fn default() -> Self {
         Self {
