@@ -356,6 +356,15 @@ fn main() -> eyre::Result<()> {
         }
     };
 
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd
+            .ext
+            .node_args
+            .engine_disable_execution_cache_sharing_with_builder
+    {
+        node_cmd.engine.share_sparse_trie_with_payload_builder = false;
+    }
+
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
         && node_cmd.builder.max_payload_tasks != 1
@@ -771,6 +780,12 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .engine_disable_execution_cache_sharing_with_builder
+        );
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
         assert_eq!(
@@ -786,6 +801,23 @@ mod tests {
             Duration::from_millis(50)
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.disable-execution-cache-sharing-with-builder",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .engine_disable_execution_cache_sharing_with_builder
+        );
 
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -817,5 +849,26 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.enable-prewarming",
+            "--builder.disable-prewarming",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
+        );
     }
 }
