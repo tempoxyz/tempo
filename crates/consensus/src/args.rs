@@ -307,12 +307,9 @@ pub struct Args {
     )]
     pub finalized_blocks_retention: u64,
 
-    /// Require startup to use a consensus finalized certificate archive.
-    ///
-    /// When disabled, startup falls back to the execution layer's finalized
-    /// watermark for compatibility with snapshots that do not include
-    /// consensus finalization state.
-    #[arg(long = "consensus.strict-startup", default_value_t = false)]
+    /// Deprecated compatability flag. Ignored as consensus state is now always
+    /// required on startup.
+    #[arg(long = "consensus.strict-startup", default_value_t = true)]
     pub strict_startup: bool,
 
     /// Deprecated compatibility flag. Ignored because the legacy immutable
@@ -515,12 +512,6 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
-    }
-
-    #[test]
-    fn strict_startup_flag_parses() {
-        let cli = parse(&["--dev", "--consensus.strict-startup"]);
-        assert!(cli.consensus.strict_startup);
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

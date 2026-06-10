@@ -1,13 +1,20 @@
 //! Resolver for follow mode.
 //!
-//! Implements [`commonware_resolver::Resolver`] for marshal's gap-repair machinery. Checks the
-//! local execution provider first and falls back to the upstream abstraction.
+//! Checks the local execution provider first and falls back to the upstream abstraction.
 
-use std::future::Future;
+use std::{future::Future, num::NonZeroUsize, time::Duration};
 
-use commonware_consensus::{marshal::resolver::handler, types::Height};
-use commonware_runtime::{Clock, Spawner};
-use commonware_utils::channel::mpsc;
+use bytes::Bytes;
+use commonware_codec::{DecodeExt as _, Encode as _};
+use commonware_consensus::{
+    marshal::resolver::handler,
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+    types::Height,
+};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_resolver::opaque;
+use commonware_runtime::{Clock, Metrics, Spawner};
+use eyre::Report;
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
@@ -17,17 +24,14 @@ use reth_provider::{
 };
 use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
+use tracing::{error, instrument, warn};
 
 use crate::consensus::{Block, Digest};
-
-mod actor;
-mod ingress;
 
 #[cfg(test)]
 mod test;
 
-pub(crate) use actor::Resolver;
-pub(crate) use ingress::Mailbox;
+pub(crate) type Mailbox = opaque::Resolver<handler::Key<Digest>, handler::Annotation, PublicKey>;
 
 pub(crate) struct Config<
     P = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
@@ -37,23 +41,99 @@ pub(crate) struct Config<
     pub(super) execution_provider: P,
     /// For reading blocks and certificates from the connected node.
     pub(super) upstream: U,
-    pub(super) mailbox_size: usize,
+    pub(super) mailbox_size: NonZeroUsize,
 }
 
 pub(crate) fn try_init<TContext, P, U>(
     context: TContext,
     config: Config<P, U>,
-) -> (
-    Resolver<TContext, P, U>,
-    Mailbox,
-    mpsc::Receiver<handler::Message<Digest>>,
-)
+) -> (Mailbox, handler::Receiver<Digest>)
 where
-    TContext: Clock + Spawner,
+    TContext: Clock + Metrics + Spawner,
     P: BlockProvider + Clone + 'static,
     U: Upstream + Clone + 'static,
 {
-    actor::try_init(context, config)
+    let mailbox_size = config.mailbox_size;
+    let (receiver, consumer) = handler::init(context.child("handler"), mailbox_size);
+    let resolver = opaque::init(
+        context.child("fetcher"),
+        Fetcher {
+            execution_provider: config.execution_provider,
+            upstream: config.upstream,
+        },
+        consumer,
+        mailbox_size,
+        Duration::from_millis(250),
+    );
+    (resolver, receiver)
+}
+
+#[derive(Clone)]
+struct Fetcher<P, U> {
+    execution_provider: P,
+    upstream: U,
+}
+
+impl<P, U> opaque::Fetcher for Fetcher<P, U>
+where
+    P: BlockProvider + Clone + 'static,
+    U: Upstream + Clone + 'static,
+{
+    type Key = handler::Key<Digest>;
+    type Value = Bytes;
+
+    fn fetch(&self, key: Self::Key) -> impl Future<Output = Option<Self::Value>> + Send {
+        let execution_provider = self.execution_provider.clone();
+        let upstream = self.upstream.clone();
+        async move {
+            match key {
+                handler::Key::Block(digest) => {
+                    resolve_block(&execution_provider, &upstream, digest).await
+                }
+                handler::Key::Finalized { height } => resolve_finalized(&upstream, height).await,
+                handler::Key::Notarized { .. } => None,
+            }
+        }
+    }
+}
+
+/// Resolves an encoded block from the execution layer, falling back to the upstream node.
+#[instrument(skip(execution_provider, upstream))]
+async fn resolve_block<P: BlockProvider, U: Upstream>(
+    execution_provider: &P,
+    upstream: &U,
+    block_digest: Digest,
+) -> Option<Bytes> {
+    match execution_provider
+        .block_by_hash(block_digest)
+        .inspect_err(|error| error!(%error, "execution layer error looking up block"))
+    {
+        Err(_) => None,
+        Ok(Some(block)) => Some(block.encode()),
+        Ok(None) => upstream
+            .get_block(block_digest)
+            .await
+            .map(|block| block.encode()),
+    }
+}
+
+/// Resolves a finalization (certificate and block) by height from the upstream node.
+#[instrument(skip_all, fields(%height))]
+async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<Bytes> {
+    let certified_block = upstream.get_finalization(height).await?;
+
+    let finalization = alloy_primitives::hex::decode(&certified_block.certificate)
+        .map_err(Report::new)
+        .and_then(|bytes| {
+            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(&*bytes).map_err(Report::new)
+        })
+        .inspect_err(|error| warn!(%error, "failed decoding certificate"))
+        .ok()?;
+
+    // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
+    // is available when reconstructing this consensus block.
+    let consensus_block = Block::from_execution_block_unchecked(certified_block.block, None);
+    Some((finalization, consensus_block).encode())
 }
 
 /// Local execution-layer block lookup needed by the resolver.

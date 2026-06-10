@@ -11,7 +11,7 @@ use commonware_consensus::{
     types::{FixedEpocher, Height, Round},
 };
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Metrics as _, Runner as _, deterministic};
+use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 
 use super::{Config, init};
@@ -47,7 +47,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor() {
         let marshal = StubMarshal::default();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -63,7 +63,7 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor() {
         let block = make_block(block_height, B256::with_last_byte(20));
         let block_hash = block.block_hash();
         let (ack, waiter) = Exact::handle();
-        mailbox.report(Update::Block(block, ack)).await;
+        let _ = mailbox.report(Update::Block(block.into(), ack));
         waiter.await.expect("valid payload should be acknowledged");
 
         wait_until(&context, || marshal.floor() == Height::new(expected_floor)).await;
@@ -89,7 +89,7 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
         provider.set_finalized(finalized_height, B256::with_last_byte(20));
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -104,7 +104,7 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
 
         let block = make_block(finalized_height - 1, B256::with_last_byte(10));
         let (ack, waiter) = Exact::handle();
-        mailbox.report(Update::Block(block, ack)).await;
+        let _ = mailbox.report(Update::Block(block.into(), ack));
         waiter.await.expect("valid payload should be acknowledged");
 
         assert_eq!(provider.payload_count(), 1);
@@ -122,7 +122,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
 
         let marshal = StubMarshal::default();
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider,
@@ -137,7 +137,7 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
 
         let block = make_block(block_height, B256::with_last_byte(20));
         let (ack, waiter) = Exact::handle();
-        mailbox.report(Update::Block(block, ack)).await;
+        let _ = mailbox.report(Update::Block(block.into(), ack));
         waiter.await.expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
 
@@ -152,7 +152,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
         provider.reject_payloads();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -167,7 +167,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
 
         let block = make_block(1, B256::with_last_byte(1));
         let (ack, waiter) = Exact::handle();
-        mailbox.report(Update::Block(block, ack)).await;
+        let _ = mailbox.report(Update::Block(block.into(), ack));
 
         assert!(waiter.await.is_err(), "invalid payload must cancel its ack");
         actor_handle
@@ -186,7 +186,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
         provider.reject_forkchoices();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -200,7 +200,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
 
         let block = make_block(1, B256::with_last_byte(1));
         let (ack, waiter) = Exact::handle();
-        mailbox.report(Update::Block(block, ack)).await;
+        let _ = mailbox.report(Update::Block(block.into(), ack));
 
         assert!(waiter.await.is_err(), "rejected FCU must cancel the ack");
         actor_handle
@@ -219,7 +219,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
         let release_forkchoice = provider.pause_next_forkchoice();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -234,7 +234,7 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
 
         let first_digest = Digest(B256::with_last_byte(1));
         let first_tip = Update::Tip(Round::zero(), Height::new(1), first_digest);
-        mailbox.report(first_tip).await;
+        let _ = mailbox.report(first_tip);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         let highest_digest = Digest(B256::with_last_byte(4));
@@ -243,17 +243,17 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
             Height::new(3),
             Digest(B256::with_last_byte(3)),
         );
-        mailbox.report(higher_tip).await;
+        let _ = mailbox.report(higher_tip);
 
         let lower_tip = Update::Tip(
             Round::zero(),
             Height::new(2),
             Digest(B256::with_last_byte(2)),
         );
-        mailbox.report(lower_tip).await;
+        let _ = mailbox.report(lower_tip);
 
         let highest_tip = Update::Tip(Round::zero(), Height::new(4), highest_digest);
-        mailbox.report(highest_tip).await;
+        let _ = mailbox.report(highest_tip);
 
         context.sleep(Duration::from_millis(1)).await;
         assert_eq!(provider.forkchoices().len(), 1);
@@ -278,7 +278,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
         let provider = StubExecutionProvider::default();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -293,7 +293,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
 
         let digest = Digest(B256::with_last_byte(1));
         let tip = Update::Tip(Round::zero(), Height::new(1), digest);
-        mailbox.report(tip).await;
+        let _ = mailbox.report(tip);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         context.sleep(Duration::from_millis(1)).await;
@@ -313,7 +313,7 @@ fn heartbeat_waits_for_in_flight_execution() {
         let release_forkchoice = provider.pause_next_forkchoice();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -328,7 +328,7 @@ fn heartbeat_waits_for_in_flight_execution() {
 
         let digest = Digest(B256::with_last_byte(1));
         let tip = Update::Tip(Round::zero(), Height::new(1), digest);
-        mailbox.report(tip).await;
+        let _ = mailbox.report(tip);
         wait_until(&context, || provider.forkchoices().len() == 1).await;
 
         context.sleep(HEARTBEAT_INTERVAL * 2).await;
@@ -355,7 +355,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
         let marshal = StubMarshal::default();
 
         let (actor, mut mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),
@@ -371,7 +371,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
         for block_height in [finalized_height + 1, finalized_height + 2] {
             let block = make_block(block_height, B256::with_last_byte(20));
             let (ack, waiter) = Exact::handle();
-            mailbox.report(Update::Block(block, ack)).await;
+            let _ = mailbox.report(Update::Block(block.into(), ack));
 
             waiter
                 .await
@@ -394,7 +394,7 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         provider.set_finalized(EPOCH_LENGTH.get(), finalized_hash);
 
         let (actor, _mailbox) = init(
-            context.with_label("follower_executor"),
+            context.child("follower_executor"),
             Config {
                 execution_provider: provider.clone(),
                 execution_engine: provider.clone(),

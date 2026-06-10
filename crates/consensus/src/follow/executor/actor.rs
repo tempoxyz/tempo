@@ -140,7 +140,7 @@ where
                 Some(update) = self.mailbox.next() => {
                     match update {
                         Update::Block(block, ack) => {
-                            self.block_queue.push_back((block, ack));
+                            self.block_queue.push_back(((*block).clone(), ack));
                         }
                         Update::Tip(_, height, digest) => {
                             if height > self.latest_tip.height {
@@ -182,7 +182,7 @@ where
         };
 
         let last_fcu = self.last_fcu;
-        let context = self.context.clone();
+        let context = self.context.child("execute_request");
         let execution_engine = self.execution_engine.clone();
         self.execution_task
             .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
@@ -215,7 +215,7 @@ where
         };
 
         debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
-        self.marshal.set_floor(floor_height).await;
+        self.marshal.prune(floor_height).await;
         self.floor = floor_height;
 
         Ok(())
@@ -233,7 +233,7 @@ enum ExecutionTaskResult {
 }
 
 async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
-    context: ContextCell<TContext>,
+    context: TContext,
     execution_engine: E,
     last_fcu: FinalizedTip,
     request: ExecutionRequest,

@@ -22,7 +22,7 @@ use commonware_runtime::{
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
-use rand_core::CryptoRngCore;
+use rand_core::CryptoRng;
 use reth_ethereum::provider::BlockIdReader as _;
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
@@ -179,7 +179,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRngCore + RuntimeMetrics + Pacer + Spawner + Storage,
+        TContext: BufferPooler + Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {
@@ -231,7 +231,7 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
                 execution_node: upstream_execution_node,
                 feed: upstream_feed_state,
@@ -253,16 +253,15 @@ impl FollowerBuilder {
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
-            mailbox_size: 16_384,
+            mailbox_size: commonware_utils::NZUsize!(16_384),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            strict_startup: true,
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            .try_init(context.child("follower").with_attribute("name", &name))
             .await
             .expect("failed to initialize follow engine")
             .start();

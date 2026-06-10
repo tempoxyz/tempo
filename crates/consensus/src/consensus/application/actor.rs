@@ -20,38 +20,39 @@ use alloy_primitives::{B256, Bytes};
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
+    marshal::core::DigestFallback,
     simplex::Plan,
-    types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
+    types::{Epoch, Epocher as _, FixedEpocher, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
-    ContextCell, FutureExt as _, Handle, Metrics as _, Pacer, Spawner, Storage, spawn_cell,
+    ContextCell, FutureExt as _, Handle, Pacer, Spawner, Storage, Supervisor, spawn_cell,
+    telemetry::metrics::{Counter, MetricsExt as _},
 };
-use prometheus_client::metrics::counter::Counter;
 
 use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, future::try_join};
-use rand_08::{CryptoRng, Rng};
+use rand_core::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
+use reth_provider::{BlockReader as _, BlockSource};
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    marshal_persist_estimate, observe_marshal_persist,
+    marshal_persist_estimate,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tracing::{Level, debug, info, instrument, warn};
 
 use super::{
     Mailbox,
-    ingress::{Broadcast, Genesis, Message, Propose, Verify},
+    ingress::{Broadcast, Message, Propose, Verify},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -81,11 +82,6 @@ struct ProposalReturn {
     /// After the proposal is persisted locally, the actor sleeps until this time
     /// so early builds still respect the proposal pacing budget.
     return_at: SystemTime,
-    /// Approximate encoded proposal size used for marshal-persist pacing.
-    ///
-    /// This is a reasonably close estimate derived during payload building, not the exact final
-    /// encoded block size.
-    block_size_estimate_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -188,25 +184,19 @@ where
     fn handle_message(&mut self, msg: Message) {
         match msg {
             Message::Broadcast(broadcast) => {
-                self.context.with_label("broadcast").spawn({
+                self.context.child("broadcast").spawn({
                     let inner = self.inner.clone();
                     move |_| inner.handle_broadcast(*broadcast)
                 });
             }
-            Message::Genesis(genesis) => {
-                self.context.with_label("genesis").spawn({
-                    let inner = self.inner.clone();
-                    move |context| inner.handle_genesis(genesis, context)
-                });
-            }
             Message::Propose(propose) => {
-                self.context.with_label("propose").spawn({
+                self.context.child("propose").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_propose(*propose, context)
                 });
             }
             Message::Verify(verify) => {
-                self.context.with_label("verify").spawn({
+                self.context.child("verify").spawn({
                     let inner = self.inner.clone();
                     move |context| inner.handle_verify(*verify, context)
                 });
@@ -238,74 +228,14 @@ struct Inner<TState> {
 }
 
 impl Inner<Init> {
-    #[instrument(
-        skip_all,
-        fields(%digest),
-    )]
+    #[instrument(skip_all, fields(%digest))]
     async fn handle_broadcast(self, Broadcast { digest, plan }: Broadcast) {
         let (round, recipients) = match plan {
             Plan::Propose { round } => (round, Recipients::All),
             Plan::Forward { round, recipients } => (round, recipients),
         };
-        self.marshal.forward(round, digest, recipients).await;
-    }
 
-    #[instrument(
-        skip_all,
-        fields(
-            epoch = %genesis.epoch,
-        ),
-        ret(Display),
-        err(level = Level::ERROR)
-    )]
-    async fn handle_genesis<TContext: commonware_runtime::Clock>(
-        self,
-        mut genesis: Genesis,
-        context: TContext,
-    ) -> eyre::Result<Digest> {
-        // The last block of the previous epoch is the genesis of the current
-        // epoch. Only epoch 0/height 0 is special cased because first height
-        // of epoch 0 == genesis of epoch 0.
-        let boundary = match genesis.epoch.previous() {
-            None => Height::zero(),
-            Some(previous_epoch) => self
-                .epoch_strategy
-                .last(previous_epoch)
-                .expect("epoch strategy is for all epochs"),
-        };
-
-        let mut attempts = 0;
-        let epoch_genesis = loop {
-            attempts += 1;
-            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary.get()) {
-                break Digest(hash);
-            } else if let Some((_, digest)) = self.marshal.get_info(boundary).await {
-                break digest;
-            } else {
-                info_span!("fetch_genesis_digest").in_scope(|| {
-                    info!(
-                        boundary.height = %boundary,
-                        attempts,
-                        "neither marshal actor nor execution layer had the \
-                        boundary block of the previous epoch available; \
-                        waiting 2s before trying again"
-                    );
-                });
-                select!(
-                    () = genesis.response.closed() => {
-                        return Err(eyre!("genesis request was cancelled"));
-                    },
-
-                    _ = context.sleep(Duration::from_secs(2)) => {
-                        continue;
-                    },
-                );
-            }
-        };
-        genesis.response.send(epoch_genesis).map_err(|_| {
-            eyre!("failed returning parent digest for epoch: return channel was already closed")
-        })?;
-        Ok(epoch_genesis)
+        self.marshal.forward(round, digest, recipients);
     }
 
     /// Handles a [`Propose`] request.
@@ -319,7 +249,7 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext: Pacer>(
+    async fn handle_propose<TContext: Pacer + Supervisor>(
         self,
         request: Propose,
         context: TContext,
@@ -356,7 +286,7 @@ impl Inner<Init> {
                 futures::pin_mut!(already_verified);
 
                 let mut proposal = Box::pin(self.clone().propose(
-                    context.clone(),
+                    &context,
                     BuildProposalArgs {
                         propose_start,
                         parent_view,
@@ -391,15 +321,6 @@ impl Inner<Init> {
                 };
 
                 if let Some(proposal_return) = proposal_return {
-                    let persist_start = Instant::now();
-                    if !self.marshal.proposed(round, block.clone()).await {
-                        bail!("marshal actor rejected persisting proposal");
-                    }
-                    observe_marshal_persist(
-                        proposal_return.block_size_estimate_bytes,
-                        persist_start.elapsed(),
-                    );
-
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.return_at).await;
                 }
@@ -499,7 +420,7 @@ impl Inner<Init> {
 
     async fn propose<TContext: Pacer>(
         self,
-        context: TContext,
+        context: &TContext,
         args: BuildProposalArgs,
     ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
         let BuildProposalArgs {
@@ -536,14 +457,15 @@ impl Inner<Init> {
             let parent = if parent.block().header().block_access_list_hash().is_some()
                 && parent.block_access_list().is_none()
             {
-                self.marshal
-                    .subscribe_by_digest(
-                        Some(Round::new(round.epoch(), parent_view)),
-                        parent_digest,
-                    )
+                let round = Round::new(round.epoch(), parent_view);
+                (*self
+                    .marshal
+                    .subscribe_by_digest(parent_digest, DigestFallback::FetchByRound { round })
                     .await
-                    .await
-                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+                    .map_err(|_| {
+                        eyre!("syncer dropped channel before the parent block was sent")
+                    })?)
+                .clone()
             } else {
                 parent
             };
@@ -567,7 +489,7 @@ impl Inner<Init> {
         // it.
         if !is_genesis_parent
             && verify_block(
-                context.clone(),
+                context,
                 parent_epoch_info.epoch(),
                 &self.epoch_strategy,
                 self.execution_node
@@ -642,7 +564,7 @@ impl Inner<Init> {
         // timestamp is not in the future during EL validation.
         let mut epoch_millis = context.current().epoch_millis();
         if epoch_millis <= parent.timestamp_millis() {
-            self.metrics.parent_ahead_of_local_time.inc();
+            self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
         };
 
@@ -740,13 +662,7 @@ impl Inner<Init> {
         );
         let return_at = context.current() + return_delay;
 
-        Ok((
-            proposal,
-            Some(ProposalReturn {
-                return_at,
-                block_size_estimate_bytes,
-            }),
-        ))
+        Ok((proposal, Some(ProposalReturn { return_at })))
     }
 
     #[instrument(
@@ -842,7 +758,7 @@ impl Inner<Init> {
         }
 
         let validation_duration = verify_block(
-            context,
+            &context,
             round.epoch(),
             &self.epoch_strategy,
             self.execution_node
@@ -980,7 +896,7 @@ struct VerifyResult {
     )
 )]
 async fn verify_block<TContext: Pacer>(
-    context: TContext,
+    context: &TContext,
     epoch: Epoch,
     epoch_strategy: &FixedEpocher,
     engine: ConsensusEngineHandle<TempoPayloadTypes>,
@@ -1007,7 +923,7 @@ async fn verify_block<TContext: Pacer>(
 
     // Scheme registration precedes engine creation, so the scheme must exist
     let scheme = scheme_provider
-        .scoped(epoch)
+        .scheme(epoch)
         .ok_or_eyre("cannot determine participants in the current epoch")?;
 
     let validator_set = Some(
@@ -1025,7 +941,7 @@ async fn verify_block<TContext: Pacer>(
     let validation_start = Instant::now();
     let payload_status = engine
         .new_payload(execution_data)
-        .pace(&context, Duration::from_millis(50))
+        .pace(context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
@@ -1069,6 +985,7 @@ async fn verify_header(
     let ctx = block
         .header()
         .consensus_context
+        .clone()
         .ok_or_eyre("missing consensus context")?;
 
     let expected_ctx = TempoConsensusContext {
@@ -1158,11 +1075,11 @@ async fn subscribe(
         // EL database reads do not include commonware sidecars.
         Block::from_execution_block_unchecked(block, None)
     } else {
-        marshal
-            .subscribe_by_digest(Some(round), digest)
+        (*marshal
+            .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })
             .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?)
+        .clone()
     };
     Ok(block)
 }
@@ -1177,11 +1094,9 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let parent_ahead_of_local_time = Counter::default();
-        context.register(
+        let parent_ahead_of_local_time = context.counter(
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time",
-            parent_ahead_of_local_time.clone(),
         );
 
         Self {

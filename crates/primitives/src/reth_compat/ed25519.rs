@@ -1,10 +1,6 @@
-use alloy_rlp::Encodable;
-
-use crate::ed25519::PublicKey;
-
-impl reth_primitives_traits::InMemorySize for PublicKey {
+impl reth_primitives_traits::InMemorySize for crate::ed25519::PublicKey {
     fn size(&self) -> usize {
-        self.length()
+        alloy_primitives::B256::len_bytes()
     }
 }
 

@@ -22,7 +22,6 @@ use commonware_consensus::{
     types::{Epoch, Height, Round, View},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_utils::channel::oneshot;
 use parking_lot::Mutex;
 use reth_node_core::primitives::SealedBlock;
 use tempo_node::rpc::consensus::CertifiedBlock;
@@ -123,7 +122,6 @@ struct StubUpstreamInner {
     finalizations: Mutex<HashMap<u64, CertifiedBlock>>,
     block_reads: AtomicUsize,
     finalization_reads: AtomicUsize,
-    block_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl StubUpstream {
@@ -142,25 +140,13 @@ impl StubUpstream {
     pub(super) fn finalization_reads(&self) -> usize {
         self.inner.finalization_reads.load(Ordering::SeqCst)
     }
-
-    pub(super) fn pause_next_block_read(&self) -> oneshot::Sender<()> {
-        let (release, gate) = oneshot::channel();
-        *self.inner.block_gate.lock() = Some(gate);
-        release
-    }
 }
 
 impl Upstream for StubUpstream {
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send {
         self.inner.block_reads.fetch_add(1, Ordering::SeqCst);
         let block = self.inner.blocks.lock().get(&digest).cloned();
-        let gate = self.inner.block_gate.lock().take();
-        async move {
-            if let Some(gate) = gate {
-                let _ = gate.await;
-            }
-            block
-        }
+        async move { block }
     }
 
     fn get_finalization(

@@ -150,8 +150,8 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns the consensus context
-    pub fn consensus_context(&self) -> Option<TempoConsensusContext> {
-        self.consensus_context
+    pub fn consensus_context(&self) -> Option<&TempoConsensusContext> {
+        self.consensus_context.as_ref()
     }
 
     /// Returns the subblocks.
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn payload_id_includes_consensus_context() {
         let parent = B256::random();
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
 
         let mk = |ctx: Option<TempoConsensusContext>| -> PayloadId {
             let mut attrs = TempoPayloadAttributes::random();
@@ -519,25 +519,25 @@ mod tests {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer,
+            proposer: proposer.clone(),
         }));
         let ctx_b = mk(Some(TempoConsensusContext {
             epoch: 1,
             view: 2,
             parent_view: 1,
-            proposer,
+            proposer: proposer.clone(),
         }));
         let ctx_c = mk(Some(TempoConsensusContext {
             epoch: 2,
             view: 1,
             parent_view: 0,
-            proposer,
+            proposer: proposer.clone(),
         }));
         let ctx_d = mk(Some(TempoConsensusContext {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer: PublicKey::from_seed([0xcd; 32]),
+            proposer: PublicKey::from_seed(0xcd),
         }));
 
         // Without context, falls back to parent-hash-only ID.
@@ -557,7 +557,7 @@ mod tests {
             epoch: 1,
             view: 1,
             parent_view: 0,
-            proposer,
+            proposer: proposer.clone(),
         }));
         assert_eq!(ctx_a, ctx_a_again);
 

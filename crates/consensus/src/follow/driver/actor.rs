@@ -17,7 +17,7 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::Acknowledgement as _;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
-use rand_08::{CryptoRng, Rng};
+use rand_core::{CryptoRng, Rng};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn};
@@ -249,7 +249,7 @@ where
         let can_use_network_identity_fallback =
             finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
-        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
+        let scheme = match self.config.scheme_provider.scheme(finalization_epoch) {
             Some(scheme) => scheme,
             None if can_use_network_identity_fallback => self.network_scheme.clone(),
             None => {
@@ -261,7 +261,7 @@ where
         };
 
         let identity = scheme.identity();
-        if !finalization.verify(&mut self.context, &scheme, &Sequential) {
+        if !finalization.verify(&mut self.context, scheme.as_ref(), &Sequential) {
             debug!(
                 "failed to verify finalization {} against scheme: {identity}",
                 finalization.proposal.payload

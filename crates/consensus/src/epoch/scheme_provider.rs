@@ -7,7 +7,9 @@ use std::{
 
 use commonware_consensus::{simplex::scheme::bls12381_threshold::vrf::Scheme, types::Epoch};
 use commonware_cryptography::{
-    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
+    bls12381::primitives::variant::MinSig,
+    certificate::{Provider, Scoped},
+    ed25519::PublicKey,
 };
 
 #[derive(Clone)]
@@ -40,16 +42,12 @@ impl Provider for SchemeProvider {
     type Scope = Epoch;
     type Scheme = Scheme<PublicKey, MinSig>;
 
-    fn scoped(&self, scope: Self::Scope) -> Option<Arc<Self::Scheme>> {
-        self.inner.lock().unwrap().get(&scope).cloned()
-    }
-
-    /// Always returned `None`.
-    ///
-    /// While we are using bls12-381 threshold cryptography, the constant term
-    /// of the public polynomial can change in a full re-dkg and so tempo can
-    /// never verify certificates from all epochs.
-    fn all(&self) -> Option<Arc<Self::Scheme>> {
-        None
+    fn scoped(&self, scope: Self::Scope) -> Option<Scoped<Self::Scheme>> {
+        self.inner
+            .lock()
+            .unwrap()
+            .get(&scope)
+            .cloned()
+            .map(Scoped::scheme)
     }
 }

@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
@@ -45,8 +46,9 @@ pub(crate) struct EventReporter(Mailbox);
 impl Reporter for EventReporter {
     type Activity = Event;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         self.0.send(activity);
+        Feedback::Ok
     }
 }
 
@@ -56,7 +58,8 @@ pub(crate) struct MarshalReporter(Mailbox);
 impl Reporter for MarshalReporter {
     type Activity = marshal::Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         self.0.send(activity);
+        Feedback::Ok
     }
 }

@@ -10,7 +10,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Output},
+        dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
@@ -21,6 +21,7 @@ use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand_08::SeedableRng as _;
+use rand_10::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -1187,14 +1188,14 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
+    let mut rng = rand_10::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
 
-    let (output, shares) = dkg::deal::<_, _, N3f1>(
+    let (output, shares) = dkg::feldman_desmedt::deal::<_, _, N3f1>(
         &mut rng,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),

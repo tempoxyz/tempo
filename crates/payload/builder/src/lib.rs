@@ -517,7 +517,7 @@ where
             general_gas_limit,
             shared_gas_limit,
             timestamp_millis_part: attributes.timestamp_millis_part(),
-            consensus_context: attributes.consensus_context(),
+            consensus_context: attributes.consensus_context().cloned(),
             subblock_fee_recipients,
         };
         let evm_env = self
