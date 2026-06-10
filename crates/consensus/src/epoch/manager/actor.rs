@@ -47,8 +47,8 @@ use alloy_consensus::BlockHeader as _;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporters,
-    marshal::Update,
-    simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
+    marshal::{Update, core::DigestFallback},
+    simplex::{self, config::Floor, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, EpochDelta, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -59,14 +59,14 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
-    telemetry::metrics::status::GaugeExt as _,
+    BufferPooler, Clock, ContextCell, Handle, Network, Spawner, Storage, spawn_cell,
+    telemetry::metrics::{Counter, Gauge, GaugeExt as _, MetricsExt as _},
 };
-use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
+use commonware_utils::{Acknowledgement as _, NZUsize, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
-use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_08::{CryptoRng, Rng};
+use reth_ethereum::chainspec::EthChainSpec;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
@@ -76,11 +76,11 @@ use crate::{
 
 use super::ingress::{Content, Message};
 
-const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
-const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
+const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
+const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 
 pub(crate) struct Actor<TContext, TBlocker> {
-    active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
+    active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TBlocker>,
     context: ContextCell<TContext>,
     confirmed_latest_network_epoch: Option<Epoch>,
@@ -107,36 +107,25 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
-        let active_epochs = Gauge::default();
-        let latest_epoch = Gauge::default();
-        let latest_participants = Gauge::default();
-        let how_often_signer = Counter::default();
-        let how_often_verifier = Counter::default();
-
-        context.register(
+        let active_epochs = context.gauge(
             "active_epochs",
             "the number of epochs currently managed by the epoch manager",
-            active_epochs.clone(),
         );
-        context.register(
+        let latest_epoch = context.gauge(
             "latest_epoch",
             "the latest epoch managed by this epoch manager",
-            latest_epoch.clone(),
         );
-        context.register(
+        let latest_participants = context.gauge(
             "latest_participants",
             "the number of participants in the most recently started epoch",
-            latest_participants.clone(),
         );
-        context.register(
+        let how_often_signer = context.counter(
             "how_often_signer",
             "how often a node is a signer; a node is a signer if it has a share",
-            how_often_signer.clone(),
         );
-        context.register(
+        let how_often_verifier = context.counter(
             "how_often_verifier",
             "how often a node is a verifier; a node is a verifier if it does not have a share",
-            how_often_verifier.clone(),
         );
 
         Self {
@@ -189,7 +178,7 @@ where
         ),
     ) {
         let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
-            self.context.with_label("vote_mux"),
+            self.context.child("vote_mux"),
             vote_sender,
             vote_receiver,
             self.config.mailbox_size,
@@ -199,7 +188,7 @@ where
         mux.start();
 
         let (mux, mut certificate_mux) = Muxer::builder(
-            self.context.with_label("certificate_mux"),
+            self.context.child("certificate_mux"),
             certificate_sender,
             certificate_receiver,
             self.config.mailbox_size,
@@ -208,7 +197,7 @@ where
         mux.start();
 
         let (mux, mut resolver_mux) = Muxer::new(
-            self.context.with_label("resolver_mux"),
+            self.context.child("resolver_mux"),
             resolver_sender,
             resolver_receiver,
             self.config.mailbox_size,
@@ -308,6 +297,7 @@ where
         }
 
         let n_participants = participants.len();
+
         // Register the new signing scheme with the scheme provider.
         let is_signer = matches!(share, Some(..));
         let scheme = if let Some(share) = share {
@@ -318,24 +308,64 @@ where
             info!("we don't have a share for this epoch, participating as a verifier",);
             Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
+
         self.config.scheme_provider.register(epoch, scheme.clone());
 
-        // Manage the context so we can explicitly drop during cleanup, releasing
-        // all metrics associated with this context.
-        let engine_ctx = self
-            .context
-            .with_label("simplex")
-            .with_attribute("epoch", epoch)
-            .with_scope();
+        let floor = match epoch.previous().map(|prev| {
+            self.config
+                .epoch_strategy
+                .last(prev)
+                .expect("epoch strategy valid for all epochs and heights")
+        }) {
+            Some(boundary_height) => 'floor: {
+                if let Some(block) = self.config.marshal.get_block(boundary_height).await {
+                    break 'floor Floor::Genesis(block.digest());
+                }
 
+                let state = self
+                    .config
+                    .execution_node
+                    .provider
+                    .canonical_in_memory_state();
+
+                ensure!(
+                    state
+                        .get_finalized_num_hash()
+                        .is_some_and(|watermark| watermark.number >= boundary_height.get()),
+                    "consensus layer does not have access to certificate or \
+                    block at boundary `{boundary_height}`, and execution layer \
+                    finalized watermark is below the boundary height, so a \
+                    consensus engine for epoch `{epoch}` cannot be started"
+                );
+
+                let hash = state.hash_by_number(boundary_height.get()).ok_or_else(|| {
+                    eyre!(
+                        "consensus layer does not have access to certificate or \
+                    block at boundary `{boundary_height}`, and execution layer \
+                    does not know about the finalized block hash corresponding \
+                    to it, so a consensus engine for epoch `{epoch}` cannot be \
+                    started"
+                    )
+                })?;
+
+                Floor::Genesis(Digest(hash))
+            }
+            None => {
+                let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
+                Floor::Genesis(Digest(genesis_hash))
+            }
+        };
+
+        let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
         let engine = simplex::Engine::new(
-            engine_ctx.clone(),
+            engine_ctx,
             simplex::Config {
+                epoch,
+                floor,
                 scheme,
                 elector: elector::Random,
-                blocker: self.config.blocker.clone(),
-                automaton: self.config.application.clone(),
-                relay: self.config.application.clone(),
+                strategy: Sequential,
+
                 reporter: Reporters::<_, crate::subblocks::Mailbox, _>::from((
                     self.config.subblocks.clone(),
                     Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
@@ -344,13 +374,14 @@ where
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
                 ),
-                mailbox_size: self.config.mailbox_size,
-                epoch,
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
-                page_cache: self.config.page_cache.clone(),
 
+                blocker: self.config.blocker.clone(),
+                automaton: self.config.application.clone(),
+                relay: self.config.application.clone(),
+                page_cache: self.config.page_cache.clone(),
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,
                 timeout_retry: self.config.time_to_retry_nullify_broadcast,
@@ -358,11 +389,9 @@ where
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
 
-                fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-
+                mailbox_size: NZUsize!(self.config.mailbox_size),
+                fetch_concurrent: NZUsize!(crate::config::NUMBER_CONCURRENT_FETCHES),
                 forwarding: commonware_consensus::simplex::config::ForwardingPolicy::Disabled,
-
-                strategy: Sequential,
             },
         );
 
@@ -372,10 +401,7 @@ where
 
         assert!(
             self.active_epochs
-                .insert(
-                    epoch,
-                    (engine.start(vote, certificate, resolver), engine_ctx)
-                )
+                .insert(epoch, engine.start(vote, certificate, resolver))
                 .is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
@@ -386,12 +412,20 @@ where
 
         info!("started consensus engine backing the epoch");
 
-        self.metrics.latest_participants.set(n_participants as i64);
-        self.metrics.active_epochs.inc();
-        let _ = self.metrics.latest_epoch.try_set(epoch.get());
-        self.metrics.how_often_signer.inc_by(u64::from(is_signer));
+        let _ = self.metrics.latest_epoch.metric().try_set(epoch.get());
+        self.metrics.active_epochs.metric().inc();
+
+        self.metrics
+            .latest_participants
+            .metric()
+            .set(n_participants as i64);
+        self.metrics
+            .how_often_signer
+            .metric()
+            .inc_by(u64::from(is_signer));
         self.metrics
             .how_often_verifier
+            .metric()
             .inc_by(u64::from(!is_signer));
 
         Ok(())
@@ -399,8 +433,7 @@ where
 
     #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
-        if let Some((engine, engine_ctx)) = self.active_epochs.remove(&epoch) {
-            drop(engine_ctx);
+        if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
             info!("stopped engine backing epoch");
         } else {
@@ -470,8 +503,7 @@ where
             let block = self
                 .config
                 .marshal
-                .subscribe_by_digest(None, digest)
-                .await
+                .subscribe_by_digest(digest, DigestFallback::Wait)
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
@@ -542,10 +574,10 @@ where
             "hinting to sync system that a finalization certificate might be \
             available for our reference epoch",
         );
+
         self.config
             .marshal
-            .hint_finalized(boundary_height, NonEmptyVec::new(from))
-            .await;
+            .hint_finalized(boundary_height, NonEmptyVec::new(from));
     }
 }
 

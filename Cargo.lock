@@ -78,7 +78,7 @@ dependencies = [
  "rand 0.8.6",
  "rust-embed",
  "scrypt",
- "sha2 0.10.9",
+ "sha2",
  "subtle",
  "x25519-dalek",
  "zeroize",
@@ -98,7 +98,7 @@ dependencies = [
  "nom",
  "rand 0.8.6",
  "secrecy",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -374,7 +374,7 @@ dependencies = [
  "ethereum_ssz_derive",
  "serde",
  "serde_with",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -1291,6 +1291,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-ed-on-bls12-381-bandersnatch"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1786b2e3832f6f0f7c8d62d5d5a282f6952a1ab99981c54cd52b6ac1d8f02df5"
+dependencies = [
+ "ark-bls12-381",
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-r1cs-std",
+ "ark-std 0.5.0",
+]
+
+[[package]]
 name = "ark-ff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1797,7 +1810,7 @@ dependencies = [
  "http 0.2.12",
  "http 1.4.0",
  "percent-encoding",
- "sha2 0.10.9",
+ "sha2",
  "time",
  "tracing",
 ]
@@ -2232,15 +2245,6 @@ dependencies = [
 
 [[package]]
 name = "block-buffer"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4152116fd6e9dadb291ae18fc1ec3575ed6d84c29642d97890f4b4a3417297e4"
-dependencies = [
- "generic-array",
-]
-
-[[package]]
-name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
@@ -2504,7 +2508,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
 dependencies = [
- "sha2 0.10.9",
+ "sha2",
  "tinyvec",
 ]
 
@@ -2868,7 +2872,7 @@ dependencies = [
  "hmac",
  "k256",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -2884,7 +2888,7 @@ dependencies = [
  "once_cell",
  "pbkdf2",
  "rand 0.8.6",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -2902,7 +2906,7 @@ dependencies = [
  "generic-array",
  "ripemd",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "sha3 0.10.9",
  "thiserror 1.0.69",
 ]
@@ -2967,28 +2971,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "commonware-broadcast"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+name = "commonware-actor"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
+ "cfg-if",
+ "commonware-macros",
+ "commonware-runtime",
+ "crossbeam-queue",
+ "futures-util",
+ "parking_lot",
+]
+
+[[package]]
+name = "commonware-broadcast"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
- "prometheus-client",
  "thiserror 2.0.18",
  "tracing",
 ]
 
 [[package]]
 name = "commonware-codec"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
+ "arbitrary",
  "bytes",
  "cfg-if",
+ "commonware-codec-macros",
+ "commonware-conformance",
  "commonware-macros",
  "paste",
  "rand 0.8.6",
@@ -2997,9 +3017,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "commonware-codec-macros"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "commonware-coding"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3018,16 +3049,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "commonware-conformance"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "commonware-conformance-macros",
+ "commonware-formatting",
+ "commonware-macros",
+ "futures",
+ "serde",
+ "sha2",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "commonware-conformance-macros"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "commonware-consensus"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "bytes",
  "cfg-if",
+ "commonware-actor",
  "commonware-broadcast",
  "commonware-codec",
  "commonware-coding",
  "commonware-cryptography",
+ "commonware-formatting",
  "commonware-macros",
  "commonware-math",
  "commonware-p2p",
@@ -3038,7 +3095,6 @@ dependencies = [
  "commonware-utils",
  "futures",
  "pin-project",
- "prometheus-client",
  "rand 0.8.6",
  "rand_core 0.6.4",
  "rand_distr 0.4.3",
@@ -3049,10 +3105,17 @@ dependencies = [
 
 [[package]]
 name = "commonware-cryptography"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "anyhow",
+ "arbitrary",
+ "ark-ec",
+ "ark-ed-on-bls12-381-bandersnatch",
+ "ark-ff 0.5.0",
+ "ark-r1cs-std",
+ "ark-relations",
+ "ark-serialize 0.5.0",
  "aws-lc-rs",
  "blake3",
  "blst",
@@ -3060,14 +3123,15 @@ dependencies = [
  "cfg-if",
  "chacha20poly1305",
  "commonware-codec",
+ "commonware-formatting",
  "commonware-macros",
  "commonware-math",
  "commonware-parallel",
  "commonware-utils",
  "crc-fast",
  "ctutils",
+ "curve25519-dalek",
  "ecdsa",
- "ed25519-consensus",
  "getrandom 0.2.17",
  "num-rational",
  "num-traits",
@@ -3075,16 +3139,38 @@ dependencies = [
  "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.18",
  "x25519-dalek",
  "zeroize",
 ]
 
 [[package]]
+name = "commonware-formatting"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "commonware-macros",
+ "const-hex",
+]
+
+[[package]]
+name = "commonware-invariants"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "arbitrary",
+ "commonware-formatting",
+ "commonware-macros",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "commonware-macros"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -3092,8 +3178,8 @@ dependencies = [
 
 [[package]]
 name = "commonware-macros-impl"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3104,11 +3190,13 @@ dependencies = [
 
 [[package]]
 name = "commonware-math"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
+ "arbitrary",
  "bytes",
  "commonware-codec",
+ "commonware-invariants",
  "commonware-macros",
  "commonware-parallel",
  "commonware-utils",
@@ -3117,9 +3205,10 @@ dependencies = [
 
 [[package]]
 name = "commonware-p2p"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
+ "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
@@ -3133,7 +3222,6 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
- "prometheus-client",
  "rand 0.8.6",
  "rand_core 0.6.4",
  "rand_distr 0.4.3",
@@ -3143,8 +3231,8 @@ dependencies = [
 
 [[package]]
 name = "commonware-parallel"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3153,10 +3241,11 @@ dependencies = [
 
 [[package]]
 name = "commonware-resolver"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "bytes",
+ "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-macros",
@@ -3165,7 +3254,6 @@ dependencies = [
  "commonware-stream",
  "commonware-utils",
  "futures",
- "prometheus-client",
  "rand 0.8.6",
  "thiserror 2.0.18",
  "tracing",
@@ -3173,19 +3261,21 @@ dependencies = [
 
 [[package]]
 name = "commonware-runtime"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "axum",
  "bytes",
  "cfg-if",
  "commonware-codec",
  "commonware-cryptography",
+ "commonware-formatting",
  "commonware-macros",
  "commonware-parallel",
+ "commonware-runtime-macros",
  "commonware-utils",
  "criterion",
- "crossbeam-queue",
+ "crossbeam-utils",
  "futures",
  "getrandom 0.2.17",
  "governor",
@@ -3198,7 +3288,7 @@ dependencies = [
  "rand 0.8.6",
  "rand_core 0.6.4",
  "rayon",
- "sha2 0.10.9",
+ "sha2",
  "sysinfo 0.37.2",
  "thiserror 2.0.18",
  "tokio",
@@ -3208,9 +3298,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "commonware-runtime-macros"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "commonware-storage"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3218,14 +3319,13 @@ dependencies = [
  "cfg-if",
  "commonware-codec",
  "commonware-cryptography",
+ "commonware-formatting",
  "commonware-macros",
  "commonware-parallel",
  "commonware-runtime",
  "commonware-utils",
  "futures",
  "futures-util",
- "prometheus-client",
- "rayon",
  "thiserror 2.0.18",
  "tracing",
  "zstd",
@@ -3233,12 +3333,13 @@ dependencies = [
 
 [[package]]
 name = "commonware-stream"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
  "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
+ "commonware-formatting",
  "commonware-macros",
  "commonware-runtime",
  "commonware-utils",
@@ -3252,12 +3353,14 @@ dependencies = [
 
 [[package]]
 name = "commonware-utils"
-version = "2026.4.0"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2a7dd423f0a241276a5a38db8cc3d05f11de0c03#2a7dd423f0a241276a5a38db8cc3d05f11de0c03"
+version = "2026.5.0"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1#d0b9a8e9e575ee6262b4de2d6e613bdc79cff2a1"
 dependencies = [
+ "arbitrary",
  "bytes",
  "cfg-if",
  "commonware-codec",
+ "commonware-formatting",
  "commonware-macros",
  "futures",
  "getrandom 0.2.17",
@@ -3700,19 +3803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "curve25519-dalek-ng"
-version = "4.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c359b7249347e46fb28804470d071c921156ad62b3eef5d34e2ba867533dec8"
-dependencies = [
- "byteorder",
- "digest 0.9.0",
- "rand_core 0.6.4",
- "subtle-ng",
- "zeroize",
-]
-
-[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4070,20 +4160,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ed25519-consensus"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8465edc8ee7436ffea81d21a019b16676ee3db267aa8d5a8d729581ecf998b"
-dependencies = [
- "curve25519-dalek-ng",
- "hex",
- "rand_core 0.6.4",
- "sha2 0.9.9",
- "thiserror 1.0.69",
- "zeroize",
-]
-
-[[package]]
 name = "ed25519-dalek"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4093,7 +4169,7 @@ dependencies = [
  "ed25519",
  "rand_core 0.6.4",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "subtle",
  "zeroize",
 ]
@@ -4230,7 +4306,7 @@ checksum = "5aa93f58bb1eb3d1e556e4f408ef1dac130bad01ac37db4e7ade45de40d1c86a"
 dependencies = [
  "cpufeatures 0.2.17",
  "ring",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -6190,7 +6266,7 @@ dependencies = [
  "elliptic-curve",
  "once_cell",
  "serdect",
- "sha2 0.10.9",
+ "sha2",
  "signature",
 ]
 
@@ -6359,7 +6435,7 @@ dependencies = [
  "k256",
  "multihash",
  "quick-protobuf",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
  "zeroize",
@@ -7003,6 +7079,7 @@ version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
+ "arbitrary",
  "num-integer",
  "num-traits",
  "serde",
@@ -7365,7 +7442,7 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "serdect",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -9184,7 +9261,7 @@ dependencies = [
  "rand 0.8.6",
  "reth-network-peers",
  "secp256k1 0.30.0",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -9339,7 +9416,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "ethereum_ssz",
  "ethereum_ssz_derive",
- "sha2 0.10.9",
+ "sha2",
  "snap",
  "thiserror 2.0.18",
 ]
@@ -9356,7 +9433,7 @@ dependencies = [
  "reqwest 0.13.3",
  "reth-era",
  "reth-fs-util",
- "sha2 0.10.9",
+ "sha2",
  "tokio",
 ]
 
@@ -10363,7 +10440,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-trie-common",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -10587,7 +10664,7 @@ dependencies = [
  "revm-inspectors",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -11475,7 +11552,7 @@ dependencies = [
  "revm-primitives",
  "ripemd",
  "secp256k1 0.31.1",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -11726,7 +11803,7 @@ version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bcdef0be6fe7f6fa333b1073c949729274b05f123a0ad7efcb8efd878e5c3b1"
 dependencies = [
- "sha2 0.10.9",
+ "sha2",
  "walkdir",
 ]
 
@@ -12016,7 +12093,7 @@ checksum = "0516a385866c09368f0b5bcd1caff3366aace790fcd46e2bb032697bb172fd1f"
 dependencies = [
  "pbkdf2",
  "salsa20",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -12315,19 +12392,6 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.9.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d58a1e1bf39749807d89cf2d98ac2dfa0ff1cb3faa38fbb64dd88ac8013d800"
-dependencies = [
- "block-buffer 0.9.0",
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.9.0",
- "opaque-debug",
-]
-
-[[package]]
-name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
@@ -12620,12 +12684,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "subtle-ng"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "734676eb262c623cec13c3155096e08d1f8f29adce39ba17948b18dad1e54142"
 
 [[package]]
 name = "symbolic-common"
@@ -12967,6 +13025,7 @@ dependencies = [
  "axum",
  "bytes",
  "clap",
+ "commonware-actor",
  "commonware-broadcast",
  "commonware-codec",
  "commonware-consensus",
@@ -12987,7 +13046,6 @@ dependencies = [
  "jsonrpsee",
  "parking_lot",
  "pin-project",
- "prometheus-client",
  "rand 0.8.6",
  "rand_core 0.6.4",
  "reth-consensus-common",
@@ -13170,7 +13228,7 @@ dependencies = [
  "semver 1.0.28",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
@@ -13260,7 +13318,7 @@ dependencies = [
  "reth-transaction-pool",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
@@ -13400,8 +13458,8 @@ dependencies = [
  "arbitrary",
  "aws-lc-rs",
  "base64 0.22.1",
+ "commonware-cryptography",
  "derive_more",
- "ed25519-consensus",
  "modular-bitfield",
  "once_cell",
  "p256",
@@ -13416,7 +13474,7 @@ dependencies = [
  "revm",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "tempo-contracts",
  "tracing-subscriber 0.3.23",
 ]
@@ -13443,7 +13501,7 @@ dependencies = [
  "reth-rpc-eth-types",
  "reth-storage-api",
  "revm",
- "sha2 0.10.9",
+ "sha2",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",

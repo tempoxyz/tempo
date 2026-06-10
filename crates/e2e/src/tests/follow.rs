@@ -19,7 +19,7 @@ use commonware_runtime::{
     BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::NZU64;
+use commonware_utils::{NZU64, NZUsize};
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
 use tempo_consensus::{feed::FeedStateHandle, follow};
@@ -147,7 +147,7 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
                 execution_node: node.node.clone().into(),
                 feed: upstream.feed_state(),
@@ -169,16 +169,15 @@ impl FollowerBuilder {
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
-            mailbox_size: 16_384,
+            mailbox_size: NZUsize!(16_384),
             fcu_heartbeat_interval: Duration::from_secs(300),
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            strict_startup: true,
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
             .await
             .expect("failed to initialize follow engine")
             .start();

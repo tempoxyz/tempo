@@ -9,7 +9,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Output},
+        dkg::{self, feldman_desmedt::Output},
         primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
@@ -1138,7 +1138,7 @@ fn generate_consensus_config(
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
 
-    let (output, shares) = dkg::deal::<_, _, N3f1>(
+    let (output, shares) = dkg::feldman_desmedt::deal::<_, _, N3f1>(
         &mut rng,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),

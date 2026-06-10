@@ -176,7 +176,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                proposer_public_key: header
+                    .consensus_context
+                    .as_ref()
+                    .map(|ctx| ctx.proposer.clone()),
             },
         })
     }
@@ -231,7 +234,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .info
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
+                proposer_public_key: attributes
+                    .consensus_context
+                    .as_ref()
+                    .map(|ctx| ctx.proposer.clone()),
             },
         })
     }
@@ -277,7 +283,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
-            consensus_context: block.header().consensus_context,
+            consensus_context: block.header().consensus_context.clone(),
             subblock_fee_recipients,
         })
     }
@@ -304,7 +310,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
-            consensus_context: attributes.consensus_context,
+            consensus_context: attributes.consensus_context.clone(),
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
@@ -371,14 +377,14 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xab; 32]);
+        let proposer = PublicKey::from_seed(0xab);
         let evm_env = evm_config
             .evm_env(&TempoHeader {
                 consensus_context: Some(TempoConsensusContext {
                     epoch: 1,
                     view: 2,
                     parent_view: 1,
-                    proposer,
+                    proposer: proposer.clone(),
                 }),
                 ..header
             })
@@ -479,7 +485,7 @@ mod tests {
         assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
         assert_eq!(evm_env.block_env.proposer_public_key, None);
 
-        let proposer = PublicKey::from_seed([0xcd; 32]);
+        let proposer = PublicKey::from_seed(0xcd);
         let evm_env = evm_config
             .next_evm_env(
                 &parent,
@@ -488,7 +494,7 @@ mod tests {
                         epoch: 1,
                         view: 2,
                         parent_view: 1,
-                        proposer,
+                        proposer: proposer.clone(),
                     }),
                     ..attributes
                 },

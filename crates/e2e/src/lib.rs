@@ -17,7 +17,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self},
+        dkg::feldman_desmedt as dkg,
         primitives::{group::Share, sharing::Mode},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -27,7 +27,7 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Metrics as _, Runner as _,
+    Runner as _, Supervisor as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -241,7 +241,7 @@ pub async fn setup_validators(
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
-        context.with_label("network"),
+        context.child("network"),
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,
@@ -311,7 +311,6 @@ pub async fn setup_validators(
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            strict_startup: true,
         };
 
         nodes.push(TestingNode::new(

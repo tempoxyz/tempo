@@ -3,20 +3,26 @@
 //! Implements [`Resolver`] for marshal's gap-repair machinery. Checks the
 //! local execution node first and falls back to the upstream abstraction.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+    sync::Arc,
+};
 
 use bytes::Bytes;
+use commonware_actor::Feedback;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
-    marshal::resolver::handler,
+    marshal::resolver::handler::{self, Annotation, Key},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
     types::Height,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
-use commonware_runtime::{ContextCell, Spawner, spawn_cell};
+use commonware_resolver::{Consumer as _, Delivery, Fetch};
+use commonware_runtime::{ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{
     channel::{fallible::FallibleExt as _, mpsc},
-    futures::{AbortablePool, Aborter},
+    futures::{AbortablePool, Aborter, Pool},
     vec::NonEmptyVec,
 };
 use eyre::Report;
@@ -30,21 +36,23 @@ use crate::consensus::{Digest, block::Block};
 pub(crate) fn try_init<TContext>(
     context: TContext,
     config: Config,
-) -> (
-    Resolver<TContext>,
-    Mailbox,
-    mpsc::Receiver<handler::Message<Digest>>,
-) {
-    let (handler_tx, handler_rx) = mpsc::channel(config.mailbox_size);
+) -> (Resolver<TContext>, Mailbox, handler::Receiver<Digest>)
+where
+    TContext: Metrics,
+{
     let (mailbox_tx, mailbox_rx) = mpsc::unbounded_channel();
+    let (handler_rx, handler) = handler::init(context.child("handler"), config.mailbox_size);
+
     let actor = Resolver {
         context: ContextCell::new(context),
         config,
         mailbox: mailbox_rx,
-        handler_tx,
+        handler,
         requests: BTreeMap::new(),
         fetches: AbortablePool::default(),
+        deliveries: Pool::default(),
     };
+
     let mailbox = Mailbox { inner: mailbox_tx };
     (actor, mailbox, handler_rx)
 }
@@ -56,23 +64,16 @@ pub(crate) struct Mailbox {
     inner: mpsc::UnboundedSender<Message>,
 }
 
-type Predicate<K> = Box<dyn Fn(&K) -> bool + Send>;
+type ResolverFetch = Fetch<Key<Digest>, Annotation>;
+type RetainPredicate = dyn Fn(&Key<Digest>, &Annotation) -> bool + Send;
 
 /// Messages sent to the resolver.
 enum Message {
     /// Initiate fetch requests.
-    Fetch { keys: Vec<handler::Request<Digest>> },
-
-    /// Cancel a fetch request by key.
-    Cancel { key: handler::Request<Digest> },
-
-    /// Cancel all fetch requests.
-    Clear,
+    Fetch { keys: Vec<ResolverFetch> },
 
     /// Cancel all fetch requests that do not satisfy the predicate.
-    Retain {
-        predicate: Predicate<handler::Request<Digest>>,
-    },
+    Retain { predicate: Box<RetainPredicate> },
 }
 
 pub(crate) struct Config {
@@ -80,18 +81,23 @@ pub(crate) struct Config {
     pub(super) execution_node: Arc<TempoFullNode>,
     /// For reading blocks and certificates from the connected node.
     pub(super) upstream: super::upstream::Mailbox,
-    pub(super) mailbox_size: usize,
+    pub(super) mailbox_size: NonZeroUsize,
 }
 
-type FetchPool = AbortablePool<(handler::Request<Digest>, Result<Bytes, bool>)>;
+struct PendingRequest {
+    subscribers: BTreeSet<Annotation>,
+    _aborter: Aborter,
+}
+
 pub(crate) struct Resolver<TContext> {
     context: ContextCell<TContext>,
     config: Config,
     /// To send messages to the application/actor relying on the resolver.
-    handler_tx: mpsc::Sender<handler::Message<Digest>>,
+    handler: handler::Handler<Digest>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-    requests: BTreeMap<handler::Request<Digest>, Aborter>,
-    fetches: FetchPool,
+    requests: BTreeMap<Key<Digest>, PendingRequest>,
+    fetches: AbortablePool<(Key<Digest>, Result<Bytes, bool>)>,
+    deliveries: Pool<(Key<Digest>, bool)>,
 }
 
 impl<TContext> Resolver<TContext>
@@ -110,19 +116,25 @@ where
                     }
                 }
 
+                delivery = self.deliveries.next_completed() => {
+                    let (key, valid) = delivery;
+                    if !valid {
+                        debug!(%key, "delivered fetched value was rejected or canceled");
+                    }
+                }
+
                 Some(msg) = self.mailbox.recv() => {
                     match msg {
                         Message::Fetch { keys, } => {
                             self.handle_fetch_request(keys);
                         }
-                        Message::Cancel { key } => {
-                            self.requests.remove(&key);
-                        }
-                        Message::Clear => {
-                            self.requests.clear();
-                        }
                         Message::Retain { predicate } => {
-                            self.requests.retain(move |key, _| predicate(key));
+                            self.requests.retain(|key, request| {
+                                request
+                                    .subscribers
+                                    .retain(|subscriber| predicate(key, subscriber));
+                                !request.subscribers.is_empty()
+                            });
                         }
                     }
                 }
@@ -135,71 +147,83 @@ where
     }
 
     #[instrument(skip_all)]
-    fn handle_fetch_request(&mut self, keys: Vec<handler::Request<Digest>>) {
-        for key in keys {
-            self.schedule_request(key);
+    fn handle_fetch_request(&mut self, fetches: Vec<ResolverFetch>) {
+        for fetch in fetches {
+            self.schedule_request(fetch);
         }
     }
 
     #[instrument(skip_all)]
-    fn handle_fetch_resolution(
-        &mut self,
-        (key, resolution): (handler::Request<Digest>, Result<Bytes, bool>),
-    ) {
+    fn handle_fetch_resolution(&mut self, (key, resolution): (Key<Digest>, Result<Bytes, bool>)) {
+        let Some(request) = self.requests.remove(&key) else {
+            return;
+        };
+
         match resolution {
             Ok(value) => {
                 debug!(%key, "fetched value, delivering to client");
-                self.requests.remove(&key);
-                // Fire and forget; there is no mechanism to retry
-                // sending the response.
-                let (response, _) = commonware_utils::channel::oneshot::channel();
-                let _ = self.handler_tx.try_send(handler::Message::Deliver {
-                    key,
-                    value,
-                    response,
+                let subscribers =
+                    NonEmptyVec::from_unchecked(request.subscribers.into_iter().collect());
+
+                // Keep the receiver alive until marshal validates the delivery;
+                // otherwise the handler treats the response as canceled.
+                let receiver = self.handler.deliver(Delivery { key, subscribers }, value);
+                self.deliveries.push(async move {
+                    let valid = receiver.await.unwrap_or(false);
+                    (key, valid)
                 });
             }
             Err(true) => {
                 debug!(%key, "fetch failed, rescheduling");
-                self.requests.remove(&key);
-                self.schedule_request(key);
+                for subscriber in request.subscribers {
+                    self.schedule_request(Fetch { key, subscriber });
+                }
             }
             Err(false) => {
                 debug!(%key, "fetch failed, dropping");
-                self.requests.remove(&key);
             }
         }
     }
 
-    fn schedule_request(&mut self, key: handler::Request<Digest>) {
+    fn schedule_request(&mut self, fetch: ResolverFetch) {
+        let Fetch { key, subscriber } = fetch;
         if !self.requests.contains_key(&key) {
             let aborter = match &key {
-                handler::Request::Block(digest) => {
+                Key::Block(digest) => {
                     let execution_node = self.config.execution_node.clone();
                     let digest = *digest;
-                    let key = key.clone();
                     self.fetches.push(async move {
                         let response = resolve_block(&execution_node, digest);
                         (key, response)
                     })
                 }
-                handler::Request::Finalized { height } => {
+                Key::Finalized { height } => {
                     let upstream = self.config.upstream.clone();
                     let height = *height;
-                    let key = key.clone();
                     self.fetches.push(async move {
                         let response = resolve_finalized_new(upstream, height).await;
                         (key, response)
                     })
                 }
-                handler::Request::Notarized { .. } => {
+                Key::Notarized { .. } => {
                     debug!("ignoring requests for notarized blocks");
                     return;
                 }
             };
             debug!(%key, "scheduled new request");
-            self.requests.insert(key, aborter);
+            self.requests.insert(
+                key,
+                PendingRequest {
+                    subscribers: BTreeSet::from([subscriber]),
+                    _aborter: aborter,
+                },
+            );
         } else {
+            self.requests
+                .get_mut(&key)
+                .expect("checked above")
+                .subscribers
+                .insert(subscriber);
             debug!(%key, "request already scheduled");
         }
     }
@@ -252,40 +276,58 @@ async fn resolve_finalized_new(
 }
 
 impl commonware_resolver::Resolver for Mailbox {
-    type Key = handler::Request<Digest>;
-    type PublicKey = PublicKey;
+    type Key = Key<Digest>;
+    type Subscriber = Annotation;
 
-    async fn fetch(&mut self, key: Self::Key) {
-        self.fetch_all(vec![key]).await;
+    fn fetch<F>(&mut self, key: F) -> Feedback
+    where
+        F: Into<commonware_resolver::Fetch<Self::Key, Self::Subscriber>> + Send,
+    {
+        self.fetch_all(vec![key])
     }
 
-    async fn fetch_all(&mut self, keys: Vec<Self::Key>) {
-        self.inner.send_lossy(Message::Fetch { keys });
+    fn fetch_all<F>(&mut self, keys: Vec<F>) -> Feedback
+    where
+        F: Into<commonware_resolver::Fetch<Self::Key, Self::Subscriber>> + Send,
+    {
+        self.inner.send_lossy(Message::Fetch {
+            keys: keys.into_iter().map(Into::into).collect(),
+        });
+        Feedback::Ok
     }
 
-    async fn fetch_targeted(&mut self, key: Self::Key, _targets: NonEmptyVec<Self::PublicKey>) {
-        self.fetch(key).await;
-    }
-
-    async fn fetch_all_targeted(
+    fn retain(
         &mut self,
-        requests: Vec<(Self::Key, NonEmptyVec<Self::PublicKey>)>,
-    ) {
-        self.fetch_all(requests.into_iter().map(|(k, _)| k).collect())
-            .await;
-    }
-
-    async fn cancel(&mut self, key: Self::Key) {
-        self.inner.send_lossy(Message::Cancel { key });
-    }
-
-    async fn clear(&mut self) {
-        self.inner.send_lossy(Message::Clear);
-    }
-
-    async fn retain(&mut self, predicate: impl Fn(&Self::Key) -> bool + Send + 'static) {
+        predicate: impl Fn(&Self::Key, &Self::Subscriber) -> bool + Send + 'static,
+    ) -> Feedback {
         self.inner.send_lossy(Message::Retain {
             predicate: Box::new(predicate),
         });
+        Feedback::Ok
+    }
+}
+
+impl commonware_resolver::TargetedResolver for Mailbox {
+    type PublicKey = PublicKey;
+
+    fn fetch_targeted(
+        &mut self,
+        key: impl Into<commonware_resolver::Fetch<Self::Key, Self::Subscriber>> + Send,
+        _targets: NonEmptyVec<Self::PublicKey>,
+    ) -> Feedback {
+        <Self as commonware_resolver::Resolver>::fetch(self, key)
+    }
+
+    fn fetch_all_targeted<F>(
+        &mut self,
+        requests: Vec<(F, NonEmptyVec<Self::PublicKey>)>,
+    ) -> Feedback
+    where
+        F: Into<commonware_resolver::Fetch<Self::Key, Self::Subscriber>> + Send,
+    {
+        <Self as commonware_resolver::Resolver>::fetch_all(
+            self,
+            requests.into_iter().map(|(key, _)| key).collect(),
+        )
     }
 }

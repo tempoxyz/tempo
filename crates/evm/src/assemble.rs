@@ -80,7 +80,7 @@ impl TempoBlockAssembler {
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
-            consensus_context,
+            consensus_context: consensus_context.clone(),
         }))
     }
 }
@@ -258,7 +258,7 @@ mod tests {
         let ctx = tempo_primitives::TempoConsensusContext {
             epoch: 1,
             view: 5,
-            proposer: tempo_primitives::ed25519::PublicKey::from_seed([0xab; 32]),
+            proposer: tempo_primitives::ed25519::PublicKey::from_seed(0xab),
             parent_view: 4,
         };
 
@@ -302,7 +302,7 @@ mod tests {
             general_gas_limit,
             shared_gas_limit,
             validator_set: None,
-            consensus_context: Some(ctx),
+            consensus_context: Some(ctx.clone()),
             subblock_fee_recipients: HashMap::new(),
         };
 

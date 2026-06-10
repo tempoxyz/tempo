@@ -6,19 +6,17 @@
 
 use std::time::Instant;
 
-use alloy_consensus::Sealable as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as _, ed25519::PublicKey,
 };
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
-    archive::{Archive as _, Identifier, immutable, prunable},
+    archive::{immutable, prunable},
     translator::TwoCap,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{WrapErr as _, ensure};
-use reth_provider::{BlockIdReader, BlockReader};
 use tracing::{info, instrument};
 
 use crate::{
@@ -77,11 +75,11 @@ pub(crate) async fn init_finalizations_archive<TContext>(
     commonware_storage::archive::Error,
 >
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let start = Instant::now();
     let archive = immutable::Archive::init(
-        context.with_label("finalizations_by_height"),
+        context.child("finalizations_by_height"),
         immutable::Config {
             metadata_partition: format!("{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-metadata"),
             freezer_table_partition: format!(
@@ -130,7 +128,7 @@ pub(crate) async fn init_finalized_blocks<TContext, P>(
     retention_blocks: u64,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     P: FinalizedBlocksProvider + 'static,
 {
     ensure!(
@@ -161,11 +159,11 @@ async fn init_prunable_finalized_blocks_archive<TContext>(
     page_cache: CacheRef,
 ) -> Result<prunable::Archive<TwoCap, TContext, Digest, Block>, commonware_storage::archive::Error>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let start = Instant::now();
     let archive = prunable::Archive::init(
-        context.with_label("finalized_blocks_prunable"),
+        context.child("finalized_blocks_prunable"),
         prunable::Config {
             translator: TwoCap,
             key_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-key"),
@@ -187,65 +185,4 @@ where
     );
 
     archive
-}
-
-/// Finds the latest finalization certificate backed by finalized execution storage.
-///
-/// Searches backwards from the execution provider's finalized tip. At
-/// most `max_depth` blocks behind that starting height are inspected.
-///
-/// Returns `None` if no persisted finalization certificate has a matching
-/// finalized execution block.
-pub async fn find_last_finalized_marker<TContext, P>(
-    context: &TContext,
-    execution_provider: &P,
-    max_depth: u64,
-) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
-{
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
-        .await
-        .wrap_err("failed to open finalizations-by-height archive")?;
-
-    if archive.last_index().is_none() {
-        return Ok(None);
-    }
-    let Some(finalized_tip) = execution_provider
-        .finalized_block_number()
-        .wrap_err("failed reading finalized block number from execution provider")?
-    else {
-        return Ok(None);
-    };
-
-    let search_end = finalized_tip.saturating_sub(max_depth);
-    for height in (search_end..=finalized_tip).rev() {
-        let Some(finalization) = archive
-            .get(Identifier::Index(height))
-            .await
-            .wrap_err_with(|| format!("failed reading finalization at height {height}"))?
-        else {
-            continue;
-        };
-
-        let Some(block) = execution_provider
-            .block_by_number(height)
-            .wrap_err_with(|| format!("failed reading block at height {height}"))?
-        else {
-            continue;
-        };
-
-        let finalization_digest = finalization.proposal.payload;
-        let block_digest = Digest(block.header.hash_slow());
-        ensure!(
-            finalization_digest == block_digest,
-            "digest mismatch at height `{height}`. finalization: {finalization_digest}, execution: {block_digest}",
-        );
-
-        return Ok(Some((height, finalization)));
-    }
-
-    Ok(None)
 }

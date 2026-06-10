@@ -2,6 +2,7 @@ use crate::{consensus::Digest, epoch::SchemeProvider};
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash};
 use alloy_rlp::Decodable;
+use commonware_actor::Feedback;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
     Epochable, Reporter, Viewable,
@@ -352,7 +353,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let span = Span::current();
         let handle = self
             .context
-            .with_label("validate_subblock")
+            .child("validate_subblock")
             .shared(true)
             .spawn(move |_| {
                 build_subblock(
@@ -418,13 +419,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         // We only send it after we've validated the tip to make sure that our view
         // of the chain matches the one of the view of subblock sender. Otherwise,
         // we expect to receive the subblock again.
-        let _ = network_tx
-            .send(
-                Recipients::One(sender.clone()),
-                SubblocksMessage::Ack(subblock.signature_hash()).encode(),
-                true,
-            )
-            .await;
+        let _ = network_tx.send(
+            Recipients::One(sender.clone()),
+            SubblocksMessage::Ack(subblock.signature_hash()).encode(),
+            true,
+        );
 
         debug!("validating new subblock");
 
@@ -434,17 +433,20 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let scheme_provider = self.scheme_provider.clone();
         let epoch_strategy = self.epoch_strategy.clone();
         let span = Span::current();
-        self.context.clone().shared(true).spawn(move |_| {
-            validate_subblock(
-                sender.clone(),
-                node,
-                subblock,
-                validated_subblocks_tx,
-                scheme_provider,
-                epoch_strategy,
-            )
-            .instrument(span)
-        });
+        self.context
+            .child("validate_subblock")
+            .shared(true)
+            .spawn(move |_| {
+                validate_subblock(
+                    sender.clone(),
+                    node,
+                    subblock,
+                    validated_subblocks_tx,
+                    scheme_provider,
+                    epoch_strategy,
+                )
+                .instrument(span)
+            });
 
         Ok(())
     }
@@ -506,13 +508,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         );
 
         if built.proposer != self.signer.public_key() {
-            let _ = network_tx
-                .send(
-                    Recipients::One(built.proposer.clone()),
-                    SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
-                    true,
-                )
-                .await;
+            let _ = network_tx.send(
+                Recipients::One(built.proposer.clone()),
+                SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
+                true,
+            );
         } else {
             let subblock = built.subblock.clone();
             built.stop_broadcasting();
@@ -663,10 +663,14 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-    async fn report(&mut self, activity: Self::Activity) -> () {
-        let _ = self
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        match self
             .tx
-            .unbounded_send(Message::Consensus(Box::new(activity)));
+            .unbounded_send(Message::Consensus(Box::new(activity)))
+        {
+            Ok(()) => Feedback::Ok,
+            Err(_) => Feedback::Closed,
+        }
     }
 }
 

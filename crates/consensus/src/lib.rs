@@ -25,7 +25,8 @@ use std::sync::Arc;
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
-use commonware_runtime::Metrics as _;
+use commonware_runtime::Supervisor as _;
+use commonware_utils::NZUsize;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -131,9 +132,8 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     }
-    .try_init(context.with_label("engine"))
+    .try_init(context.child("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
@@ -193,7 +193,7 @@ pub async fn run_follow_stack(
     info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
-        context.with_label("upstream"),
+        context.child("upstream"),
         crate::follow::upstream::Config { upstream_url },
     )
     .wrap_err("failed to initialize client to upstream node")?;
@@ -206,14 +206,13 @@ pub async fn run_follow_stack(
         network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(epoch_length),
-        mailbox_size: config.mailbox_size,
+        mailbox_size: NZUsize!(config.mailbox_size),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
-        strict_startup: config.strict_startup,
     };
 
     let ret = config
-        .try_init(context.with_label("engine"))
+        .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?
         .start()
@@ -240,7 +239,7 @@ async fn instantiate_network(
         crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
-        mailbox_size: config.mailbox_size,
+        mailbox_size: NZUsize!(config.mailbox_size),
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
@@ -264,5 +263,5 @@ async fn instantiate_network(
         .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    Ok(lookup::Network::new(context.with_label("network"), cfg))
+    Ok(lookup::Network::new(context.child("network"), cfg))
 }

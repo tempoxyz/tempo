@@ -318,17 +318,14 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         if height != baseline {
             panic!(
                 "height has changed, progress was made while the network was \
-                stopped: baseline = `{baseline}`, progressed_to = `{height}`"
+                stopped: baseline = `{baseline:?}`, progressed_to = `{height:?}`"
             );
         }
     }
 }
 
-fn max_consensus_height(metrics: &Metrics) -> u64 {
-    metrics
-        .values::<u64>("_marshal_processed_height")
-        .max()
-        .expect("processed height is a metric")
+fn max_consensus_height(metrics: &Metrics) -> Option<u64> {
+    metrics.values::<u64>("_marshal_processed_height").max()
 }
 
 enum ShutdownAfterFinalizing {
