@@ -17,7 +17,6 @@ use reth_revm::{
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-#[cfg(feature = "engine")]
 use tempo_precompiles::storage::{StorageAction, StorageActions};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
@@ -67,7 +66,6 @@ impl EvmFactory for TempoEvmFactory {
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
     /// Recorded storage actions.
-    #[cfg(feature = "engine")]
     actions: StorageActions,
     inspect: bool,
 }
@@ -84,26 +82,11 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        #[cfg(feature = "engine")]
-        {
-            let actions = StorageActions::disabled();
-            Self {
-                inner: tempo_revm::TempoEvm::new_with_actions(
-                    ctx,
-                    NoOpInspector {},
-                    actions.clone(),
-                ),
-                actions,
-                inspect: false,
-            }
-        }
-
-        #[cfg(not(feature = "engine"))]
-        {
-            Self {
-                inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
-                inspect: false,
-            }
+        let actions = StorageActions::disabled();
+        Self {
+            inner: tempo_revm::TempoEvm::new_with_actions(ctx, NoOpInspector {}, actions.clone()),
+            actions,
+            inspect: false,
         }
     }
 }
@@ -152,7 +135,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
-            #[cfg(feature = "engine")]
             actions: self.actions,
             inspect: true,
         }
@@ -171,20 +153,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Enables recording of storage actions.
-    #[cfg(feature = "engine")]
     pub fn with_actions(self) -> Self {
         self.actions.enable();
         self
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
-    #[cfg(feature = "engine")]
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
         self.actions.take()
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
-    #[cfg(feature = "engine")]
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.actions.replace(actions)
     }
