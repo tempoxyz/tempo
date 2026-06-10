@@ -359,7 +359,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
                     .collect(),
                 nonce_key: *nonce_key,
-                subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
+                subblock_transaction: aa_signed.tx().has_sub_block_nonce_key_prefix(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
