@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t6_dynamic_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_T6_BASE_FEE_CAP, TEMPO_T6_BASE_FEE_FLOOR};
+        use tempo_chainspec::spec::{TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR};
 
         let chainspec = create_t6_chainspec();
         let consensus = TempoConsensus::new(chainspec);
@@ -821,7 +821,7 @@ mod tests {
             .number(1)
             .timestamp_millis_part(500)
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T6_BASE_FEE_CAP)
+            .base_fee(TEMPO_T7_BASE_FEE_CAP)
             .gas_used(0)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
@@ -833,7 +833,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T6_BASE_FEE_CAP * 7 / 8)
+            .base_fee(TEMPO_T7_BASE_FEE_CAP * 7 / 8)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
@@ -850,7 +850,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T6_BASE_FEE_CAP)
+            .base_fee(TEMPO_T7_BASE_FEE_CAP)
             .build();
         let bad_child_sealed = SealedHeader::seal_slow(bad_child);
         let result = consensus.validate_header_against_parent(&bad_child_sealed, &parent_sealed);
@@ -865,7 +865,7 @@ mod tests {
             .number(1)
             .timestamp_millis_part(500)
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T6_BASE_FEE_FLOOR)
+            .base_fee(TEMPO_T7_BASE_FEE_FLOOR)
             .gas_used(0)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
@@ -876,7 +876,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
-            .base_fee(TEMPO_T6_BASE_FEE_FLOOR)
+            .base_fee(TEMPO_T7_BASE_FEE_FLOOR)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 

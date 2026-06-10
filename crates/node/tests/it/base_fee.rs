@@ -8,7 +8,7 @@ use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
 use std::{env, time::Duration};
 use tempo_chainspec::constants::gas::{
-    TEMPO_T1_BASE_FEE, TEMPO_T6_BASE_FEE_FLOOR, tempo_t6_next_block_base_fee,
+    TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_FLOOR, tempo_t7_next_block_base_fee,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
 
@@ -100,7 +100,7 @@ async fn test_base_fee() -> eyre::Result<()> {
             .expect("Could not get child basefee");
         assert_eq!(
             child_base_fee,
-            tempo_t6_next_block_base_fee(parent_base_fee, parent.header.gas_used)
+            tempo_t7_next_block_base_fee(parent_base_fee, parent.header.gas_used)
         );
     }
 
@@ -120,7 +120,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         })
         .collect::<Vec<_>>();
     let final_block = blocks.last().expect("at least genesis block");
-    expected_fee_history.push(u128::from(tempo_t6_next_block_base_fee(
+    expected_fee_history.push(u128::from(tempo_t7_next_block_base_fee(
         final_block
             .header
             .base_fee_per_gas
@@ -167,7 +167,7 @@ async fn test_t6_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
             .header
             .base_fee_per_gas
             .expect("Could not get basefee");
-        if base_fee == TEMPO_T6_BASE_FEE_FLOOR {
+        if base_fee == TEMPO_T7_BASE_FEE_FLOOR {
             floor_block = Some(block);
             break;
         }
@@ -181,13 +181,13 @@ async fn test_t6_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
             .header
             .base_fee_per_gas
             .expect("Could not get basefee"),
-        TEMPO_T6_BASE_FEE_FLOOR
+        TEMPO_T7_BASE_FEE_FLOOR
     );
 
     let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
     let receipt = token
         .transfer(Address::random(), U256::ONE)
-        .gas_price(TEMPO_T6_BASE_FEE_FLOOR as u128)
+        .gas_price(TEMPO_T7_BASE_FEE_FLOOR as u128)
         .gas(1_000_000)
         .send()
         .await?
@@ -197,7 +197,7 @@ async fn test_t6_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
     assert!(receipt.status(), "floor-priced transaction should succeed");
     assert_eq!(
         receipt.effective_gas_price(),
-        u128::from(TEMPO_T6_BASE_FEE_FLOOR),
+        u128::from(TEMPO_T7_BASE_FEE_FLOOR),
         "floor-priced transaction should be mined at the T6 floor base fee"
     );
 

@@ -358,16 +358,13 @@ impl EthChainSpec for TempoChainSpec {
 
     fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
         let target_fork = self.tempo_hardfork_at(target_timestamp);
-        if target_fork.is_t6() && !self.tempo_hardfork_at(parent.inner.timestamp).is_t6() {
-            return Some(TEMPO_T6_BASE_FEE_CAP);
-        }
 
-        if target_fork.is_t6() {
+        if target_fork.is_t7() {
             let parent_base_fee = parent
                 .inner
                 .base_fee_per_gas
                 .expect("tempo blocks are expected to have a base fee");
-            Some(tempo_t6_next_block_base_fee(
+            Some(tempo_t7_next_block_base_fee(
                 parent_base_fee,
                 parent.inner.gas_used,
             ))
@@ -401,7 +398,7 @@ impl TempoHardforks for TempoChainSpec {
 mod tests {
     use crate::{
         hardfork::{TempoHardfork, TempoHardforks},
-        spec::{TEMPO_T1_BASE_FEE, TEMPO_T6_BASE_FEE_CAP, TEMPO_T6_BASE_FEE_FLOOR},
+        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
     };
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
@@ -633,25 +630,25 @@ mod tests {
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 10),
-            Some(TEMPO_T6_BASE_FEE_CAP)
+            Some(TEMPO_T7_BASE_FEE_CAP)
         );
     }
 
     #[test]
     fn next_block_base_fee_adjusts_after_t6_activation() {
         let chainspec = chainspec_with_t6_at(10);
-        let parent = header(10, TEMPO_T6_BASE_FEE_CAP, 0);
+        let parent = header(10, TEMPO_T7_BASE_FEE_CAP, 0);
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 11),
-            Some(TEMPO_T6_BASE_FEE_CAP * 7 / 8)
+            Some(TEMPO_T7_BASE_FEE_CAP * 7 / 8)
         );
     }
 
     #[test]
     fn next_block_base_fee_uses_parent_gas_used_after_t6_activation() {
         let chainspec = chainspec_with_t6_at(10);
-        let parent = header(10, TEMPO_T6_BASE_FEE_FLOOR, 30_000_000);
+        let parent = header(10, TEMPO_T7_BASE_FEE_FLOOR, 30_000_000);
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 11),
