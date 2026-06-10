@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -10,7 +10,9 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
+use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::transaction::InitMultisig;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -51,6 +53,19 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Block-scoped cache for native multisig account markers.
+    ///
+    /// The marker is stateful account metadata, not transaction signature metadata. It is cached on
+    /// the EVM so repeated transactions from the same accounts do not repeatedly read the native
+    /// multisig marker storage slot. The cache is cleared when the EVM moves to a new block.
+    pub(crate) native_multisig_account_cache: HashMap<Address, bool>,
+    /// Block-scoped cache for validated native multisig configs.
+    ///
+    /// Values are inserted only after the native multisig storage path has loaded and validated the
+    /// config. The cache is cleared when the EVM moves to a new block or when a transaction directly
+    /// touches the native multisig precompile, because config updates use the same `(account,
+    /// config_id)` key.
+    pub(crate) native_multisig_config_cache: HashMap<(Address, B256), InitMultisig>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -87,6 +102,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            native_multisig_account_cache: HashMap::new(),
+            native_multisig_config_cache: HashMap::new(),
         }
     }
 
@@ -127,6 +144,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.fee_token = None;
         self.key_expiry = None;
+    }
+
+    /// Clears block-scoped execution caches.
+    pub fn clear_block_caches(&mut self) {
+        self.native_multisig_account_cache.clear();
+        self.native_multisig_config_cache.clear();
     }
 }
 
@@ -734,14 +757,14 @@ mod tests {
             .gas_limit(1_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, config_id);
-        let owner_signature = PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?)
-            .to_bytes();
-        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature {
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
             account,
             config_id,
-            signatures: vec![owner_signature],
-            init: Some(config.clone()),
-        }));
+            vec![owner_signature],
+            Some(config.clone()),
+        )));
 
         let mut evm = create_funded_evm_t6(account);
         StorageCtx::enter_ctx(&mut evm.ctx, || NativeMultisig::new().initialize())?;
