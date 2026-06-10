@@ -3,7 +3,7 @@ use std::io::Write as _;
 use commonware_codec::Encode as _;
 use commonware_cryptography::{
     Signer as _,
-    bls12381::{dkg, primitives::variant::MinSig},
+    bls12381::{dkg::feldman_desmedt as dkg, primitives::variant::MinSig},
     ed25519::PrivateKey,
 };
 use commonware_utils::{N3f1, NZU32};
