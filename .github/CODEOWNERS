@@ -21,4 +21,4 @@ crates/primitives/ @klkvr @mattsse
 crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
-tips/ @legion2002 @0xKitsune @danrobinson @dankrad
+tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush @samczsun
