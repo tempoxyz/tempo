@@ -554,6 +554,7 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut yielded_for_current_idle_streak = false;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -606,6 +607,11 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    if pool_transactions_included > 0 && !yielded_for_current_idle_streak {
+                        yielded_for_current_idle_streak = true;
+                        std::thread::yield_now();
+                        continue;
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -619,6 +625,7 @@ where
                 };
                 break stop_reason;
             };
+            yielded_for_current_idle_streak = false;
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
