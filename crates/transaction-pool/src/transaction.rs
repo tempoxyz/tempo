@@ -372,7 +372,7 @@ impl TempoPooledTransaction {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.fee_payer().ok()?;
+            let fee_payer = self.tx_env().fee_payer().ok()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
@@ -384,7 +384,8 @@ impl TempoPooledTransaction {
     /// conservative sender-scoped invalidation for malformed pooled state.
     pub(crate) fn is_sender_paid_fee(&self) -> bool {
         let sender = self.sender();
-        self.fee_payer()
+        self.tx_env()
+            .fee_payer()
             .map_or(true, |fee_payer| fee_payer == sender)
     }
 
@@ -428,7 +429,7 @@ impl TempoPooledTransaction {
         }
 
         let sender = self.sender();
-        let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
+        let fee_payer = self.tx_env().fee_payer().unwrap_or(sender);
         let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
 
         // For payment transactions, warm sender + recipient balance and allowance slots.
