@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageOps},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -540,11 +540,7 @@ impl TIP20Token {
         self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(to.target)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(to.target, new_to_balance)?;
+        self.increment_balance(to.target, amount)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -1002,6 +998,29 @@ impl TIP20Token {
         self.balances[account].write(amount)
     }
 
+    fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+        let balance = self.balances.at_mut(&account);
+        let slot = balance.slot();
+        balance.sinc(slot, amount).map_err(|err| {
+            if err == TempoPrecompileError::under_overflow() {
+                TIP20Error::supply_cap_exceeded().into()
+            } else {
+                err
+            }
+        })
+    }
+
+    fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+        let balance = self.balances.at_mut(&account);
+        let slot = balance.slot();
+        balance.sdec(slot, amount).map_err(|err| match err {
+            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                TIP20Error::insufficient_balance(current, amount, self.address).into()
+            }
+            err => err,
+        })
+    }
+
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
         self.allowances[owner][spender].read()
     }
@@ -1148,29 +1167,13 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
-            );
-        }
-
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        self.set_balance(from, new_from_balance)?;
+        self.decrement_balance(from, amount)?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            self.set_balance(to.target, new_to_balance)?;
+            self.increment_balance(to.target, amount)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1295,22 +1298,10 @@ impl TIP20Token {
             )?;
         }
 
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
+        self.decrement_balance(from, amount)?;
+        self.increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)?;
 
-        self.set_balance(from, new_from_balance)?;
-
-        let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
+        Ok(())
     }
 
     /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
@@ -1353,23 +1344,10 @@ impl TIP20Token {
             )?;
         }
 
-        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
-                .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+        self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)?;
+        self.increment_balance(to, refund)?;
 
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
-
-        let to_balance = self.get_balance(to)?;
-        let new_to_balance = to_balance
-            .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, new_to_balance)
+        Ok(())
     }
 }
 
@@ -2312,6 +2290,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_transfer_fee_pre_tx_fee_manager_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let fee_amount = U256::ONE;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(user, fee_amount)
+                .apply()?;
+            token.set_balance(TIP_FEE_MANAGER_ADDRESS, U256::MAX)?;
+
+            assert_eq!(
+                token.transfer_fee_pre_tx(user, fee_amount),
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::supply_cap_exceeded()
+                ))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_transfer_fee_pre_tx_paused() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2365,6 +2367,55 @@ pub(crate) mod tests {
                 &TIP20Event::transfer(user, TIP_FEE_MANAGER_ADDRESS, gas_used).into_log_data()
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_insufficient_fee_manager_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let initial_fee = U256::from(10);
+        let refund_amount = U256::from(30);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, initial_fee)
+                .apply()?;
+
+            assert_eq!(
+                token.transfer_fee_post_tx(user, refund_amount, U256::ZERO),
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::insufficient_balance(initial_fee, refund_amount, token.address)
+                ))
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_recipient_overflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let refund_amount = U256::ONE;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .apply()?;
+            token.set_balance(TIP_FEE_MANAGER_ADDRESS, refund_amount)?;
+            token.set_balance(user, U256::MAX)?;
+
+            assert_eq!(
+                token.transfer_fee_post_tx(user, refund_amount, U256::ZERO),
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::supply_cap_exceeded()
+                ))
+            );
             Ok(())
         })
     }
