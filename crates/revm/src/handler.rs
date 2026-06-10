@@ -5796,7 +5796,7 @@ mod tests {
             evm.inner.ctx.tx.inner.gas_price = 0;
             evm.inner.ctx.tx.inner.gas_priority_fee = Some(0);
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, stale_fee * U256::from(2))

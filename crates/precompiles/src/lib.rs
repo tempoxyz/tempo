@@ -214,7 +214,12 @@ sol! {
 }
 
 macro_rules! tempo_precompile {
-    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{ tempo_precompile!($id, $cfg, StorageActions::disabled(), |$input| $impl) }};
+    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
+        #[cfg(not(test))]
+        compile_error!("tempo_precompile! without actions is only available in tests");
+        #[cfg(test)]
+        tempo_precompile!($id, $cfg, StorageActions::disabled(), |$input| $impl)
+    }};
     ($id:expr, $cfg:expr, $actions:expr, |$input:ident| $impl:expr) => {{
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
