@@ -596,7 +596,7 @@ where
 {
     match request {
         ExecutionRequest::Heartbeat { cause } => {
-            if let Err(error) = send_forkchoice_update(
+            if let Err(error) = submit_forkchoice_update(
                 &execution_node,
                 &context,
                 cause,
@@ -614,7 +614,7 @@ where
         }
         ExecutionRequest::CanonicalizeHead(request) => {
             let canonicalized =
-                execute_forkchoice_update(&context, execution_node, canonicalized, *request).await;
+                run_forkchoice_update_task(&context, execution_node, canonicalized, *request).await;
             ExecutionTaskResult::Completed { canonicalized }
         }
         ExecutionRequest::CanonicalizeAndBuild { cause, request } => {
@@ -624,7 +624,7 @@ where
                 attributes,
                 response,
             } = request;
-            let canonicalized = execute_forkchoice_update(
+            let canonicalized = run_forkchoice_update_task(
                 &context,
                 execution_node,
                 canonicalized,
@@ -674,7 +674,7 @@ where
         head_or_finalized = %request.head_or_finalized,
     ),
 )]
-async fn execute_forkchoice_update<TContext: Pacer>(
+async fn run_forkchoice_update_task<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
     canonicalized: LastCanonicalized,
@@ -700,7 +700,7 @@ async fn execute_forkchoice_update<TContext: Pacer>(
         return None;
     }
 
-    match send_forkchoice_update(
+    match submit_forkchoice_update(
         &execution_node,
         context,
         cause,
@@ -732,7 +732,7 @@ async fn execute_forkchoice_update<TContext: Pacer>(
         ?kind,
     ),
 )]
-async fn send_forkchoice_update<TContext: Pacer>(
+async fn submit_forkchoice_update<TContext: Pacer>(
     execution_node: &TempoFullNode,
     context: &TContext,
     cause: Span,
@@ -809,7 +809,7 @@ async fn forward_finalized<TContext: Pacer>(
     let forkchoice = (new_canonicalized != canonicalized).then_some(new_canonicalized);
 
     if let Some(canonicalized) = forkchoice {
-        send_forkchoice_update(
+        submit_forkchoice_update(
             &execution_node,
             context,
             cause.clone(),
