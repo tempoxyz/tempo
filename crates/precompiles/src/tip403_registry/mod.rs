@@ -415,9 +415,6 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(TIP403RegistryError::invalid_recovery_authority().into());
-        }
         if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
@@ -1295,25 +1292,10 @@ mod tests {
     }
 
     #[test]
-    fn test_set_receive_policy_rejects_invalid_account() -> eyre::Result<()> {
+    fn test_set_receive_policy_rejects_virtual_account() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            let block_result = registry.set_receive_policy(
-                RECEIVE_POLICY_GUARD_ADDRESS,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: REJECT_ALL_POLICY_ID,
-                    tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAuthority: Address::ZERO,
-                },
-            );
-            assert!(matches!(
-                block_result,
-                Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::InvalidRecoveryAuthority(_)
-                ))
-            ));
 
             let virtual_result = registry.set_receive_policy(
                 Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
