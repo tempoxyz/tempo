@@ -555,8 +555,8 @@ mod tests {
         Arc::new(TempoChainSpec::from_genesis(genesis))
     }
 
-    /// Creates a chainspec with T6 active at timestamp 10.
-    fn create_t6_chainspec() -> Arc<TempoChainSpec> {
+    /// Creates a chainspec with T7 active at timestamp 10.
+    fn create_t7_chainspec() -> Arc<TempoChainSpec> {
         let genesis_json = r#"{
             "config": {
                 "chainId": 100000,
@@ -581,7 +581,7 @@ mod tests {
                 "epochLength": 21600,
                 "t0Time": 0,
                 "t1Time": 0,
-                "t6Time": 10
+                "t7Time": 10
             },
             "nonce": "0x42",
             "timestamp": "0x0",
@@ -809,10 +809,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_header_against_parent_t6_dynamic_base_fee() {
+    fn test_validate_header_against_parent_t7_dynamic_base_fee() {
         use tempo_chainspec::spec::{TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR};
 
-        let chainspec = create_t6_chainspec();
+        let chainspec = create_t7_chainspec();
         let consensus = TempoConsensus::new(chainspec);
 
         let parent = TestHeaderBuilder::default()
