@@ -506,7 +506,7 @@ where
 
         check_cancel!();
 
-        debug!("building new payload");
+        trace!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
 
