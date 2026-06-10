@@ -36,7 +36,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t8() {
+        if self.storage.spec().is_t7() {
             return Ok(());
         }
 
@@ -150,7 +150,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::setRewardRecipientCall,
     ) -> Result<()> {
-        if self.storage.spec().is_t8() {
+        if self.storage.spec().is_t7() {
             return Ok(());
         }
 
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_t7_zero_rpt_fast_path_preserves_opt_in_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
         let alice = Address::random();
         let bob = Address::random();
@@ -459,12 +459,17 @@ mod tests {
 
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            token.set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(token.update_rewards(alice)?, alice);
             assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
 
-            // Repeating the opt-in before the first distribution must not double-count Alice.
-            token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+            StorageCtx.set_spec(TempoHardfork::T7);
+
+            // T7 disables reward mutators, but the zero-RPT fast path still returns existing
+            // opt-in state so pre-T7 lazy reward checkpointing can keep using reward hooks.
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            assert_eq!(token.get_user_reward_info(alice)?.reward_recipient, alice);
+            assert_eq!(token.update_rewards(alice)?, alice);
             assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
 
             // Transfers out of an opted-in holder and mints into one still update the opted supply
@@ -476,12 +481,6 @@ mod tests {
                     amount: transfer_amount,
                 },
             )?;
-            assert_eq!(
-                token.get_opted_in_supply()?,
-                (alice_balance - transfer_amount).to::<u128>()
-            );
-
-            token.set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
 
             token.mint(
@@ -494,21 +493,18 @@ mod tests {
             let opted_in_supply = alice_balance + mint_amount;
             assert_eq!(token.get_opted_in_supply()?, opted_in_supply.to::<u128>());
 
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
             token.distribute_reward(
                 admin,
                 ITIP20::distributeRewardCall {
                     amount: reward_amount,
                 },
             )?;
-            assert_eq!(
-                token.get_global_reward_per_token()?,
-                reward_amount * ACC_PRECISION / opted_in_supply
-            );
-            assert_eq!(
-                U256::from(token.get_pending_rewards(alice)?),
-                U256::from(100)
-            );
-            assert_eq!(U256::from(token.get_pending_rewards(bob)?), U256::from(10));
+            assert_eq!(token.get_balance(admin)?, reward_amount);
+            assert_eq!(token.get_balance(token.address)?, U256::ZERO);
+            assert_eq!(token.get_global_reward_per_token()?, U256::ZERO);
+            assert_eq!(token.get_pending_rewards(alice)?, 0);
+            assert_eq!(token.get_pending_rewards(bob)?, 0);
 
             Ok(())
         })
@@ -576,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip1075_t8_noops_and_claims_legacy_rewards() -> eyre::Result<()> {
+    fn test_tip1075_t7_noops_and_t8_claims_settled_rewards() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
         let alice = Address::random();
@@ -591,7 +587,7 @@ mod tests {
                 .with_mint(admin, reward_amount * U256::from(2))
                 .apply()?;
 
-            // Pre-T8: settle one reward distribution, then leave another lazy/pending.
+            // Pre-T7: settle one reward distribution, then leave another lazy/pending.
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
             token.distribute_reward(
@@ -609,37 +605,23 @@ mod tests {
             )?;
             assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
 
-            // T7 still enforces legacy reward mutators; the disabling gate starts at T8.
             StorageCtx.set_spec(TempoHardfork::T7);
-            assert!(matches!(
-                token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO }),
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidAmount(_)))
-            ));
-            token.paused.write(true)?;
-            assert_eq!(
-                token
-                    .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })
-                    .unwrap_err(),
-                TIP20Error::contract_paused().into()
-            );
-            token.paused.write(false)?;
-
-            StorageCtx.set_spec(TempoHardfork::T8);
             token.paused.write(true)?;
 
-            // T8+: setRewardRecipient is a no-op, even while paused.
+            // T7+: setRewardRecipient is a no-op, even while paused.
             token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
             assert_eq!(
                 token.user_reward_info[alice].read()?.reward_recipient,
                 alice
             );
 
-            // T8+: distributeReward is a no-op, even for an otherwise invalid zero amount.
+            // T7+: distributeReward is a no-op, even for an otherwise invalid zero amount.
             let rpt = token.get_global_reward_per_token()?;
             token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO })?;
             assert_eq!(token.get_global_reward_per_token()?, rpt);
 
             // T8+: claimRewards pays settled rewards only and doesn't opt them in.
+            StorageCtx.set_spec(TempoHardfork::T8);
             token.paused.write(false)?;
             let claimed = token.claim_rewards(alice)?;
             assert_eq!(claimed, reward_amount);
