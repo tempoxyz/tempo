@@ -488,7 +488,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
             .mint(
                 *user_token.address(),
                 *validator_token.address(),
-                U256::from(2_002),
+                U256::from(3_000),
                 user_address,
             )
             .send()
@@ -539,12 +539,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
         .collectedFees(validator_address, *validator_token.address())
         .call()
         .await?;
-    let collected_delta = collected_after - collected_before;
-    assert!(
-        collected_delta == out2 || collected_delta == out2 + U256::ONE,
-        "unexpected collected fee delta: expected {out2} or {} after rounding, got {collected_delta}",
-        out2 + U256::ONE
-    );
+    assert_eq!(collected_after - collected_before, out2);
 
     let direct_after = fee_amm
         .getPool(*user_token.address(), *validator_token.address())
