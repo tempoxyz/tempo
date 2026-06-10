@@ -103,7 +103,7 @@ impl NonceManager {
     /// Checks if a hash has been seen and is still valid (not expired).
     /// NOTE: internally used by the transaction pool.
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
-        let expiry = self.expiring_nonce_seen[hash].read()?;
+        let expiry = self.expiring_nonce_seen.at_unique(&hash).read()?;
         Ok(expiry != 0 && expiry > now)
     }
 
@@ -141,7 +141,10 @@ impl NonceManager {
         }
 
         // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        // The hashes are unique per transaction, so the handlers are computed without
+        // caching and held on to for the later writes.
+        let mut seen_handler = self.expiring_nonce_seen.at_unique(&expiring_nonce_hash);
+        let seen_expiry = seen_handler.read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
@@ -155,18 +158,19 @@ impl NonceManager {
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            let mut old_handler = self.expiring_nonce_seen.at_unique(&old_hash);
+            let old_expiry = old_handler.read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
             // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            old_handler.write(0)?;
         }
 
         // 5. Insert new entry
         self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
-        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+        seen_handler.write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {

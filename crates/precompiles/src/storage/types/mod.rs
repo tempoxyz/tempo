@@ -25,7 +25,7 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256, keccak256, keccak256_uncached};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -359,14 +359,28 @@ pub trait StorageKey: sealed::OnlyPrimitives {
     ///
     /// Left-pads the key to 32 bytes, concatenates with the slot, and hashes.
     fn mapping_slot(&self, slot: U256) -> U256 {
-        let key_bytes = self.as_storage_bytes();
-        let key_bytes = key_bytes.as_ref();
-        debug_assert!(key_bytes.len() <= 32);
-
-        let mut buf = [0u8; 64];
-        buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
-        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-
-        U256::from_be_bytes(keccak256(buf).0)
+        U256::from_be_bytes(keccak256(mapping_slot_input(self, slot)).0)
     }
+
+    /// Same as [`mapping_slot`](Self::mapping_slot) but bypasses the global keccak cache.
+    ///
+    /// Use for high-entropy keys that are unlikely to repeat (e.g. transaction hashes):
+    /// such keys never hit the cache, and inserting them evicts entries that would be
+    /// reused.
+    fn mapping_slot_uncached(&self, slot: U256) -> U256 {
+        U256::from_be_bytes(keccak256_uncached(mapping_slot_input(self, slot)).0)
+    }
+}
+
+/// Assembles the 64-byte keccak input `bytes32(key) | bytes32(slot)` for mapping slot
+/// computation.
+fn mapping_slot_input<K: StorageKey + ?Sized>(key: &K, slot: U256) -> [u8; 64] {
+    let key_bytes = key.as_storage_bytes();
+    let key_bytes = key_bytes.as_ref();
+    debug_assert!(key_bytes.len() <= 32);
+
+    let mut buf = [0u8; 64];
+    buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
+    buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+    buf
 }

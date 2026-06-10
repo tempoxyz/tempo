@@ -99,6 +99,26 @@ impl<K, V: StorableType> Mapping<K, V> {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
+
+    /// Returns an owned `Handler` for the given key without any caching.
+    ///
+    /// Use for high-entropy keys that are unlikely to be accessed through this mapping
+    /// again, such as transaction hashes: the slot computation bypasses the global keccak
+    /// cache (unique keys never hit it and their insertion evicts reusable entries) and the
+    /// handler is not stored in the per-mapping handler cache.
+    ///
+    /// Hold on to the returned handler when performing multiple operations for the same
+    /// key, as every call recomputes the slot hash.
+    pub fn at_unique(&self, key: &K) -> V::Handler
+    where
+        K: StorageKey,
+    {
+        V::handle(
+            key.mapping_slot_uncached(self.base_slot),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
 }
 
 impl<K, V: StorableType> Default for Mapping<K, V> {
@@ -241,6 +261,14 @@ mod tests {
         let derived_slot = &mapping[test_key];
         let expected_slot = test_key.mapping_slot(base_slot);
         assert_eq!(derived_slot.slot(), expected_slot);
+
+        // Property 4: The uncached path computes the same slot as the cached one
+        let unique_key = Address::random();
+        assert_eq!(
+            mapping.at_unique(&unique_key).slot(),
+            mapping[unique_key].slot(),
+            "at_unique should compute the same slot as the cached path"
+        );
     }
 
     #[test]

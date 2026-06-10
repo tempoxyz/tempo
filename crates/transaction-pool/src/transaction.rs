@@ -412,17 +412,23 @@ impl TempoPooledTransaction {
     pub fn expiring_nonce_slot(&self) -> Option<U256> {
         *self.expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
-            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
+            Some(
+                NonceManager::new()
+                    .expiring_nonce_seen
+                    .at_unique(&hash)
+                    .slot(),
+            )
         })
     }
 
     /// Warms the global keccak cache with storage slot hashes that will be accessed
     /// during payment execution after pool validation.
     ///
-    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
-    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
-    /// which is unknown at validation time.
+    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]` and
+    /// `user_tokens[fee_payer]` are already cached from `validate_with_evm`. The
+    /// `expiring_nonce_seen[hash]` slot is computed without the keccak cache (unique key).
+    /// `validator_tokens[beneficiary]` depends on the block producer, which is unknown at
+    /// validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {
             return;
