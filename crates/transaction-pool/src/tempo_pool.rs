@@ -335,31 +335,30 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let Ok(fee_payer) = tx.transaction.fee_payer() else {
-                    continue;
-                };
-
-                if updates
-                    .fee_balance_changes
-                    .get(&fee_token)
-                    .is_some_and(|accounts| accounts.contains(&fee_payer))
-                {
-                    let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
-                        Entry::Occupied(entry) => *entry.get(),
-                        Entry::Vacant(entry) => {
-                            let Ok(balance) =
-                                provider.get_token_balance(fee_token, fee_payer, spec)
-                            else {
-                                continue;
-                            };
-                            *entry.insert(balance)
-                        }
+                // only resolve the fee payer if the fee token saw balance changes
+                if let Some(accounts) = updates.fee_balance_changes.get(&fee_token) {
+                    let Ok(fee_payer) = tx.transaction.fee_payer() else {
+                        continue;
                     };
 
-                    if balance < tx.transaction.fee_token_cost() {
-                        to_remove.push(*tx.hash());
-                        insolvent_fee_payer_count += 1;
-                        continue;
+                    if accounts.contains(&fee_payer) {
+                        let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
+                            Entry::Occupied(entry) => *entry.get(),
+                            Entry::Vacant(entry) => {
+                                let Ok(balance) =
+                                    provider.get_token_balance(fee_token, fee_payer, spec)
+                                else {
+                                    continue;
+                                };
+                                *entry.insert(balance)
+                            }
+                        };
+
+                        if balance < tx.transaction.fee_token_cost() {
+                            to_remove.push(*tx.hash());
+                            insolvent_fee_payer_count += 1;
+                            continue;
+                        }
                     }
                 }
             }
