@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn next_block_base_fee_seeds_cap_on_t7_activation() {
         let chainspec = chainspec_with_t7_at(10);
-        let parent = header(9, TEMPO_T1_BASE_FEE / 2, 0);
+        let parent = header(9, TEMPO_T1_BASE_FEE, 0);
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 10),
