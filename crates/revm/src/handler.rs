@@ -1536,7 +1536,6 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        let gas = exec_result.gas_mut();
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
