@@ -193,7 +193,8 @@ fn init_txpool_defaults() {
         .with_additional_validation_tasks(8)
         .with_minimal_protocol_basefee(TempoHardfork::default().base_fee())
         .with_minimum_priority_fee(Some(0))
-        .with_max_batch_size(50000)
+        .with_max_batch_size(150)
+        .with_batch_timeout(Duration::from_millis(5))
         .try_init()
         .expect("failed to initialize txpool defaults");
 }
