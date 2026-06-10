@@ -954,8 +954,11 @@ where
             cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
         )?;
 
-        // modify account nonce and touch the account.
-        caller_account.touch();
+        // Protocol-nonce CALLs bump the nonce below, and bump_nonce() touches
+        // the account before journaling the nonce change.
+        if !nonce_key.is_zero() || !tx.kind().is_call() {
+            caller_account.touch();
+        }
 
         // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
         // This case would create a new account for caller.
