@@ -82,15 +82,9 @@ impl TIP20Token {
     ///
     /// T8+: no-op, as rewards are disabled.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
-        let hardfork = self.storage.spec();
-
         // T8+: no-op, as rewards are disabled.
-        if hardfork.is_t8() {
+        if self.storage.spec().is_t8() {
             return Ok(Address::ZERO);
-        }
-        // T7+: early exit if there are no global rewards per token.
-        if hardfork.is_t7() && self.get_global_reward_per_token()?.is_zero() {
-            return self.user_reward_info[holder].reward_recipient.read();
         }
 
         let mut info = self.user_reward_info[holder].read()?;
@@ -162,6 +156,7 @@ impl TIP20Token {
         }
 
         let from_delegate = self.update_rewards(msg_sender)?;
+
         let holder_balance = self.get_balance(msg_sender)?;
 
         if from_delegate != Address::ZERO {
