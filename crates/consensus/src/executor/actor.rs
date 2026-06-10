@@ -283,18 +283,14 @@ where
                         (height, Some(block)) => {
                             let (ack, _wait) = Exact::handle();
                             let span = info_span!("backfill_on_start", %height);
-                            if let Err(error) = self.enqueue_forward_finalized(
-                                span,
-                                block,
-                                ack,
-                                true,
-                            ) {
-                                warn!(
-                                    %error,
-                                    %height,
-                                    "failed enqueueing backfilled block for execution",
-                                );
-                            }
+                            self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(
+                                Box::new(FinalizedBlockRequest {
+                                    cause: span,
+                                    block,
+                                    acknowledgment: ack,
+                                    is_backfill: true,
+                                }),
+                            ));
                         }
                         (height, None) => {
                             warn_span!("backfill_on_start", %height)
@@ -396,40 +392,17 @@ where
                     self.latest_observed_finalized_tip.replace((height, digest));
                 }
                 Update::Block(block, acknowledgement) => {
-                    self.enqueue_forward_finalized(cause, block, acknowledgement, false)?;
+                    self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
+                        FinalizedBlockRequest {
+                            cause,
+                            block,
+                            acknowledgment: acknowledgement,
+                            is_backfill: false,
+                        },
+                    )));
                 }
             },
         }
-        Ok(())
-    }
-
-    /// Queues `block` to be finalized by the background execution task.
-    ///
-    /// The actor starts one queued execution task at a time, so newer finalized
-    /// blocks are still sent after older finalized blocks without blocking this actor.
-    #[instrument(
-        skip_all,
-        parent = &cause,
-        fields(
-            block.digest = %block.digest(),
-            block.height = %block.height(),
-        ),
-        err(level = Level::WARN),
-    )]
-    fn enqueue_forward_finalized(
-        &mut self,
-        cause: Span,
-        block: Block,
-        acknowledgment: Exact,
-        is_backfill: bool,
-    ) -> eyre::Result<()> {
-        let request = FinalizedBlockRequest {
-            cause,
-            block,
-            acknowledgment,
-            is_backfill,
-        };
-        self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(request)));
         Ok(())
     }
 
@@ -442,7 +415,16 @@ where
             return;
         }
 
-        self.execution_queue.push_back(request);
+        if request.is_backfill() {
+            let insert_at = self
+                .execution_queue
+                .iter()
+                .position(|request| !request.is_backfill())
+                .unwrap_or(self.execution_queue.len());
+            self.execution_queue.insert(insert_at, request);
+        } else {
+            self.execution_queue.push_back(request);
+        }
     }
 
     fn start_next_execution_task(&mut self) {
