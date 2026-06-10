@@ -94,19 +94,21 @@ impl TIP20Token {
                     .and_then(|v| v.checked_div(ACC_PRECISION))
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                // Add reward to delegate's balance (or holder's own balance if self-delegated)
-                if cached_delegate == holder {
-                    info.reward_balance = info
-                        .reward_balance
-                        .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                } else {
-                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
-                    delegate_info.reward_balance = delegate_info
-                        .reward_balance
-                        .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info[cached_delegate].write(delegate_info)?;
+                if reward != U256::ZERO {
+                    // Add reward to delegate's balance (or holder's own balance if self-delegated)
+                    if cached_delegate == holder {
+                        info.reward_balance = info
+                            .reward_balance
+                            .checked_add(reward)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                    } else {
+                        let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
+                        delegate_info.reward_balance = delegate_info
+                            .reward_balance
+                            .checked_add(reward)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                        self.user_reward_info[cached_delegate].write(delegate_info)?;
+                    }
                 }
             }
             info.reward_per_token = global_reward_per_token;
