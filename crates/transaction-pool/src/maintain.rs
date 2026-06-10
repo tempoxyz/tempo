@@ -906,12 +906,16 @@ where
                     );
                     let evicted = {
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                        pool.evict_invalidated_transactions_from(
-                            &updates,
-                            all_txs
-                                .iter()
-                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
-                        )
+                        if removed_this_iteration.is_empty() {
+                            pool.evict_invalidated_transactions_from(&updates, all_txs.iter())
+                        } else {
+                            pool.evict_invalidated_transactions_from(
+                                &updates,
+                                all_txs
+                                    .iter()
+                                    .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                            )
+                        }
                     };
                     for hash in &evicted {
                         state.untrack(hash);
