@@ -34,7 +34,7 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase};
+use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
     IValidatorConfigV2::{self, Validator},
     VALIDATOR_CONFIG_V2_ADDRESS,
@@ -902,8 +902,8 @@ Pass `--secret <PATH>` (preferably a FIFO, for example `--secret <(cmd)`) to enc
 
 fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphrase> {
     let path = path.as_ref();
-    let (passphrase, is_fifo) = tempo_commonware_node_config::read_secret(path)
-        .wrap_err("failed reading from secret path")?;
+    let (passphrase, is_fifo) =
+        tempo_consensus_config::read_secret(path).wrap_err("failed reading from secret path")?;
     if !is_fifo {
         eprintln!(
             "WARNING: signing-key passphrase was read from a non-FIFO path `{}`; prefer a FIFO to avoid persisting the passphrase on disk.",

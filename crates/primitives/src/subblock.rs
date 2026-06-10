@@ -246,6 +246,17 @@ impl RecoveredSubBlock {
             .map(|(sender, tx)| Recovered::new_unchecked(tx, sender))
     }
 
+    /// Returns true if this subblock has any expired transactions for the given timestamp.
+    pub fn has_expired_transactions(&self, timestamp: u64) -> bool {
+        self.transactions.iter().any(|tx| {
+            tx.as_aa().is_some_and(|tx| {
+                tx.tx()
+                    .valid_before
+                    .is_some_and(|valid| valid.get() <= timestamp)
+            })
+        })
+    }
+
     /// Returns the validator that submitted the subblock.
     pub fn validator(&self) -> B256 {
         self.validator
