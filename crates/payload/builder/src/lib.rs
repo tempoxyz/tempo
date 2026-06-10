@@ -1339,7 +1339,7 @@ fn maybe_override_fee_recipient<DB: Database>(
         },
     ) {
         Ok(Some(fee_recipient)) => {
-            debug!(%fee_recipient, "resolved fee recipient from contract");
+            trace!(%fee_recipient, "resolved fee recipient from contract");
             executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
         Ok(None) => {}
