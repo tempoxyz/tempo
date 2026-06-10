@@ -17,9 +17,13 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, PoolTransaction, TransactionPool};
+use reth_transaction_pool::{
+    AllPoolTransactions, PoolTransaction, TransactionOrigin, TransactionPool,
+    ValidPoolTransaction,
+};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
+    sync::Arc,
     time::Instant,
 };
 use tempo_chainspec::TempoChainSpec;
@@ -33,6 +37,15 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+fn into_origin_pooled_transaction(
+    tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+) -> (TransactionOrigin, TempoPooledTransaction) {
+    match Arc::try_unwrap(tx) {
+        Ok(tx) => (tx.origin, tx.transaction),
+        Err(tx) => (tx.origin, tx.transaction.clone()),
+    }
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -869,7 +882,7 @@ where
                         tokio::spawn(async move {
                             let txs: Vec<_> = removed_txs
                                 .into_iter()
-                                .map(|tx| (tx.origin, tx.transaction.clone()))
+                                .map(into_origin_pooled_transaction)
                                 .collect();
 
                             let results = pool_clone.add_transactions_with_origins(txs).await;
