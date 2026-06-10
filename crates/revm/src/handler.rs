@@ -954,8 +954,12 @@ where
             cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
         )?;
 
-        // modify account nonce and touch the account.
-        caller_account.touch();
+        // Non-protocol nonce transactions do not mutate the caller account. If the
+        // caller was loaded as missing, touching it only creates a journal entry
+        // that later collapses to no state transition.
+        if nonce_key.is_zero() || !caller_account.account().is_loaded_as_not_existing() {
+            caller_account.touch();
+        }
 
         // add additional gas for CREATE tx with 2d nonce and account nonce is 0.
         // This case would create a new account for caller.
