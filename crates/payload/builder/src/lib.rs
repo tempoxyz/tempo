@@ -664,7 +664,6 @@ where
                 continue;
             }
 
-            check_cancel!();
             if is_payment {
                 payment_transactions += 1;
             }
