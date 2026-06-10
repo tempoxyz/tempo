@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use alloy_consensus::BlockHeader as _;
+use commonware_actor::Feedback;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
     Epochable, Heightable as _, Reporter, marshal,
@@ -28,7 +29,7 @@ use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
-use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
@@ -104,10 +105,8 @@ pub(super) fn try_init<TContext>(
         ),
     );
 
-    let network_scheme = Arc::new(Scheme::certificate_verifier(
-        crate::config::NAMESPACE,
-        config.network_identity.identity,
-    ));
+    let network_scheme =
+        Scheme::certificate_verifier(crate::config::NAMESPACE, config.network_identity.identity);
 
     let actor = Driver {
         context: ContextCell::new(context),
@@ -163,8 +162,11 @@ impl Mailbox {
         MarshalReporter(self.clone())
     }
 
-    fn send(&self, msg: impl Into<Message>) {
-        let _ = self.0.send(msg.into());
+    fn send(&self, msg: impl Into<Message>) -> Feedback {
+        match self.0.send(msg.into()) {
+            Ok(()) => Feedback::Ok,
+            Err(_) => Feedback::Closed,
+        }
     }
 }
 
@@ -174,8 +176,8 @@ pub(super) struct EventReporter(Mailbox);
 impl Reporter for EventReporter {
     type Activity = Event;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        self.0.send(activity)
     }
 }
 
@@ -185,8 +187,8 @@ pub(super) struct MarshalReporter(Mailbox);
 impl Reporter for MarshalReporter {
     type Activity = marshal::Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
-        self.0.send(activity);
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
+        self.0.send(activity)
     }
 }
 
@@ -197,7 +199,7 @@ pub(super) struct Driver<TContext> {
 
     last_boundary: Height,
     current_epoch: Epoch,
-    network_scheme: Arc<Scheme<PublicKey, MinSig>>,
+    network_scheme: Scheme<PublicKey, MinSig>,
 }
 
 impl<C: Clock + Rng + CryptoRng> Driver<C>
@@ -209,7 +211,6 @@ where
     }
 
     async fn run(mut self) {
-        self.config.marshal.set_floor(self.last_boundary).await;
         if self.heal_gap().await.is_err() {
             return;
         };
@@ -323,7 +324,7 @@ where
         let finalization_epoch = finalization.epoch();
         if finalization_epoch > self.current_epoch {
             let stub_peers =
-                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
+                NonEmptyVec::new(ed25519::PrivateKey::random(&mut *self.context).public_key());
 
             let boundary_height = self
                 .config
@@ -340,51 +341,46 @@ where
 
             // In the event our network identity cannot verify this finalization,
             // hint the boundary of the current epoch to progress.
+            //
+            // TODO(hamdi): Since we no longer set the floor via the height we need to wire
+            // into Update::Tip and set the floor with the finalization instead.
             self.config
                 .marshal
-                .hint_finalized(boundary_height, stub_peers.clone())
-                .await;
-
-            if let Some(one_before_boundary) = boundary_height.previous() {
-                self.config.marshal.set_floor(one_before_boundary).await;
-            }
-
-            let network_identity = self.config.network_identity.clone();
-            if finalization_epoch.get() < network_identity.from_epoch {
-                return Ok(());
-            }
+                .hint_finalized(boundary_height, stub_peers);
         }
 
-        let can_use_network_identity_fallback =
-            finalization_epoch.get() >= self.config.network_identity.from_epoch;
-
-        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
-            Some(scheme) => scheme,
-            None if can_use_network_identity_fallback => self.network_scheme.clone(),
-            None => bail!(
+        let mut scheme = self.config.scheme_provider.scoped(finalization_epoch);
+        if scheme.is_none() {
+            ensure!(
+                finalization_epoch.get() >= self.config.network_identity.from_epoch,
                 "finalization epoch `{finalization_epoch}` behind network identity starting epoch `{}`; current epoch `{}`",
                 self.config.network_identity.from_epoch,
                 self.current_epoch
-            ),
-        };
+            );
+
+            self.config
+                .scheme_provider
+                .register(finalization_epoch, self.network_scheme.clone());
+
+            scheme.replace(Arc::new(self.network_scheme.clone()));
+        }
 
         // If we can accept this cert, jump to it and set the floor as the
         // upstream may have pruned any intermediatery blocks.
-        if finalization.verify(&mut self.context, &scheme, &Sequential) {
+        let scheme = scheme.expect("scheme must be available");
+        if finalization.verify(&mut *self.context, &scheme, &Sequential) {
             let round = finalization.round();
-            let activity = Activity::Finalization(finalization);
             if !self.config.marshal.verified(round, consensus_block).await {
                 warn_span!("follow_driver").in_scope(
                     || warn!(?round, %height, "marshal refused to persist the verified block"),
                 )
             }
 
-            if let Some(one_before_block) = height.previous() {
-                self.config.marshal.set_floor(one_before_block).await;
-            }
+            let activity = Activity::Finalization(finalization.clone());
 
-            self.config.marshal.report(activity.clone()).await;
-            self.config.feed.report(activity).await;
+            self.config.marshal.set_floor(finalization.clone());
+            self.config.marshal.report(activity.clone());
+            self.config.feed.report(activity);
         } else {
             debug!(%finalization_epoch, %height, "failed finalization certificate verification")
         }

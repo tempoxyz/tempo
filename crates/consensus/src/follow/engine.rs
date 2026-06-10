@@ -10,7 +10,7 @@
 //! The archive format is shared with the consensus engine running in validator mode
 //! so nodes can switch between validator and follower modes without data migration.
 
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{Reporters, types::FixedEpocher};
@@ -19,7 +19,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZUsize, channel::mpsc};
+use commonware_utils::NZUsize;
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
@@ -57,7 +57,7 @@ pub struct Config<TUpstream> {
     pub network_identity: NetworkIdentity,
 
     /// Mailbox size for async channels.
-    pub mailbox_size: usize,
+    pub mailbox_size: NonZeroUsize,
 
     /// FCU heartbeat interval.
     pub fcu_heartbeat_interval: Duration,
@@ -92,7 +92,6 @@ impl<TUpstream> Config<TUpstream> {
             + Spawner
             + Storage
             + BufferPooler
-            + Clone
             + Send
             + 'static,
     {
@@ -112,7 +111,7 @@ impl<TUpstream> Config<TUpstream> {
             finalized_floor: last_finalized_height,
             finalized_tip,
         } = alias::marshal::init(
-            context.clone(),
+            &context,
             page_cache_ref,
             self.execution_node.clone(),
             alias::marshal::Config {
@@ -137,7 +136,7 @@ impl<TUpstream> Config<TUpstream> {
         });
 
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
-            context.with_label("resolver"),
+            context.child("resolver"),
             resolver::Config {
                 execution_node: self.execution_node.clone(),
                 upstream: self.upstream_mailbox.clone(),
@@ -146,13 +145,13 @@ impl<TUpstream> Config<TUpstream> {
         );
 
         let (feed_actor, feed_mailbox) = feed::init(
-            context.with_label("feed"),
+            context.child("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
         let (executor_actor, executor_mailbox) = executor::init(
-            context.with_label("executor"),
+            context.child("executor"),
             executor::Config {
                 execution_node: self.execution_node.clone(),
                 finalized_floor: last_finalized_height,
@@ -165,10 +164,10 @@ impl<TUpstream> Config<TUpstream> {
         .wrap_err("failed to initialize executor")?;
 
         // No broadcast is needed in follow mode.
-        let broadcast = stubs::null_broadcast(context.with_label("broadcast"), self.mailbox_size);
+        let broadcast = stubs::null_broadcast(context.child("broadcast"), self.mailbox_size);
 
         let (driver, driver_mailbox) = driver::try_init(
-            context.with_label("driver"),
+            context.child("driver"),
             driver::Config {
                 execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
@@ -208,7 +207,7 @@ where
     driver_mailbox: driver::Mailbox,
     resolver: Resolver<TContext>,
     resolver_mailbox: resolver::Mailbox,
-    resolver_rx: mpsc::Receiver<commonware_consensus::marshal::resolver::handler::Message<Digest>>,
+    resolver_rx: commonware_consensus::marshal::resolver::handler::Receiver<Digest>,
     marshal: crate::alias::marshal::Actor<TContext>,
     executor: executor::Actor<TContext>,
     executor_mailbox: executor::Mailbox,
@@ -227,7 +226,6 @@ where
         + Spawner
         + Storage
         + BufferPooler
-        + Clone
         + Send
         + 'static,
     TUpstreamActor: upstream::UpstreamActor,

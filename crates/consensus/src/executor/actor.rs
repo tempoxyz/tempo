@@ -11,6 +11,7 @@ use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
     Clock, ContextCell, FutureExt, Handle, Metrics as RuntimeMetrics, Pacer, Spawner, spawn_cell,
+    telemetry::metrics::{Counter, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure};
@@ -23,7 +24,6 @@ use futures::{
     future::BoxFuture,
     stream::FuturesUnordered,
 };
-use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
 use tempo_node::{TempoExecutionData, TempoFullNode};
@@ -167,11 +167,9 @@ impl Metrics {
     where
         TContext: RuntimeMetrics,
     {
-        let finalized_blocks_proposed_by_self = Counter::default();
-        context.register(
+        let finalized_blocks_proposed_by_self = context.counter(
             "finalized_blocks_proposed_by_self",
             "number of finalized blocks whose proposer matches this node's public key",
-            finalized_blocks_proposed_by_self.clone(),
         );
         Self {
             finalized_blocks_proposed_by_self,
@@ -287,13 +285,10 @@ where
                                 self.last_canonicalized = canonicalized;
                             }
                             if let Some(job) = payload_job {
+                                let context = self.context.child("payload_job");
                                 self.payload_jobs.push(
-                                    run_payload_job(
-                                        self.context.clone(),
-                                        self.execution_node.clone(),
-                                        job,
-                                    )
-                                    .boxed(),
+                                    run_payload_job(context, self.execution_node.clone(), job)
+                                        .boxed(),
                                 );
                             }
                         }
@@ -500,8 +495,9 @@ where
         }
         let request = self.execution_queue.pop_front().expect("front exists");
 
+        let context = self.context.child("execution_task");
         let task = execute_request(
-            self.context.clone(),
+            context,
             self.execution_node.clone(),
             self.public_key.clone(),
             self.metrics.clone(),
@@ -578,7 +574,7 @@ struct StartPayloadJob {
 }
 
 async fn execute_request<TContext>(
-    context: ContextCell<TContext>,
+    context: TContext,
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
@@ -591,8 +587,8 @@ where
     match request {
         ExecutionRequest::Heartbeat { cause } => {
             if let Err(error) = submit_forkchoice_update(
-                &execution_node,
                 &context,
+                &execution_node,
                 cause,
                 canonicalized,
                 None,
@@ -696,8 +692,8 @@ async fn run_canonicalize_task<TContext: Pacer>(
     // forkchoice state: the execution layer treats it as a no-op (the FCU
     // heartbeat relies on this).
     match submit_forkchoice_update(
-        &execution_node,
         context,
+        &execution_node,
         cause.clone(),
         new_canonicalized,
         attributes,
@@ -802,8 +798,8 @@ async fn run_payload_job<TContext: Pacer>(
     ),
 )]
 async fn submit_forkchoice_update<TContext: Pacer>(
-    execution_node: &TempoFullNode,
     context: &TContext,
+    execution_node: &TempoFullNode,
     cause: Span,
     canonicalized: LastCanonicalized,
     attrs: Option<TempoPayloadAttributes>,
@@ -874,8 +870,8 @@ async fn forward_finalized<TContext: Pacer>(
 
     if let Some(canonicalized) = forkchoice {
         submit_forkchoice_update(
-            &execution_node,
             context,
+            &execution_node,
             cause.clone(),
             canonicalized,
             None,
@@ -887,7 +883,7 @@ async fn forward_finalized<TContext: Pacer>(
     }
 
     let (block, block_access_list) = block.into_parts();
-    let consensus_context = block.header().consensus_context;
+    let consensus_context = block.header().consensus_context.clone();
     let payload_status = execution_node
         .add_ons_handle
         .beacon_engine_handle
@@ -911,10 +907,9 @@ async fn forward_finalized<TContext: Pacer>(
     );
 
     if let Some(public_key) = public_key.as_ref()
-        && consensus_context
-            .is_some_and(|context| &PublicKey::from(context.proposer.get()) == public_key)
+        && consensus_context.is_some_and(|context| public_key == &context.proposer.to_inner())
     {
-        metrics.finalized_blocks_proposed_by_self.inc();
+        metrics.finalized_blocks_proposed_by_self.metric().inc();
     }
 
     acknowledgment.acknowledge();

@@ -1,6 +1,5 @@
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
-use ed25519_consensus::{VerificationKey, VerificationKeyBytes};
 
 #[derive(Debug)]
 pub struct InvalidPublicKey;
@@ -11,59 +10,56 @@ impl core::fmt::Display for InvalidPublicKey {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+/// Type wrapper around [`commonware_cryptography::ed25519::PublicKey`]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "B256", try_from = "B256"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
-pub struct PublicKey(VerificationKey);
+pub struct PublicKey(commonware_cryptography::ed25519::PublicKey);
 
 impl PublicKey {
-    pub fn get(&self) -> VerificationKey {
+    pub fn into_inner(self) -> commonware_cryptography::ed25519::PublicKey {
         self.0
     }
 
-    #[cfg(any(test, feature = "arbitrary"))]
-    pub fn from_seed(seed: [u8; 32]) -> Self {
-        ed25519_consensus::SigningKey::from(seed)
-            .verification_key()
-            .into()
+    pub fn to_inner(&self) -> commonware_cryptography::ed25519::PublicKey {
+        self.0.clone()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn from_seed(seed: u64) -> Self {
+        use commonware_cryptography::Signer;
+        Self(commonware_cryptography::ed25519::PrivateKey::from_seed(seed).public_key())
     }
 }
 
 impl Encodable for PublicKey {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        self.0.as_bytes().encode(out)
+        B256::from(self).encode(out);
     }
 
     fn length(&self) -> usize {
-        self.0.as_bytes().length()
+        B256::from(self).length()
     }
 }
 
 impl Decodable for PublicKey {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let inner = <[u8; 32]>::decode(buf)?;
-        let key = VerificationKey::try_from(inner)
-            .map_err(|_| alloy_rlp::Error::Custom("malformed ed25519 public key"))?;
-        Ok(Self(key))
-    }
-}
-
-impl From<ed25519_consensus::VerificationKey> for PublicKey {
-    fn from(value: ed25519_consensus::VerificationKey) -> Self {
-        Self(value)
+        B256::decode(buf)?
+            .try_into()
+            .map_err(|_| alloy_rlp::Error::Custom("malformed ed25519 public key"))
     }
 }
 
 impl From<PublicKey> for B256 {
     fn from(value: PublicKey) -> Self {
-        <[u8; 32]>::from(VerificationKeyBytes::from(value.0)).into()
+        Self::from(&value)
     }
 }
 
 impl<'a> From<&'a PublicKey> for B256 {
     fn from(value: &'a PublicKey) -> Self {
-        <[u8; 32]>::from(VerificationKeyBytes::from(value.0)).into()
+        Self::from(<[u8; 32]>::from(&value.0))
     }
 }
 
@@ -71,17 +67,17 @@ impl TryFrom<B256> for PublicKey {
     type Error = InvalidPublicKey;
 
     fn try_from(value: B256) -> Result<Self, Self::Error> {
-        let inner = VerificationKeyBytes::from(<[u8; 32]>::from(value))
-            .try_into()
+        let key = commonware_cryptography::ed25519::PublicKey::try_from(value.as_slice())
             .map_err(|_| InvalidPublicKey)?;
-        Ok(Self(inner))
+
+        Ok(Self(key))
     }
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        Ok(Self::from_seed(u.arbitrary()?))
+        commonware_cryptography::ed25519::PublicKey::arbitrary(u).map(Self)
     }
 }
 
@@ -89,28 +85,27 @@ impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
 mod tests {
     use super::*;
     use alloy_rlp::{Decodable, Encodable};
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
     #[test]
     fn public_key_conversions_and_rlp() {
-        let pk = PublicKey::from_seed([0xab; 32]);
-        let pk2 = PublicKey::from_seed([0xcd; 32]);
+        let pk = PublicKey(PrivateKey::from_seed(41).public_key());
+        let pk2 = PublicKey(PrivateKey::from_seed(42).public_key());
 
         // different seeds produce different keys
         assert_ne!(pk, pk2);
 
         // PublicKey → B256 roundtrip (ref and owned)
         let b256: B256 = B256::from(&pk);
-        let b256_owned: B256 = B256::from(pk);
+        let b256_owned: B256 = B256::from(pk.clone());
         assert_eq!(b256, b256_owned);
         let recovered = PublicKey::try_from(b256).unwrap();
         assert_eq!(pk, recovered);
 
-        // get() returns the inner key
-        let _ = pk.get();
-
         // RLP encode → decode roundtrip
         let mut buf = Vec::new();
         pk.encode(&mut buf);
+        assert_eq!(buf, alloy_rlp::encode(b256));
         assert_eq!(buf.len(), pk.length());
         let decoded = PublicKey::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(pk, decoded);
@@ -120,7 +115,7 @@ mod tests {
         assert!(PublicKey::decode(&mut &short_buf[..]).is_err());
 
         // Hash + Eq: same seed → same key
-        let pk_dup = PublicKey::from_seed([0xab; 32]);
+        let pk_dup = PublicKey(PrivateKey::from_seed(41).public_key());
         assert_eq!(pk, pk_dup);
     }
 }

@@ -16,6 +16,7 @@
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
+    marshal::core::DigestFallback,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
     types::{Epoch, Round, View},
 };
@@ -150,7 +151,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     if let Some(p) = oldest.take() {
                         self.pending.insert(p.round, p);
                     }
-                    self.subscribe(activity).await;
+
+                    self.subscribe(activity);
                 },
             );
         };
@@ -158,7 +160,7 @@ impl<TContext: Spawner> Actor<TContext> {
         info_span!("feed_actor").in_scope(|| error!(%reason, "shutting down"));
     }
 
-    async fn subscribe(&mut self, activity: FeedActivity) {
+    fn subscribe(&mut self, activity: FeedActivity) {
         let (round, payload) = match &activity {
             Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
             Activity::Finalization(f) => (f.proposal.round, f.proposal.payload),
@@ -184,7 +186,10 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         }
 
-        let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
+        let block_rx = self
+            .marshal
+            .subscribe_by_digest(payload, DigestFallback::FetchByRound { round });
+
         let pending = PendingSubscription::new(round, activity, block_rx);
         self.pending.insert(round, pending);
     }

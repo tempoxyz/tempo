@@ -12,7 +12,9 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
+        dkg::feldman_desmedt::{
+            self as dkg, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog,
+        },
         primitives::{
             group::Share,
             sharing::{Mode, ModeVersion},
@@ -510,7 +512,7 @@ impl Builder {
         let states_metadata_partition = format!("{partition_prefix}_states_metadata");
 
         let mut states = metadata::Metadata::init(
-            context.with_label("states"),
+            context.child("states"),
             metadata::Config {
                 partition: states_metadata_partition,
                 codec_config: MAXIMUM_VALIDATORS,
@@ -548,7 +550,7 @@ impl Builder {
             .expect("states storage must contain a state after initialization");
 
         let events = segmented::variable::Journal::init(
-            context.with_label("events"),
+            context.child("events"),
             segmented::variable::Config {
                 partition: format!("{partition_prefix}_events"),
                 compression: None,
@@ -1212,7 +1214,7 @@ mod tests {
     use super::*;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{
-        bls12381::{dkg, primitives::sharing::Mode},
+        bls12381::{dkg::feldman_desmedt as dkg, primitives::sharing::Mode},
         ed25519::PrivateKey,
         transcript::Summary,
     };

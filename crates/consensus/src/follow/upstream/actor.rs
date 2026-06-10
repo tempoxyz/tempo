@@ -82,11 +82,12 @@ where
                                 url = %self.url,
                                 "connecting to upstream node failed, attempting again",
                             ));
+
+                            let sleep = self.context.sleep(reconnect_in);
                             self.pending_connect.replace({
-                                let context = self.context.clone();
                                 let url = self.url;
                                 async move {
-                                    context.sleep(reconnect_in).await;
+                                    sleep.await;
                                     connect(url, attempts.saturating_add(1)).await
                                 }.boxed()
                             });
@@ -118,7 +119,7 @@ where
                             debug_span!("consensus_event").in_scope(|| debug!(
                                 ?event, "received consensus event, forwarding to reporter"
                             ));
-                            reporter.report(event).await;
+                            reporter.report(event);
                         }
                         Some(Err(error)) => {
                             warn_span!("event").in_scope(|| warn!(
@@ -193,7 +194,7 @@ where
         for (height, response) in self.waiters.drain(..) {
             let client = client.clone();
             self.context
-                .with_label("get_finalization")
+                .child("get_finalization")
                 .spawn(move |_| get_finalization(client, height, response));
         }
     }

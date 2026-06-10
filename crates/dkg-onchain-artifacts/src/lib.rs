@@ -7,7 +7,7 @@ use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
-        dkg::Output,
+        dkg::feldman_desmedt::Output,
         primitives::{
             sharing::{ModeVersion, Sharing},
             variant::{MinSig, Variant},
@@ -109,7 +109,9 @@ mod tests {
 
     use commonware_codec::{Encode as _, ReadExt as _};
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{Signer as _, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_cryptography::{
+        Signer as _, bls12381::dkg::feldman_desmedt as dkg, ed25519::PrivateKey,
+    };
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use rand_08::SeedableRng as _;

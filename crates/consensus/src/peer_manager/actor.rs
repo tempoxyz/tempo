@@ -15,11 +15,13 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
-use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
+use commonware_runtime::{
+    Clock, ContextCell, Metrics, Spawner, spawn_cell,
+    telemetry::metrics::{Gauge, MetricsExt as _},
+};
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
-use prometheus_client::metrics::gauge::Gauge;
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
@@ -79,11 +81,9 @@ where
         }: super::Config<TPeerManager>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> Self {
-        let peers = Gauge::default();
-        context.register(
+        let peers = context.gauge(
             "peers",
             "how many peers are registered overall for the latest epoch",
-            peers.clone(),
         );
         let context = ContextCell::new(context);
         let peer_update_timer = Box::pin(context.sleep(BOOTSTRAP_UPDATE_INTERVAL));
@@ -135,10 +135,10 @@ where
     async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
         match message {
             Message::Track { id, peers } => {
-                AddressableManager::track(&mut self.oracle, id, peers).await;
+                AddressableManager::track(&mut self.oracle, id, peers);
             }
             Message::Overwrite { peers } => {
-                AddressableManager::overwrite(&mut self.oracle, peers).await;
+                AddressableManager::overwrite(&mut self.oracle, peers);
             }
             Message::PeerSet { id, response } => {
                 let result = Provider::peer_set(&mut self.oracle, id).await;
@@ -272,11 +272,15 @@ where
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
-                WhatHasChanged::Addresses => self.oracle.overwrite(peers.to_flat_map()).await,
-                WhatHasChanged::Peers => self.oracle.track(height, peers.clone()).await,
+                WhatHasChanged::Addresses => {
+                    self.oracle.overwrite(peers.to_flat_map());
+                }
+                WhatHasChanged::Peers => {
+                    self.oracle.track(height, peers.clone());
+                }
             }
         } else {
-            self.oracle.track(height, peers.clone()).await;
+            self.oracle.track(height, peers.clone());
         }
 
         // Always bump the last-tracked peer set. If the peers are unchanged
@@ -286,7 +290,7 @@ where
             .replace(LastTrackedPeerSet { height, peers });
 
         if let Some(tracked) = &self.last_tracked_peer_set {
-            self.peers.set(tracked.peers.len() as i64);
+            self.peers.metric().set(tracked.peers.len() as i64);
         }
 
         debug!(
@@ -495,7 +499,7 @@ mod tests {
     use commonware_cryptography::{
         Signer as _,
         bls12381::{
-            dkg,
+            dkg::feldman_desmedt as dkg,
             primitives::{sharing::Mode, variant::MinSig},
         },
         ed25519::PrivateKey,

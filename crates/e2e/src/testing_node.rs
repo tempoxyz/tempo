@@ -9,7 +9,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
-use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
+use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
 use reth_db::{Database, DatabaseEnv, open_db_read_only};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
@@ -79,7 +79,6 @@ where
     /// The chain address of the node. Used for executing validator-config smart
     /// contract calls.
     pub chain_address: Address,
-
     n_starts: u32,
 }
 
@@ -127,7 +126,6 @@ where
             last_db_block_on_stop: None,
             network_address,
             chain_address,
-
             n_starts: 0,
         }
     }
@@ -294,7 +292,9 @@ where
         let engine = self
             .consensus_config
             .clone()
-            .try_init(context.with_label(&format!("{}_{}", self.uid, self.n_starts)))
+            .try_init(context.child(Box::leak(
+                format!("{}_{}", self.uid, self.n_starts).into_boxed_str(),
+            )))
             .await
             .expect("must be able to start the engine");
 

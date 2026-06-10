@@ -383,9 +383,9 @@ impl commonware_consensus::CertifiableBlock for Block {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {
-        match self.consensus_context {
+        match &self.consensus_context {
             Some(ctx) => Context {
-                leader: ctx.proposer.get().into(),
+                leader: ctx.proposer.to_inner(),
                 round: Round::new(Epoch::new(ctx.epoch), View::new(ctx.view)),
                 parent: (View::new(ctx.parent_view), self.parent_digest()),
             },
