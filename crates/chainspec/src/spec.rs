@@ -608,8 +608,16 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1781013600));
             assert_eq!(cs.tempo_hardfork_at(1781013600), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
+            assert!(!cs.is_t6_active_at_timestamp(1781013600));
+
+            // Before T6 activation (1782223200 = Jun 23rd 2026 16:00 CEST)
+            assert!(!cs.is_t6_active_at_timestamp(1782223199));
+            assert_eq!(cs.tempo_hardfork_at(1782223199), TempoHardfork::T5);
+
+            // At and after T6 activation
+            assert!(cs.is_t6_active_at_timestamp(1782223200));
+            assert_eq!(cs.tempo_hardfork_at(1782223200), TempoHardfork::T6);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
         }
 
         #[test]
@@ -672,8 +680,16 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1780495200));
             assert_eq!(cs.tempo_hardfork_at(1780495200), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
+            assert!(!cs.is_t6_active_at_timestamp(1780495200));
+
+            // Before T6 activation (1781791200 = Jun 18th 2026 16:00 CEST)
+            assert!(!cs.is_t6_active_at_timestamp(1781791199));
+            assert_eq!(cs.tempo_hardfork_at(1781791199), TempoHardfork::T5);
+
+            // At and after T6 activation
+            assert!(cs.is_t6_active_at_timestamp(1781791200));
+            assert_eq!(cs.tempo_hardfork_at(1781791200), TempoHardfork::T6);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
         }
 
         #[test]
