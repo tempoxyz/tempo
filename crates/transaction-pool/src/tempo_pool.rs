@@ -127,7 +127,7 @@ where
     pub fn evict_invalidated_transactions(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
-    ) -> Vec<TxHash> {
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() {
             return Vec::new();
         }
@@ -136,11 +136,13 @@ where
         self.evict_invalidated_transactions_from(updates, all_txs.iter())
     }
 
+    /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
+    /// the caller controls when they are dropped.
     pub(crate) fn evict_invalidated_transactions_from<'a>(
         &self,
         updates: &crate::maintain::TempoPoolUpdates,
         transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    ) -> Vec<TxHash> {
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() {
             return Vec::new();
         }
@@ -470,25 +472,26 @@ where
             }
         }
 
-        if !to_remove.is_empty() {
-            tracing::debug!(
-                target: "txpool",
-                total = to_remove.len(),
-                revoked_count,
-                key_authorization_target_count,
-                spending_limit_count,
-                spending_limit_spend_count,
-                key_authorization_witness_count,
-                liquidity_count,
-                user_token_count,
-                blacklisted_count,
-                unwhitelisted_count,
-                insolvent_fee_payer_count,
-                "Evicting invalidated transactions"
-            );
-            self.remove_transactions(to_remove.clone());
+        if to_remove.is_empty() {
+            return Vec::new();
         }
-        to_remove
+
+        tracing::debug!(
+            target: "txpool",
+            total = to_remove.len(),
+            revoked_count,
+            key_authorization_target_count,
+            spending_limit_count,
+            spending_limit_spend_count,
+            key_authorization_witness_count,
+            liquidity_count,
+            user_token_count,
+            blacklisted_count,
+            unwhitelisted_count,
+            insolvent_fee_payer_count,
+            "Evicting invalidated transactions"
+        );
+        self.remove_transactions(to_remove)
     }
 
     /// Adds a validated transaction to the subpool derived from its type and nonce key.
@@ -1357,6 +1360,11 @@ fn get_recipient_policy_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Returns the hashes of the evicted transactions.
+    fn tx_hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
+        txs.iter().map(|tx| *tx.hash()).collect()
+    }
+
     use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
@@ -1654,7 +1662,7 @@ mod tests {
         updates.user_token_changes.insert(fee_payer);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -1692,7 +1700,7 @@ mod tests {
         updates.user_token_changes.insert(sender);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -1832,7 +1840,7 @@ mod tests {
             .insert(fee_payer);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -1871,7 +1879,7 @@ mod tests {
         updates.blacklist_additions.push((policy_id, sender));
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -1910,7 +1918,7 @@ mod tests {
         updates.whitelist_removals.push((policy_id, sender));
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
     }
 
@@ -2063,7 +2071,7 @@ mod tests {
             .insert(burned_witness);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*matching.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
         assert!(pool.get(matching.hash()).is_none());
         assert!(pool.get(untouched.hash()).is_some());
     }
@@ -2150,7 +2158,7 @@ mod tests {
         updates.revoked_keys.insert(sender, admin_key);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*matching.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
         assert!(pool.get(matching.hash()).is_none());
         assert!(pool.get(untouched.hash()).is_some());
     }
@@ -2239,7 +2247,7 @@ mod tests {
             .insert(sender, target_key);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
-        assert_eq!(evicted, vec![*matching.hash()]);
+        assert_eq!(tx_hashes(&evicted), vec![*matching.hash()]);
         assert!(pool.get(matching.hash()).is_none());
         assert!(pool.get(untouched.hash()).is_some());
     }
