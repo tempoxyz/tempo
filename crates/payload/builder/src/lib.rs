@@ -629,14 +629,15 @@ where
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+            let remaining_non_shared_gas = non_shared_gas_limit.saturating_sub(cumulative_gas_used);
+            if max_regular_gas_used > remaining_non_shared_gas {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
+                        remaining_non_shared_gas,
                     ),
                 );
                 self.metrics
@@ -652,7 +653,8 @@ where
 
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+            let remaining_general_gas = general_gas_limit.saturating_sub(non_payment_gas_used);
+            if !is_payment && max_regular_gas_used > remaining_general_gas {
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::Other(Box::new(
