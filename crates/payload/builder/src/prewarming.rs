@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -10,7 +13,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -26,7 +29,19 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+type PrewarmEvm = TempoEvm<StateProviderDatabase<StateProviderBox>>;
+type PrewarmEvmState = Option<PrewarmEvm>;
+
+static NEXT_PREWARM_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static LOCAL_PREWARM_EVM_STATE: RefCell<Option<LocalPrewarmEvmState>> = RefCell::new(None);
+}
+
+struct LocalPrewarmEvmState {
+    generation: u64,
+    evm: PrewarmEvmState,
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -61,6 +76,7 @@ impl BestTransactionsPrewarming {
             cache,
             evm_env,
             stop: stop.clone(),
+            generation: NEXT_PREWARM_GENERATION.fetch_add(1, Ordering::Relaxed),
         };
 
         let this = Self {
@@ -80,6 +96,7 @@ impl BestTransactionsPrewarming {
                     commands_tx,
                     prewarm,
                     next_expiring_nonce_offset: 0,
+                    source_exhausted: false,
                 },
             );
         });
@@ -100,16 +117,21 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
+            let advance =
+                |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>, reply_exhausted| {
+                if ctx.source_exhausted {
+                    if reply_exhausted {
+                        let _ = ctx.transactions_tx.send(None);
+                    }
+                    return;
+                }
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
+                    ctx.source_exhausted = true;
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -131,13 +153,16 @@ impl BestTransactionsPrewarming {
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
             for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+                advance(&mut ctx, false);
+                if ctx.source_exhausted {
+                    break;
+                }
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        advance(&mut ctx, true);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -147,12 +172,23 @@ impl BestTransactionsPrewarming {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
+                        let mut exhausted = false;
                         for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
+                            match tx {
+                                Some(tx)
+                                    if !is_invalidated_buffered_transaction(&invalid.tx, &tx) =>
+                                {
+                                    let _ = ctx.transactions_tx.send(Some(tx));
+                                }
+                                Some(_) => {}
+                                None => {
+                                    exhausted = true;
+                                }
                             }
+                        }
+                        if exhausted || ctx.source_exhausted {
+                            ctx.source_exhausted = true;
+                            let _ = ctx.transactions_tx.send(None);
                         }
                     }
                     BestTransactionsCommand::NoUpdates => {
@@ -170,7 +206,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            LOCAL_PREWARM_EVM_STATE.with(|state| *state.borrow_mut() = None);
+        });
     }
 
     fn prewarm_transaction<Provider>(
@@ -184,8 +222,20 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+        LOCAL_PREWARM_EVM_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let state = state.get_or_insert_with(|| LocalPrewarmEvmState {
+                generation: prewarm.generation,
+                evm: prewarm.evm_for_ctx(),
+            });
+            if state.generation != prewarm.generation {
+                *state = LocalPrewarmEvmState {
+                    generation: prewarm.generation,
+                    evm: prewarm.evm_for_ctx(),
+                };
+            }
+
+            let Some(evm) = state.evm.as_mut() else {
                 return;
             };
 
@@ -263,8 +313,10 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        match self.transactions_rx.try_recv() {
+            Ok(Some(tx)) => return Some(tx),
+            Ok(None) => return None,
+            Err(_) => {}
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
@@ -306,6 +358,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    source_exhausted: bool,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -316,6 +369,7 @@ struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    generation: u64,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -998,19 +1052,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_and_cached_for_consumer_advances() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
     }
 
     #[test]
