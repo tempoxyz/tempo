@@ -367,11 +367,12 @@ where
     /// This is only done for system transaction as they are effectively bypassing
     /// the regular block gas limit checks and we need to make sure that they
     /// only perform explicitly allowed actions.
-    pub(crate) fn validate_tx_pre_execution(
+    fn validate_tx_pre_execution_with_system_flag(
         &self,
         tx: &TempoTxEnvelope,
+        is_system_tx: bool,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
-        if tx.is_system_tx() {
+        if is_system_tx {
             self.validate_system_tx(tx).map(Some)
         } else {
             Ok(None)
@@ -393,13 +394,14 @@ where
         }
     }
 
-    pub(crate) fn validate_tx(
+    fn validate_tx_with_system_flag(
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
+        is_system_tx: bool,
     ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
-        if tx.is_system_tx() {
+        if is_system_tx {
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
             match self.section {
@@ -507,11 +509,13 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
+        let is_system_tx = tx_env.is_system_tx;
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
         }
-        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let next_section =
+            self.validate_tx_pre_execution_with_system_flag(recovered.tx(), is_system_tx)?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -543,7 +547,7 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_tx_with_system_flag(recovered.tx(), block_gas_used, is_system_tx)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
@@ -1169,7 +1173,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx_with_system_flag(&tx, 21000, tx.is_system_tx());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1211,7 +1215,8 @@ mod tests {
             .build(&mut db, &chainspec);
 
         let subblock_tx = create_subblock_tx(&proposer);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result =
+            executor.validate_tx_with_system_flag(&subblock_tx, 21000, subblock_tx.is_system_tx());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1226,7 +1231,8 @@ mod tests {
             })
             .build(&mut db2, &chainspec);
 
-        let result = executor2.validate_tx(&subblock_tx, 21000);
+        let result =
+            executor2.validate_tx_with_system_flag(&subblock_tx, 21000, subblock_tx.is_system_tx());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1256,7 +1262,8 @@ mod tests {
 
         // Try to submit a tx for proposer1 (already processed)
         let subblock_tx = create_subblock_tx(&proposer1);
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let result =
+            executor.validate_tx_with_system_flag(&subblock_tx, 21000, subblock_tx.is_system_tx());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -1278,7 +1285,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
+        let result = executor.validate_tx_with_system_flag(&tx, 21000, tx.is_system_tx());
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
