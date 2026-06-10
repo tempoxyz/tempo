@@ -93,10 +93,6 @@ impl TIP20Token {
             return self.user_reward_info[holder].reward_recipient.read();
         }
 
-        self.update_rewards_legacy(holder)
-    }
-
-    fn update_rewards_legacy(&mut self, holder: Address) -> Result<Address> {
         let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
@@ -168,13 +164,26 @@ impl TIP20Token {
         let from_delegate = self.update_rewards(msg_sender)?;
         let holder_balance = self.get_balance(msg_sender)?;
 
-        match (from_delegate.is_zero(), call.recipient.is_zero()) {
-            // Opted in -> opted out: remove holder balance from opted-in supply.
-            (false, true) => self.decrease_opted_in_supply(holder_balance)?,
-            // Opted out -> opted in: add holder balance to opted-in supply.
-            (true, false) => self.increase_opted_in_supply(holder_balance)?,
-            // No opted-in supply change.
-            _ => (),
+        if from_delegate != Address::ZERO {
+            if call.recipient == Address::ZERO {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_sub(holder_balance)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+        } else if call.recipient != Address::ZERO {
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                .checked_add(holder_balance)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
         }
 
         let mut info = self.user_reward_info[msg_sender].read()?;
@@ -226,7 +235,14 @@ impl TIP20Token {
             self.set_balance(msg_sender, recipient_balance)?;
 
             if reward_recipient != Address::ZERO {
-                self.increase_opted_in_supply(max_amount)?;
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_add(max_amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
             }
 
             self.emit_event(TIP20Event::transfer(
@@ -259,28 +275,6 @@ impl TIP20Token {
         self.opted_in_supply.write(value)
     }
 
-    fn increase_opted_in_supply(&mut self, amount: U256) -> Result<()> {
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_opted_in_supply(
-            opted_in_supply
-                .try_into()
-                .map_err(|_| TempoPrecompileError::under_overflow())?,
-        )
-    }
-
-    fn decrease_opted_in_supply(&mut self, amount: U256) -> Result<()> {
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_opted_in_supply(
-            opted_in_supply
-                .try_into()
-                .map_err(|_| TempoPrecompileError::under_overflow())?,
-        )
-    }
-
     /// Handles reward accounting for both sender and receiver during token transfers.
     pub fn handle_rewards_on_transfer(
         &mut self,
@@ -291,13 +285,26 @@ impl TIP20Token {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
-        match (from_delegate.is_zero(), to_delegate.is_zero()) {
-            // Opted in -> opted out: remove holder balance from opted-in supply.
-            (false, true) => self.decrease_opted_in_supply(amount)?,
-            // Opted out -> opted in: add holder balance to opted-in supply.
-            (true, false) => self.increase_opted_in_supply(amount)?,
-            // No opted-in supply change.
-            _ => (),
+        if !from_delegate.is_zero() {
+            if to_delegate.is_zero() {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+        } else if !to_delegate.is_zero() {
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
         }
 
         Ok(())
@@ -308,7 +315,14 @@ impl TIP20Token {
         let to_delegate = self.update_rewards(to)?;
 
         if !to_delegate.is_zero() {
-            self.increase_opted_in_supply(amount)?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
         }
 
         Ok(())
