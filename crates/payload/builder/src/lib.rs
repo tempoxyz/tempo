@@ -924,7 +924,7 @@ where
                         self.metrics
                             .sparse_trie_state_root_wait_duration_seconds
                             .record(elapsed);
-                        debug!(
+                        trace!(
                             target: "payload_builder",
                             id = %payload_id,
                             state_root = ?outcome.state_root,
