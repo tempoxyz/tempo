@@ -146,7 +146,7 @@ async fn test_base_fee() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_t6_floor_base_fee_transaction_succeeds_after_low_activity() -> eyre::Result<()> {
+async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = crate::utils::TestNodeBuilder::new()

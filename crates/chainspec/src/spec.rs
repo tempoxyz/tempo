@@ -61,9 +61,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T5 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t5_time: Option<u64>,
-    /// Activation timestamp for T6 hardfork.
+    /// Activation timestamp for t7 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
-    t6_time: Option<u64>,
+    t7_time: Option<u64>,
     /// Activation timestamp for T7 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t7_time: Option<u64>,
@@ -96,7 +96,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T3 => self.t3_time,
             TempoHardfork::T4 => self.t4_time,
             TempoHardfork::T5 => self.t5_time,
-            TempoHardfork::T6 => self.t6_time,
+            TempoHardfork::t7 => self.t7_time,
             TempoHardfork::T7 => self.t7_time,
         }
     }
@@ -573,7 +573,7 @@ mod tests {
         }
     }
 
-    fn chainspec_with_t6_at(t6_time: u64) -> super::TempoChainSpec {
+    fn chainspec_with_t7_at(t7_time: u64) -> super::TempoChainSpec {
         let genesis = serde_json::json!({
             "config": {
                 "chainId": 99999,
@@ -597,7 +597,7 @@ mod tests {
                 "terminalTotalDifficultyPassed": true,
                 "t0Time": 0,
                 "t1Time": 0,
-                "t6Time": t6_time
+                "t7Time": t7_time
             },
             "nonce": "0x42",
             "timestamp": "0x0",
@@ -613,8 +613,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_fixed_before_t6() {
-        let chainspec = chainspec_with_t6_at(10);
+    fn next_block_base_fee_fixed_before_t7() {
+        let chainspec = chainspec_with_t7_at(10);
         let parent = header(8, TEMPO_T1_BASE_FEE / 2, 0);
 
         assert_eq!(
@@ -624,8 +624,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_seeds_cap_on_t6_activation() {
-        let chainspec = chainspec_with_t6_at(10);
+    fn next_block_base_fee_seeds_cap_on_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
         let parent = header(9, TEMPO_T1_BASE_FEE / 2, 0);
 
         assert_eq!(
@@ -635,8 +635,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_adjusts_after_t6_activation() {
-        let chainspec = chainspec_with_t6_at(10);
+    fn next_block_base_fee_adjusts_after_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
         let parent = header(10, TEMPO_T7_BASE_FEE_CAP, 0);
 
         assert_eq!(
@@ -646,8 +646,8 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_uses_parent_gas_used_after_t6_activation() {
-        let chainspec = chainspec_with_t6_at(10);
+    fn next_block_base_fee_uses_parent_gas_used_after_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
         let parent = header(10, TEMPO_T7_BASE_FEE_FLOOR, 30_000_000);
 
         assert_eq!(
@@ -723,7 +723,7 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1781013600));
             assert_eq!(cs.tempo_hardfork_at(1781013600), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t7_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
         }
 
@@ -787,7 +787,7 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1780495200));
             assert_eq!(cs.tempo_hardfork_at(1780495200), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t7_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
         }
 
