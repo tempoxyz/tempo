@@ -305,7 +305,7 @@ impl AA2dPool {
             // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
             // Remove from eviction set
-            self.remove_eviction_key(replaced, tx_id);
+            self.remove_eviction_key(replaced);
         }
 
         // insert transaction by hash
@@ -756,7 +756,7 @@ impl AA2dPool {
         let tx = self.by_id.remove(id)?;
 
         // Remove from eviction set
-        self.remove_eviction_key(&tx, *id);
+        self.remove_eviction_key(&tx);
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
@@ -787,11 +787,10 @@ impl AA2dPool {
         }
     }
 
-    fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>, id: AA2dTransactionId) {
-        self.by_eviction_order.remove(&EvictionKey::with_base_fee(
-            Arc::clone(tx),
-            id,
-            self.base_fee,
+    fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>) {
+        self.by_eviction_order.remove(&EvictionOrderKey::new(
+            TempoTipOrdering::default().priority(&tx.inner.transaction.transaction, self.base_fee),
+            tx.inner.submission_id,
         ));
     }
 
@@ -1242,9 +1241,12 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        self.expiring_nonce_eviction_order.remove(
-            &ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee),
-        );
+        self.expiring_nonce_eviction_order
+            .remove(&EvictionOrderKey::new(
+                TempoTipOrdering::default()
+                    .priority(&pending_tx.transaction.transaction, self.base_fee),
+                pending_tx.submission_id,
+            ));
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
@@ -1668,18 +1670,18 @@ impl AA2dInternalTransaction {
     }
 }
 
-/// Minimal ordering key for expiring nonce eviction lookups.
+/// Minimal ordering key for eviction set lookups.
 ///
-/// `ExpiringNonceEvictionKey` borrows as this type so BTreeSet lookup APIs like
-/// `remove`, `contains`, and `get` do not need to construct a full key with a
-/// cloned transaction.
+/// [`EvictionKey`] and [`ExpiringNonceEvictionKey`] borrow as this type so BTreeSet
+/// lookup APIs like `remove`, `contains`, and `get` do not need to construct a full
+/// key with a cloned transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ExpiringNonceEvictionOrderKey {
+struct EvictionOrderKey {
     priority: Priority<u64>,
     submission_id: u64,
 }
 
-impl ExpiringNonceEvictionOrderKey {
+impl EvictionOrderKey {
     fn new(priority: Priority<u64>, submission_id: u64) -> Self {
         Self {
             priority,
@@ -1688,7 +1690,7 @@ impl ExpiringNonceEvictionOrderKey {
     }
 }
 
-impl Ord for ExpiringNonceEvictionOrderKey {
+impl Ord for EvictionOrderKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.priority
             .cmp(&other.priority)
@@ -1696,7 +1698,7 @@ impl Ord for ExpiringNonceEvictionOrderKey {
     }
 }
 
-impl PartialOrd for ExpiringNonceEvictionOrderKey {
+impl PartialOrd for EvictionOrderKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -1716,14 +1718,14 @@ impl PartialOrd for ExpiringNonceEvictionOrderKey {
 /// `submission_id` is unique for live entries.
 #[derive(Debug, Clone)]
 struct ExpiringNonceEvictionKey {
-    order: ExpiringNonceEvictionOrderKey,
+    order: EvictionOrderKey,
     transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
 }
 
 impl ExpiringNonceEvictionKey {
     fn from_pending_with_base_fee(tx: &AA2dStoredTransaction, base_fee: u64) -> Self {
         Self {
-            order: ExpiringNonceEvictionOrderKey::new(
+            order: EvictionOrderKey::new(
                 TempoTipOrdering::default().priority(&tx.transaction.transaction, base_fee),
                 tx.submission_id,
             ),
@@ -1733,7 +1735,7 @@ impl ExpiringNonceEvictionKey {
 
     fn from_pending_owned(tx: PendingTransaction<TxOrdering>) -> Self {
         Self {
-            order: ExpiringNonceEvictionOrderKey::new(tx.priority, tx.submission_id),
+            order: EvictionOrderKey::new(tx.priority, tx.submission_id),
             transaction: tx.transaction,
         }
     }
@@ -1761,8 +1763,8 @@ impl ExpiringNonceEvictionKey {
     }
 }
 
-impl Borrow<ExpiringNonceEvictionOrderKey> for ExpiringNonceEvictionKey {
-    fn borrow(&self) -> &ExpiringNonceEvictionOrderKey {
+impl Borrow<EvictionOrderKey> for ExpiringNonceEvictionKey {
+    fn borrow(&self) -> &EvictionOrderKey {
         &self.order
     }
 }
@@ -1803,10 +1805,8 @@ struct EvictionKey {
     /// We cache this because deriving it from the transaction requires
     /// `aa_transaction_id()` which returns an Option and does more work.
     tx_id: AA2dTransactionId,
-    /// Priority snapshot used for eviction ordering.
-    priority: Priority<u64>,
-    /// Submission ID cached for tie-breaking.
-    submission_id: u64,
+    /// Priority and submission ID snapshot used for eviction ordering.
+    order: EvictionOrderKey,
 }
 
 impl EvictionKey {
@@ -1821,24 +1821,29 @@ impl EvictionKey {
         Self {
             tx,
             tx_id,
-            priority,
-            submission_id,
+            order: EvictionOrderKey::new(priority, submission_id),
         }
     }
 
     /// Returns the transaction's priority.
     fn priority(&self) -> &Priority<u64> {
-        &self.priority
+        &self.order.priority
     }
 
     /// Returns the submission ID.
     fn submission_id(&self) -> u64 {
-        self.submission_id
+        self.order.submission_id
     }
 
     /// Returns whether this transaction is pending.
     fn is_pending(&self) -> bool {
         self.tx.is_pending()
+    }
+}
+
+impl Borrow<EvictionOrderKey> for EvictionKey {
+    fn borrow(&self) -> &EvictionOrderKey {
+        &self.order
     }
 }
 

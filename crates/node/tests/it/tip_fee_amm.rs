@@ -488,7 +488,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
             .mint(
                 *user_token.address(),
                 *validator_token.address(),
-                U256::from(3_000),
+                U256::from(2_002),
                 user_address,
             )
             .send()
@@ -524,6 +524,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
     let receipt = transfer_token
         .transfer(Address::random(), U256::from(1))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .send()
         .await?
         .get_receipt()
@@ -538,7 +539,12 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
         .collectedFees(validator_address, *validator_token.address())
         .call()
         .await?;
-    assert_eq!(collected_after - collected_before, out2);
+    let collected_delta = collected_after - collected_before;
+    assert!(
+        collected_delta == out2 || collected_delta == out2 + U256::ONE,
+        "unexpected collected fee delta: expected {out2} or {} after rounding, got {collected_delta}",
+        out2 + U256::ONE
+    );
 
     let direct_after = fee_amm
         .getPool(*user_token.address(), *validator_token.address())

@@ -12,7 +12,7 @@ use alloy::{
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{constants::gas::TEMPO_T6_BASE_FEE_FLOOR, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 
@@ -262,7 +262,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = transfer_tx
                     .into_transaction_request()
                     .from(caller2)
-                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_price(TEMPO_T6_BASE_FEE_FLOOR as u128)
                     .gas_limit(250_000);
 
                 all_futures.push((provider2.send_transaction(tx), "payment"));

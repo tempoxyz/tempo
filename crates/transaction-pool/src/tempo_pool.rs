@@ -537,11 +537,11 @@ where
                         .tip_timestamp();
                     let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-                    let added = self.aa_2d_pool.write().add_transaction(
-                        Arc::new(tx),
-                        state_nonce,
-                        hardfork,
-                    )?;
+                    let tx = Arc::new(tx);
+                    let added =
+                        self.aa_2d_pool
+                            .write()
+                            .add_transaction(tx, state_nonce, hardfork)?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
@@ -1452,7 +1452,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(fee_token)
             .expect("fee token must be a valid TIP20 token")
             .balances[account]
-            .base_slot();
+            .slot();
 
         provider.add_account(
             fee_token,

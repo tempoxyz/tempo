@@ -40,6 +40,7 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PositiveDuration};
+pub use storage::find_last_finalized_marker;
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.

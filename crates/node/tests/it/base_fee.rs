@@ -8,7 +8,7 @@ use alloy_eips::BlockNumberOrTag;
 use futures::{StreamExt, future::join_all, stream};
 use std::{env, time::Duration};
 use tempo_chainspec::constants::gas::{
-    TEMPO_T1_BASE_FEE, TEMPO_T6_BASE_FEE_CAP, TEMPO_T6_BASE_FEE_FLOOR, tempo_t6_next_block_base_fee,
+    TEMPO_T1_BASE_FEE, TEMPO_T6_BASE_FEE_FLOOR, tempo_t6_next_block_base_fee,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
 
@@ -36,7 +36,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .header
         .base_fee_per_gas
         .expect("Could not get basefee");
-    assert_eq!(base_fee, TEMPO_T6_BASE_FEE_CAP);
+    assert_eq!(base_fee, TEMPO_T1_BASE_FEE);
 
     let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
 
@@ -84,7 +84,7 @@ async fn test_base_fee() -> eyre::Result<()> {
             .header
             .base_fee_per_gas
             .expect("Could not get basefee"),
-        TEMPO_T6_BASE_FEE_CAP
+        TEMPO_T1_BASE_FEE
     );
 
     for window in blocks.windows(2) {
