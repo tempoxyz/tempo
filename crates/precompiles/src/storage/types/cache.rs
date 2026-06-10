@@ -1,7 +1,7 @@
 use alloy_primitives::map::HashMap;
 use std::{cell::RefCell, hash::Hash};
 
-const CACHE_THRESHOLD: usize = 100;
+const CACHE_THRESHOLD: usize = 32;
 
 #[derive(Debug)]
 pub(crate) struct LinearCache<K, H> {
