@@ -667,7 +667,8 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    pool.remove_transactions(updates.expired_txs.clone());
+                    let expired_txs = std::mem::take(&mut updates.expired_txs);
+                    pool.remove_transactions(expired_txs);
                     metrics.expired_transactions_evicted.increment(expired_count as u64);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
