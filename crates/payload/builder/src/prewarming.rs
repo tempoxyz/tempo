@@ -105,7 +105,8 @@ impl BestTransactionsPrewarming {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                           publish_before_prewarm: bool| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
@@ -117,27 +118,36 @@ impl BestTransactionsPrewarming {
                 } else {
                     None
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
-
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
-                });
+
+                if publish_before_prewarm {
+                    let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                    scope.spawn(move |_| {
+                        Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    });
+                } else {
+                    let prewarm_tx = tx.clone();
+                    scope.spawn(move |_| {
+                        Self::prewarm_transaction(prewarm, prewarm_tx, expiring_nonce_offset);
+                        let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    });
+                    let _ = ctx.transactions_tx.send(Some(tx));
+                }
             };
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
             for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+                advance(&mut ctx, true);
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        advance(&mut ctx, false);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
