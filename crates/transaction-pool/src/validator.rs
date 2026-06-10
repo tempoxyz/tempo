@@ -1,5 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
+    state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
@@ -13,7 +14,7 @@ use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
 use reth_provider::BlockReaderIdExt;
-use reth_revm::{cached::CachedReads, database::StateProviderDatabase};
+use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
     AccountReader, BytecodeReader, StateProvider, StateProviderFactory,
     errors::{ProviderError, ProviderResult},
@@ -24,8 +25,12 @@ use reth_transaction_pool::{
 };
 use revm::{
     DatabaseRef,
-    context::result::{EVMError, InvalidTransaction},
+    context::{
+        ContextTr, JournalTr,
+        result::{EVMError, InvalidTransaction},
+    },
 };
+use std::sync::Arc;
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -38,8 +43,7 @@ use tempo_primitives::{
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
 use tempo_revm::{
-    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, ValidationContext,
-    error::FeePaymentError,
+    TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, error::FeePaymentError,
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -93,6 +97,11 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
+    /// Tip-scoped cache of state reads shared across validation calls, replaced on each
+    /// `on_new_head_block`.
+    cached_state: RwLock<Arc<StateCache>>,
+    /// The chain spec, cached to avoid cloning the shared `Arc` on every validation.
+    chain_spec: Arc<TempoChainSpec>,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -119,12 +128,15 @@ where
                     .header(),
             )
             .expect("failed constructing EvmEnv from latest header");
+        let chain_spec = inner.client().chain_spec();
         Self {
             inner,
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
+            cached_state: RwLock::new(Arc::new(StateCache::default())),
+            chain_spec,
         }
     }
 
@@ -306,58 +318,61 @@ where
         Ok(())
     }
 
-    /// Runs the Tempo EVM validation pipeline against the given state, reusing the
-    /// same validation logic that the block executor uses
-    /// ([`TempoEvm::validate_transaction`]).
+    /// Validates a batch of transactions against the same state snapshot.
     ///
-    /// A throwaway [`TempoEvm`] is created over a cached database; all state
-    /// mutations (nonce bumps, fee deduction, key authorisation) are applied to the
-    /// journal and discarded when the EVM is dropped.
-    fn validate_with_evm<DB>(
+    /// All transactions share one throwaway [`TempoEvm`] (journaled writes are discarded
+    /// after each transaction while loaded state stays warm) and the validator's tip-scoped
+    /// [`StateCache`], so repeated state reads are served from memory across transactions
+    /// and across concurrent validation calls.
+    fn validate_batch<P: StateProvider>(
         &self,
-        transaction: &TempoPooledTransaction,
-        db: DB,
-    ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>>
-    where
-        DB: Database<Error = ProviderError>,
-    {
+        state_provider: P,
+        transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
+    ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
+        let cached_state = self.cached_state.read().clone();
+        let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
         let evm_env = self.cached_evm_env.read().clone();
 
-        // Create a throwaway EVM and run validation.
+        // Create a throwaway EVM for the whole batch and run validation, reusing the same
+        // validation logic that the block executor uses ([`TempoEvm::validate_transaction`]).
         // - Skip `valid_after` check: the pool intentionally accepts transactions with a
         //   future `valid_after` (queued until executable).
         // - Disable nonce check: the pool accepts future-nonce transactions (queued)
         //   and handles nonce ordering separately.
         // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
-        let mut evm = TempoEvm::new(db, evm_env);
+        let mut evm = TempoEvm::new(&mut db, evm_env);
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
 
-        if let Some(tx_env) = transaction.cached_tx_env() {
-            evm.validate_transaction(tx_env.clone())
-        } else {
-            let result = evm.validate_transaction(transaction.tx_env_slow());
-            transaction.cache_tx_env(evm.into_ctx().tx);
-            result
-        }
+        transactions
+            .into_iter()
+            .map(|(origin, transaction)| {
+                let outcome = self.validate_one_with_evm(origin, transaction, &mut evm);
+                // Discard this transaction's journaled writes (nonce bumps, fee deduction,
+                // key authorisation) while keeping loaded accounts and storage warm for the
+                // rest of the batch.
+                evm.ctx_mut().journal_mut().discard_tx();
+                outcome
+            })
+            .collect()
     }
 
-    /// Validates one transaction against a state snapshot.
+    /// Validates one transaction with the given throwaway EVM.
     ///
-    /// Caller-owned `cached_reads` lets batch validation reuse DB reads across transactions from
-    /// the same snapshot.
-    fn validate_one(
+    /// The caller is responsible for discarding the journaled writes afterwards.
+    fn validate_one_with_evm<DB>(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        mut state_provider: impl StateProvider,
-        cached_reads: &mut CachedReads,
-    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        evm: &mut TempoEvm<DB>,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction>
+    where
+        DB: Database<Error = ProviderError> + DatabaseRef<Error = ProviderError>,
+    {
         // Get the current hardfork based on tip timestamp
         let spec = self
-            .inner
-            .chain_spec()
+            .chain_spec
             .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         // Reject system transactions, those are never allowed in the pool.
@@ -413,8 +428,14 @@ where
         // authorization, and balance checks.
         //
         // Returns resolved fee token and key expiry for pool caching.
-        let mut db = cached_reads.as_db_mut(StateProviderDatabase::new(&state_provider));
-        let validation_ctx = match self.validate_with_evm(&transaction, &mut db) {
+        let result = if let Some(tx_env) = transaction.cached_tx_env() {
+            evm.validate_transaction(tx_env.clone())
+        } else {
+            let result = evm.validate_transaction(transaction.tx_env_slow());
+            transaction.cache_tx_env(core::mem::take(&mut evm.ctx_mut().tx));
+            result
+        };
+        let validation_ctx = match result {
             Ok(ctx) => ctx,
             Err(err) => match err {
                 EVMError::Transaction(err) => {
@@ -468,10 +489,11 @@ where
 
         // Validate that transaction has enough liquidity against at least one of the recent validator tokens.
         let fee = transaction.fee_token_cost();
-        match self
-            .amm_liquidity_cache
-            .has_enough_liquidity(validation_ctx.fee_token, fee, &mut db)
-        {
+        match self.amm_liquidity_cache.has_enough_liquidity(
+            validation_ctx.fee_token,
+            fee,
+            evm.db_mut(),
+        ) {
             Ok(true) => {}
             Ok(false) => {
                 return TransactionValidationOutcome::Invalid(
@@ -492,7 +514,7 @@ where
         // (chain_id, EIP-3607 code check, protocol nonce, etc.) and to produce
         // the Valid outcome with state_nonce and balance for pool ordering.
         let inner_validation = {
-            let cached_state_provider = CachedAccountInfoReader::new(db.into_db());
+            let cached_state_provider = CachedAccountInfoReader::new(evm.db_ref());
             self.inner
                 .validate_one_with_state_provider(origin, transaction, &cached_state_provider)
         };
@@ -541,16 +563,13 @@ where
 
                     // Check if T1 hardfork is active for expiring nonce handling
                     let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self
-                        .inner
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(current_time);
+                    let is_t1_active = self.chain_spec.is_t1_active_at_timestamp(current_time);
 
                     if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
-                        state_nonce = match state_provider.with_read_only_storage_ctx(spec, || {
+                        state_nonce = match evm.db_mut().with_read_only_storage_ctx(spec, || {
                             NonceManager::new().get_nonce(INonce::getNonceCall {
                                 account: transaction.transaction().sender(),
                                 nonceKey: nonce_key,
@@ -621,8 +640,9 @@ where
             }
         };
 
-        let mut cached_reads = CachedReads::default();
-        self.validate_one(origin, transaction, state_provider, &mut cached_reads)
+        self.validate_batch(state_provider, core::iter::once((origin, transaction)))
+            .pop()
+            .expect("validate_batch returns one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -642,11 +662,7 @@ where
             }
         };
 
-        let mut cached_reads = CachedReads::default();
-        transactions
-            .into_iter()
-            .map(|(origin, tx)| self.validate_one(origin, tx, &state_provider, &mut cached_reads))
-            .collect()
+        self.validate_batch(state_provider, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -666,11 +682,10 @@ where
             }
         };
 
-        let mut cached_reads = CachedReads::default();
-        transactions
-            .into_iter()
-            .map(|tx| self.validate_one(origin, tx, &state_provider, &mut cached_reads))
-            .collect()
+        self.validate_batch(
+            state_provider,
+            transactions.into_iter().map(|tx| (origin, tx)),
+        )
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
@@ -682,6 +697,9 @@ where
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+
+        // State changed, drop all cached reads.
+        *self.cached_state.write() = Arc::new(StateCache::default());
     }
 }
 
@@ -729,6 +747,7 @@ mod tests {
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BytecodeReader};
     use reth_transaction_pool::{
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
