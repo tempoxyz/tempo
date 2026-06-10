@@ -16,7 +16,7 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
@@ -450,12 +450,7 @@ fn storage_touches_for_transaction(
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-        tx.transaction
-            .inner()
-            .fee_token()
-            .unwrap_or(DEFAULT_FEE_TOKEN)
-    });
+    let fee_token = tx.transaction.effective_fee_token();
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
@@ -698,6 +693,7 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+    use tempo_precompiles::DEFAULT_FEE_TOKEN;
     use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
