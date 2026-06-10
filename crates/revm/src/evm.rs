@@ -2029,7 +2029,7 @@ mod tests {
     /// Regression for the reported flow:
     /// - pre-tx fee collection debits an access-key spending limit down to zero (`x -> 0`),
     /// - user execution fails/reverts under its own execution checkpoint,
-    /// - TIP-1060 settlement runs at execution end,
+    /// - TIP-1060 settlement runs during post-execution refund accounting,
     /// - post-tx fee refund restores the spending limit (`0 -> x`) after settlement.
     ///
     /// This uses the real handler transaction path so drift in `collect_fee_pre_tx`, `execution`,
@@ -2099,8 +2099,8 @@ mod tests {
 
         // Real failed AA multicall: validation runs collect_fee_pre_tx, the first user call
         // performs an SSTORE, the second user call fails and reverts the user-call checkpoint,
-        // the handler runs apply_refund at execution end, then reimburse_caller restores the
-        // unused keychain spending limit via collect_fee_post_tx.
+        // the handler runs apply_refund during post-execution refund accounting, then
+        // reimburse_caller restores the unused keychain spending limit via `collect_fee_post_tx`.
         let storage_writer = Address::repeat_byte(0xA3);
         evm.ctx.db_mut().insert_account_info(
             storage_writer,

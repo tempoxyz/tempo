@@ -11,6 +11,7 @@ use revm::{
     context_interface::cfg::GasParams,
     interpreter::{
         Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
+        gas::GasTracker,
         instruction_context::{GasStateOutcome, GasStateTr},
         interpreter::EthInterpreter,
     },
@@ -44,7 +45,6 @@ pub fn apply_refund<DB: Database, I>(
         .unwrap_or_default();
 
     let mut refunds = 0;
-
     for (key, sstores_num) in sstores {
         if sstores_num.is_zero() {
             continue;
@@ -78,16 +78,12 @@ pub fn apply_refund<DB: Database, I>(
     Ok(())
 }
 
-/// Opcode-level [`StorageCreditsBackend`] adapter over an [`InstructionContext`].
-///
-/// Bridges the revm host/interpreter to the backend-agnostic
-/// [`sstore_storage_credits`] so the SSTORE opcode runs the same TIP-1060
-/// storage credits policy as precompile-driven storage writes.
-struct InterpreterStorageCredits<'a, 'b, DB: Database> {
-    context: &'a mut InstructionContext<'b, TempoContext<DB>, EthInterpreter>,
+struct StorageCreditsContext<'a, DB: Database> {
+    context: &'a mut TempoContext<DB>,
+    gas_tracker: &'a mut GasTracker,
 }
 
-impl<DB: Database> StorageCreditsBackend for InterpreterStorageCredits<'_, '_, DB> {
+impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     type Error = InstructionResult;
 
     #[inline]
@@ -102,30 +98,17 @@ impl<DB: Database> StorageCreditsBackend for InterpreterStorageCredits<'_, '_, D
 
     #[inline]
     fn gas_params(&self) -> &GasParams {
-        self.context.host.gas_params()
+        self.context.gas_params()
     }
 
     #[inline]
-    fn remaining_gas(&self) -> u64 {
-        self.context.interpreter.gas.remaining()
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        self.gas_tracker
     }
-
-    #[inline]
-    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
-        if self.context.interpreter.gas.record_regular_cost(cost) {
-            Ok(())
-        } else {
-            Err(InstructionResult::OutOfGas)
-        }
-    }
-
     #[inline]
     fn load_storage_credit_account(&mut self) -> Result<(), Self::Error> {
-        self.context.host.load_account_info_skip_cold_load(
-            STORAGE_CREDITS_ADDRESS,
-            false,
-            false,
-        )?;
+        self.context
+            .load_account_info_skip_cold_load(STORAGE_CREDITS_ADDRESS, false, false)?;
         Ok(())
     }
 
@@ -137,7 +120,6 @@ impl<DB: Database> StorageCreditsBackend for InterpreterStorageCredits<'_, '_, D
     ) -> Result<StateLoad<U256>, Self::Error> {
         Ok(self
             .context
-            .host
             .sload_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, skip_cold_load)?)
     }
 
@@ -147,16 +129,15 @@ impl<DB: Database> StorageCreditsBackend for InterpreterStorageCredits<'_, '_, D
         key: U256,
         value: U256,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
-        self.context
-            .host
-            .sstore_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, value, false)
-            .map_err(Into::into)
+        Ok(self
+            .context
+            .sstore_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, value, false)?)
     }
 
     #[inline]
     fn credit_tstore_increment(&mut self, key: U256) {
-        let pending = self.context.host.tload(STORAGE_CREDITS_ADDRESS, key);
-        self.context.host.tstore(
+        let pending = self.context.tload(STORAGE_CREDITS_ADDRESS, key);
+        self.context.tstore(
             STORAGE_CREDITS_ADDRESS,
             key,
             pending.saturating_add(U256::from(1)),
@@ -177,6 +158,14 @@ where
         owner: Address,
         values: &StateLoad<SStoreResult>,
     ) -> Result<GasStateOutcome, InstructionResult> {
-        sstore_storage_credits(&mut InterpreterStorageCredits { context }, owner, values)
+        let InstructionContext { interpreter, host } = context;
+        sstore_storage_credits(
+            &mut StorageCreditsContext {
+                context: host,
+                gas_tracker: interpreter.gas.tracker_mut(),
+            },
+            owner,
+            values,
+        )
     }
 }
