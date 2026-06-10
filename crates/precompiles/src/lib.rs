@@ -243,7 +243,7 @@ impl TIP20Token {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("TIP20Token", cfg, |input| {
-            Self::from_address(address).expect("TIP20 prefix already verified")
+            Self::from_address_unchecked(address)
         })
     }
 }
