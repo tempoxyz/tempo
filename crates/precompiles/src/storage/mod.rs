@@ -70,6 +70,30 @@ pub trait PrecompileStorageProvider {
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
 
+    /// Increments a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let value = self
+            .sload(address, key)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore(address, key, value)
+    }
+
+    /// Decrements a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let current = self.sload(address, key)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.sstore(address, key, value)
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
 
@@ -169,6 +193,30 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+
+    /// Increments a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let value = self
+            .load(slot)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.store(slot, value)
+    }
+
+    /// Decrements a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let current = self.load(slot)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.store(slot, value)
+    }
 }
 
 /// Trait providing access to a contract's address.
