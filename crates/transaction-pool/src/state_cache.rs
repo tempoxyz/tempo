@@ -3,6 +3,7 @@
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -21,6 +22,11 @@ pub(crate) struct StateCache {
     storage: DashMap<(Address, U256), U256, DefaultHashBuilder>,
     /// Cached bytecode keyed by code hash.
     contracts: DashMap<B256, Bytecode, DefaultHashBuilder>,
+    /// Approximate entry counts for cap enforcement; `DashMap::len` locks every shard and is
+    /// too expensive for the insert path. Racing inserts may overshoot the caps slightly.
+    account_count: AtomicUsize,
+    storage_count: AtomicUsize,
+    contract_count: AtomicUsize,
 }
 
 impl StateCache {
@@ -59,8 +65,14 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
             return Ok(account.clone());
         }
         let account = self.db.basic_ref(address)?;
-        if self.cache.accounts.len() < StateCache::MAX_ACCOUNTS {
-            self.cache.accounts.insert(address, account.clone());
+        if self.cache.account_count.load(Ordering::Relaxed) < StateCache::MAX_ACCOUNTS
+            && self
+                .cache
+                .accounts
+                .insert(address, account.clone())
+                .is_none()
+        {
+            self.cache.account_count.fetch_add(1, Ordering::Relaxed);
         }
         Ok(account)
     }
@@ -70,8 +82,14 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
             return Ok(code.clone());
         }
         let code = self.db.code_by_hash_ref(code_hash)?;
-        if self.cache.contracts.len() < StateCache::MAX_CONTRACTS {
-            self.cache.contracts.insert(code_hash, code.clone());
+        if self.cache.contract_count.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
+            && self
+                .cache
+                .contracts
+                .insert(code_hash, code.clone())
+                .is_none()
+        {
+            self.cache.contract_count.fetch_add(1, Ordering::Relaxed);
         }
         Ok(code)
     }
@@ -81,8 +99,10 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
             return Ok(*value);
         }
         let value = self.db.storage_ref(address, index)?;
-        if self.cache.storage.len() < StateCache::MAX_STORAGE_SLOTS {
-            self.cache.storage.insert((address, index), value);
+        if self.cache.storage_count.load(Ordering::Relaxed) < StateCache::MAX_STORAGE_SLOTS
+            && self.cache.storage.insert((address, index), value).is_none()
+        {
+            self.cache.storage_count.fetch_add(1, Ordering::Relaxed);
         }
         Ok(value)
     }
