@@ -262,7 +262,7 @@ where
                         ExecutionTaskResult::Completed { canonicalized } => {
                             if let Some(canonicalized) = canonicalized {
                                 // There is only one execution task running at
-                                // a time, and `last_canoncalized` is only
+                                // a time, and `last_canonicalized` is only
                                 // mutated here to keep a consistent view.
                                 self.last_canonicalized = canonicalized;
                             }
