@@ -214,17 +214,20 @@ impl AA2dPool {
             transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
+        // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
+        // Only treat as expiring nonce if T1 hardfork is active.
+        //
+        // No `by_hash` duplicate check needed here: a duplicate transaction maps to the same
+        // expiring nonce hash, which `add_expiring_nonce_transaction` rejects.
+        if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
+            return self.add_expiring_nonce_transaction(transaction);
+        }
+
         if self.contains(transaction.hash()) {
             return Err(PoolError::new(
                 *transaction.hash(),
                 PoolErrorKind::AlreadyImported,
             ));
-        }
-
-        // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
-        // Only treat as expiring nonce if T1 hardfork is active
-        if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
-            return self.add_expiring_nonce_transaction(transaction);
         }
 
         let tx_id = transaction
@@ -275,18 +278,30 @@ impl AA2dPool {
                 Some(replaced)
             }
             Entry::Vacant(entry) => {
-                // Check per-sender limit for new (non-replacement) transactions
-                let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-                if sender_count >= self.config.max_txs_per_sender {
-                    return Err(PoolError::new(
-                        *transaction.hash(),
-                        PoolErrorKind::SpammerExceededCapacity(sender),
-                    ));
+                // Check per-sender limit and increment the count for new (non-replacement)
+                // transactions with a single map lookup
+                match self.txs_by_sender.entry(sender) {
+                    hash_map::Entry::Occupied(mut count) => {
+                        if *count.get() >= self.config.max_txs_per_sender {
+                            return Err(PoolError::new(
+                                *transaction.hash(),
+                                PoolErrorKind::SpammerExceededCapacity(sender),
+                            ));
+                        }
+                        *count.get_mut() += 1;
+                    }
+                    hash_map::Entry::Vacant(count) => {
+                        if self.config.max_txs_per_sender == 0 {
+                            return Err(PoolError::new(
+                                *transaction.hash(),
+                                PoolErrorKind::SpammerExceededCapacity(sender),
+                            ));
+                        }
+                        count.insert(1);
+                    }
                 }
 
                 entry.insert(Arc::clone(&tx));
-                // Increment sender count for new transactions
-                *self.txs_by_sender.entry(sender).or_insert(0) += 1;
                 self.queued_count += 1;
                 None
             }
@@ -342,6 +357,10 @@ impl AA2dPool {
                         if !was_pending {
                             newly_pending += 1;
                             promoted.push(existing_tx.inner.clone());
+                        } else {
+                            // already pending, so the rest of the contiguous sequence is
+                            // already pending as well
+                            break;
                         }
                     }
                 }
@@ -416,14 +435,27 @@ impl AA2dPool {
             hash_map::Entry::Vacant(entry) => entry,
         };
 
-        // Check per-sender limit
+        // Check per-sender limit and increment the count with a single map lookup
         let sender = transaction.sender();
-        let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-        if sender_count >= self.config.max_txs_per_sender {
-            return Err(PoolError::new(
-                tx_hash,
-                PoolErrorKind::SpammerExceededCapacity(sender),
-            ));
+        match self.txs_by_sender.entry(sender) {
+            hash_map::Entry::Occupied(mut count) => {
+                if *count.get() >= self.config.max_txs_per_sender {
+                    return Err(PoolError::new(
+                        tx_hash,
+                        PoolErrorKind::SpammerExceededCapacity(sender),
+                    ));
+                }
+                *count.get_mut() += 1;
+            }
+            hash_map::Entry::Vacant(count) => {
+                if self.config.max_txs_per_sender == 0 {
+                    return Err(PoolError::new(
+                        tx_hash,
+                        PoolErrorKind::SpammerExceededCapacity(sender),
+                    ));
+                }
+                count.insert(1);
+            }
         }
 
         // Create pending transaction
@@ -452,8 +484,6 @@ impl AA2dPool {
         }
         self.by_hash.insert(tx_hash, transaction.clone());
 
-        // Increment sender count
-        *self.txs_by_sender.entry(sender).or_insert(0) += 1;
         self.pending_count += 1;
 
         trace!(target: "txpool", hash = %tx_hash, "Added expiring nonce transaction");
