@@ -12,9 +12,11 @@ use super::{AccountState, CreditMode, TIP1060StorageCredits};
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
-    interpreter::{SStoreResult, StateLoad, instruction_context::GasStateOutcome},
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker, instruction_context::GasStateOutcome},
 };
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
+
+const SSTORE_SET_WITHOUT_EXPANSION_COST: u64 = 20_000;
 
 /// Storage and gas operations required by [`sstore_storage_credits`].
 ///
@@ -36,11 +38,17 @@ pub trait StorageCreditsBackend {
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
 
-    /// Remaining regular gas.
-    fn remaining_gas(&self) -> u64;
+    /// Gas tracker for the active execution context.
+    fn gas_tracker(&mut self) -> &mut GasTracker;
 
     /// Charges `cost` regular gas, returning [`out_of_gas`](Self::out_of_gas) if insufficient.
-    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error>;
+    #[inline]
+    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
+        self.gas_tracker()
+            .record_regular_cost(cost)
+            .then_some(())
+            .ok_or_else(Self::out_of_gas)
+    }
 
     /// Loads (warms) the storage credits contract account.
     fn load_storage_credit_account(&mut self) -> Result<(), Self::Error>;
@@ -96,7 +104,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         if is_cold {
             backend.charge_gas(backend.gas_params().cold_storage_cost())?;
         }
-        if values.new_values_changes_present() && values.is_original_eq_present() {
+        if values.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         }
 
@@ -114,7 +122,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
-    let skip_cold = backend.remaining_gas() < additional_cold_cost;
+    let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load = backend.load_credits(account_slot, skip_cold)?;
     if storage_credit_state_load.is_cold {
         backend.charge_gas(additional_cold_cost)?;
@@ -138,7 +146,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     if caller_state_load.is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
                     }
-                    backend.charge_gas(20_000)?;
+                    backend.charge_gas(SSTORE_SET_WITHOUT_EXPANSION_COST)?;
                     storage_credits.balance -= 1;
                     was_changed = true;
                     outcome.skip_gas = true;
@@ -161,8 +169,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             .data;
 
         // Only when change happens charge additional gas.
-        // Creation of credit slot is compensated by creation of the contract creation.
-        // And creation and deletion of credit is compensated by EIP-1060, so no additional gas is charged.
+        // Creation of credit slot is compensated by account creation cost.
+        // Creation and deletion of credit is compensated by TIP-1060, so no additional gas is charged.
         if result.new_values_changes_present() && result.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };
