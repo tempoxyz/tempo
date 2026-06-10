@@ -17,6 +17,7 @@ use tempo_primitives::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
 };
+use tempo_contracts::precompiles::TIP20_CHANNEL_RESERVE_ADDRESS;
 
 /// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
@@ -343,7 +344,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
-            unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
+            unique_tx_identifier: aa_unique_tx_identifier(tx, aa_signed, caller),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -369,6 +370,23 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 expiring_nonce_idx: None,
             })),
         }
+    }
+}
+
+fn aa_unique_tx_identifier(
+    tx: &TempoTransaction,
+    aa_signed: &AASigned,
+    caller: Address,
+) -> Option<B256> {
+    if tx.is_expiring_nonce_tx()
+        || tx
+            .calls
+            .iter()
+            .any(|call| matches!(call.to, TxKind::Call(to) if to == TIP20_CHANNEL_RESERVE_ADDRESS))
+    {
+        Some(aa_signed.expiring_nonce_hash(caller))
+    } else {
+        None
     }
 }
 
@@ -435,6 +453,7 @@ mod tests {
     };
 
     use crate::{TempoInvalidTransaction, TempoTxEnv};
+    use super::TIP20_CHANNEL_RESERVE_ADDRESS;
 
     fn create_call(to: TxKind) -> Call {
         Call {
@@ -548,13 +567,24 @@ mod tests {
             "expiring nonce channel opens must use the sender-scoped transaction identifier"
         );
 
-        // Regular 2D nonce txs still use the same encode_for_signing||sender construction.
+        // Ordinary AA transfers do not need the channel-reserve context hash.
         let regular_signed = make_aa_signed(U256::from(42));
         let regular_env = super::TempoTxEnv::from_recovered_tx(&regular_signed, caller);
         assert_eq!(
             regular_env.channel_open_context_hash(),
-            Some(regular_signed.expiring_nonce_hash(caller)),
-            "non-expiring AA channel opens must use encode_for_signing||sender"
+            None,
+            "non-expiring AA transfers should not compute a channel context hash"
+        );
+
+        // Non-expiring channel reserve calls still use the same encode_for_signing||sender construction.
+        let mut channel_reserve_signed = make_aa_signed(U256::from(42));
+        channel_reserve_signed.tx_mut().calls[0].to = TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS);
+        let channel_reserve_env =
+            super::TempoTxEnv::from_recovered_tx(&channel_reserve_signed, caller);
+        assert_eq!(
+            channel_reserve_env.channel_open_context_hash(),
+            Some(channel_reserve_signed.expiring_nonce_hash(caller)),
+            "non-expiring AA channel reserve calls must use encode_for_signing||sender"
         );
     }
 
