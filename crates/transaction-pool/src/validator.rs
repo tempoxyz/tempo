@@ -26,6 +26,7 @@ use revm::{
     DatabaseRef,
     context::result::{EVMError, InvalidTransaction},
 };
+use std::sync::atomic::{AtomicU8, Ordering};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -93,6 +94,12 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
+    /// The Tempo hardfork active at the current tip, stored as an index into
+    /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
+    ///
+    /// Cached here so hot paths can resolve the active hardfork with a single atomic load
+    /// instead of walking the chain spec's fork schedule.
+    active_hardfork: AtomicU8,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -119,13 +126,23 @@ where
                     .header(),
             )
             .expect("failed constructing EvmEnv from latest header");
+        let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
         Self {
             inner,
             aa_valid_after_max_secs,
             max_tempo_authorizations,
             amm_liquidity_cache,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
+            active_hardfork,
         }
+    }
+
+    /// Returns the Tempo hardfork active at the current tip.
+    ///
+    /// Updated on each `on_new_head_block`.
+    pub fn active_hardfork(&self) -> TempoHardfork {
+        TempoHardfork::from_variant_index(self.active_hardfork.load(Ordering::Relaxed))
+            .expect("stored hardfork index is valid")
     }
 
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
@@ -354,11 +371,8 @@ where
         mut state_provider: impl StateProvider,
         cached_reads: &mut CachedReads,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
-        // Get the current hardfork based on tip timestamp
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+        // Get the hardfork active at the current tip
+        let spec = self.active_hardfork();
 
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -677,11 +691,14 @@ where
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
-        *self.cached_evm_env.write() = self
+        let evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        self.active_hardfork
+            .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
+        *self.cached_evm_env.write() = evm_env;
     }
 }
 

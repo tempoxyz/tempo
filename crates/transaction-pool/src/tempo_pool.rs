@@ -29,10 +29,7 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -171,7 +168,7 @@ where
             .inner
             .fork_tracker()
             .tip_timestamp();
-        let spec = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+        let spec = self.protocol_pool.validator().validator().active_hardfork();
 
         // Cache policy lookups per fee token to avoid redundant storage reads.
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
@@ -531,14 +528,7 @@ where
                     };
 
                     // Get the active Tempo hardfork for expiring nonce handling
-                    let tip_timestamp = self
-                        .protocol_pool
-                        .validator()
-                        .validator()
-                        .inner
-                        .fork_tracker()
-                        .tip_timestamp();
-                    let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+                    let hardfork = self.protocol_pool.validator().validator().active_hardfork();
 
                     let tx = Arc::new(tx);
                     let added =

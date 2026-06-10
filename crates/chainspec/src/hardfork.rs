@@ -137,6 +137,20 @@ macro_rules! tempo_hardfork {
             }
 
             #[test]
+            fn test_variant_index_roundtrip() {
+                for fork in TempoHardfork::VARIANTS {
+                    assert_eq!(
+                        TempoHardfork::from_variant_index(fork.variant_index()),
+                        Some(*fork)
+                    );
+                }
+                assert_eq!(
+                    TempoHardfork::from_variant_index(TempoHardfork::VARIANTS.len() as u8),
+                    None
+                );
+            }
+
+            #[test]
             #[cfg(feature = "serde")]
             fn test_tempo_hardfork_serde() {
                 for fork in TempoHardfork::VARIANTS {
@@ -208,6 +222,25 @@ tempo_hardfork! (
 );
 
 impl TempoHardfork {
+    /// Returns the position of this hardfork in [`Self::VARIANTS`].
+    ///
+    /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
+    pub const fn variant_index(&self) -> u8 {
+        *self as u8
+    }
+
+    /// Returns the hardfork at the given [`Self::VARIANTS`] position, see
+    /// [`Self::variant_index`].
+    ///
+    /// Returns `None` if the index is out of bounds.
+    pub const fn from_variant_index(index: u8) -> Option<Self> {
+        if (index as usize) < Self::VARIANTS.len() {
+            Some(Self::VARIANTS[index as usize])
+        } else {
+            None
+        }
+    }
+
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
     /// - Pre-T1: None
     /// - T1+: 30M gas (fixed)
