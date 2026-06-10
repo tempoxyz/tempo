@@ -134,45 +134,44 @@ impl BestTransactionsPrewarming {
                 advance(&mut ctx);
             }
 
-            let handle_command =
-                |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
-                 command: BestTransactionsCommand|
-                 -> bool {
-                    match command {
-                        BestTransactionsCommand::Advance => {
-                            advance(ctx);
-                        }
-                        BestTransactionsCommand::Invalid {
-                            invalid,
-                            old_rx,
-                            new_tx,
-                        } => {
-                            ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                            ctx.transactions_tx = new_tx;
+            let handle_command = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                                  command: BestTransactionsCommand|
+             -> bool {
+                match command {
+                    BestTransactionsCommand::Advance => {
+                        advance(ctx);
+                    }
+                    BestTransactionsCommand::Invalid {
+                        invalid,
+                        old_rx,
+                        new_tx,
+                    } => {
+                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                        ctx.transactions_tx = new_tx;
 
-                            for tx in old_rx {
-                                if let Some(tx) = tx
-                                    && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
-                                {
-                                    let _ = ctx.transactions_tx.send(Some(tx));
-                                }
+                        for tx in old_rx {
+                            if let Some(tx) = tx
+                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                            {
+                                let _ = ctx.transactions_tx.send(Some(tx));
                             }
                         }
-                        BestTransactionsCommand::NoUpdates => {
-                            ctx.best_txs.no_updates();
-                        }
-                        BestTransactionsCommand::SkipBlobs(skip_blobs) => {
-                            ctx.best_txs.set_skip_blobs(skip_blobs);
-                        }
-                        BestTransactionsCommand::Stop { drain_rx } => {
-                            ctx.prewarm.stop();
-                            drop(drain_rx);
-                            return false;
-                        }
                     }
+                    BestTransactionsCommand::NoUpdates => {
+                        ctx.best_txs.no_updates();
+                    }
+                    BestTransactionsCommand::SkipBlobs(skip_blobs) => {
+                        ctx.best_txs.set_skip_blobs(skip_blobs);
+                    }
+                    BestTransactionsCommand::Stop { drain_rx } => {
+                        ctx.prewarm.stop();
+                        drop(drain_rx);
+                        return false;
+                    }
+                }
 
-                    true
-                };
+                true
+            };
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 if !handle_command(&mut ctx, command) {
