@@ -1,5 +1,6 @@
 //! Mailbox for sending consensus activity to the feed actor.
 
+use commonware_actor::Feedback;
 use commonware_consensus::{
     Reporter,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
@@ -29,9 +30,12 @@ impl Mailbox {
 impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         if self.sender.unbounded_send(activity).is_err() {
             error!("failed sending activity to feed because it is no longer running");
+            Feedback::Closed
+        } else {
+            Feedback::Ok
         }
     }
 }

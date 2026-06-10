@@ -77,11 +77,11 @@ pub(crate) async fn init_finalizations_archive<TContext>(
     commonware_storage::archive::Error,
 >
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let start = Instant::now();
     let archive = immutable::Archive::init(
-        context.with_label("finalizations_by_height"),
+        context.child("finalizations_by_height"),
         immutable::Config {
             metadata_partition: format!("{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-metadata"),
             freezer_table_partition: format!(
@@ -130,7 +130,7 @@ pub(crate) async fn init_finalized_blocks<TContext, P>(
     retention_blocks: u64,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     P: FinalizedBlocksProvider + 'static,
 {
     ensure!(
@@ -161,11 +161,11 @@ async fn init_prunable_finalized_blocks_archive<TContext>(
     page_cache: CacheRef,
 ) -> Result<prunable::Archive<TwoCap, TContext, Digest, Block>, commonware_storage::archive::Error>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
     let start = Instant::now();
     let archive = prunable::Archive::init(
-        context.with_label("finalized_blocks_prunable"),
+        context.child("finalized_blocks_prunable"),
         prunable::Config {
             translator: TwoCap,
             key_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-key"),
@@ -202,7 +202,7 @@ pub async fn find_last_finalized_marker<TContext, P>(
     max_depth: u64,
 ) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
