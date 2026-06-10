@@ -261,10 +261,11 @@ where
                     match task_result {
                         ExecutionTaskResult::Completed { canonicalized } => {
                             if let Some(canonicalized) = canonicalized {
+                                // There is only one execution task running at
+                                // a time, and `last_canoncalized` is only
+                                // mutated here to keep a consistent view.
                                 self.last_canonicalized = canonicalized;
                             }
-                            // A new task will be scheduled on the next loop
-                            // iteration.
                         }
                         ExecutionTaskResult::Fatal { error } => {
                             error_span!("shutdown").in_scope(|| error!(
@@ -347,22 +348,6 @@ where
         }
     }
 
-    fn prepare_latest_observed_finalized_tip(&mut self) -> Option<ForkchoiceUpdateRequest> {
-        if self.is_backfilling() {
-            return None;
-        }
-
-        let (height, digest) = self.latest_observed_finalized_tip?;
-        self.prepare_forkchoice_update(
-            Span::current(),
-            HeadOrFinalized::Finalized,
-            height,
-            digest,
-            None,
-            ForkchoiceUpdateResponse::None,
-        )
-    }
-
     #[instrument(skip_all)]
     fn send_forkchoice_update_heartbeat(&mut self) {
         self.enqueue_execution_request(ExecutionRequest::Heartbeat {
@@ -379,10 +364,21 @@ where
                     info_span!("handle_message")
                         .in_scope(|| info!("request to canonicalize deferred while backfilling"));
                 }
-                self.enqueue_execution_request(ExecutionRequest::CanonicalizeHead {
-                    cause,
-                    request,
-                });
+                let CanonicalizeHead {
+                    height,
+                    digest,
+                    response,
+                } = request;
+                self.enqueue_execution_request(ExecutionRequest::CanonicalizeHead(Box::new(
+                    ForkchoiceUpdateTask {
+                        cause,
+                        head_or_finalized: HeadOrFinalized::Head,
+                        height,
+                        digest,
+                        attrs: None,
+                        response: ForkchoiceUpdateResponse::Canonicalize { response },
+                    },
+                )));
             }
             Command::CanonicalizeAndBuild(request) => {
                 if is_backfilling {
@@ -407,47 +403,6 @@ where
         Ok(())
     }
 
-    /// Prepares a forkchoice update request from the latest state returned by
-    /// the execution layer.
-    #[instrument(
-        skip_all,
-        parent = &cause,
-        fields(
-            head.height = %height,
-            head.digest = %digest,
-            %head_or_finalized,
-        ),
-    )]
-    fn prepare_forkchoice_update(
-        &mut self,
-        cause: Span,
-        head_or_finalized: HeadOrFinalized,
-        height: Height,
-        digest: Digest,
-        attrs: Option<TempoPayloadAttributes>,
-        response: ForkchoiceUpdateResponse,
-    ) -> Option<ForkchoiceUpdateRequest> {
-        let new_canonicalized = match head_or_finalized {
-            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
-            HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
-        };
-
-        if new_canonicalized == self.last_canonicalized && attrs.is_none() {
-            debug!("would not change forkchoice state; not sending it to the execution layer");
-            response.send_ok_without_payload_id();
-            return None;
-        }
-
-        let request = ForkchoiceUpdateRequest {
-            cause,
-            canonicalized: new_canonicalized,
-            attrs,
-            response,
-            kind: ForkchoiceUpdateKind::Canonicalize { head_or_finalized },
-        };
-        Some(request)
-    }
-
     /// Queues `block` to be finalized by the background execution task.
     ///
     /// The actor starts one queued execution task at a time, so newer finalized
@@ -470,25 +425,12 @@ where
     ) -> eyre::Result<()> {
         let request = FinalizedBlockRequest {
             cause,
-            forkchoice: None,
             block,
             acknowledgment,
             is_backfill,
         };
         self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(request)));
         Ok(())
-    }
-
-    fn prepare_finalized_block_request(
-        &self,
-        mut request: FinalizedBlockRequest,
-    ) -> FinalizedBlockRequest {
-        let new_canonicalized = self
-            .last_canonicalized
-            .update_finalized(request.block.height(), request.block.digest());
-        request.forkchoice =
-            (new_canonicalized != self.last_canonicalized).then_some(new_canonicalized);
-        request
     }
 
     fn enqueue_execution_request(&mut self, request: ExecutionRequest) {
@@ -507,73 +449,45 @@ where
         if !self.execution_task.is_none() {
             return;
         }
-        loop {
-            let request = if let Some(request) = self.execution_queue.front() {
-                if self.is_backfilling() && !request.is_backfill() {
-                    return;
-                }
-                self.execution_queue.pop_front().expect("front exists")
-            } else {
-                let Some(request) = self.prepare_latest_observed_finalized_tip() else {
-                    return;
-                };
-                ExecutionRequest::ForkchoiceUpdate(Box::new(request))
-            };
 
-            let request = match request {
-                ExecutionRequest::CanonicalizeHead { cause, request } => {
-                    let CanonicalizeHead {
+        // If nothing is currently scheduled and a newer finalized tip was
+        // observed, push it into the queue so that it will be picked up next.
+        if self.execution_queue.is_empty()
+            && !self.is_backfilling()
+            && let Some((height, digest)) = self.latest_observed_finalized_tip
+            && let new_canonicalized = self.last_canonicalized.update_finalized(height, digest)
+            && new_canonicalized != self.last_canonicalized
+        {
+            self.execution_queue
+                .push_back(ExecutionRequest::CanonicalizeHead(Box::new(
+                    ForkchoiceUpdateTask {
+                        cause: Span::current(),
+                        head_or_finalized: HeadOrFinalized::Finalized,
                         height,
                         digest,
-                        response,
-                    } = request;
-                    let Some(request) = self.prepare_forkchoice_update(
-                        cause,
-                        HeadOrFinalized::Head,
-                        height,
-                        digest,
-                        None,
-                        ForkchoiceUpdateResponse::Canonicalize { response },
-                    ) else {
-                        continue;
-                    };
-                    ExecutionRequest::ForkchoiceUpdate(Box::new(request))
-                }
-                ExecutionRequest::CanonicalizeAndBuild { cause, request } => {
-                    let CanonicalizeAndBuild {
-                        height,
-                        digest,
-                        attributes,
-                        response,
-                    } = request;
-                    let Some(request) = self.prepare_forkchoice_update(
-                        cause,
-                        HeadOrFinalized::Head,
-                        height,
-                        digest,
-                        Some(*attributes),
-                        ForkchoiceUpdateResponse::Build { response },
-                    ) else {
-                        continue;
-                    };
-                    ExecutionRequest::ForkchoiceUpdate(Box::new(request))
-                }
-                ExecutionRequest::FinalizeBlock(request) => ExecutionRequest::FinalizeBlock(
-                    Box::new(self.prepare_finalized_block_request(*request)),
-                ),
-                request => request,
-            };
-            let task = execute_request(
-                self.context.clone(),
-                self.execution_node.clone(),
-                self.public_key.clone(),
-                self.metrics.clone(),
-                self.last_canonicalized,
-                request,
-            );
-            self.execution_task.replace(task.boxed());
+                        attrs: None,
+                        response: ForkchoiceUpdateResponse::None,
+                    },
+                )));
+        }
+
+        let Some(request) = self.execution_queue.front() else {
+            return;
+        };
+        if self.is_backfilling() && !request.is_backfill() {
             return;
         }
+        let request = self.execution_queue.pop_front().expect("front exists");
+
+        let task = execute_request(
+            self.context.clone(),
+            self.execution_node.clone(),
+            self.public_key.clone(),
+            self.metrics.clone(),
+            self.last_canonicalized,
+            request,
+        );
+        self.execution_task.replace(task.boxed());
     }
 
     fn is_backfilling(&self) -> bool {
@@ -585,15 +499,11 @@ enum ExecutionRequest {
     Heartbeat {
         cause: Span,
     },
-    CanonicalizeHead {
-        cause: Span,
-        request: CanonicalizeHead,
-    },
+    CanonicalizeHead(Box<ForkchoiceUpdateTask>),
     CanonicalizeAndBuild {
         cause: Span,
         request: CanonicalizeAndBuild,
     },
-    ForkchoiceUpdate(Box<ForkchoiceUpdateRequest>),
     FinalizeBlock(Box<FinalizedBlockRequest>),
 }
 
@@ -604,14 +514,6 @@ impl ExecutionRequest {
         };
         req.is_backfill
     }
-}
-
-struct ForkchoiceUpdateRequest {
-    cause: Span,
-    canonicalized: LastCanonicalized,
-    attrs: Option<TempoPayloadAttributes>,
-    response: ForkchoiceUpdateResponse,
-    kind: ForkchoiceUpdateKind,
 }
 
 enum ForkchoiceUpdateResponse {
@@ -670,7 +572,6 @@ impl ForkchoiceUpdateResponse {
 
 struct FinalizedBlockRequest {
     cause: Span,
-    forkchoice: Option<LastCanonicalized>,
     block: Block,
     acknowledgment: Exact,
     is_backfill: bool,
@@ -689,6 +590,15 @@ enum ExecutionTaskResult {
     Fatal {
         error: Report,
     },
+}
+
+struct ForkchoiceUpdateTask {
+    cause: Span,
+    head_or_finalized: HeadOrFinalized,
+    height: Height,
+    digest: Digest,
+    attrs: Option<TempoPayloadAttributes>,
+    response: ForkchoiceUpdateResponse,
 }
 
 async fn execute_request<TContext>(
@@ -720,17 +630,46 @@ where
                 canonicalized: None,
             }
         }
-        ExecutionRequest::ForkchoiceUpdate(request) => {
-            let canonicalized = execute_forkchoice_update(&context, execution_node, *request).await;
+        ExecutionRequest::CanonicalizeHead(request) => {
+            let canonicalized =
+                execute_forkchoice_update(&context, execution_node, canonicalized, *request).await;
             ExecutionTaskResult::Completed { canonicalized }
         }
-        ExecutionRequest::CanonicalizeHead { .. }
-        | ExecutionRequest::CanonicalizeAndBuild { .. } => {
-            unreachable!("raw canonicalization requests are prepared before execution")
+        ExecutionRequest::CanonicalizeAndBuild { cause, request } => {
+            let CanonicalizeAndBuild {
+                height,
+                digest,
+                attributes,
+                response,
+            } = request;
+            let canonicalized = execute_forkchoice_update(
+                &context,
+                execution_node,
+                canonicalized,
+                ForkchoiceUpdateTask {
+                    cause,
+                    head_or_finalized: HeadOrFinalized::Head,
+                    height,
+                    digest,
+                    attrs: Some(*attributes),
+                    response: ForkchoiceUpdateResponse::Build { response },
+                },
+            )
+            .await;
+            ExecutionTaskResult::Completed { canonicalized }
         }
         ExecutionRequest::FinalizeBlock(request) => {
             let fatal_on_error = !request.is_backfill;
-            match forward_finalized(&context, execution_node, public_key, metrics, *request).await {
+            match forward_finalized(
+                &context,
+                execution_node,
+                public_key,
+                metrics,
+                canonicalized,
+                *request,
+            )
+            .await
+            {
                 Ok(canonicalized) => ExecutionTaskResult::Completed { canonicalized },
                 Err(error) if fatal_on_error => ExecutionTaskResult::Fatal { error },
                 Err(error) => {
@@ -744,23 +683,54 @@ where
     }
 }
 
+#[instrument(
+    skip_all,
+    parent = &request.cause,
+    fields(
+        head.height = %request.height,
+        head.digest = %request.digest,
+        head_or_finalized = %request.head_or_finalized,
+    ),
+)]
 async fn execute_forkchoice_update<TContext: Pacer>(
     context: &TContext,
     execution_node: Arc<TempoFullNode>,
-    request: ForkchoiceUpdateRequest,
+    canonicalized: LastCanonicalized,
+    request: ForkchoiceUpdateTask,
 ) -> Option<LastCanonicalized> {
-    let ForkchoiceUpdateRequest {
+    let ForkchoiceUpdateTask {
         cause,
-        canonicalized,
+        head_or_finalized,
+        height,
+        digest,
         attrs,
         response,
-        kind,
     } = request;
-    match send_forkchoice_update(&execution_node, context, cause, canonicalized, attrs, kind).await
+
+    let new_canonicalized = match head_or_finalized {
+        HeadOrFinalized::Head => canonicalized.update_head(height, digest),
+        HeadOrFinalized::Finalized => canonicalized.update_finalized(height, digest),
+    };
+
+    if new_canonicalized == canonicalized && attrs.is_none() {
+        debug!("would not change forkchoice state; not sending it to the execution layer");
+        response.send_ok_without_payload_id();
+        return None;
+    }
+
+    match send_forkchoice_update(
+        &execution_node,
+        context,
+        cause,
+        new_canonicalized,
+        attrs,
+        ForkchoiceUpdateKind::Canonicalize { head_or_finalized },
+    )
+    .await
     {
         Ok(payload_id) => {
             response.send_payload_id(payload_id);
-            Some(canonicalized)
+            Some(new_canonicalized)
         }
         Err(error) => {
             response.send_error(error);
@@ -843,15 +813,18 @@ async fn forward_finalized<TContext: Pacer>(
     execution_node: Arc<TempoFullNode>,
     public_key: Option<PublicKey>,
     metrics: Metrics,
+    canonicalized: LastCanonicalized,
     request: FinalizedBlockRequest,
 ) -> eyre::Result<Option<LastCanonicalized>> {
     let FinalizedBlockRequest {
         cause,
-        forkchoice,
         block,
         acknowledgment,
         is_backfill: _,
     } = request;
+
+    let new_canonicalized = canonicalized.update_finalized(block.height(), block.digest());
+    let forkchoice = (new_canonicalized != canonicalized).then_some(new_canonicalized);
 
     if let Some(canonicalized) = forkchoice {
         send_forkchoice_update(
