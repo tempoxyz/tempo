@@ -157,6 +157,16 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
+    /// Increments a persistent storage slot by `delta`, returning the new value.
+    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        Self::try_with_storage(|s| s.sinc(address, key, delta))
+    }
+
+    /// Decrements a persistent storage slot by `delta`, returning the new value.
+    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<U256> {
+        Self::try_with_storage(|s| s.sdec(address, key, delta))
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))

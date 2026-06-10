@@ -507,6 +507,52 @@ mod tests {
                     );
                     reconstructed.insert(key, value);
                 }
+                StorageAction::Sinc(address, slot, delta) => {
+                    let key = (address, slot);
+                    let base = match reconstructed.get(&key) {
+                        Some(value) => *value,
+                        None => {
+                            let original = state
+                                .get(&address)
+                                .and_then(|account| account.storage.get(&slot))
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "SINC without prior SLOAD and absent EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                    )
+                                })
+                                .original_value();
+                            first_loads.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = base.checked_add(delta).unwrap_or_else(|| {
+                        panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
+                    reconstructed.insert(key, value);
+                }
+                StorageAction::Sdec(address, slot, delta) => {
+                    let key = (address, slot);
+                    let base = match reconstructed.get(&key) {
+                        Some(value) => *value,
+                        None => {
+                            let original = state
+                                .get(&address)
+                                .and_then(|account| account.storage.get(&slot))
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "SDEC without prior SLOAD and absent EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                    )
+                                })
+                                .original_value();
+                            first_loads.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = base.checked_sub(delta).unwrap_or_else(|| {
+                        panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
+                    reconstructed.insert(key, value);
+                }
             }
         }
 
@@ -679,8 +725,6 @@ mod tests {
             let currency_word = short_string_word(USD_CURRENCY.as_bytes());
 
             let sender_after_fee = starting_balance - max_fee_spending;
-            let sender_after_transfer = sender_after_fee - transfer_amount;
-            let sender_after_refund = sender_after_transfer + refund_amount;
 
             let actions = evm
                 .take_actions()
@@ -728,12 +772,10 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SSTORE balances[sender]: debit max fee escrow.
-                    StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SLOAD balances[FeeManager]: read fee escrow custody balance.
-                    StorageAction::Sload(PATH_USD_ADDRESS, fee_manager_balance_slot, U256::ZERO),
-                    // SSTORE balances[FeeManager]: credit max fee escrow.
-                    StorageAction::Sstore(
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SINC balances[FeeManager]: credit max fee escrow.
+                    StorageAction::Sinc(
                         PATH_USD_ADDRESS,
                         fee_manager_balance_slot,
                         max_fee_spending,
@@ -802,20 +844,10 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SSTORE balances[sender]: debit user transfer.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SLOAD balances[recipient]: read recipient balance before transfer credit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, recipient_balance_slot, U256::ZERO),
-                    // SSTORE balances[recipient]: credit user transfer.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        recipient_balance_slot,
-                        transfer_amount,
-                    ),
+                    // SDEC balances[sender]: debit user transfer.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, transfer_amount),
+                    // SINC balances[recipient]: credit user transfer.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, recipient_balance_slot, transfer_amount),
                     // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out before fee refund.
                     StorageAction::Sload(
                         PATH_USD_ADDRESS,
@@ -846,30 +878,14 @@ mod tests {
                         fee_manager_balance_slot,
                         max_fee_spending,
                     ),
-                    // SSTORE balances[FeeManager]: leave actual spent fee in FeeManager custody.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        actual_spending,
-                    ),
-                    // SLOAD balances[sender]: read sender before crediting unused fee refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SSTORE balances[sender]: refund unused fee.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_refund,
-                    ),
+                    // SDEC balances[FeeManager]: leave actual spent fee in FeeManager custody.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, fee_manager_balance_slot, refund_amount),
+                    // SINC balances[sender]: refund unused fee.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, sender_balance_slot, refund_amount),
                     // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
-                    // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
-                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
-                    // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
-                    StorageAction::Sstore(
+                    // SINC collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
+                    StorageAction::Sinc(
                         TIP_FEE_MANAGER_ADDRESS,
                         collected_fees_slot,
                         actual_spending,
@@ -917,12 +933,10 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SSTORE balances[sender]: debit max fee escrow.
-                    StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SLOAD balances[FeeManager]: read fee escrow custody balance.
-                    StorageAction::Sload(PATH_USD_ADDRESS, fee_manager_balance_slot, U256::ZERO),
-                    // SSTORE balances[FeeManager]: credit max fee escrow.
-                    StorageAction::Sstore(
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SINC balances[FeeManager]: credit max fee escrow.
+                    StorageAction::Sinc(
                         PATH_USD_ADDRESS,
                         fee_manager_balance_slot,
                         max_fee_spending,
@@ -985,20 +999,10 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SSTORE balances[sender]: debit user transfer.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SLOAD balances[recipient]: read recipient balance before transfer credit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, recipient_balance_slot, U256::ZERO),
-                    // SSTORE balances[recipient]: credit user transfer.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        recipient_balance_slot,
-                        transfer_amount,
-                    ),
+                    // SDEC balances[sender]: debit user transfer.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, transfer_amount),
+                    // SINC balances[recipient]: credit user transfer.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, recipient_balance_slot, transfer_amount),
                     // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out before fee refund.
                     StorageAction::Sload(
                         PATH_USD_ADDRESS,
@@ -1029,30 +1033,14 @@ mod tests {
                         fee_manager_balance_slot,
                         max_fee_spending,
                     ),
-                    // SSTORE balances[FeeManager]: leave actual spent fee in FeeManager custody.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        actual_spending,
-                    ),
-                    // SLOAD balances[sender]: read sender before crediting unused fee refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SSTORE balances[sender]: refund unused fee.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_refund,
-                    ),
+                    // SDEC balances[FeeManager]: leave actual spent fee in FeeManager custody.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, fee_manager_balance_slot, refund_amount),
+                    // SINC balances[sender]: refund unused fee.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, sender_balance_slot, refund_amount),
                     // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
-                    // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
-                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
-                    // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
-                    StorageAction::Sstore(
+                    // SINC collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
+                    StorageAction::Sinc(
                         TIP_FEE_MANAGER_ADDRESS,
                         collected_fees_slot,
                         actual_spending,

@@ -11,6 +11,10 @@ pub enum StorageAction {
     Sload(Address, U256, U256),
     /// Records an SSTORE opcode.
     Sstore(Address, U256, U256),
+    /// Records a semantic persistent storage increment.
+    Sinc(Address, U256, U256),
+    /// Records a semantic persistent storage decrement.
+    Sdec(Address, U256, U256),
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).
