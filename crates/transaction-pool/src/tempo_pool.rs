@@ -150,11 +150,17 @@ where
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
-        let mut state_provider = if !updates.validator_token_changes.is_empty()
-            || !updates.blacklist_additions.is_empty()
-            || !updates.whitelist_removals.is_empty()
-            || !updates.fee_balance_changes.is_empty()
-            || !updates.spending_limit_spends.is_empty()
+        let has_validator_token_changes = !updates.validator_token_changes.is_empty();
+        let has_blacklist_additions = !updates.blacklist_additions.is_empty();
+        let has_whitelist_removals = !updates.whitelist_removals.is_empty();
+        let has_fee_balance_changes = !updates.fee_balance_changes.is_empty();
+        let has_spending_limit_spends = !updates.spending_limit_spends.is_empty();
+
+        let mut state_provider = if has_validator_token_changes
+            || has_blacklist_additions
+            || has_whitelist_removals
+            || has_fee_balance_changes
+            || has_spending_limit_spends
         {
             self.client().latest().ok()
         } else {
@@ -196,7 +202,7 @@ where
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
         let amm_cache = self.amm_liquidity_cache();
-        let has_active_validator_token_changes = !updates.validator_token_changes.is_empty() && {
+        let has_active_validator_token_changes = has_validator_token_changes && {
             let active_new_tokens: Vec<_> = updates
                 .validator_token_changes
                 .iter()
@@ -221,6 +227,11 @@ where
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
+        let has_revoked_keys = !updates.revoked_keys.is_empty();
+        let has_spending_limit_changes = !updates.spending_limit_changes.is_empty();
+        let has_key_authorization_witness_burns =
+            !updates.key_authorization_witness_burns.is_empty();
+        let has_user_token_changes = !updates.user_token_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         for tx in transactions {
@@ -229,7 +240,7 @@ where
                 let keychain_subject = has_keychain_subject_updates
                     .then(|| tx.transaction.keychain_subject())
                     .flatten();
-                let key_authorization_subject = (!updates.revoked_keys.is_empty())
+                let key_authorization_subject = has_revoked_keys
                     .then(|| tx.transaction.key_authorization_signer_subject())
                     .flatten();
                 let key_authorization_target = has_key_authorization_target_updates
@@ -237,7 +248,7 @@ where
                     .flatten();
 
                 // Check 1: Revoked keychain keys
-                if !updates.revoked_keys.is_empty()
+                if has_revoked_keys
                     && (keychain_subject
                         .as_ref()
                         .is_some_and(|subject| subject.matches_revoked(&updates.revoked_keys))
@@ -251,7 +262,7 @@ where
                 }
 
                 // Check 1b: Inline key authorization target status changes
-                if !updates.key_authorization_target_changes.is_empty()
+                if has_key_authorization_target_updates
                     && key_authorization_target.as_ref().is_some_and(|subject| {
                         subject.matches_key_update(&updates.key_authorization_target_changes)
                     })
@@ -263,7 +274,7 @@ where
 
                 // Check 2: Spending limit updates
                 // Only evict if the transaction's fee token matches the token whose limit changed.
-                if !updates.spending_limit_changes.is_empty()
+                if has_spending_limit_changes
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_changes)
                     && tx.transaction.is_sender_paid_fee()
@@ -278,7 +289,7 @@ where
                 // triples whose remaining limit changed during execution. We re-read the
                 // current remaining limit from state for matching pending txs and evict if
                 // the tx's fee cost now exceeds that remaining limit.
-                if !updates.spending_limit_spends.is_empty()
+                if has_spending_limit_spends
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_spends)
                     && tx.transaction.is_sender_paid_fee()
@@ -298,7 +309,7 @@ where
             }
 
             // Check 2c: TIP-1053 key-authorization witness burns
-            if !updates.key_authorization_witness_burns.is_empty()
+            if has_key_authorization_witness_burns
                 && let Some(subject) = tx.transaction.key_authorization_witness_subject()
                 && updates
                     .key_authorization_witness_burns
@@ -332,9 +343,7 @@ where
             // Check 3b: Fee payer balance changes.
             // When a TIP20 transfer changes a fee payer's balance, pending transactions for that
             // (fee_token, fee_payer) pair may no longer be executable.
-            if !updates.fee_balance_changes.is_empty()
-                && let Some(ref mut provider) = state_provider
-            {
+            if has_fee_balance_changes && let Some(ref mut provider) = state_provider {
                 let fee_token = tx.transaction.effective_fee_token();
                 let Ok(fee_payer) = tx.transaction.fee_payer() else {
                     continue;
@@ -367,9 +376,7 @@ where
 
             // Check 4: Blacklisted fee payers.
             // AA transactions use their recovered fee payer; non-AA transactions use their sender.
-            if !updates.blacklist_additions.is_empty()
-                && let Some(ref mut provider) = state_provider
-            {
+            if has_blacklist_additions && let Some(ref mut provider) = state_provider {
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
@@ -412,9 +419,7 @@ where
             // Check 5: Un-whitelisted fee payers.
             // When a fee payer or sender is removed from a whitelist, their pending
             // transactions will fail validation at execution time.
-            if !updates.whitelist_removals.is_empty()
-                && let Some(ref mut provider) = state_provider
-            {
+            if has_whitelist_removals && let Some(ref mut provider) = state_provider {
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
@@ -458,7 +463,7 @@ where
             // transactions paid by that account that don't have an explicit fee_token set may
             // now resolve to a different token at execution time, causing fee payment failures.
             // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
-            if !updates.user_token_changes.is_empty()
+            if has_user_token_changes
                 && tx.transaction.inner().fee_token().is_none()
                 && tx
                     .transaction
