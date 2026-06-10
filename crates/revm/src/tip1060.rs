@@ -8,7 +8,7 @@ use alloy_evm::Database;
 use alloy_primitives::{Address, U256};
 use revm::{
     context::{Host as _, JournalTr, result::EVMError},
-    context_interface::cfg::GasParams,
+    context_interface::cfg::{GasId, GasParams},
     interpreter::{
         Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
         gas::GasTracker,
@@ -72,12 +72,22 @@ pub fn apply_refund<DB: Database, I>(
         journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
     }
 
-    // TODO use gas_params for proper constant.
-    gas.erase_cost(refunds * 230_000);
+    // Refund 230k per storage credit.
+    let storage_credit_value = evm
+        .inner
+        .ctx
+        .cfg
+        .gas_params
+        .get(GasId::sstore_set_state_gas());
+    gas.erase_cost(refunds.saturating_mul(storage_credit_value));
 
     Ok(())
 }
 
+/// Opcode-level [`StorageCreditsBackend`] adapter over an [`InstructionContext`].
+///
+/// Bridges the revm host/interpreter to the backend-agnostic [`sstore_storage_credits`] so the
+/// SSTORE opcode runs the same TIP-1060 storage credits policy as precompile storage writes.
 struct StorageCreditsContext<'a, DB: Database> {
     context: &'a mut TempoContext<DB>,
     gas_tracker: &'a mut GasTracker,
