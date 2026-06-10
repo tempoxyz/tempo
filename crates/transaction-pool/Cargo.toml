@@ -75,3 +75,8 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tokio.workspace = true
 test-case.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "aa_2d_pool"
+harness = false
