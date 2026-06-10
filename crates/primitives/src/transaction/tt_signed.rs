@@ -121,6 +121,13 @@ impl AASigned {
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
+        if let Some(cached) = self.expiring_nonce_hash.get() {
+            if cached.0 == sender {
+                return cached.1;
+            }
+            return unique_tx_identifier_from_signable(&self.tx, sender);
+        }
+
         let cached = self.expiring_nonce_hash.get_or_init(|| {
             let hash = unique_tx_identifier_from_signable(&self.tx, sender);
             #[allow(clippy::useless_conversion)]
