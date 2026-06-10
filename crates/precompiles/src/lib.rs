@@ -133,11 +133,15 @@ pub trait Precompile {
 ///
 /// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
+#[cfg(test)]
 pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     tempo_precompiles_with_actions(cfg, StorageActions::disabled())
 }
 
 /// Returns the full Tempo precompiles for the given config and storage actions.
+///
+/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
+/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
 pub fn tempo_precompiles_with_actions(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
