@@ -32,9 +32,11 @@ jobs:
     outputs:
       should_run: ${{ steps.filter.outputs.specs }}
       foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
+      release_only_sdk_crates: ${{ steps.release-only.outputs.release_only_sdk_crates }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
@@ -56,6 +58,34 @@ jobs:
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
               - '.github/workflows/update-reth.yml'
+      - name: Check release-only SDK crate changes
+        id: release-only
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'main' }}
+        run: |
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "Not skipping Foundry precompile tests on push events."
+            exit 0
+          fi
+
+          base_ref="${BASE_REF#refs/heads/}"
+          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD")"
+          if [[ -z "$changed_files" ]]; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "No changed files detected against origin/${base_ref}."
+            exit 0
+          fi
+
+          allowed='^(Cargo\.lock|crates/(alloy|chainspec|contracts|primitives)/(Cargo\.toml|CHANGELOG\.md))$'
+          if printf '%s\n' "$changed_files" | grep -Ev "$allowed" >/dev/null; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "Found non-release-only SDK crate changes."
+          else
+            echo "release_only_sdk_crates=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping Foundry precompile tests: only SDK crate release metadata changed."
+          fi
 
   foundry-resolver-smoke:
     name: Foundry Resolver Smoke
@@ -213,7 +243,7 @@ jobs:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
     # Skip for forked repos
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
