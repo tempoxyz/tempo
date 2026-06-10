@@ -1,5 +1,5 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{Typed2718, crypto::secp256k1};
+use alloy_consensus::crypto::secp256k1;
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use core::num::NonZeroU64;
@@ -12,7 +12,7 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
+    AASigned, TEMPO_TX_TYPE_ID, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
@@ -315,7 +315,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 
         Self {
             inner: TxEnv {
-                tx_type: tx.ty(),
+                tx_type: TEMPO_TX_TYPE_ID,
                 caller,
                 gas_limit: *gas_limit,
                 gas_price: *max_fee_per_gas,
