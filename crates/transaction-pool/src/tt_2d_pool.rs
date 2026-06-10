@@ -1402,6 +1402,13 @@ impl AA2dPool {
             self.expiring_nonce_txs.len(),
             self.expiring_nonce_eviction_order.len()
         );
+        assert_eq!(
+            self.by_id.len(),
+            self.by_eviction_order.len(),
+            "by_id.len() ({}) != by_eviction_order.len() ({})",
+            self.by_id.len(),
+            self.by_eviction_order.len()
+        );
 
         // All independent transactions must exist in by_id
         for (seq_id, independent_tx) in &self.independent_transactions {
@@ -1513,6 +1520,54 @@ impl AA2dPool {
                     "Transaction {id:?} is in independent set but not pending"
                 );
             }
+
+            let expected_priority = TempoTipOrdering::default()
+                .priority(&tx.inner.transaction.transaction, self.base_fee);
+            let expected_order =
+                EvictionOrderKey::new(expected_priority.clone(), tx.inner.submission_id);
+            let Some(eviction_key) = self.by_eviction_order.get(&expected_order) else {
+                panic!("Transaction with id {id:?} in by_id but not in by_eviction_order");
+            };
+            assert_eq!(
+                eviction_key.tx_id, *id,
+                "Eviction key for transaction {id:?} has mismatched transaction id"
+            );
+            assert_eq!(
+                eviction_key.priority(),
+                &expected_priority,
+                "Eviction key for transaction {id:?} has stale priority"
+            );
+            assert_eq!(
+                eviction_key.tx.inner.transaction.hash(),
+                tx.inner.transaction.hash(),
+                "Eviction key for transaction {id:?} has mismatched transaction hash"
+            );
+        }
+
+        for key in &self.by_eviction_order {
+            let Some(tx) = self.by_id.get(&key.tx_id) else {
+                panic!("Eviction key {:?} not in by_id", key.tx_id);
+            };
+            assert_eq!(
+                key.submission_id(),
+                tx.inner.submission_id,
+                "Eviction key {:?} has mismatched submission id",
+                key.tx_id
+            );
+            let expected_priority = TempoTipOrdering::default()
+                .priority(&tx.inner.transaction.transaction, self.base_fee);
+            assert_eq!(
+                key.priority(),
+                &expected_priority,
+                "Eviction key {:?} has stale priority",
+                key.tx_id
+            );
+            assert_eq!(
+                key.tx.inner.transaction.hash(),
+                tx.inner.transaction.hash(),
+                "Eviction key {:?} has mismatched transaction hash",
+                key.tx_id
+            );
         }
 
         // Verify pending/queued consistency
