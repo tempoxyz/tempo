@@ -1005,7 +1005,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and $ctx.tracy != "off" {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
-        let capture_cmd = $"sudo env PATH=($env.PATH) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
+        let capture_path = ($env.PATH | str join (char esep))
+        let capture_cmd = $"sudo env PATH=($capture_path) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
             print $"  Tracy-capture will start in ($ctx.tracy_offset)s($limit_msg)..."
             job spawn { sleep ($"($ctx.tracy_offset)sec" | into duration); sh -c $capture_cmd }
