@@ -40,11 +40,15 @@ def group_name(label: str) -> str:
     return "other"
 
 
-def scatter_builder_latency(
+def scatter_samples(
     per_run: list[dict[str, Any]],
     output: Path,
     baseline_name: str,
     feature_name: str,
+    *,
+    sample_key: str,
+    title: str,
+    ylabel: str,
 ) -> None:
     rng = random.Random(1337)
     colors = {
@@ -65,7 +69,7 @@ def scatter_builder_latency(
 
     for idx, run in enumerate(per_run, start=1):
         label = str(run.get("label") or f"run-{idx}")
-        samples = values(run, "builder_latency_ms")
+        samples = values(run, sample_key)
         if not samples:
             continue
 
@@ -78,17 +82,43 @@ def scatter_builder_latency(
         tick_labels.append(label)
 
     if not tick_positions:
-        raise SystemExit("summary.json has no builder_latency_ms samples")
+        raise ValueError(f"summary.json has no {sample_key} samples")
 
-    ax.set_title("Builder latency samples")
+    ax.set_title(title)
     ax.set_xlabel("Run")
-    ax.set_ylabel("Builder latency (ms)")
+    ax.set_ylabel(ylabel)
     ax.set_xticks(tick_positions)
     ax.set_xticklabels(tick_labels, rotation=30, ha="right")
     ax.grid(True, axis="y", alpha=0.25)
     ax.legend()
     fig.savefig(output, dpi=160)
     plt.close(fig)
+
+
+def maybe_scatter_samples(
+    per_run: list[dict[str, Any]],
+    output: Path,
+    baseline_name: str,
+    feature_name: str,
+    *,
+    sample_key: str,
+    title: str,
+    ylabel: str,
+) -> bool:
+    try:
+        scatter_samples(
+            per_run,
+            output,
+            baseline_name,
+            feature_name,
+            sample_key=sample_key,
+            title=title,
+            ylabel=ylabel,
+        )
+    except ValueError as error:
+        print(f"Skipping {output.name}: {error}")
+        return False
+    return True
 
 
 def main() -> None:
@@ -110,12 +140,47 @@ def main() -> None:
     if not per_run:
         raise SystemExit("summary.json has no per_run data")
 
-    scatter_builder_latency(
-        per_run,
-        output_dir / "builder_latency_scatter.png",
-        args.baseline_name,
-        args.feature_name,
-    )
+    charts = [
+        {
+            "file": "builder_latency_scatter.png",
+            "sample_key": "builder_latency_ms",
+            "title": "Builder latency samples",
+            "ylabel": "Builder latency (ms)",
+        },
+        {
+            "file": "block_size_scatter.png",
+            "sample_key": "serialized_block_size_bytes",
+            "title": "Serialized block size samples",
+            "ylabel": "Serialized block size (bytes)",
+        },
+        {
+            "file": "block_tx_count_scatter.png",
+            "sample_key": "serialized_block_tx_count",
+            "title": "Block transaction count samples",
+            "ylabel": "Transactions per block",
+        },
+        {
+            "file": "block_bytes_per_tx_scatter.png",
+            "sample_key": "serialized_block_size_per_tx_bytes",
+            "title": "Serialized bytes per transaction samples",
+            "ylabel": "Serialized bytes per transaction",
+        },
+    ]
+    written = [
+        chart["file"]
+        for chart in charts
+        if maybe_scatter_samples(
+            per_run,
+            output_dir / chart["file"],
+            args.baseline_name,
+            args.feature_name,
+            sample_key=chart["sample_key"],
+            title=chart["title"],
+            ylabel=chart["ylabel"],
+        )
+    ]
+    if not written:
+        raise SystemExit("summary.json has no chartable samples")
     print(f"Charts written to {output_dir}")
 
 

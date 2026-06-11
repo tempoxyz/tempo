@@ -1306,6 +1306,9 @@ def generate-summary [
             total_gas: $total_gas
             block_time_mean: $block_time_mean
             builder_latency_ms: $builder_latency_values
+            serialized_block_size_bytes: $serialized_block_size_values
+            serialized_block_tx_count: $serialized_block_tx_count_values
+            serialized_block_size_per_tx_bytes: $serialized_block_size_per_tx_values
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
