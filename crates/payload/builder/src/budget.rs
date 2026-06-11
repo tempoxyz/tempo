@@ -8,10 +8,12 @@
 //! through consensus.
 //!
 //! The decision model is:
-//! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
+//! `leader_idle + setup + predicted_builder_work + predicted_validator_work + marshal_persist >= budget`.
 //! Idle waiting only happens on the proposer. Builder work is projected from the
 //! current build, while validator work uses feedback from previously validated
 //! blocks when available and otherwise falls back to the builder projection.
+//! Marshal persistence is charged once for the proposer; validators persist
+//! concurrently with execution-layer validation, off their critical path.
 
 use std::time::Duration;
 
@@ -79,7 +81,8 @@ pub(crate) struct PayloadBudgetDecision {
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle and setup once, projected builder work once, learned
 /// validator work once capped at the conservative builder-work projection, and
-/// marshal persistence once for each side.
+/// marshal persistence once for the proposer. Validators persist concurrently
+/// with execution-layer validation, so their persist does not consume budget.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
@@ -105,7 +108,6 @@ pub(crate) fn payload_budget_decision(
         .saturating_add(non_replayable_elapsed)
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
-        .saturating_add(marshal_persist)
         .saturating_add(marshal_persist);
     PayloadBudgetDecision {
         predicted_builder_work,
@@ -277,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_budget_accounts_for_marshal_persist_twice() {
+    fn payload_budget_accounts_for_marshal_persist_once() {
         let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
 
         let decision = payload_budget_decision(
@@ -291,7 +293,7 @@ mod tests {
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.marshal_persist, Duration::from_millis(15));
-        assert_eq!(decision.total_reserved, Duration::from_millis(300));
+        assert_eq!(decision.total_reserved, Duration::from_millis(285));
 
         let decision = payload_budget_decision(
             Duration::from_millis(100),
@@ -304,7 +306,7 @@ mod tests {
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.marshal_persist, Duration::from_micros(14_999));
-        assert_eq!(decision.total_reserved, Duration::from_micros(299_998));
+        assert_eq!(decision.total_reserved, Duration::from_micros(284_999));
     }
 
     #[test]
