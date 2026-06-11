@@ -16,12 +16,13 @@ use revm::{
         interpreter::EthInterpreter,
     },
 };
+use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::TIP1060StorageCreditsEvent;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
     tip1060_storage_credits::{
-        CreditMode, STORAGE_CREDIT_VALUE, StorageCreditsBackend, sstore_storage_credits,
+        CreditMode, StorageCreditsBackend, TransientState, sstore_storage_credits,
     },
 };
 
@@ -50,7 +51,9 @@ pub fn apply_refund<DB: Database, I>(
 
     let mut refunds = 0;
     for (key, word) in slots {
-        let pending = word.as_limbs()[0];
+        let transient_state = TransientState::try_from(word)
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        let pending = transient_state.pending_refunds;
         if pending == 0 {
             continue;
         }
