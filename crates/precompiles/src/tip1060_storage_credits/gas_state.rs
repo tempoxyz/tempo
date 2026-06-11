@@ -18,10 +18,8 @@ use revm::{
         instruction_context::GasStateOutcome,
     },
 };
+use tempo_chainspec::constants::gas::SSTORE_SET;
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
-
-pub const STORAGE_CREDIT_VALUE: u64 = 230_000;
-const SSTORE_SET_WITHOUT_EXPANSION_COST: u64 = 20_000;
 
 /// Error mapping required by storage credit accounting.
 pub trait StorageCreditsError: Sized {
@@ -167,7 +165,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     if caller_state_load.is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
                     }
-                    backend.charge_gas(SSTORE_SET_WITHOUT_EXPANSION_COST)?;
+                    backend.charge_gas(SSTORE_SET)?;
                     balance -= 1;
                     was_changed = true;
                     outcome.skip_gas = true;

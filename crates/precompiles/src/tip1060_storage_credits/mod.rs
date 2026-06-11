@@ -3,9 +3,7 @@
 pub mod dispatch;
 pub mod gas_state;
 
-pub use gas_state::{
-    STORAGE_CREDIT_VALUE, StorageCreditsBackend, StorageCreditsError, sstore_storage_credits,
-};
+pub use gas_state::{StorageCreditsBackend, StorageCreditsError, sstore_storage_credits};
 
 use crate::{
     STORAGE_CREDITS_ADDRESS,
