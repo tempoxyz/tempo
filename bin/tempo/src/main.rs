@@ -362,7 +362,7 @@ fn main() -> eyre::Result<()> {
             .node_args
             .engine_disable_execution_cache_sharing_with_builder
     {
-        node_cmd.engine.share_sparse_trie_with_payload_builder = false;
+        node_cmd.engine.share_execution_cache_with_payload_builder = false;
     }
 
     if let Commands::Node(node_cmd) = &cli.command
@@ -819,6 +819,7 @@ mod tests {
                 .node_args
                 .engine_disable_execution_cache_sharing_with_builder
         );
+        assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
 
         let cli = TempoCli::try_parse_from([
             "tempo",
