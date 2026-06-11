@@ -19,11 +19,6 @@ use tempo_precompiles::{
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
-struct CachedTip20Token {
-    address: Address,
-    token: TIP20Token,
-}
-
 #[derive(Clone, Copy)]
 struct CachedValidatorFeeToken {
     beneficiary: Address,
@@ -32,15 +27,14 @@ struct CachedValidatorFeeToken {
 
 struct CachedFeeCollectorInner {
     fee_manager: TipFeeManager,
-    fee_token: Option<CachedTip20Token>,
     validator_fee_token: Option<CachedValidatorFeeToken>,
 }
 
 /// Cached fee-collection state used by internal fee collection.
 ///
-/// Generated handles cache deterministic storage handlers and derived slots. The resolved
-/// validator fee token is also cached and invalidated when the cached validator-token storage slot
-/// changes.
+/// Keeps a generated fee-manager handle so deterministic storage handlers and derived slots can be
+/// reused. The resolved validator fee token is also cached and invalidated when the cached
+/// validator-token storage slot changes.
 pub(crate) struct CachedFeeCollector {
     inner: RefCell<CachedFeeCollectorInner>,
 }
@@ -50,7 +44,6 @@ impl CachedFeeCollector {
         Self {
             inner: RefCell::new(CachedFeeCollectorInner {
                 fee_manager: TipFeeManager::new(),
-                fee_token: None,
                 validator_fee_token: None,
             }),
         }
@@ -100,26 +93,6 @@ impl CachedFeeCollector {
 }
 
 impl CachedFeeCollectorInner {
-    fn fee_token_mut(
-        fee_token: &mut Option<CachedTip20Token>,
-        address: Address,
-    ) -> PrecompileResult<&mut TIP20Token> {
-        if fee_token
-            .as_ref()
-            .is_none_or(|cached| cached.address != address)
-        {
-            *fee_token = Some(CachedTip20Token {
-                address,
-                token: TIP20Token::from_address(address)?,
-            });
-        }
-
-        Ok(&mut fee_token
-            .as_mut()
-            .expect("fee token cache initialized above")
-            .token)
-    }
-
     fn validator_fee_token(
         fee_manager: &mut TipFeeManager,
         cached_validator_fee_token: &mut Option<CachedValidatorFeeToken>,
@@ -151,15 +124,14 @@ impl CachedFeeCollectorInner {
     ) -> PrecompileResult<Address> {
         let Self {
             fee_manager,
-            fee_token: cached_token,
             validator_fee_token: cached_validator_token,
         } = self;
         let validator_token =
             Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
-        let token = Self::fee_token_mut(cached_token, fee_token)?;
+        let mut token = TIP20Token::from_address(fee_token)?;
 
         fee_manager.collect_fee_pre_tx_with_token_and_validator_token(
-            token,
+            &mut token,
             fee_payer,
             fee_token,
             max_amount,
@@ -178,15 +150,14 @@ impl CachedFeeCollectorInner {
     ) -> PrecompileResult<U256> {
         let Self {
             fee_manager,
-            fee_token: cached_token,
             validator_fee_token: cached_validator_token,
         } = self;
         let validator_token =
             Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
-        let token = Self::fee_token_mut(cached_token, fee_token)?;
+        let mut token = TIP20Token::from_address(fee_token)?;
 
         fee_manager.collect_fee_post_tx_with_token_and_validator_token(
-            token,
+            &mut token,
             fee_payer,
             actual_spending,
             refund_amount,
