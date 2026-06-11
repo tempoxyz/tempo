@@ -301,24 +301,11 @@ jobs:
           set -euo pipefail
 
           cargo_version="${VERSION#v}"
-          branch="jenpaff/bump-cargo-${VERSION}"
+          branch="release/bump-cargo-${VERSION}"
           current_version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tempo").version')
 
           if [ "$current_version" = "$cargo_version" ]; then
             echo "main already has tempo version $cargo_version"
-            exit 0
-          fi
-
-          open_prs=$(gh pr list \
-            --repo "${{ github.repository }}" \
-            --head "$branch" \
-            --base main \
-            --state open \
-            --json number \
-            --jq 'length')
-
-          if [ "$open_prs" != "0" ]; then
-            echo "Open Cargo version bump PR already exists for $branch"
             exit 0
           fi
 
