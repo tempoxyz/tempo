@@ -876,20 +876,30 @@ impl Inner<Init> {
             );
         }
 
-        let validation_duration = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &block,
-            parent_digest,
-            &self.scheme_provider,
+        // Persist the block in the marshal actor concurrently with execution-layer
+        // validation. The cache is digest-addressed and writing to an occupied
+        // index is a no-op, so an invalid block only leaves a prunable cache
+        // entry behind while a valid one no longer pays the persist on the
+        // critical path between validation and the vote.
+        let speculative_persist = self.marshal.verified(round, block.clone());
+        let (validation_duration, persisted) = futures::future::join(
+            verify_block(
+                context,
+                round.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &block,
+                parent_digest,
+                &self.scheme_provider,
+            ),
+            speculative_persist,
         )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
+        .await;
+        let validation_duration =
+            validation_duration.wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
@@ -908,23 +918,15 @@ impl Inner<Init> {
         let block_digest = block.digest();
 
         if is_good {
-            // Persist the block in the marshal actor and update the canonical head
-            // concurrently; both are independent actors and must only have completed
-            // before the verification result is returned, so running them serially
-            // would needlessly delay the vote.
-            //
-            // FIXME: move canonicalization into the certification step?
-            let (persisted, canonicalized) = futures::future::join(
-                self.marshal.verified(round, block),
-                self.state
-                    .executor
-                    .canonicalize_head(block_height, block_digest),
-            )
-            .await;
             if !persisted {
                 bail!("marshal actor refused to persist verified block");
             }
-            canonicalized
+
+            // FIXME: move this into the certification step?
+            self.state
+                .executor
+                .canonicalize_head(block_height, block_digest)
+                .await
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
         }
         Ok(is_good)
