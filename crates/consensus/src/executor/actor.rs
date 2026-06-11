@@ -726,11 +726,11 @@ async fn run_canonicalize_task<TContext: Pacer>(
 /// Drives a payload build on the execution layer to completion.
 ///
 /// Resolves the payload registered under `payload_id` from the execution
-/// layer's payload builder and delivers it on `response`. Resolving is also
-/// what removes the build job from the payload builder, so the job is always
-/// run to completion, even if the subscriber has gone away in the meantime
-/// (for example because the consensus engine cancelled the proposal request
-/// that triggered the build); the built payload is then simply discarded.
+/// layer's payload builder and delivers it on `response`. If the subscriber
+/// goes away before the payload is resolved (for example because the
+/// consensus engine cancelled the proposal request that triggered the
+/// build), the in-flight resolve future is dropped, which deregisters the
+/// build job from the payload builder and aborts the build.
 #[instrument(
     skip_all,
     parent = &cause,
@@ -742,33 +742,42 @@ async fn run_payload_job<TContext: Pacer>(
     StartPayloadJob {
         cause,
         payload_id,
-        response,
+        mut response,
     }: StartPayloadJob,
 ) {
-    // In all failure branches, dropping the response channel signals the
+    let payload = select! {
+        payload = execution_node
+            .payload_builder_handle
+            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .pace(&context, Duration::from_millis(20))
+        => payload,
+
+        // Drops the in-flight payload-resolution, killing payload build.
+        () = response.cancellation() => {
+            info!("payload subscriber went away before the payload was resolved; killing the payload build");
+            return;
+        }
+    };
+
+    // In the failure branches, dropping the response channel signals the
     // failure to the subscriber; the cause is only logged here.
-    let payload = match execution_node
-        .payload_builder_handle
-        .resolve_kind(payload_id, PayloadKind::WaitForPending)
-        .pace(&context, Duration::from_millis(20))
-        .await
-    {
-        Some(Ok(payload)) => payload,
+    match payload {
+        Some(Ok(payload)) => {
+            if response.send(payload).is_err() {
+                info!(
+                    "payload subscriber went away before the payload could be delivered; discarding it"
+                );
+            }
+        }
         Some(Err(error)) => {
             warn!(
                 error = %eyre::Report::new(error),
                 "payload build job failed",
             );
-            return;
         }
         None => {
             warn!("no payload build job found under the payload ID");
-            return;
         }
-    };
-
-    if response.send(payload).is_err() {
-        info!("payload subscriber went away before the payload could be delivered; discarding it");
     }
 }
 
