@@ -566,7 +566,7 @@ impl StablecoinDEX {
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let storage_credits = if charge_credits {
-            StorageCreditAccount::load(order.maker(), |user| self.storage_credits(user))?
+            StorageCreditAccount::load(order.maker(), &self.dex_storage_credits)?
         } else {
             None
         };
@@ -620,7 +620,7 @@ impl StablecoinDEX {
             storage_credits.spend(
                 order.storage_credits(),
                 self.address,
-                |user, credits| self.dex_storage_credits[user].write(credits),
+                &mut self.dex_storage_credits,
                 || self.orders[order.order_id()].write(order),
             )
         } else {
@@ -1256,8 +1256,7 @@ impl StablecoinDEX {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
-        let storage_credits =
-            StorageCreditAccount::load(order.maker(), |user| self.storage_credits(user))?;
+        let storage_credits = StorageCreditAccount::load(order.maker(), &self.dex_storage_credits)?;
 
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
@@ -1332,9 +1331,11 @@ impl StablecoinDEX {
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
             self.orders[order.order_id()].delete()?;
-            storage_credits.add(order.storage_credits(), self.address, |user, credits| {
-                self.dex_storage_credits[user].write(credits)
-            })?;
+            storage_credits.add(
+                order.storage_credits(),
+                self.address,
+                &mut self.dex_storage_credits,
+            )?;
         } else {
             self.orders[order.order_id()].delete()?;
         }

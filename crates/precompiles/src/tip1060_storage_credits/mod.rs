@@ -216,15 +216,12 @@ impl StorageCreditAccount {
         Self { user, amount }
     }
 
-    pub fn load(
-        user: Address,
-        read_credit: impl FnOnce(Address) -> Result<u64>,
-    ) -> Result<Option<Self>> {
+    pub fn load(user: Address, credits: &Mapping<Address, u64>) -> Result<Option<Self>> {
         if !StorageCtx.spec().is_t7() {
             return Ok(None);
         }
 
-        Ok(Some(Self::new(user, read_credit(user)?)))
+        Ok(Some(Self::new(user, credits[user].read()?)))
     }
 
     fn with_budget<T>(
@@ -247,16 +244,16 @@ impl StorageCreditAccount {
         }
     }
 
-    /// Runs `write_storage` while allowing up to `slots.min(budget)` TIP-1060 token consumptions
-    /// from `credit_owner`'s storage-credit balance.
+    /// Runs `write_storage` while allowing up to `slots.min(self.amount)` TIP-1060 token
+    /// consumptions from `credit_owner`'s storage-credit balance.
     ///
-    /// If spending all credits, the `dex_storage_credits[user]` counter is cleared first so the
-    /// credit embodied by that nonzero counter slot becomes available for the storage creation.
+    /// If all credits are spent, this clears the counter slot first so the credit embodied by that
+    /// nonzero slot becomes available for the storage creation.
     pub fn spend<T>(
         &mut self,
         slots: u64,
         credit_owner: Address,
-        mut write_credit: impl FnMut(Address, u64) -> Result<()>,
+        credits: &mut Mapping<Address, u64>,
         write_storage: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         let budget = self.amount.min(slots);
@@ -265,19 +262,11 @@ impl StorageCreditAccount {
         }
 
         let old = *self;
-        if budget == self.amount {
-            write_credit(self.user, 0)?;
-            self.amount = 0;
-        }
+        self.amount -= budget;
+        credits[self.user].write(self.amount)?;
 
         match Self::with_budget(credit_owner, budget, write_storage) {
-            Ok(value) => {
-                if budget < old.amount {
-                    self.amount -= budget;
-                    write_credit(self.user, self.amount)?;
-                }
-                Ok(value)
-            }
+            Ok(value) => Ok(value),
             Err(err) => {
                 *self = old;
                 Err(err)
@@ -289,15 +278,15 @@ impl StorageCreditAccount {
         &mut self,
         slots: u64,
         credit_owner: Address,
-        write_credit: impl FnOnce(Address, u64) -> Result<()>,
+        credits: &mut Mapping<Address, u64>,
     ) -> Result<()> {
         let was_empty = self.amount == 0;
         self.amount = self.amount.saturating_add(slots);
 
         if was_empty && self.amount > 0 {
-            Self::with_budget(credit_owner, 1, || write_credit(self.user, self.amount))
+            Self::with_budget(credit_owner, 1, || credits[self.user].write(self.amount))
         } else {
-            write_credit(self.user, self.amount)
+            credits[self.user].write(self.amount)
         }
     }
 }
@@ -343,7 +332,7 @@ impl StorageCreditDeltas {
             StorageCreditAccount::new(user, credits[user].read()?).add(
                 slots,
                 credit_owner,
-                |user, value| credits[user].write(value),
+                credits,
             )?;
         }
 
