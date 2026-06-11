@@ -280,7 +280,7 @@ impl Order {
         }
     }
 
-    pub fn non_empty_slots(&self) -> u64 {
+    pub fn storage_credits(&self) -> u64 {
         let mut slots = Self::SLOTS as u64;
         if !self.is_flip() && self.next() == 0 && self.flip_tick() == 0 {
             slots = slots.saturating_sub(1);

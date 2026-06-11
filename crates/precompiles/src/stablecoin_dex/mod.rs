@@ -618,7 +618,7 @@ impl StablecoinDEX {
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
             storage_credits.spend(
-                order.non_empty_slots(),
+                order.storage_credits(),
                 self.address,
                 |user, credits| self.dex_storage_credits[user].write(credits),
                 || self.orders[order.order_id()].write(order),
@@ -985,12 +985,12 @@ impl StablecoinDEX {
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
                 self.orders[order.order_id()].delete()?;
-                storage_credits.credit_slots(order.maker(), order.non_empty_slots());
+                storage_credits.credit_slots(order.maker(), order.storage_credits());
             }
         } else {
             // Non-flip filled order: always delete.
             self.orders[order.order_id()].delete()?;
-            storage_credits.credit_slots(order.maker(), order.non_empty_slots());
+            storage_credits.credit_slots(order.maker(), order.storage_credits());
         }
 
         // Advance tick if liquidity is exhausted
@@ -1332,7 +1332,7 @@ impl StablecoinDEX {
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
             self.orders[order.order_id()].delete()?;
-            storage_credits.add(order.non_empty_slots(), self.address, |user, credits| {
+            storage_credits.add(order.storage_credits(), self.address, |user, credits| {
                 self.dex_storage_credits[user].write(credits)
             })?;
         } else {
