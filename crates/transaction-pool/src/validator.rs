@@ -29,6 +29,7 @@ use revm::{
         ContextTr, JournalTr,
         result::{EVMError, InvalidTransaction},
     },
+    database::BundleState,
 };
 use std::sync::{
     Arc,
@@ -100,8 +101,9 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
-    /// Tip hash and cache of state reads shared across validation calls, replaced on each
-    /// `on_new_head_block`.
+    /// Tip hash and cache of state reads shared across validation calls. Replaced via
+    /// [`Self::seed_state_cache`] from pool maintenance whenever a new block is committed,
+    /// seeding the next cache from the committed block's post-execution state.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
     /// The Tempo hardfork active at the current tip, stored as an index into
     /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
@@ -391,6 +393,17 @@ where
         } else {
             Arc::new(StateCache::default())
         }
+    }
+
+    /// Replaces the tip-scoped state cache with a fresh one seeded from `tip_hash`'s
+    /// post-execution state.
+    ///
+    /// Called from pool maintenance on every commit (and after a reorg), where the new tip's
+    /// execution outcome is available. Swapping in a brand new [`Arc`] keeps in-flight
+    /// validations that hold the previous cache reading a consistent snapshot, while the next
+    /// validations anchored to `tip_hash` start warm with the entries the block touched.
+    pub fn seed_state_cache(&self, tip_hash: B256, bundle: &BundleState) {
+        *self.cached_state.write() = (tip_hash, Arc::new(StateCache::from_post_state(bundle)));
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -741,9 +754,6 @@ where
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
-
-        // State changed, drop all cached reads and anchor the new cache to this tip.
-        *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
     }
 }
 

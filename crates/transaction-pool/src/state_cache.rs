@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
-use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
+use revm::{Database, DatabaseRef, bytecode::Bytecode, database::BundleState, state::AccountInfo};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
@@ -12,8 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// across all concurrent validation calls so only the first access hits the underlying
 /// state provider.
 ///
-/// The validator replaces the cache whenever a new head block is processed, mirroring the
-/// lifecycle of its cached EVM environment.
+/// On every new head block the validator replaces the cache with a fresh one seeded from that
+/// block's post-execution state (see [`StateCache::from_post_state`]). The accounts, storage
+/// slots and contracts a block touches during execution are the same fee-token, nonce-manager
+/// and system-contract entries the next block's validations read, so seeding keeps those warm
+/// across blocks instead of re-reading them from the state provider every block.
 #[derive(Debug, Default)]
 pub(crate) struct StateCache {
     /// Cached basic account info, including non-existent accounts (`None`).
@@ -39,6 +42,57 @@ impl StateCache {
     const MAX_STORAGE_SLOTS: usize = 1 << 18;
     /// Maximum number of cached contracts.
     const MAX_CONTRACTS: usize = 1 << 12;
+
+    /// Builds a cache seeded with the post-execution state of a committed block range.
+    ///
+    /// The cache starts empty and is populated only with the post-state values found in
+    /// `bundle` (the accounts and storage slots the range touched, plus any contracts it
+    /// deployed). Because it never carries over entries from the previous tip, it cannot
+    /// serve stale reads: destroyed accounts and wiped storage slots simply stay absent and
+    /// are re-read on demand, and the cache size is bounded by the size of the block range
+    /// rather than growing without limit across blocks.
+    ///
+    /// Seeding runs once per block off the hot validation path, so it skips the per-entry cap
+    /// checks the on-demand read path uses and instead sets the entry counters from the final
+    /// map lengths. A large range (e.g. a deep reorg) may seed past the caps, but the counters
+    /// then reflect that and the on-demand read path stops inserting until entries drain.
+    pub(crate) fn from_post_state(bundle: &BundleState) -> Self {
+        let storage_len = bundle.state.values().map(|a| a.storage.len()).sum();
+        let cache = Self {
+            accounts: DashMap::with_capacity_and_hasher(bundle.state.len(), Default::default()),
+            storage: DashMap::with_capacity_and_hasher(storage_len, Default::default()),
+            contracts: DashMap::with_capacity_and_hasher(
+                bundle.contracts.len(),
+                Default::default(),
+            ),
+            ..Default::default()
+        };
+
+        // Contracts are keyed by code hash, which is immutable, so deployed bytecode is always
+        // safe to cache.
+        for (code_hash, code) in &bundle.contracts {
+            cache.contracts.insert(*code_hash, code.clone());
+        }
+
+        for (address, account) in &bundle.state {
+            cache.accounts.insert(*address, account.account_info());
+            for (slot, value) in &account.storage {
+                cache.storage.insert((*address, *slot), value.present_value);
+            }
+        }
+
+        cache
+            .account_count
+            .store(cache.accounts.len(), Ordering::Relaxed);
+        cache
+            .storage_count
+            .store(cache.storage.len(), Ordering::Relaxed);
+        cache
+            .contract_count
+            .store(cache.contracts.len(), Ordering::Relaxed);
+
+        cache
+    }
 }
 
 /// A [`DatabaseRef`] adapter that serves reads from a shared [`StateCache`], falling back
@@ -166,6 +220,66 @@ mod tests {
         fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
             Ok(B256::ZERO)
         }
+    }
+
+    #[test]
+    fn seeds_from_post_state_without_hitting_db() {
+        use alloy_primitives::map::{AddressMap, B256Map, HashMap};
+        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+
+        let seeded_addr = Address::with_last_byte(1);
+        let seeded_slot = U256::from(7);
+        let seeded_value = U256::from(123);
+        let unseeded_addr = Address::with_last_byte(2);
+        let code_hash = B256::repeat_byte(0xab);
+
+        let seeded_info = AccountInfo {
+            balance: U256::from(999),
+            nonce: 5,
+            ..Default::default()
+        };
+
+        let mut storage = HashMap::default();
+        storage.insert(
+            seeded_slot,
+            StorageSlot::new_changed(U256::ZERO, seeded_value),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            seeded_addr,
+            BundleAccount::new(None, Some(seeded_info), storage, AccountStatus::Changed),
+        );
+        let mut contracts = B256Map::default();
+        contracts.insert(code_hash, Bytecode::default());
+        let bundle = BundleState {
+            state,
+            contracts,
+            ..Default::default()
+        };
+
+        let cache = StateCache::from_post_state(&bundle);
+        assert_eq!(cache.account_count.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.storage_count.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.contract_count.load(Ordering::Relaxed), 1);
+
+        let inner = CountingDb::default();
+        let db = StateCacheDb::new(&cache, &inner);
+
+        // Seeded entries are served from the cache, leaving the underlying db untouched.
+        assert_eq!(
+            db.basic_ref(seeded_addr).unwrap().unwrap().balance,
+            U256::from(999)
+        );
+        assert_eq!(
+            db.storage_ref(seeded_addr, seeded_slot).unwrap(),
+            seeded_value
+        );
+        assert!(db.code_by_hash_ref(code_hash).unwrap().is_empty());
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 0);
+
+        // An account the block did not touch still falls through to the db.
+        assert!(db.basic_ref(unseeded_addr).unwrap().is_some());
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 1);
     }
 
     #[test]

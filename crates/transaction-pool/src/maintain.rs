@@ -617,8 +617,13 @@ where
                 let block_update_start = Instant::now();
 
                 let tip = &new;
-                let bundle_state = tip.execution_outcome().state().state();
+                let execution_outcome = tip.execution_outcome();
+                let bundle_state = execution_outcome.state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
+
+                // Reseed the validator's state cache from this block's post-state so the next
+                // block's validations start warm on the entries the block touched.
+                pool.seed_validation_state_cache(tip.tip().hash(), execution_outcome.state());
 
                 // Removed transactions are collected here and dropped at the end of the
                 // iteration: deallocating them (input data, signatures, allocator work) is
