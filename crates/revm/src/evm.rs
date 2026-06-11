@@ -2267,6 +2267,140 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1060: repeatedly clearing and restoring the same slot in `Direct` mode must not mine
+    /// storage credits that can subsidize unrelated fresh slot creations.
+    ///
+    /// The hardcoded runtime is the original credit-mining reproducer. It bootstraps slot 0 to a
+    /// nonzero value during deployment, then the call transaction selects `Direct` mode, churns that
+    /// same slot 500 times (`x->0`, then `0->x`), and finally attempts to create 500 fresh slots.
+    /// The clear leg mints one credit, but the restore leg crosses the present zero boundary and
+    /// consumes it, so the churn loop has net-zero credits and the later fresh-slot writes OOG.
+    #[test]
+    fn test_tip1060_direct_clear_restore_churn_cannot_subsidize_fresh_slots() -> eyre::Result<()> {
+        use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+        use revm::{
+            Context, Database, ExecuteCommitEvm, MainContext,
+            context::{CfgEnv, TxEnv},
+            database::{CacheDB, EmptyDB},
+            state::AccountInfo,
+        };
+        use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_precompiles::{
+            STORAGE_CREDITS_ADDRESS, tip1060_storage_credits::TIP1060StorageCredits,
+        };
+
+        use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
+
+        // CREATE init-code:
+        //   constructor: SSTORE(0, 1)
+        //   runtime:
+        //     setMode(Direct)
+        //     for 500: SSTORE(0, 0); SSTORE(0, 2)
+        //     for 500: SSTORE(0x100 + i, 1)
+        let init = Bytes::from(
+            hex!(
+                "600160005561006b601360003961006b6000f3\
+                602160005360176001536\
+                05b600253604a600353\
+                6002602353\
+                6000600060246000600073106000000000000000000000000000000000000\
+                05af150\
+                6101f45b60006000556002600055600190038061003e5750\
+                6101f45b8061010001600190556001900380610056575000"
+            )
+            .to_vec(),
+        );
+
+        let caller = Address::repeat_byte(0x11);
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T7;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T7);
+        const GAS_LIMIT: u64 = 16_777_216;
+        let mut block = TempoBlockEnv::default();
+        block.inner.gas_limit = GAS_LIMIT;
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::new()))
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+        let mut evm = TempoEvm::new(ctx, ());
+        evm.ctx.db_mut().insert_account_info(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                ..Default::default()
+            },
+        );
+
+        // First transaction: deploy the contract and create the bootstrap slot. This pays for one
+        // real storage slot so the second transaction can start with slot 0 nonzero.
+        let deploy = evm.transact_commit(
+            TxEnv {
+                caller,
+                kind: TxKind::Create,
+                data: init,
+                gas_limit: GAS_LIMIT,
+                ..Default::default()
+            }
+            .into(),
+        )?;
+        assert!(deploy.is_success(), "deploy reverted/halted: {deploy:?}");
+        let contract = deploy
+            .created_address()
+            .expect("CREATE should yield an address");
+
+        // Second transaction: clear/restore the bootstrap slot repeatedly, then attempt to create
+        // 500 unrelated slots. If clear/restore churn incorrectly minted surplus credits, this call
+        // would succeed under the block gas limit. It must instead OOG.
+        let call = evm.transact_commit(
+            TxEnv {
+                caller,
+                nonce: 1,
+                kind: TxKind::Call(contract),
+                gas_limit: GAS_LIMIT,
+                ..Default::default()
+            }
+            .into(),
+        )?;
+
+        assert!(
+            !call.is_success(),
+            "credit-mining PoC must not create 500 fresh slots under one churned credit: {call:?}"
+        );
+        assert_eq!(
+            call.tx_gas_used(),
+            GAS_LIMIT,
+            "expected OOG at the tx gas limit"
+        );
+
+        // The OOG transaction must roll back both credit bookkeeping and attempted fresh-slot
+        // writes: no mined credits are retained, and only the deployment bootstrap slot remains.
+        let balance = u64::from_word(evm.ctx.db_mut().storage(
+            STORAGE_CREDITS_ADDRESS,
+            TIP1060StorageCredits::slot(contract),
+        )?)
+        .unwrap();
+        assert_eq!(
+            balance, 0,
+            "failed PoC must not leave mined storage credits behind"
+        );
+
+        let slots = evm
+            .ctx
+            .db_mut()
+            .cache
+            .accounts
+            .get(&contract)
+            .map(|a| a.storage.iter().filter(|(_, v)| !v.is_zero()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            slots, 1,
+            "failed PoC must revert all fresh-slot writes and keep only the bootstrap slot"
+        );
+
+        Ok(())
+    }
+
     /// TIP-1060: the storage credits minted by clearing a slot in a first transaction change the
     /// cost of creating a slot in a *later* transaction, and that dependence is mode-specific.
     ///
