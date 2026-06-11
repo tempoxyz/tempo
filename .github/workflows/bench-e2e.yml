@@ -20,37 +20,15 @@ on:
         required: false
         default: ""
       baseline-hardfork:
-        description: Latest active hardfork for the baseline run.
-        type: choice
-        required: true
-        default: T6
-        options:
-          - T0
-          - T1
-          - T1A
-          - T1B
-          - T1C
-          - T2
-          - T3
-          - T4
-          - T5
-          - T6
+        description: Latest active hardfork for the baseline run. Empty = latest Tempo hardfork.
+        type: string
+        required: false
+        default: ""
       feature-hardfork:
-        description: Latest active hardfork for the feature run.
-        type: choice
-        required: true
-        default: T6
-        options:
-          - T0
-          - T1
-          - T1A
-          - T1B
-          - T1C
-          - T2
-          - T3
-          - T4
-          - T5
-          - T6
+        description: Latest active hardfork for the feature run. Empty = latest Tempo hardfork.
+        type: string
+        required: false
+        default: ""
       preset:
         description: Benchmark preset.
         type: choice
@@ -210,11 +188,11 @@ on:
       baseline-hardfork:
         type: string
         required: false
-        default: T6
+        default: ""
       feature-hardfork:
         type: string
         required: false
-        default: T6
+        default: ""
       baseline-features:
         type: string
         required: false
