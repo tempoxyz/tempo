@@ -27,7 +27,7 @@ use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
-use commonware_utils::NZU64;
+use commonware_utils::{NZU64, NZUsize};
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -240,14 +240,12 @@ async fn instantiate_network(
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    let mailbox_size =
-        NonZeroUsize::new(config.mailbox_size).ok_or_eyre("mailbox size must be non-zero")?;
     let cfg = lookup::Config {
         namespace,
         crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
-        mailbox_size,
+        mailbox_size: NZUsize!(config.mailbox_size),
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,

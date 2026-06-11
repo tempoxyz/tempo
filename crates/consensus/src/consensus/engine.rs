@@ -140,8 +140,7 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
-        let mailbox_size =
-            NonZeroUsize::new(self.mailbox_size).ok_or_eyre("mailbox size must be non-zero")?;
+        let mailbox_size = NZUsize!(self.mailbox_size);
 
         let alias::marshal::Initialized {
             actor: marshal,
@@ -152,8 +151,8 @@ where
             page_cache_ref.clone(),
             execution_node.clone(),
             alias::marshal::Config {
+                mailbox_size,
                 partition_prefix: self.partition_prefix.clone(),
-                mailbox_size: NZUsize!(self.mailbox_size),
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
