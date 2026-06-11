@@ -116,6 +116,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn ensure_not_static(&self) -> Result<(), TempoPrecompileError> {
+        if self.is_static {
+            return Err(TempoPrecompileError::StaticCallNotAllowed);
+        }
+        Ok(())
+    }
+
+    #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
@@ -309,6 +317,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
@@ -377,6 +387,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let action = StorageAction::Sstore(address, key, value);
         self.sstore_inner(address, key, value, action)
     }
@@ -388,6 +400,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -413,6 +427,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_sub(delta)
@@ -438,6 +454,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         self.internals.tstore(address, key, value);
         Ok(())
@@ -445,6 +463,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(
             gas::LOG
                 + self
@@ -652,6 +672,15 @@ mod tests {
             gas_limit: u64,
             reservoir: u64,
         ) -> EvmPrecompileStorageProvider<'_> {
+            self.provider_with_gas_limit_and_static(gas_limit, reservoir, false)
+        }
+
+        fn provider_with_gas_limit_and_static(
+            &mut self,
+            gas_limit: u64,
+            reservoir: u64,
+            is_static: bool,
+        ) -> EvmPrecompileStorageProvider<'_> {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
             let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
@@ -665,7 +694,7 @@ mod tests {
                 reservoir,
                 spec,
                 amsterdam_eip8037_enabled,
-                false,
+                is_static,
                 gas_params,
             )
         }
@@ -782,6 +811,45 @@ mod tests {
         };
 
         assert_eq!(data, *code.original_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn test_mutating_ops_reject_static_context_before_gas_or_mutation() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_with_gas_limit_and_static(u64::MAX, 0, true);
+
+        let addr = Address::random();
+        let key = U256::ONE;
+        let code = Bytecode::new_raw(vec![0xff].into());
+        let event = LogData::new_unchecked(vec![], bytes!());
+
+        assert!(matches!(
+            provider.set_code(addr, code),
+            Err(TempoPrecompileError::StaticCallNotAllowed)
+        ));
+        assert!(matches!(
+            provider.sstore(addr, key, U256::ONE),
+            Err(TempoPrecompileError::StaticCallNotAllowed)
+        ));
+        assert!(matches!(
+            provider.tstore(addr, key, U256::ONE),
+            Err(TempoPrecompileError::StaticCallNotAllowed)
+        ));
+        assert!(matches!(
+            provider.emit_event(addr, event),
+            Err(TempoPrecompileError::StaticCallNotAllowed)
+        ));
+        assert_eq!(provider.gas_used(), 0);
+        assert_eq!(provider.sload(addr, key)?, U256::ZERO);
+        assert_eq!(provider.tload(addr, key)?, U256::ZERO);
+        std::mem::drop(provider);
+
+        let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
+            panic!("Failed to load account code")
+        };
+
+        assert!(data.is_empty());
         Ok(())
     }
 
