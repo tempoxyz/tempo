@@ -19,6 +19,7 @@ CHARTS = [
     {
         "file": "block_time_scatter.png",
         "sample_key": "block_time_ms",
+        "metric": "Block Time",
         "label": "Block Time Scatter",
         "title": "Block time samples",
         "ylabel": "Block time (ms)",
@@ -26,6 +27,7 @@ CHARTS = [
     {
         "file": "serialized_block_size_per_tx_scatter.png",
         "sample_key": "serialized_block_size_per_tx_bytes",
+        "metric": "Serialized Block Size per Transaction",
         "label": "Serialized Block Size per Transaction Scatter",
         "title": "Serialized block size per transaction samples",
         "ylabel": "Serialized bytes per transaction",
@@ -33,6 +35,7 @@ CHARTS = [
     {
         "file": "block_tx_count_scatter.png",
         "sample_key": "serialized_block_tx_count",
+        "metric": "Transactions per Block",
         "label": "Transactions per Block Scatter",
         "title": "Transactions per block samples",
         "ylabel": "Transactions per block",
@@ -40,6 +43,7 @@ CHARTS = [
     {
         "file": "builder_latency_scatter.png",
         "sample_key": "builder_latency_ms",
+        "metric": "Builder Latency",
         "label": "Builder Latency Scatter",
         "title": "Builder latency samples",
         "ylabel": "Builder latency (ms)",
@@ -47,6 +51,7 @@ CHARTS = [
     {
         "file": "builder_finish_scatter.png",
         "sample_key": "builder_finish_ms",
+        "metric": "Builder Finish",
         "label": "Builder Finish Scatter",
         "title": "Builder finish samples",
         "ylabel": "Builder finish (ms)",
@@ -54,6 +59,7 @@ CHARTS = [
     {
         "file": "builder_pool_fetch_scatter.png",
         "sample_key": "builder_pool_fetch_ms",
+        "metric": "Builder Pool Fetch",
         "label": "Builder Pool Fetch Scatter",
         "title": "Builder pool fetch samples",
         "ylabel": "Builder pool fetch (ms)",
@@ -61,6 +67,7 @@ CHARTS = [
     {
         "file": "builder_invalid_tx_execution_attempts_scatter.png",
         "sample_key": "builder_invalid_tx_execution_attempts",
+        "metric": "Builder Invalid Tx Attempts",
         "label": "Builder Invalid Tx Attempts Scatter",
         "title": "Builder invalid transaction attempts samples",
         "ylabel": "Invalid transaction attempts",
@@ -68,6 +75,7 @@ CHARTS = [
     {
         "file": "serialized_block_size_scatter.png",
         "sample_key": "serialized_block_size_bytes",
+        "metric": "Serialized Block Size",
         "label": "Serialized Block Size Scatter",
         "title": "Serialized block size samples",
         "ylabel": "Serialized block size (MiB)",
@@ -76,6 +84,7 @@ CHARTS = [
     {
         "file": "builder_fill_idle_scatter.png",
         "sample_key": "builder_fill_idle_ms",
+        "metric": "Builder Fill Idle",
         "label": "Builder Fill Idle Scatter",
         "title": "Builder fill idle samples",
         "ylabel": "Builder fill idle (ms)",
@@ -83,6 +92,7 @@ CHARTS = [
     {
         "file": "validation_latency_scatter.png",
         "sample_key": "validation_latency_ms",
+        "metric": "Validation Latency",
         "label": "Validation Latency Scatter",
         "title": "Validation latency samples",
         "ylabel": "Validation latency (ms)",
@@ -296,7 +306,14 @@ def main() -> None:
             ylabel=chart["ylabel"],
             scale=chart.get("scale", 1.0),
         ):
-            written.append({"file": chart["file"], "label": chart["label"]})
+            written.append(
+                {
+                    "file": chart["file"],
+                    "label": chart["label"],
+                    "metric": chart["metric"],
+                    "kind": "scatter",
+                }
+            )
 
         stem = chart["file"].removesuffix("_scatter.png")
         for group, display_name in [
@@ -315,7 +332,14 @@ def main() -> None:
                 xlabel=chart["ylabel"],
                 scale=chart.get("scale", 1.0),
             ):
-                written.append({"file": file_name, "label": label})
+                written.append(
+                    {
+                        "file": file_name,
+                        "label": label,
+                        "metric": chart["metric"],
+                        "kind": f"{group}_distribution",
+                    }
+                )
 
     if not written:
         raise SystemExit("summary.json has no chartable samples")

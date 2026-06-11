@@ -1094,10 +1094,23 @@ jobs:
               } catch (error) {
                 core.info(`No chart manifest found: ${error.message}`);
               }
-              chartsSection = '\n\n### Scatter Plots\n\n';
+              const groupedCharts = new Map();
               for (const chart of charts) {
-                chartsSection += `<details><summary>${chart.label}</summary>\n\n`;
-                chartsSection += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
+                const metric = chart.metric || chart.label;
+                if (!groupedCharts.has(metric)) groupedCharts.set(metric, []);
+                groupedCharts.get(metric).push(chart);
+              }
+
+              const chartOrder = ['scatter', 'baseline_distribution', 'feature_distribution'];
+              chartsSection = '\n\n### Metric Distribution Plots\n\n';
+              for (const [metric, metricCharts] of groupedCharts) {
+                metricCharts.sort((a, b) => chartOrder.indexOf(a.kind) - chartOrder.indexOf(b.kind));
+                chartsSection += `<details><summary>${metric}</summary>\n\n`;
+                for (const chart of metricCharts) {
+                  const heading = chart.kind === 'scatter' ? 'Scatter' : chart.kind === 'baseline_distribution' ? 'Baseline distribution' : chart.kind === 'feature_distribution' ? 'Feature distribution' : chart.label;
+                  chartsSection += `#### ${heading}\n\n`;
+                  chartsSection += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
+                }
                 chartsSection += `</details>\n\n`;
               }
             }
