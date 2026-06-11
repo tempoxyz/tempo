@@ -654,7 +654,7 @@ async fn run_canonicalize_task<TContext: Pacer>(
         height,
         digest,
         fcu_response,
-        build_attributes,
+        mut build_attributes,
     }: Canonicalize,
 ) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
     let new_canonicalized = match head_or_finalized {
@@ -662,12 +662,22 @@ async fn run_canonicalize_task<TContext: Pacer>(
         HeadOrFinalized::Finalized => canonicalized.update_finalized(height, digest),
     };
 
+    // Only build on top of the most recent head. If the requested parent
+    // could not be made the head (because a block above it was already
+    // finalized), the build is stale, and submitting its attributes anyway
+    // would register a build on top of the wrong block. Taking the
+    // attributes drops the response channel, which signals the failure to
+    // the subscriber.
+    if build_attributes.is_some() && new_canonicalized.forkchoice.head_block_hash != digest.0 {
+        info!("dropping payload build request: its parent cannot be made the head");
+        build_attributes.take();
+    }
+
     let (attributes, payload_response) = build_attributes.unzip();
 
     // The forkchoice update is submitted even if it would not change the
     // forkchoice state: the execution layer treats it as a no-op (the FCU
-    // heartbeat relies on this), and a build must always send its payload
-    // attributes to register the build job.
+    // heartbeat relies on this).
     match submit_forkchoice_update(
         &execution_node,
         context,

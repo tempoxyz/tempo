@@ -350,7 +350,7 @@ impl Inner<Init> {
                 let already_verified = OptionFuture::some(self.marshal.get_verified(round));
                 futures::pin_mut!(already_verified);
 
-                let mut proposal = Box::pin(self.clone().build_proposal(
+                let mut proposal = Box::pin(self.clone().propose(
                     context.clone(),
                     BuildProposalArgs {
                         propose_start,
@@ -361,33 +361,28 @@ impl Inner<Init> {
                     },
                 ));
 
-                let (block, proposal_return) = tokio::select! {
+                let proposal_result = tokio::select! {
                     biased;
 
                     Some(block) = &mut already_verified => {
-                        // Dropping the proposal future drops its payload
-                        // subscription, telling the executor that the payload
-                        // of any in-flight build is no longer wanted.
-                        drop(proposal);
                         debug!("skipping proposal: verified block already exists for round on restart");
-                        (block, None)
+                        Ok((block, None))
                     },
 
                     res = &mut proposal => {
-                        let proposal = res.wrap_err("failed creating a proposal")?;
-
-                        // Make sure that we get a response from the already_verified future before proposing.
-                        if already_verified.is_none() {
-                            proposal
-                        } else {
-                            if let Some(block) = already_verified.await {
-                                debug!("skipping proposal: verified block already exists for round on restart");
-                                (block, None)
-                            } else {
-                                proposal
-                            }
-                        }
+                        res.wrap_err("failed creating a proposal")
                     },
+                };
+
+                // already_verified blocks are always preferred, even if
+                // building a block failed.
+                let (block, proposal_return) = if already_verified.is_some()
+                    && let Some(block) = already_verified.await
+                {
+                    debug!("skipping proposal: verified block already exists for round on restart");
+                    (block, None)
+                } else {
+                    proposal_result?
                 };
 
                 let digest = block.digest();
@@ -410,11 +405,6 @@ impl Inner<Init> {
 
             tokio::select! {
                 () = response.closed() => {
-                    // Dropping the proposal future drops its payload
-                    // subscription, telling the executor that the payload
-                    // of any in-flight build is no longer wanted.
-                    drop(proposal);
-
                     return Err(eyre!(
                         "proposal return channel was closed by consensus \
                         engine before block could be proposed; aborting"
@@ -496,7 +486,7 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn build_proposal<TContext: Pacer>(
+    async fn propose<TContext: Pacer>(
         self,
         context: TContext,
         args: BuildProposalArgs,
