@@ -10,32 +10,36 @@
 
 use super::{CreditMode, TIP1060StorageCredits, TransientState};
 use crate::storage::FromWord;
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, IntoLogData, LogData, U256};
 use revm::{
     context_interface::cfg::GasParams,
-    interpreter::{SStoreResult, StateLoad, gas::GasTracker, instruction_context::GasStateOutcome},
+    interpreter::{
+        InstructionResult, SStoreResult, StateLoad, gas::GasTracker,
+        instruction_context::GasStateOutcome,
+    },
 };
-use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
+use tempo_chainspec::constants::gas::SSTORE_SET;
+use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, TIP1060StorageCreditsEvent};
 
-pub const STORAGE_CREDIT_VALUE: u64 = 230_000;
-const SSTORE_SET_WITHOUT_EXPANSION_COST: u64 = 20_000;
+/// Error mapping required by storage credit accounting.
+pub trait StorageCreditsError: Sized {
+    fn out_of_gas() -> Self;
+    fn fatal_external() -> Self;
+}
 
-/// Storage and gas operations required by [`sstore_storage_credits`].
-///
-/// All storage operations target the storage credits contract; the concrete
-/// address is supplied by the implementor so this trait stays free of revm
-/// host details. The associated [`Error`](StorageCreditsBackend::Error) lets each
-/// backend surface failures in its own error type (`InstructionResult` for the
-/// opcode path, `TempoPrecompileError` for the precompile path).
+impl StorageCreditsError for InstructionResult {
+    fn out_of_gas() -> Self {
+        Self::OutOfGas
+    }
+
+    fn fatal_external() -> Self {
+        Self::FatalExternalError
+    }
+}
+
+/// Minimal journal/gas operations required by storage credit accounting.
 pub trait StorageCreditsBackend {
-    /// Error type returned by the backend.
-    type Error;
-
-    /// Constructs the backend's out-of-gas error.
-    fn out_of_gas() -> Self::Error;
-
-    /// Constructs the backend's fatal/external error (e.g. malformed state word).
-    fn fatal_external() -> Self::Error;
+    type Error: StorageCreditsError;
 
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
@@ -43,42 +47,65 @@ pub trait StorageCreditsBackend {
     /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](Self::out_of_gas) if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsError::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
             .record_regular_cost(cost)
             .then_some(())
-            .ok_or_else(Self::out_of_gas)
+            .ok_or_else(Self::Error::out_of_gas)
     }
 
-    /// SLOAD a slot of the storage credits contract, optionally skipping the cold load.
-    fn load_credits(
+    /// SLOAD `address[key]`, optionally skipping the cold load.
+    fn sload(
         &mut self,
+        address: Address,
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error>;
 
-    /// SSTORE a slot of the storage credits contract (cold load is never skipped here).
-    fn store_credits(
+    /// SSTORE `address[key]`.
+    fn sstore(
         &mut self,
+        address: Address,
         key: U256,
         value: U256,
+        skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error>;
 
-    /// Loads the transaction-local storage credit state word at `key`.
-    fn load_transient_state(&mut self, key: U256) -> U256;
+    /// TLOAD `address[key]`.
+    fn tload(&mut self, address: Address, key: U256) -> U256;
 
-    /// Stores the transaction-local storage credit state word at `key`.
-    fn store_transient_state(&mut self, key: U256, value: U256);
+    /// TSTORE `address[key] = value`.
+    fn tstore(&mut self, address: Address, key: U256, value: U256);
+
+    /// Emits `event` from `address`.
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error>;
 }
 
-/// Applies the TIP-1060 storage credits policy for a single SSTORE.
+#[inline]
+fn emit_mode_updated<B: StorageCreditsBackend>(
+    backend: &mut B,
+    account: Address,
+    new_mode: CreditMode,
+) -> Result<(), B::Error> {
+    let event = TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into());
+    backend.emit_event(STORAGE_CREDITS_ADDRESS, event.into_log_data())
+}
+
+#[inline]
+fn store_credit_state<B: StorageCreditsBackend>(
+    backend: &mut B,
+    key: U256,
+    state: TransientState,
+) -> Result<(), B::Error> {
+    backend.tstore(STORAGE_CREDITS_ADDRESS, key, state.into());
+    Ok(())
+}
+
+/// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
 ///
-/// Called after the storage write has been journaled, with `values` describing
-/// the original/present/new slot values for `owner`. Returns a [`GasStateOutcome`]
-/// telling the caller whether to skip the normal dynamic/state-gas accounting
-/// (`skip_gas`) and/or the refund accounting (`skip_refund`).
+/// Returns whether to skip normal dynamic/state gas and/or refund accounting.
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
@@ -122,13 +149,14 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
-    let storage_credit_state_load = backend.load_credits(account_slot, skip_cold)?;
+    let storage_credit_state_load =
+        backend.sload(STORAGE_CREDITS_ADDRESS, account_slot, skip_cold)?;
     if storage_credit_state_load.is_cold {
         backend.charge_gas(additional_cold_cost)?;
     }
 
     let mut balance =
-        u64::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
+        u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
     if values.is_new_zero() {
@@ -137,9 +165,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: slot create. The selected storage creation mode is transient.
-        let mut transient_state =
-            TransientState::from_word(backend.load_transient_state(account_slot))
-                .map_err(|_| B::fatal_external())?;
+        let mut transient_state: TransientState = backend
+            .tload(STORAGE_CREDITS_ADDRESS, account_slot)
+            .try_into()
+            .map_err(|_| B::Error::fatal_external())?;
 
         match transient_state.mode {
             CreditMode::Direct => {
@@ -149,15 +178,24 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     if is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
                     }
-                    backend.charge_gas(SSTORE_SET_WITHOUT_EXPANSION_COST)?;
+                    backend.charge_gas(SSTORE_SET)?;
                     balance -= 1;
-                    transient_state.budget -= 1;
-                    if transient_state.budget == 0 {
-                        transient_state.mode = CreditMode::Preserve;
-                    }
-                    backend.store_transient_state(account_slot, transient_state.into_word());
                     was_changed = true;
                     outcome.skip_gas = true;
+
+                    if transient_state.budget != u64::MAX {
+                        transient_state.budget -= 1;
+                    }
+                    if transient_state.budget == 0 {
+                        transient_state.mode = CreditMode::Preserve;
+                        emit_mode_updated(backend, owner, CreditMode::Preserve)?;
+                    }
+                    store_credit_state(backend, account_slot, transient_state)?;
+                } else if transient_state.budget == 0 {
+                    // Zero-budget Direct creations pay the full creation cost and then move to Preserve.
+                    transient_state.mode = CreditMode::Preserve;
+                    store_credit_state(backend, account_slot, transient_state)?;
+                    emit_mode_updated(backend, owner, CreditMode::Preserve)?;
                 }
                 // Otherwise, leave gas enabled so revm charges full creation costs. Exhausted
                 // budget is moved back to Preserve rather than Refund.
@@ -167,7 +205,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Refund => {
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
-                backend.store_transient_state(account_slot, transient_state.into_word());
+                store_credit_state(backend, account_slot, transient_state)?;
             }
         }
     }
@@ -175,7 +213,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     if was_changed {
         // cold load is already checked above when we loaded the storage credits account.
         let result = backend
-            .store_credits(account_slot, U256::from(balance))?
+            .sstore(
+                STORAGE_CREDITS_ADDRESS,
+                account_slot,
+                U256::from(balance),
+                false,
+            )?
             .data;
 
         // Only when change happens charge additional gas.

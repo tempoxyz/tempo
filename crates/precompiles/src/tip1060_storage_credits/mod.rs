@@ -3,7 +3,7 @@
 pub mod dispatch;
 pub mod gas_state;
 
-pub use gas_state::{STORAGE_CREDIT_VALUE, StorageCreditsBackend, sstore_storage_credits};
+pub use gas_state::{StorageCreditsBackend, StorageCreditsError, sstore_storage_credits};
 
 use crate::{
     STORAGE_CREDITS_ADDRESS,
@@ -61,39 +61,32 @@ impl From<CreditMode> for Mode {
     }
 }
 
+// NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    /// Remaining direct-spend budget for Direct mode. If applicable.
     pub budget: u64,
-    /// Credit Mode.
     pub mode: CreditMode,
-    // Pending refund-eligible creations for Refund mode.
     pub pending_refunds: u64,
 }
 
-impl TransientState {
-    /// Decodes a packed transient state word.
-    ///
-    /// Layout:
-    /// - bits `0..=63`: remaining direct-spend budget (`uint64`)
-    /// - bits `64..=71`: storage creation mode
-    /// - bits `128..=191`: pending refund-eligible creations (`uint64`)
-    /// - all other bits: reserved for future hardfork-gated extensions
+impl TryFrom<U256> for TransientState {
+    type Error = TempoPrecompileError;
+
     #[inline]
-    pub fn from_word(value: U256) -> Result<Self> {
-        // `U256` limbs are little-endian: limb 0 holds bits 0..=63,
-        // limb 1 holds bits 64..=127, limb 2 holds bits 128..=191.
+    fn try_from(value: U256) -> Result<Self> {
         let limbs = value.as_limbs();
         Ok(Self {
             budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[2],
+            pending_refunds: limbs[3],
         })
     }
+}
 
+impl From<TransientState> for U256 {
     #[inline]
-    pub fn into_word(self) -> U256 {
-        U256::from_limbs([self.budget, self.mode as u64, self.pending_refunds, 0])
+    fn from(value: TransientState) -> Self {
+        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
     }
 }
 
@@ -123,7 +116,11 @@ impl TIP1060StorageCredits {
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
-        self.transient_state_of(account).map(|state| state.mode)
+        self.credit_state_of(account).map(|state| state.mode)
+    }
+
+    pub fn budget_of(&self, account: Address) -> Result<u64> {
+        self.credit_state_of(account).map(|state| state.budget)
     }
 
     /// Sets the transaction-local storage-creation mode for the caller.
@@ -134,57 +131,32 @@ impl TIP1060StorageCredits {
         } else {
             0
         };
-        if self.write_mode_with_budget(msg_sender, mode, budget)? {
-            self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
-                msg_sender,
-                mode.into(),
-            ))
-        } else {
-            Ok(())
-        }
+
+        self.write_mode_with_budget(msg_sender, mode, budget)?;
+        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+            msg_sender,
+            mode.into(),
+        ))
     }
 
-    /// Sets a transaction-local Direct budget for the caller.
-    ///
-    /// A positive budget switches to `Direct` and allows at most `credits` credit-backed storage
-    /// creates. A zero budget switches to `Preserve`, matching the post-exhaustion behavior.
-    pub fn set_budget(&mut self, msg_sender: Address, credits: u64) -> Result<()> {
-        let mode = if credits == 0 {
-            CreditMode::Preserve
-        } else {
-            CreditMode::Direct
-        };
-
-        if self.write_mode_with_budget(msg_sender, mode, credits)? {
-            self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
-                msg_sender,
-                mode.into(),
-            ))?;
-        }
-        Ok(())
+    pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
+        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)?;
+        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+            msg_sender,
+            Mode::Direct,
+        ))
     }
 
     fn write_mode_with_budget(
         &mut self,
-        account: Address,
+        msg_sender: Address,
         mode: CreditMode,
         budget: u64,
-    ) -> Result<bool> {
-        let (mode, budget) = match (mode, budget) {
-            (CreditMode::Direct, 0) => (CreditMode::Preserve, 0),
-            (CreditMode::Direct, budget) => (CreditMode::Direct, budget),
-            (mode, _) => (mode, 0),
-        };
-
-        let mut state = self.transient_state_of(account)?;
-        if state.mode == mode && state.budget == budget {
-            return Ok(false);
-        }
-
+    ) -> Result<()> {
+        let mut state = self.credit_state_of(msg_sender)?;
         state.mode = mode;
         state.budget = budget;
-        self.write_transient_state_of(account, state)?;
-        Ok(true)
+        self.write_credit_state_of(msg_sender, state)
     }
 
     #[inline]
@@ -193,14 +165,15 @@ impl TIP1060StorageCredits {
     }
 
     #[inline]
-    fn transient_state_of(&self, account: Address) -> Result<TransientState> {
-        TransientState::from_word(self.storage.tload(self.address, Self::slot(account))?)
+    fn credit_state_of(&self, account: Address) -> Result<TransientState> {
+        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+            .t_read()?
+            .try_into()
     }
 
     #[inline]
-    fn write_transient_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.storage
-            .tstore(self.address, Self::slot(account), state.into_word())
+    fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
+        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
     }
 }
 
@@ -233,7 +206,7 @@ impl StorageCreditAccount {
         storage_credits.set_budget(credit_owner, budget)?;
 
         let result = f();
-        let remaining_budget = storage_credits.transient_state_of(credit_owner)?.budget;
+        let remaining_budget = storage_credits.credit_state_of(credit_owner)?.budget;
 
         match result {
             Ok(value) if remaining_budget == 0 => Ok(value),

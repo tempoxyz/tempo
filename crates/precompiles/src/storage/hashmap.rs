@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
-    STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
     tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
@@ -101,16 +100,6 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     type Error = TempoPrecompileError;
 
     #[inline]
-    fn out_of_gas() -> Self::Error {
-        TempoPrecompileError::OutOfGas
-    }
-
-    #[inline]
-    fn fatal_external() -> Self::Error {
-        TempoPrecompileError::Fatal("invalid storage credits state".to_string())
-    }
-
-    #[inline]
     fn gas_params(&self) -> &GasParams {
         &self.gas_params
     }
@@ -121,14 +110,15 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     }
 
     #[inline]
-    fn load_credits(
+    fn sload(
         &mut self,
+        address: Address,
         key: U256,
         _skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
         Ok(StateLoad::new(
             self.internals
-                .get(&(STORAGE_CREDITS_ADDRESS, key))
+                .get(&(address, key))
                 .copied()
                 .unwrap_or(U256::ZERO),
             false,
@@ -136,17 +126,19 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     }
 
     #[inline]
-    fn store_credits(
+    fn sstore(
         &mut self,
+        address: Address,
         key: U256,
         value: U256,
+        _skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         let present = self
             .internals
-            .get(&(STORAGE_CREDITS_ADDRESS, key))
+            .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO);
-        self.internals.insert((STORAGE_CREDITS_ADDRESS, key), value);
+        self.internals.insert((address, key), value);
 
         Ok(StateLoad::new(
             SStoreResult {
@@ -159,16 +151,21 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     }
 
     #[inline]
-    fn load_transient_state(&mut self, key: U256) -> U256 {
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
         self.transient
-            .get(&(STORAGE_CREDITS_ADDRESS, key))
+            .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO)
     }
 
     #[inline]
-    fn store_transient_state(&mut self, key: U256, value: U256) {
-        self.transient.insert((STORAGE_CREDITS_ADDRESS, key), value);
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.transient.insert((address, key), value);
+    }
+
+    #[inline]
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
+        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 
