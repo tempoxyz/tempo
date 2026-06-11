@@ -381,6 +381,9 @@ where
     }
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
+    ///
+    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
+    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
