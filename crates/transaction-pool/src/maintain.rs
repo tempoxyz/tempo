@@ -621,10 +621,6 @@ where
                 let bundle_state = execution_outcome.state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
-                // Reseed the validator's state cache from this block's post-state so the next
-                // block's validations start warm on the entries the block touched.
-                pool.seed_validation_state_cache(tip.tip().hash(), execution_outcome.state());
-
                 // Removed transactions are collected here and dropped at the end of the
                 // iteration: deallocating them (input data, signatures, allocator work) is
                 // expensive and there is a block time of slack after the updates are done.
@@ -959,6 +955,14 @@ where
 
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
+
+                // Reseed the validator's state cache from this block's post-state so the next
+                // block's validations start warm on the entries the block touched. This runs
+                // after the pool-mutating steps above so it never delays mined-tx removal or
+                // eviction, which would otherwise let the builder pick up stale transactions.
+                let seed_start = Instant::now();
+                pool.seed_validation_state_cache(tip.tip().hash(), execution_outcome.state());
+                metrics.state_cache_seed_duration_seconds.record(seed_start.elapsed());
 
                 // Deallocating removed transactions is expensive, so do it after all updates are done.
                 drop(removed_txs);

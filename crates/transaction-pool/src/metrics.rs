@@ -96,6 +96,9 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Time spent updating the 2D nonce pool in seconds.
     pub nonce_pool_update_duration_seconds: Histogram,
 
+    /// Time spent reseeding the validator state cache from the block post-state in seconds.
+    pub state_cache_seed_duration_seconds: Histogram,
+
     /// Number of expired transactions evicted.
     pub expired_transactions_evicted: Counter,
 
