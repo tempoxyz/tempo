@@ -549,7 +549,7 @@ impl Inner<Init> {
             leader,
         } = args;
 
-        let parent = subscribe(
+        let (parent, parent_origin) = subscribe_with_origin(
             &self.execution_node,
             Round::new(round.epoch(), parent_view),
             parent_digest,
@@ -557,7 +557,7 @@ impl Inner<Init> {
         )
         .await?;
 
-        debug!(height = %parent.height(), "retrieved parent block",);
+        debug!(height = %parent.height(), ?parent_origin, "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
@@ -603,8 +603,11 @@ impl Inner<Init> {
         //
         // If proposing the first block of an epoch, its parent
         // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
+        // it. Likewise, if the parent was just read from the execution layer it
+        // has already been executed and validated there, so the engine round
+        // trip is redundant and would eat into the proposal budget.
         if !is_genesis_parent
+            && parent_origin == BlockOrigin::Consensus
             && verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
@@ -1156,6 +1159,33 @@ async fn verify_header(
 }
 
 /// Read a block from the execution layer or fetches it from consensus p2p.
+#[instrument(skip_all, fields(%round, %digest), err)]
+async fn subscribe_with_origin(
+    execution_node: &TempoFullNode,
+    round: Round,
+    digest: Digest,
+    marshal: &crate::alias::marshal::Mailbox,
+) -> eyre::Result<(Block, BlockOrigin)> {
+    if let Some(block) = execution_node
+        .provider
+        .find_block_by_hash(digest.0, BlockSource::Any)
+        .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
+    {
+        // EL database reads do not include commonware sidecars.
+        return Ok((
+            Block::from_execution_block_unchecked(block.seal(), None),
+            BlockOrigin::ExecutionLayer,
+        ));
+    }
+    let block = marshal
+        .subscribe_by_digest(Some(round), digest)
+        .await
+        .await
+        .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?;
+    Ok((block, BlockOrigin::Consensus))
+}
+
+/// Read a block from the execution layer or fetches it from consensus p2p.
 #[instrument(skip_all, fields(%round, %digest), err, ret(Display))]
 async fn subscribe(
     execution_node: &TempoFullNode,
@@ -1163,21 +1193,20 @@ async fn subscribe(
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
-    let block = if let Some(block) = execution_node
-        .provider
-        .find_block_by_hash(digest.0, BlockSource::Any)
-        .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
-    {
-        // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block.seal(), None)
-    } else {
-        marshal
-            .subscribe_by_digest(Some(round), digest)
-            .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
-    };
-    Ok(block)
+    subscribe_with_origin(execution_node, round, digest, marshal)
+        .await
+        .map(|(block, _)| block)
+}
+
+/// Where a block returned by [`subscribe_with_origin`] was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockOrigin {
+    /// The block was read from the execution layer, meaning it has already been
+    /// executed and validated there.
+    ExecutionLayer,
+    /// The block was fetched through consensus p2p and is unknown to the local
+    /// execution layer.
+    Consensus,
 }
 
 #[derive(Clone)]

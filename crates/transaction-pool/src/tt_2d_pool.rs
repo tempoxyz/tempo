@@ -45,6 +45,15 @@ type PoolUpdateResult = (
 /// snapshot keeps its cost proportional to block capacity instead of pool capacity and
 /// shortens how long the pool read lock is held while block building starts.
 const EXPIRING_NONCE_SNAPSHOT_LIMIT: usize = 32_768;
+
+/// Capacity of the new-pending-transaction broadcast feed consumed by active
+/// best-transactions iterators.
+///
+/// At saturation the pool ingests tens of thousands of transactions per second; a small
+/// buffer means any gap in iterator polling overflows the channel and silently drops
+/// feed entries (`Lagged`), starving the payload build of supply until the next
+/// snapshot. Sized to hold several blocks worth of arrivals.
+const NEW_TRANSACTION_FEED_CAPACITY: usize = 65_536;
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -139,7 +148,7 @@ impl Default for AA2dPool {
 impl AA2dPool {
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
-        let (new_transaction_notifier, _) = broadcast::channel(200);
+        let (new_transaction_notifier, _) = broadcast::channel(NEW_TRANSACTION_FEED_CAPACITY);
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
