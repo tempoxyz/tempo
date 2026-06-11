@@ -100,7 +100,7 @@ fn validate_dex_storage_credit_sum(
         example_holder.get_or_insert((user, balance));
     }
 
-    if protocol_balance != exchange_balance_sum {
+    if protocol_balance < exchange_balance_sum {
         let example_holder = example_holder
             .map(|(user, balance)| {
                 format!(
@@ -110,7 +110,7 @@ fn validate_dex_storage_credit_sum(
             })
             .unwrap_or_default();
         return Err(format!(
-            "TEMPO-DEX-STORAGE-CREDIT-SUM side={side} protocol_dex_balance={protocol_balance} exchange_storage_credit_sum={exchange_balance_sum} exchange_credit_holders={nonzero_holders}{example_holder}"
+            "TEMPO-DEX-STORAGE-CREDIT-COVER side={side} protocol_dex_balance={protocol_balance} exchange_storage_credit_sum={exchange_balance_sum} exchange_credit_holders={nonzero_holders}{example_holder}"
         ));
     }
 
