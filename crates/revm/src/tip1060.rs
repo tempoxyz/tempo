@@ -8,7 +8,7 @@ use alloy_evm::Database;
 use alloy_primitives::{Address, U256};
 use revm::{
     context::{Host as _, JournalTr, result::EVMError},
-    context_interface::cfg::{GasId, GasParams},
+    context_interface::cfg::GasParams,
     interpreter::{
         Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
         gas::GasTracker,
@@ -18,16 +18,20 @@ use revm::{
 };
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    tip1060_storage_credits::{AccountState, StorageCreditsBackend, sstore_storage_credits},
+    storage::FromWord,
+    tip1060_storage_credits::{
+        STORAGE_CREDIT_VALUE, StorageCreditsBackend, TIP1060StorageCredits, TransientState,
+        sstore_storage_credits,
+    },
 };
 
-/// Applies the storage credits refund accrued during a transaction.
+/// Applies storage-credit settlement at the end of a transaction.
 ///
-/// During execution, refunds are accumulated in the transient storage of the configured
-/// storage credits contract (via TLOAD/TSTORE). At the end of the transaction this flushes
-/// those transient credits into the contract's persistent storage: for every key written to
-/// transient storage at the storage credits contract, the transient value is added on top of the
-/// current persistent value under the same key.
+/// During execution, each account's transaction-local mode and pending `Refund` creations are
+/// stored in one transient word at the same key as its persistent balance. At end-of-transaction,
+/// entries with non-zero pending creations are settled against the same account's persistent
+/// storage credit balance, consuming up to `min(pending, balance)` credits and refunding one fixed
+/// storage credit value per credit. Mode-only transient entries are ignored.
 ///
 /// Returns number of credits applied.
 pub fn apply_refund<DB: Database, I>(
@@ -36,50 +40,45 @@ pub fn apply_refund<DB: Database, I>(
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
     let journal = &mut evm.inner.ctx.journaled_state;
 
-    // Snapshot the transient (key, sstores) pairs at the storage credits contract written during this
-    // tx, so we don't borrow `transient_storage` while mutating the journal below.
-    let sstores: Vec<_> = journal
+    // Snapshot the transient (balance slot, state) pairs at the storage credits contract written
+    // during this tx, so we don't borrow `transient_storage` while mutating the journal below.
+    let slots: Vec<_> = journal
         .transient_storage
         .get(&STORAGE_CREDITS_ADDRESS)
         .map(|slots| slots.iter().map(|(key, credit)| (*key, *credit)).collect())
         .unwrap_or_default();
 
     let mut refunds = 0;
-    for (key, sstores_num) in sstores {
-        if sstores_num.is_zero() {
+    for (key, word) in slots {
+        let transient_state =
+            TransientState::from_word(word).map_err(|err| EVMError::Custom(err.to_string()))?;
+        let pending = transient_state.pending_refunds;
+        if pending == 0 {
             continue;
         }
 
-        // SLOAD the current persistent value and add the transient credit on top.
+        // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
         let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
-        let mut state =
-            AccountState::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
-
-        let pending = sstores_num.as_limbs()[0];
-        let settled = pending.min(state.balance);
+        let mut balance =
+            u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
+        let settled = pending.min(balance);
 
         if settled == 0 {
             continue;
         }
 
-        // SSTORE the accumulated total back into the contract's persistent storage.
-        state.balance -= settled;
+        // SSTORE the post-settlement balance back into persistent storage.
+        balance -= settled;
         refunds += settled;
 
-        let new_word = state.into_word();
+        let new_word = U256::from(balance);
         debug_assert_ne!(new_word, old_word);
 
         journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
     }
 
-    // Refund 230k per storage credit.
-    let storage_credit_value = evm
-        .inner
-        .ctx
-        .cfg
-        .gas_params
-        .get(GasId::sstore_set_state_gas());
-    gas.erase_cost(refunds.saturating_mul(storage_credit_value));
+    // Refund storage credit value (230k) per settled credit.
+    gas.erase_cost(refunds.saturating_mul(STORAGE_CREDIT_VALUE));
 
     Ok(())
 }
@@ -145,13 +144,22 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 
     #[inline]
-    fn credit_tstore_increment(&mut self, key: U256) {
-        let pending = self.context.tload(STORAGE_CREDITS_ADDRESS, key);
-        self.context.tstore(
-            STORAGE_CREDITS_ADDRESS,
-            key,
-            pending.saturating_add(U256::from(1)),
-        );
+    fn load_transient_state(&mut self, account: Address) -> Result<TransientState, Self::Error> {
+        let key = TIP1060StorageCredits::transient_state_slot(account);
+        TransientState::from_word(self.context.tload(STORAGE_CREDITS_ADDRESS, key))
+            .map_err(|_| Self::fatal_external())
+    }
+
+    #[inline]
+    fn store_transient_state(
+        &mut self,
+        account: Address,
+        state: TransientState,
+    ) -> Result<(), Self::Error> {
+        let key = TIP1060StorageCredits::transient_state_slot(account);
+        self.context
+            .tstore(STORAGE_CREDITS_ADDRESS, key, state.into_word());
+        Ok(())
     }
 }
 

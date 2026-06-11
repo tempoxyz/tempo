@@ -78,6 +78,7 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
     (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
+    (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
 ];
 
 /// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)

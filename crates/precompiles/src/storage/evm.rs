@@ -2,7 +2,9 @@ use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+    tip1060_storage_credits::{
+        StorageCreditsBackend, TIP1060StorageCredits, TransientState, sstore_storage_credits,
+    },
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -113,7 +115,7 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
 
     #[inline]
     fn fatal_external() -> Self::Error {
-        TempoPrecompileError::Fatal("invalid storage credits account state".to_string())
+        TempoPrecompileError::Fatal("invalid storage credits state".to_string())
     }
 
     #[inline]
@@ -156,13 +158,22 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     }
 
     #[inline]
-    fn credit_tstore_increment(&mut self, key: U256) {
-        let pending = self.internals.tload(STORAGE_CREDITS_ADDRESS, key);
-        self.internals.tstore(
-            STORAGE_CREDITS_ADDRESS,
-            key,
-            pending.saturating_add(U256::from(1)),
-        );
+    fn load_transient_state(&mut self, account: Address) -> Result<TransientState, Self::Error> {
+        let key = TIP1060StorageCredits::transient_state_slot(account);
+        TransientState::from_word(self.internals.tload(STORAGE_CREDITS_ADDRESS, key))
+            .map_err(|_| Self::fatal_external())
+    }
+
+    #[inline]
+    fn store_transient_state(
+        &mut self,
+        account: Address,
+        state: TransientState,
+    ) -> Result<(), Self::Error> {
+        let key = TIP1060StorageCredits::transient_state_slot(account);
+        self.internals
+            .tstore(STORAGE_CREDITS_ADDRESS, key, state.into_word());
+        Ok(())
     }
 }
 
