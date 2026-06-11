@@ -40,6 +40,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
+mod follow;
 mod init_state;
 mod p2p_proxy;
 mod regenesis;
@@ -113,7 +114,7 @@ struct TempoArgs {
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
-    pub follow: Option<String>,
+    pub follow: Option<follow::FollowMode>,
 
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
@@ -293,13 +294,10 @@ async fn fetch_bootnodes(
         .await
         .wrap_err("failed to parse response as JSON")?;
 
-    let key = chain_id.to_string();
-    let enodes = match resp.get(&key) {
-        Some(enodes) => enodes,
-        None => return Ok(Vec::new()),
-    };
-
-    Ok(reth_network_peers::parse_nodes(enodes))
+    Ok(resp
+        .get(&chain_id.to_string())
+        .map(reth_network_peers::parse_nodes)
+        .unwrap_or_default())
 }
 
 fn main() -> eyre::Result<()> {
@@ -407,18 +405,16 @@ fn main() -> eyre::Result<()> {
             extra_attrs.push(format!("consensus_pubkey={pubkey}"));
         }
 
-        if !extra_attrs.is_empty() {
-            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
-            let new_attrs = if current.is_empty() {
-                extra_attrs.join(",")
-            } else {
-                format!("{current},{}", extra_attrs.join(","))
-            };
+        let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+        let new_attrs = if current.is_empty() {
+            extra_attrs.join(",")
+        } else {
+            format!("{current},{}", extra_attrs.join(","))
+        };
 
-            // SAFETY: called at startup before the OTEL SDK is initialised
-            unsafe {
-                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
-            }
+        // SAFETY: called at startup before the OTEL SDK is initialised
+        unsafe {
+            std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
         }
 
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
@@ -428,7 +424,7 @@ fn main() -> eyre::Result<()> {
             .parse()
             .wrap_err("invalid default logs filter")?;
 
-        telemetry_config.replace(config);
+        telemetry_config = Some(config);
     }
 
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -513,14 +509,9 @@ fn main() -> eyre::Result<()> {
             }
 
             let consensus_stack = if let Some(follow) = args.follow {
-                let follow_url = if follow == "auto" {
-                    node.chain_spec()
-                        .default_follow_url()
-                        .map(|s| s.to_string())
-                        .ok_or_eyre("No default follow URL for this chain")?
-                } else {
-                    follow
-                };
+                let follow_url = follow
+                    .resolve_url(&node.chain_spec())
+                    .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
                     ctx.with_label("follow"),
@@ -635,21 +626,12 @@ fn main() -> eyre::Result<()> {
 
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
-                    let follow_url = args.follow.clone().and_then(|v| {
-                        if v != "auto" {
-                            Some(v)
-                        } else {
-                            builder
-                                .config()
-                                .chain
-                                .default_follow_url()
-                                .map(|s| s.to_string())
-                        }
-                    });
-
+                    let follow_url = args
+                        .follow
+                        .as_ref()
+                        .and_then(|follow| follow.resolve_url(&builder.config().chain));
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
-
 
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
@@ -773,11 +755,39 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, defaults};
+    use super::{Commands, TempoCli, defaults, follow::FollowMode};
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        let cli = TempoCli::try_parse_from(args).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        node_cmd.ext.follow
+    }
+
+    #[test]
+    fn follow_arg_parses_to_expected_mode() {
+        init_defaults_once();
+
+        assert_eq!(parse_follow(&["tempo", "node", "--dev"]), None);
+        // `--follow` without a value falls back to the `auto` default.
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "auto"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "ws://upstream:8546"]),
+            Some(FollowMode::Url("ws://upstream:8546".to_string()))
+        );
     }
 
     #[test]
