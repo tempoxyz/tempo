@@ -2576,7 +2576,7 @@ mod tests {
             .logs()
             .iter()
             .filter(|log| log.address == STORAGE_CREDITS_ADDRESS)
-            .map(|log| ITIP1060StorageCredits::ModeUpdated::decode_log(log))
+            .map(ITIP1060StorageCredits::ModeUpdated::decode_log)
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(budgeted_mode_updates.len(), 2);
         // `setBudget(1)` first selects Direct mode. Exhausting that budget on the first
