@@ -186,21 +186,20 @@ impl AA2dPool {
     }
 
     fn rebuild_eviction_order(&mut self) {
-        self.by_eviction_order.clear();
-        for (id, tx) in &self.by_id {
-            self.by_eviction_order.insert(EvictionKey::with_base_fee(
-                Arc::clone(tx),
-                *id,
-                self.base_fee,
-            ));
-        }
+        // Collecting bulk-builds the sets from sorted input instead of doing one
+        // tree insertion per transaction, which matters because this runs on every
+        // base fee change while holding the pool write lock.
+        self.by_eviction_order = self
+            .by_id
+            .iter()
+            .map(|(id, tx)| EvictionKey::with_base_fee(Arc::clone(tx), *id, self.base_fee))
+            .collect();
 
-        self.expiring_nonce_eviction_order.clear();
-        for tx in self.expiring_nonce_txs.values() {
-            self.expiring_nonce_eviction_order.insert(
-                ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee),
-            );
-        }
+        self.expiring_nonce_eviction_order = self
+            .expiring_nonce_txs
+            .values()
+            .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee))
+            .collect();
     }
 
     /// Entrypoint for adding a 2d AA transaction.
@@ -671,15 +670,22 @@ impl AA2dPool {
                     .collect()
             }
         } else {
+            // Re-key at the requested base fee, but only the best slice of the
+            // current eviction order instead of the entire pool. A uniform base
+            // fee shift rarely reorders transactions enough for the best ones to
+            // fall outside a 2x oversampled prefix, and this snapshot is a
+            // heuristic to begin with.
             let mut keys = self
-                .expiring_nonce_txs
-                .values()
-                .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
+                .expiring_nonce_eviction_order
+                .iter()
+                .rev()
+                .take(EXPIRING_NONCE_SNAPSHOT_LIMIT * 2)
+                .map(|key| key.rekeyed_with_base_fee(base_fee))
                 .collect::<Vec<_>>();
             if keys.len() > EXPIRING_NONCE_SNAPSHOT_LIMIT {
                 // Keep only the highest-priority transactions; `select_nth_unstable`
-                // partitions in linear time so the cost stays bounded by pool size
-                // without a full sort.
+                // partitions in linear time so the cost stays bounded without a
+                // full sort.
                 let cut = keys.len() - EXPIRING_NONCE_SNAPSHOT_LIMIT;
                 keys.select_nth_unstable(cut - 1);
                 keys.drain(..cut);
@@ -1857,6 +1863,17 @@ impl ExpiringNonceEvictionKey {
         Self {
             order: EvictionOrderKey::new(tx.priority, tx.submission_id),
             transaction: tx.transaction,
+        }
+    }
+
+    /// Returns a copy of this key with its priority recomputed at `base_fee`.
+    fn rekeyed_with_base_fee(&self, base_fee: u64) -> Self {
+        Self {
+            order: EvictionOrderKey::new(
+                TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
+                self.order.submission_id,
+            ),
+            transaction: self.transaction.clone(),
         }
     }
 
