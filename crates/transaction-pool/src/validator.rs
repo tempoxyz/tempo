@@ -16,7 +16,7 @@ use reth_primitives_traits::{
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
-    AccountReader, BytecodeReader, StateProvider, StateProviderFactory,
+    AccountReader, BytecodeReader, StateProvider, StateProviderBox, StateProviderFactory,
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
@@ -117,16 +117,14 @@ where
     where
         Client: BlockReaderIdExt<Header = TempoHeader>,
     {
+        let latest_header = inner
+            .client()
+            .latest_header()
+            .expect("failed to fetch latest header")
+            .expect("latest header is None");
         let evm_env = inner
             .evm_config()
-            .evm_env(
-                inner
-                    .client()
-                    .latest_header()
-                    .expect("failed to fetch latest header")
-                    .expect("latest header is None")
-                    .header(),
-            )
+            .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
         let chain_spec = inner.client().chain_spec();
         Self {
@@ -135,7 +133,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
-            cached_state: RwLock::new(Arc::new(StateCache::default())),
+            cached_state: RwLock::new(Arc::new(StateCache::new(latest_header.hash()))),
             chain_spec,
         }
     }
@@ -327,9 +325,9 @@ where
     fn validate_batch<P: StateProvider>(
         &self,
         state_provider: P,
+        cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
-        let cached_state = self.cached_state.read().clone();
         let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
         let evm_env = self.cached_evm_env.read().clone();
 
@@ -356,6 +354,25 @@ where
                 outcome
             })
             .collect()
+    }
+
+    /// Returns the latest state provider and a state cache valid for the provider's tip.
+    fn latest_state_provider_and_cache(
+        &self,
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        let state_provider = self.inner.client().latest()?;
+        let latest_hash = self.inner.client().chain_info()?.best_hash;
+        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+    }
+
+    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
+    fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
+        let cached_state = self.cached_state.read().clone();
+        if cached_state.tip_hash() == tip_hash {
+            cached_state
+        } else {
+            Arc::new(StateCache::new(tip_hash))
+        }
     }
 
     /// Validates one transaction with the given throwaway EVM.
@@ -633,16 +650,20 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
 
-        self.validate_batch(state_provider, core::iter::once((origin, transaction)))
-            .pop()
-            .expect("validate_batch returns one outcome per transaction")
+        self.validate_batch(
+            state_provider,
+            cached_state,
+            core::iter::once((origin, transaction)),
+        )
+        .pop()
+        .expect("validate_batch returns one outcome per transaction")
     }
 
     async fn validate_transactions(
@@ -650,8 +671,8 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return transactions
                     .into_iter()
@@ -662,7 +683,7 @@ where
             }
         };
 
-        self.validate_batch(state_provider, transactions)
+        self.validate_batch(state_provider, cached_state, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -670,8 +691,8 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let state_provider = match self.inner.client().latest() {
-            Ok(provider) => provider,
+        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
+            Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
                 return transactions
                     .into_iter()
@@ -684,6 +705,7 @@ where
 
         self.validate_batch(
             state_provider,
+            cached_state,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
@@ -698,8 +720,8 @@ where
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
 
-        // State changed, drop all cached reads.
-        *self.cached_state.write() = Arc::new(StateCache::default());
+        // State changed, drop all cached reads and anchor the new cache to this tip.
+        *self.cached_state.write() = Arc::new(StateCache::new(new_tip_block.hash()));
     }
 }
 
@@ -748,7 +770,7 @@ mod tests {
     use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
-    use reth_storage_api::{AccountReader, BytecodeReader};
+    use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
     use reth_transaction_pool::{
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
@@ -965,6 +987,45 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[test]
+    fn state_cache_for_tip_reuses_only_matching_tip_cache() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let shared_cache = validator.cached_state.read().clone();
+        let shared_tip_hash = shared_cache.tip_hash();
+
+        let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
+        assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
+
+        let mismatched_tip_hash = if shared_tip_hash == B256::repeat_byte(0x42) {
+            B256::repeat_byte(0x43)
+        } else {
+            B256::repeat_byte(0x42)
+        };
+        let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
+        assert_eq!(ephemeral_cache.tip_hash(), mismatched_tip_hash);
+        assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
+    }
+
+    #[test]
+    fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let latest_hash = validator.client().chain_info().unwrap().best_hash;
+        let mismatched_tip_hash = if latest_hash == B256::repeat_byte(0x42) {
+            B256::repeat_byte(0x43)
+        } else {
+            B256::repeat_byte(0x42)
+        };
+        let shared_cache = Arc::new(StateCache::new(mismatched_tip_hash));
+        *validator.cached_state.write() = shared_cache.clone();
+
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+
+        assert_eq!(validation_cache.tip_hash(), latest_hash);
+        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 
     #[tokio::test]
