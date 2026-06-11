@@ -1088,12 +1088,12 @@ jobs:
             const chartPath = '${{ steps.push-charts.outputs.path }}';
             if (chartSha && chartPath) {
               const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${chartSha}/${chartPath}`;
-              const charts = [
-                { file: 'builder_latency_scatter.png', label: 'Builder Latency Scatter' },
-                { file: 'block_size_scatter.png', label: 'Serialized Block Size Scatter' },
-                { file: 'block_tx_count_scatter.png', label: 'Block Transaction Count Scatter' },
-                { file: 'block_bytes_per_tx_scatter.png', label: 'Serialized Bytes per Transaction Scatter' },
-              ];
+              let charts = [];
+              try {
+                charts = JSON.parse(fs.readFileSync(`${process.env.BENCH_RESULTS_DIR}/charts/charts.json`, 'utf8'));
+              } catch (error) {
+                core.info(`No chart manifest found: ${error.message}`);
+              }
               chartsSection = '\n\n### Scatter Plots\n\n';
               for (const chart of charts) {
                 chartsSection += `<details><summary>${chart.label}</summary>\n\n`;

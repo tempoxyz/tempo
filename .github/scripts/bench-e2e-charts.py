@@ -15,6 +15,73 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+CHARTS = [
+    {
+        "file": "block_time_scatter.png",
+        "sample_key": "block_time_ms",
+        "label": "Block Time Scatter",
+        "title": "Block time samples",
+        "ylabel": "Block time (ms)",
+    },
+    {
+        "file": "serialized_block_size_per_tx_scatter.png",
+        "sample_key": "serialized_block_size_per_tx_bytes",
+        "label": "Serialized Block Size per Transaction Scatter",
+        "title": "Serialized block size per transaction samples",
+        "ylabel": "Serialized bytes per transaction",
+    },
+    {
+        "file": "builder_latency_scatter.png",
+        "sample_key": "builder_latency_ms",
+        "label": "Builder Latency Scatter",
+        "title": "Builder latency samples",
+        "ylabel": "Builder latency (ms)",
+    },
+    {
+        "file": "builder_finish_scatter.png",
+        "sample_key": "builder_finish_ms",
+        "label": "Builder Finish Scatter",
+        "title": "Builder finish samples",
+        "ylabel": "Builder finish (ms)",
+    },
+    {
+        "file": "builder_pool_fetch_scatter.png",
+        "sample_key": "builder_pool_fetch_ms",
+        "label": "Builder Pool Fetch Scatter",
+        "title": "Builder pool fetch samples",
+        "ylabel": "Builder pool fetch (ms)",
+    },
+    {
+        "file": "builder_invalid_tx_execution_attempts_scatter.png",
+        "sample_key": "builder_invalid_tx_execution_attempts",
+        "label": "Builder Invalid Tx Attempts Scatter",
+        "title": "Builder invalid transaction attempts samples",
+        "ylabel": "Invalid transaction attempts",
+    },
+    {
+        "file": "serialized_block_size_scatter.png",
+        "sample_key": "serialized_block_size_bytes",
+        "label": "Serialized Block Size Scatter",
+        "title": "Serialized block size samples",
+        "ylabel": "Serialized block size (bytes)",
+    },
+    {
+        "file": "builder_fill_idle_scatter.png",
+        "sample_key": "builder_fill_idle_ms",
+        "label": "Builder Fill Idle Scatter",
+        "title": "Builder fill idle samples",
+        "ylabel": "Builder fill idle (ms)",
+    },
+    {
+        "file": "validation_latency_scatter.png",
+        "sample_key": "validation_latency_ms",
+        "label": "Validation Latency Scatter",
+        "title": "Validation latency samples",
+        "ylabel": "Validation latency (ms)",
+    },
+]
+
+
 def number(value: Any) -> float | None:
     if value is None:
         return None
@@ -140,35 +207,9 @@ def main() -> None:
     if not per_run:
         raise SystemExit("summary.json has no per_run data")
 
-    charts = [
-        {
-            "file": "builder_latency_scatter.png",
-            "sample_key": "builder_latency_ms",
-            "title": "Builder latency samples",
-            "ylabel": "Builder latency (ms)",
-        },
-        {
-            "file": "block_size_scatter.png",
-            "sample_key": "serialized_block_size_bytes",
-            "title": "Serialized block size samples",
-            "ylabel": "Serialized block size (bytes)",
-        },
-        {
-            "file": "block_tx_count_scatter.png",
-            "sample_key": "serialized_block_tx_count",
-            "title": "Block transaction count samples",
-            "ylabel": "Transactions per block",
-        },
-        {
-            "file": "block_bytes_per_tx_scatter.png",
-            "sample_key": "serialized_block_size_per_tx_bytes",
-            "title": "Serialized bytes per transaction samples",
-            "ylabel": "Serialized bytes per transaction",
-        },
-    ]
     written = [
-        chart["file"]
-        for chart in charts
+        {"file": chart["file"], "label": chart["label"]}
+        for chart in CHARTS
         if maybe_scatter_samples(
             per_run,
             output_dir / chart["file"],
@@ -181,6 +222,8 @@ def main() -> None:
     ]
     if not written:
         raise SystemExit("summary.json has no chartable samples")
+    with (output_dir / "charts.json").open("w") as f:
+        json.dump(written, f, indent=2)
     print(f"Charts written to {output_dir}")
 
 
