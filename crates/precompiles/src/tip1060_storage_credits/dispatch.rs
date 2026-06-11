@@ -19,14 +19,8 @@ impl Precompile for TIP1060StorageCredits {
             &[],
             ITIP1060StorageCreditsCalls::abi_decode,
             |call| match call {
-                ITIP1060StorageCreditsCalls::balance(call) => {
-                    view(call, |_| self.balance_of(msg_sender))
-                }
                 ITIP1060StorageCreditsCalls::balanceOf(call) => {
                     view(call, |c| self.balance_of(c.account))
-                }
-                ITIP1060StorageCreditsCalls::mode(call) => {
-                    view(call, |_| self.mode_of(msg_sender).map(Into::into))
                 }
                 ITIP1060StorageCreditsCalls::modeOf(call) => {
                     view(call, |c| self.mode_of(c.account).map(Into::into))
