@@ -5,6 +5,7 @@
 
 pub(crate) mod alias;
 mod args;
+mod bootstrap;
 pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
@@ -20,12 +21,12 @@ pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
-use commonware_runtime::Metrics as _;
+use commonware_runtime::Supervisor as _;
 use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
@@ -40,6 +41,7 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PositiveDuration};
+pub use bootstrap::write_bootstrap_finalization;
 pub use storage::find_last_finalized_marker;
 
 // Shared by both the consensus and follow engines such that
@@ -51,6 +53,7 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    consensus_dir: PathBuf,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -131,10 +134,11 @@ pub async fn run_consensus_stack(
         with_subblocks: false,
 
         feed_state,
+        consensus_dir,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
     }
-    .try_init(context.with_label("engine"))
+    .try_init(context.child("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
@@ -174,6 +178,7 @@ pub async fn run_follow_stack(
     upstream_url: String,
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
+    consensus_dir: PathBuf,
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 
@@ -194,7 +199,7 @@ pub async fn run_follow_stack(
     info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
-        context.with_label("upstream"),
+        context.child("upstream"),
         crate::follow::upstream::Config { upstream_url },
     );
 
@@ -204,6 +209,7 @@ pub async fn run_follow_stack(
         upstream,
         upstream_mailbox,
         network_identity,
+        consensus_dir,
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,
@@ -212,7 +218,7 @@ pub async fn run_follow_stack(
     };
 
     let ret = config
-        .try_init(context.with_label("engine"))
+        .try_init(context.child("engine"))
         .await
         .wrap_err("failed initializing follow engine")?
         .start()
@@ -234,12 +240,14 @@ async fn instantiate_network(
     // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
+    let mailbox_size =
+        NonZeroUsize::new(config.mailbox_size).ok_or_eyre("mailbox size must be non-zero")?;
     let cfg = lookup::Config {
         namespace,
         crypto: signing_key,
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
-        mailbox_size: config.mailbox_size,
+        mailbox_size,
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
@@ -263,5 +271,5 @@ async fn instantiate_network(
         .ok_or_eyre("handshake per subnet min period must be non-zero")?,
     };
 
-    Ok(lookup::Network::new(context.with_label("network"), cfg))
+    Ok(lookup::Network::new(context.child("network"), cfg))
 }

@@ -1,19 +1,14 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{fs, path::PathBuf, time::Instant};
 
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail};
 use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_consensus::write_bootstrap_finalization;
 use tempo_telemetry_util::display_duration;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
-
-const BOOTSTRAP_FINALIZATION_FILE: &str = "bootstrap/finalization.cert";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -76,7 +71,9 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
             .unwrap_or_else(|| datadir.join("consensus"));
 
         let consensus_manifest = load_consensus_manifest(manifest_url, manifest_path).await?;
-        write_bootstrap_finalization(&consensus_dir, &consensus_manifest)?;
+        let path =
+            write_bootstrap_finalization(&consensus_dir, consensus_manifest.finalization.as_ref())?;
+        eprintln!("persisted bootstrap finalization: {}", path.display());
 
         Ok(())
     })
@@ -119,26 +116,11 @@ async fn load_consensus_manifest(
     Ok(consensus_manifest)
 }
 
-fn write_bootstrap_finalization(
-    consensus_dir: &Path,
-    consensus_manifest: &TempoConsensusManifest,
-) -> eyre::Result<()> {
-    let path = consensus_dir.join(BOOTSTRAP_FINALIZATION_FILE);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("failed to create dir: {}", parent.display()))?;
-    }
-
-    fs::write(&path, consensus_manifest.finalization.as_ref())
-        .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
-
-    eprintln!("persisted bootstrap finalization: {}", path.display());
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
     use alloy_primitives::{B256, Bytes};
 
     #[test]
@@ -212,9 +194,10 @@ mod tests {
             finalization: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
         };
 
-        write_bootstrap_finalization(dir.path(), &tempo_consensus).unwrap();
+        let path = write_bootstrap_finalization(dir.path(), tempo_consensus.finalization.as_ref())
+            .unwrap();
 
-        let bytes = fs::read(dir.path().join(BOOTSTRAP_FINALIZATION_FILE)).unwrap();
+        let bytes = fs::read(path).unwrap();
         assert_eq!(bytes, [0x00, 0x01, 0x02, 0xff]);
     }
 }
