@@ -74,7 +74,7 @@ pub struct TempoNodeArgs {
     pub builder_disable_prewarming: bool,
 
     /// No-op legacy flag for payload builder prewarming.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
     /// Disable sharing the execution cache with the payload builder.
@@ -103,7 +103,7 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
-            builder_enable_prewarming: false,
+            builder_enable_prewarming: true,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
