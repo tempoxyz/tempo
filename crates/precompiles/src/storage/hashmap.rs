@@ -83,6 +83,21 @@ impl HashMapStorageProvider {
         self.amsterdam_eip8037_enabled = enabled;
         self
     }
+
+    /// Returns self with `is_static` overridden (builder pattern).
+    pub fn with_static(mut self, is_static: bool) -> Self {
+        self.is_static = is_static;
+        self
+    }
+
+    fn ensure_not_static(&self, op: &str) -> Result<(), TempoPrecompileError> {
+        if self.is_static {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "{op} attempted during static execution"
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
@@ -103,6 +118,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static("set_code")?;
+
         let account = self.accounts.entry(address).or_default();
         account.code_hash = code.hash_slow();
         account.code = Some(code);
@@ -125,6 +142,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static("sstore")?;
+
         self.counter_sstore += 1;
         self.internals.insert((address, key), value);
         Ok(())
@@ -136,11 +155,15 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static("tstore")?;
+
         self.transient.insert((address, key), value);
         Ok(())
     }
 
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static("emit_event")?;
+
         self.events.entry(address).or_default().push(event);
         Ok(())
     }
