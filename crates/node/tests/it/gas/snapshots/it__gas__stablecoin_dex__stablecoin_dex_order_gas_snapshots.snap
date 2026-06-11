@@ -3,8 +3,8 @@ source: crates/node/tests/it/gas/stablecoin_dex.rs
 expression: gas
 ---
 cancel_tail_bid_order: 294241
-place_bid_append_same_level: 1614585
-place_bid_empty_level: 2595385
-place_flip_ask_empty_level: 2598219
-swap_exact_in_partial_bid_fill: 378685
-swap_exact_out_full_flip_ask_fill: 673276
+place_bid_append_same_level: 1599785
+place_bid_empty_level: 2580585
+place_flip_ask_empty_level: 2583419
+swap_exact_in_partial_bid_fill: 349085
+swap_exact_out_full_flip_ask_fill: 643676
