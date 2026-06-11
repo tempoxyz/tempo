@@ -74,6 +74,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Cached fee payer address; `None` when an AA `fee_payer_signature` fails to recover.
+    fee_payer: OnceLock<Option<Address>>,
 }
 
 impl TempoPooledTransaction {
@@ -109,6 +111,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            fee_payer: OnceLock::new(),
         }
     }
 
@@ -123,9 +126,15 @@ impl TempoPooledTransaction {
         &self.inner.transaction
     }
 
-    /// Resolves the transaction fee payer.
+    /// Resolves and caches the transaction fee payer.
     pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
-        self.inner().fee_payer(self.inner().signer())
+        match self
+            .fee_payer
+            .get_or_init(|| self.inner().fee_payer(self.inner().signer()).ok())
+        {
+            Some(addr) => Ok(*addr),
+            None => Err(RecoveryError::new()),
+        }
     }
 
     /// Returns true if this is an AA transaction
