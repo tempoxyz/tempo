@@ -905,16 +905,23 @@ impl Inner<Init> {
         let block_digest = block.digest();
 
         if is_good {
-            // Persist the block in the marshal actor and execution layer.
-            if !self.marshal.verified(round, block).await {
+            // Persist the block in the marshal actor and update the canonical head
+            // concurrently; both are independent actors and must only have completed
+            // before the verification result is returned, so running them serially
+            // would needlessly delay the vote.
+            //
+            // FIXME: move canonicalization into the certification step?
+            let (persisted, canonicalized) = futures::future::join(
+                self.marshal.verified(round, block),
+                self.state
+                    .executor
+                    .canonicalize_head(block_height, block_digest),
+            )
+            .await;
+            if !persisted {
                 bail!("marshal actor refused to persist verified block");
             }
-
-            // FIXME: move this into the certification step?
-            self.state
-                .executor
-                .canonicalize_head(block_height, block_digest)
-                .await
+            canonicalized
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
         }
         Ok(is_good)
@@ -1026,10 +1033,9 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
-        block: Arc::new(block),
-        block_access_list,
+        block: block.shared_execution_block(),
+        block_access_list: block.block_access_list().cloned(),
         validator_set,
     };
     let validation_start = Instant::now();

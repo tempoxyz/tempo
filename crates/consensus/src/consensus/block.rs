@@ -110,7 +110,7 @@ impl Block {
         let _ = block_access_list;
 
         Self(Arc::new(BlockInner {
-            execution_block,
+            execution_block: Arc::new(execution_block),
             execution_block_encoded_size: OnceLock::new(),
             #[cfg(feature = "bal")]
             block_access_list,
@@ -119,11 +119,18 @@ impl Block {
 
     /// Consumes the block and returns only the execution-layer block.
     pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        self.into_inner_parts().execution_block
+        Arc::unwrap_or_clone(self.into_inner_parts().execution_block)
     }
 
-    /// Consumes the block and returns the execution-layer block plus optional BAL.
-    pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
+    /// Returns a shared handle to the execution-layer block without cloning block data.
+    pub(crate) fn shared_execution_block(&self) -> Arc<SealedBlock<tempo_primitives::Block>> {
+        self.0.execution_block.clone()
+    }
+
+    /// Consumes the block and returns the shared execution-layer block plus optional BAL.
+    pub(crate) fn into_shared_parts(
+        self,
+    ) -> (Arc<SealedBlock<tempo_primitives::Block>>, Option<Bytes>) {
         let inner = self.into_inner_parts();
         (
             inner.execution_block,
@@ -379,8 +386,8 @@ impl commonware_consensus::CertifiableBlock for Block {
 /// Inner block data shared by cheap [`Block`] clones.
 #[derive(Debug)]
 struct BlockInner {
-    /// The execution-layer block.
-    execution_block: SealedBlock<tempo_primitives::Block>,
+    /// The execution-layer block, shared so engine submissions do not clone block data.
+    execution_block: Arc<SealedBlock<tempo_primitives::Block>>,
     /// Cached execution-layer RLP size when it is already known by the caller.
     execution_block_encoded_size: OnceLock<usize>,
     /// Optional block access list. Only provided if the network supports BALs.
