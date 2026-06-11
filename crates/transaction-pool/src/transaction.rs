@@ -420,7 +420,7 @@ impl TempoPooledTransaction {
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {
