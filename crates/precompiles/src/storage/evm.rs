@@ -1,10 +1,8 @@
 use crate::{
-    STORAGE_CREDITS_ADDRESS,
-    error::TempoPrecompileError,
-    storage::PrecompileStorageProvider,
-    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+    error::TempoPrecompileError, storage::PrecompileStorageProvider,
+    tip1060_storage_credits::sstore_storage_credits,
 };
-use alloy::primitives::{Address, IntoLogData, Log, LogData, U256};
+use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
@@ -13,7 +11,6 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::TIP1060StorageCreditsEvent;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -104,7 +101,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
+impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     type Error = TempoPrecompileError;
 
     #[inline]
@@ -118,48 +115,44 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     }
 
     #[inline]
-    fn load_credits(
+    fn sload(
         &mut self,
+        address: Address,
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
-        let mut account = self.internals.load_account_mut(STORAGE_CREDITS_ADDRESS)?;
+        let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
     #[inline]
-    fn store_credits(
+    fn sstore(
         &mut self,
+        address: Address,
         key: U256,
         value: U256,
+        skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         self.internals
-            .load_account_mut(STORAGE_CREDITS_ADDRESS)?
-            .sstore(key, value, false)
+            .load_account_mut(address)?
+            .sstore(key, value, skip_cold_load)
             .map_err(Into::into)
     }
 
     #[inline]
-    fn load_credit_state(&mut self, key: U256) -> U256 {
-        self.internals.tload(STORAGE_CREDITS_ADDRESS, key)
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.internals.tload(address, key)
     }
 
     #[inline]
-    fn store_credit_state(&mut self, key: U256, value: U256) {
-        self.internals.tstore(STORAGE_CREDITS_ADDRESS, key, value);
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.internals.tstore(address, key, value);
     }
 
     #[inline]
-    fn emit_mode_updated(
-        &mut self,
-        account: Address,
-        new_mode: crate::tip1060_storage_credits::CreditMode,
-    ) -> Result<(), Self::Error> {
-        self.emit_event(
-            STORAGE_CREDITS_ADDRESS,
-            TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into()).into_log_data(),
-        )
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
+        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 
