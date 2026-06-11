@@ -197,6 +197,18 @@ impl TempoChainSpec {
         self.default_follow_url
     }
 
+    /// Resolves a `--follow` argument value to a concrete upstream URL.
+    ///
+    /// The sentinel `auto` resolves to the chain's default follow URL (if any); any other value
+    /// is used verbatim.
+    pub fn resolve_follow_url(&self, follow: &str) -> Option<String> {
+        if follow == "auto" {
+            self.default_follow_url().map(str::to_string)
+        } else {
+            Some(follow.to_string())
+        }
+    }
+
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields

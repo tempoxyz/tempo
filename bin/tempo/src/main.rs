@@ -293,13 +293,10 @@ async fn fetch_bootnodes(
         .await
         .wrap_err("failed to parse response as JSON")?;
 
-    let key = chain_id.to_string();
-    let enodes = match resp.get(&key) {
-        Some(enodes) => enodes,
-        None => return Ok(Vec::new()),
-    };
-
-    Ok(reth_network_peers::parse_nodes(enodes))
+    Ok(resp
+        .get(&chain_id.to_string())
+        .map(|enodes| reth_network_peers::parse_nodes(enodes))
+        .unwrap_or_default())
 }
 
 fn main() -> eyre::Result<()> {
@@ -407,18 +404,16 @@ fn main() -> eyre::Result<()> {
             extra_attrs.push(format!("consensus_pubkey={pubkey}"));
         }
 
-        if !extra_attrs.is_empty() {
-            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
-            let new_attrs = if current.is_empty() {
-                extra_attrs.join(",")
-            } else {
-                format!("{current},{}", extra_attrs.join(","))
-            };
+        let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+        let new_attrs = if current.is_empty() {
+            extra_attrs.join(",")
+        } else {
+            format!("{current},{}", extra_attrs.join(","))
+        };
 
-            // SAFETY: called at startup before the OTEL SDK is initialised
-            unsafe {
-                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
-            }
+        // SAFETY: called at startup before the OTEL SDK is initialised
+        unsafe {
+            std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
         }
 
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
@@ -428,7 +423,7 @@ fn main() -> eyre::Result<()> {
             .parse()
             .wrap_err("invalid default logs filter")?;
 
-        telemetry_config.replace(config);
+        telemetry_config = Some(config);
     }
 
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -513,14 +508,10 @@ fn main() -> eyre::Result<()> {
             }
 
             let consensus_stack = if let Some(follow) = args.follow {
-                let follow_url = if follow == "auto" {
-                    node.chain_spec()
-                        .default_follow_url()
-                        .map(|s| s.to_string())
-                        .ok_or_eyre("No default follow URL for this chain")?
-                } else {
-                    follow
-                };
+                let follow_url = node
+                    .chain_spec()
+                    .resolve_follow_url(&follow)
+                    .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
                     ctx.with_label("follow"),
@@ -635,21 +626,12 @@ fn main() -> eyre::Result<()> {
 
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
-                    let follow_url = args.follow.clone().and_then(|v| {
-                        if v != "auto" {
-                            Some(v)
-                        } else {
-                            builder
-                                .config()
-                                .chain
-                                .default_follow_url()
-                                .map(|s| s.to_string())
-                        }
-                    });
-
+                    let follow_url = args
+                        .follow
+                        .as_deref()
+                        .and_then(|follow| builder.config().chain.resolve_follow_url(follow));
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
-
 
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
