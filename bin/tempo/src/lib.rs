@@ -71,6 +71,17 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
+fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd
+            .ext
+            .node_args
+            .engine_disable_execution_cache_sharing_with_builder
+    {
+        node_cmd.engine.share_execution_cache_with_payload_builder = false;
+    }
+}
+
 /// Runs the Tempo node CLI.
 pub fn tempo_main() -> eyre::Result<()> {
     install_crypto_provider();
@@ -143,6 +154,8 @@ pub fn tempo_main() -> eyre::Result<()> {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+
+    apply_tempo_cli_overrides(&mut cli);
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -527,7 +540,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{TempoCli, defaults, follow::FollowMode};
+    use super::{TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode};
     use reth_ethereum::cli::Commands;
 
     fn init_defaults_once() {
@@ -572,7 +585,15 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .engine_disable_execution_cache_sharing_with_builder
+        );
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -586,6 +607,25 @@ mod tests {
             Duration::from_millis(50)
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+
+        let mut cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.disable-execution-cache-sharing-with-builder",
+        ])
+        .unwrap();
+        apply_tempo_cli_overrides(&mut cli);
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .engine_disable_execution_cache_sharing_with_builder
+        );
+        assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
 
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -608,6 +648,35 @@ mod tests {
         assert_eq!(
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
+        );
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.disable-prewarming"])
+                .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.enable-prewarming",
+            "--builder.disable-prewarming",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
         );
     }
 }

@@ -69,9 +69,20 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
 
-    /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    /// Disable prewarming for the payload builder.
+    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    pub builder_disable_prewarming: bool,
+
+    /// No-op legacy flag for payload builder prewarming.
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
+
+    /// Disable sharing the execution cache with the payload builder.
+    #[arg(
+        long = "engine.disable-execution-cache-sharing-with-builder",
+        default_value_t = false
+    )]
+    pub engine_disable_execution_cache_sharing_with_builder: bool,
 
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
@@ -91,7 +102,9 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
-            builder_enable_prewarming: false,
+            builder_disable_prewarming: false,
+            builder_enable_prewarming: true,
+            engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -110,7 +123,7 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming,
+            enable_prewarming: !self.builder_disable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -551,7 +564,7 @@ impl Default for TempoPayloadBuilderBuilder {
     fn default() -> Self {
         Self {
             state_provider_metrics: false,
-            enable_prewarming: false,
+            enable_prewarming: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
