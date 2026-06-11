@@ -49,7 +49,7 @@ use tempo_telemetry_util::display_duration;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
     TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    observe_marshal_persist,
+    marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -699,6 +699,7 @@ impl Inner<Init> {
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let marshal_persist = marshal_persist_estimate();
         // Give the builder only the proposal window that remains when payload
         // construction is requested. This accounts for a late `handle_propose`
         // start instead of resetting the budget at builder entry.
@@ -774,21 +775,22 @@ impl Inner<Init> {
         )
         .wrap_err("payload builder produced an invalid block access list")?;
         let consensus_block_size_bytes = proposal.encode_size();
+        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
-        // need to repeat replayable build work, so leave room for that cost
-        // before returning the proposal. Validator marshal persistence runs
-        // concurrently with execution-layer validation and is not on their
-        // critical path.
+        // need to repeat replayable build work and marshal persistence, so leave
+        // room for those costs before returning the proposal.
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed);
+            .saturating_sub(validation_latency_elapsed)
+            .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
+            validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_bytes,
             consensus_block_size_bytes,
