@@ -222,6 +222,22 @@ where
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
+        // The set of fee tokens that saw balance changes is usually tiny (a handful of fee
+        // tokens), so a linear scan with direct address comparisons is cheaper than hashing the
+        // fee token for every pooled transaction. Fall back to the hashmap when a block touches
+        // many tokens so the per-transaction cost stays bounded.
+        const FEE_BALANCE_LINEAR_SCAN_LIMIT: usize = 16;
+        let fee_balance_tokens: Option<Vec<(Address, &AddressSet)>> =
+            (!updates.fee_balance_changes.is_empty()
+                && updates.fee_balance_changes.len() <= FEE_BALANCE_LINEAR_SCAN_LIMIT)
+                .then(|| {
+                    updates
+                        .fee_balance_changes
+                        .iter()
+                        .map(|(token, accounts)| (*token, accounts))
+                        .collect()
+                });
+
         for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
@@ -336,7 +352,14 @@ where
             {
                 let fee_token = tx.transaction.effective_fee_token();
                 // only resolve the fee payer if the fee token saw balance changes
-                if let Some(accounts) = updates.fee_balance_changes.get(&fee_token) {
+                let accounts = match &fee_balance_tokens {
+                    Some(tokens) => tokens
+                        .iter()
+                        .find(|(token, _)| *token == fee_token)
+                        .map(|(_, accounts)| *accounts),
+                    None => updates.fee_balance_changes.get(&fee_token),
+                };
+                if let Some(accounts) = accounts {
                     let Ok(fee_payer) = tx.transaction.fee_payer() else {
                         continue;
                     };
