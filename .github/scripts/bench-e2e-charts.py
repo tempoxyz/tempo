@@ -63,7 +63,8 @@ CHARTS = [
         "sample_key": "serialized_block_size_bytes",
         "label": "Serialized Block Size Scatter",
         "title": "Serialized block size samples",
-        "ylabel": "Serialized block size (bytes)",
+        "ylabel": "Serialized block size (MiB)",
+        "scale": 1 / (1024 * 1024),
     },
     {
         "file": "builder_fill_idle_scatter.png",
@@ -91,12 +92,12 @@ def number(value: Any) -> float | None:
         return None
 
 
-def values(run: dict[str, Any], key: str) -> list[float]:
+def values(run: dict[str, Any], key: str, scale: float = 1.0) -> list[float]:
     raw = run.get(key) or []
     if not isinstance(raw, list):
         return []
     parsed = [number(value) for value in raw]
-    return [value for value in parsed if value is not None]
+    return [value * scale for value in parsed if value is not None]
 
 
 def group_name(label: str) -> str:
@@ -107,12 +108,14 @@ def group_name(label: str) -> str:
     return "other"
 
 
-def group_values(per_run: list[dict[str, Any]], sample_key: str, group: str) -> list[float]:
+def group_values(
+    per_run: list[dict[str, Any]], sample_key: str, group: str, scale: float = 1.0
+) -> list[float]:
     samples: list[float] = []
     for run in per_run:
         label = str(run.get("label") or "")
         if group_name(label) == group:
-            samples.extend(values(run, sample_key))
+            samples.extend(values(run, sample_key, scale))
     return samples
 
 
@@ -125,6 +128,7 @@ def scatter_samples(
     sample_key: str,
     title: str,
     ylabel: str,
+    scale: float = 1.0,
 ) -> None:
     rng = random.Random(1337)
     colors = {
@@ -145,7 +149,7 @@ def scatter_samples(
 
     for idx, run in enumerate(per_run, start=1):
         label = str(run.get("label") or f"run-{idx}")
-        samples = values(run, sample_key)
+        samples = values(run, sample_key, scale)
         if not samples:
             continue
 
@@ -180,8 +184,9 @@ def distribution_samples(
     group: str,
     title: str,
     xlabel: str,
+    scale: float = 1.0,
 ) -> None:
-    samples = group_values(per_run, sample_key, group)
+    samples = group_values(per_run, sample_key, group, scale)
     if not samples:
         raise ValueError(f"summary.json has no {group} {sample_key} samples")
 
@@ -206,6 +211,7 @@ def maybe_scatter_samples(
     sample_key: str,
     title: str,
     ylabel: str,
+    scale: float = 1.0,
 ) -> bool:
     try:
         scatter_samples(
@@ -216,6 +222,7 @@ def maybe_scatter_samples(
             sample_key=sample_key,
             title=title,
             ylabel=ylabel,
+            scale=scale,
         )
     except ValueError as error:
         print(f"Skipping {output.name}: {error}")
@@ -232,6 +239,7 @@ def maybe_distribution_samples(
     group: str,
     title: str,
     xlabel: str,
+    scale: float = 1.0,
 ) -> bool:
     try:
         distribution_samples(
@@ -242,6 +250,7 @@ def maybe_distribution_samples(
             group=group,
             title=title,
             xlabel=xlabel,
+            scale=scale,
         )
     except ValueError as error:
         print(f"Skipping {output.name}: {error}")
@@ -278,6 +287,7 @@ def main() -> None:
             sample_key=chart["sample_key"],
             title=chart["title"],
             ylabel=chart["ylabel"],
+            scale=chart.get("scale", 1.0),
         ):
             written.append({"file": chart["file"], "label": chart["label"]})
 
@@ -296,6 +306,7 @@ def main() -> None:
                 group=group,
                 title=chart["title"],
                 xlabel=chart["ylabel"],
+                scale=chart.get("scale", 1.0),
             ):
                 written.append({"file": file_name, "label": label})
 
