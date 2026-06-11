@@ -295,7 +295,7 @@ async fn fetch_bootnodes(
 
     Ok(resp
         .get(&chain_id.to_string())
-        .map(|enodes| reth_network_peers::parse_nodes(enodes))
+        .map(reth_network_peers::parse_nodes)
         .unwrap_or_default())
 }
 
