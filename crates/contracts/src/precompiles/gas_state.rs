@@ -24,6 +24,10 @@ crate::sol! {
         function mode() external view returns (Mode);
         function modeOf(address account) external view returns (Mode);
 
+        function creditBudget() external view returns (uint64);
+        function creditBudgetOf(address account) external view returns (uint64);
+
         function setMode(Mode newMode) external;
+        function setBudget(uint64 creditBudget) external;
     }
 }

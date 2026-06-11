@@ -4,7 +4,7 @@ use crate::{
     storage::PrecompileStorageProvider,
     tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
 };
-use alloy::primitives::{Address, Log, LogData, U256};
+use alloy::primitives::{Address, IntoLogData, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
@@ -13,6 +13,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::TIP1060StorageCreditsEvent;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -157,6 +158,18 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     #[inline]
     fn store_transient_state(&mut self, key: U256, value: U256) {
         self.internals.tstore(STORAGE_CREDITS_ADDRESS, key, value);
+    }
+
+    #[inline]
+    fn emit_mode_updated(
+        &mut self,
+        account: Address,
+        new_mode: crate::tip1060_storage_credits::CreditMode,
+    ) -> Result<(), Self::Error> {
+        self.emit_event(
+            STORAGE_CREDITS_ADDRESS,
+            TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into()).into_log_data(),
+        )
     }
 }
 

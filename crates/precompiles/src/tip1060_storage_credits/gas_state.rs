@@ -71,6 +71,13 @@ pub trait StorageCreditsBackend {
 
     /// Stores the transaction-local storage credit state word at `key`.
     fn store_transient_state(&mut self, key: U256, value: U256);
+
+    /// Emits `ModeUpdated(account, newMode)` from the storage credits precompile.
+    fn emit_mode_updated(
+        &mut self,
+        account: Address,
+        new_mode: CreditMode,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Applies the TIP-1060 storage credits policy for a single SSTORE.
@@ -143,8 +150,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         match transient_state.mode {
             CreditMode::Direct => {
-                // Only if there is a credit available, skip gas
-                if balance > 0 {
+                // Only if both a credit and direct budget are available, skip state gas.
+                if balance > 0 && transient_state.budget > 0 {
                     // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
                     if caller_state_load.is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
@@ -153,6 +160,20 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     balance -= 1;
                     was_changed = true;
                     outcome.skip_gas = true;
+
+                    if transient_state.budget != u64::MAX {
+                        transient_state.budget -= 1;
+                    }
+                    if transient_state.budget == 0 {
+                        transient_state.mode = CreditMode::Preserve;
+                        backend.emit_mode_updated(owner, CreditMode::Preserve)?;
+                    }
+                    backend.store_transient_state(account_slot, transient_state.into_word());
+                } else if transient_state.budget == 0 {
+                    // Zero-budget Direct creations pay the full creation cost and then move to Preserve.
+                    transient_state.mode = CreditMode::Preserve;
+                    backend.store_transient_state(account_slot, transient_state.into_word());
+                    backend.emit_mode_updated(owner, CreditMode::Preserve)?;
                 }
                 // Otherwise, leave gas enabled so revm charges full creation costs.
             }
