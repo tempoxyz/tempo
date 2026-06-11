@@ -1098,6 +1098,10 @@ fn collect_fixture_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), std
         } else if path
             .extension()
             .is_some_and(|extension| extension == "fixture")
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.starts_with('.'))
         {
             files.push(path);
         }

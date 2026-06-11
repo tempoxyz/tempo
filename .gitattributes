@@ -1,5 +1,4 @@
 * text=auto
-fixtures/**/*.fixture binary
 .gitattributes !filter !diff
 
 .env.example linguist-language=Dotenv

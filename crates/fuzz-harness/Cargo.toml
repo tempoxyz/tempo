@@ -30,6 +30,9 @@ reth-evm.workspace = true
 reth-trie-common.workspace = true
 revm.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4.46"
 tempo-fuzz-types.workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
@@ -37,3 +40,4 @@ tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
+zstd = "0.13.3"

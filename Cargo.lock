@@ -13205,7 +13205,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13221,6 +13221,9 @@ dependencies = [
  "reth-trie-common",
  "revm",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
@@ -13228,6 +13231,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "zstd",
 ]
 
 [[package]]

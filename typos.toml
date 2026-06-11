@@ -6,7 +6,6 @@ extend-exclude = [
     "Cargo.toml",
     "Cargo.lock",
     "*.json",
-    "*.fixture",
     "**/ph.js",
     "**/tests/**",
     "**/test/**",
