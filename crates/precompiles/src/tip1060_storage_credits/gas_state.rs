@@ -52,9 +52,6 @@ pub trait StorageCreditsBackend {
             .ok_or_else(Self::out_of_gas)
     }
 
-    /// Loads (warms) the storage credits contract account.
-    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error>;
-
     /// SLOAD a slot of the storage credits contract, optionally skipping the cold load.
     fn load_credits(
         &mut self,
@@ -69,15 +66,11 @@ pub trait StorageCreditsBackend {
         value: U256,
     ) -> Result<StateLoad<SStoreResult>, Self::Error>;
 
-    /// Loads the transaction-local storage credit state for `account`.
-    fn load_transient_state(&mut self, account: Address) -> Result<TransientState, Self::Error>;
+    /// Loads the transaction-local storage credit state word at `key`.
+    fn load_transient_state(&mut self, key: U256) -> U256;
 
-    /// Stores the transaction-local storage credit state for `account`.
-    fn store_transient_state(
-        &mut self,
-        account: Address,
-        state: TransientState,
-    ) -> Result<(), Self::Error>;
+    /// Stores the transaction-local storage credit state word at `key`.
+    fn store_transient_state(&mut self, key: U256, value: U256);
 }
 
 /// Applies the TIP-1060 storage credits policy for a single SSTORE.
@@ -126,8 +119,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    backend.load_storage_credit_account()?;
-
     let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
@@ -146,7 +137,9 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: slot create. The selected storage creation mode is transient.
-        let mut transient_state = backend.load_transient_state(owner)?;
+        let mut transient_state =
+            TransientState::from_word(backend.load_transient_state(account_slot))
+                .map_err(|_| B::fatal_external())?;
 
         match transient_state.mode {
             CreditMode::Direct => {
@@ -168,7 +161,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Refund => {
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
-                backend.store_transient_state(owner, transient_state)?;
+                backend.store_transient_state(account_slot, transient_state.into_word());
             }
         }
     }

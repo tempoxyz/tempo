@@ -137,27 +137,12 @@ impl TIP1060StorageCredits {
     }
 
     #[inline]
-    pub fn transient_state_slot(account: Address) -> U256 {
-        Self::slot(account)
-    }
-
-    #[inline]
     fn transient_state_of(&self, account: Address) -> Result<TransientState> {
-        TransientState::handle(
-            Self::transient_state_slot(account),
-            LayoutCtx::FULL,
-            self.address,
-        )
-        .t_read()
+        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_read()
     }
 
     #[inline]
     fn write_transient_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        TransientState::handle(
-            Self::transient_state_slot(account),
-            LayoutCtx::FULL,
-            self.address,
-        )
-        .t_write(state)
+        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state)
     }
 }

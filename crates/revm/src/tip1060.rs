@@ -20,8 +20,7 @@ use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
     tip1060_storage_credits::{
-        STORAGE_CREDIT_VALUE, StorageCreditsBackend, TIP1060StorageCredits, TransientState,
-        sstore_storage_credits,
+        STORAGE_CREDIT_VALUE, StorageCreditsBackend, sstore_storage_credits,
     },
 };
 
@@ -32,27 +31,25 @@ use tempo_precompiles::{
 /// entries with non-zero pending creations are settled against the same account's persistent
 /// storage credit balance, consuming up to `min(pending, balance)` credits and refunding one fixed
 /// storage credit value per credit. Mode-only transient entries are ignored.
-///
-/// Returns number of credits applied.
 pub fn apply_refund<DB: Database, I>(
     evm: &mut TempoEvm<DB, I>,
     gas: &mut Gas,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+    if !evm.cfg.spec.is_t7() {
+        return Ok(());
+    }
+
     let journal = &mut evm.inner.ctx.journaled_state;
 
-    // Snapshot the transient (balance slot, state) pairs at the storage credits contract written
-    // during this tx, so we don't borrow `transient_storage` while mutating the journal below.
-    let slots: Vec<_> = journal
-        .transient_storage
-        .get(&STORAGE_CREDITS_ADDRESS)
-        .map(|slots| slots.iter().map(|(key, credit)| (*key, *credit)).collect())
-        .unwrap_or_default();
+    // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
+    // This is safe cause refunds are applied in post-execution.
+    let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
+        return Ok(());
+    };
 
     let mut refunds = 0;
     for (key, word) in slots {
-        let transient_state =
-            TransientState::from_word(word).map_err(|err| EVMError::Custom(err.to_string()))?;
-        let pending = transient_state.pending_refunds;
+        let pending = word.as_limbs()[0];
         if pending == 0 {
             continue;
         }
@@ -114,12 +111,6 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     fn gas_tracker(&mut self) -> &mut GasTracker {
         self.gas_tracker
     }
-    #[inline]
-    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error> {
-        self.context
-            .load_account_info_skip_cold_load(STORAGE_CREDITS_ADDRESS, false, false)?;
-        Ok(())
-    }
 
     #[inline]
     fn load_credits(
@@ -127,6 +118,8 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
+        self.context
+            .load_account_info_skip_cold_load(STORAGE_CREDITS_ADDRESS, false, false)?;
         Ok(self
             .context
             .sload_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, skip_cold_load)?)
@@ -144,22 +137,13 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 
     #[inline]
-    fn load_transient_state(&mut self, account: Address) -> Result<TransientState, Self::Error> {
-        let key = TIP1060StorageCredits::transient_state_slot(account);
-        TransientState::from_word(self.context.tload(STORAGE_CREDITS_ADDRESS, key))
-            .map_err(|_| Self::fatal_external())
+    fn load_transient_state(&mut self, key: U256) -> U256 {
+        self.context.tload(STORAGE_CREDITS_ADDRESS, key)
     }
 
     #[inline]
-    fn store_transient_state(
-        &mut self,
-        account: Address,
-        state: TransientState,
-    ) -> Result<(), Self::Error> {
-        let key = TIP1060StorageCredits::transient_state_slot(account);
-        self.context
-            .tstore(STORAGE_CREDITS_ADDRESS, key, state.into_word());
-        Ok(())
+    fn store_transient_state(&mut self, key: U256, value: U256) {
+        self.context.tstore(STORAGE_CREDITS_ADDRESS, key, value);
     }
 }
 
