@@ -1,16 +1,33 @@
 use alloy::{
-    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
+    primitives::U256,
+    providers::{Provider, ProviderBuilder},
+    signers::local::MnemonicBuilder,
     sol_types::SolError,
 };
+use alloy_eips::BlockNumberOrTag;
 use tempo_contracts::precompiles::{
     IStablecoinDEX,
     ITIP20::{self, ITIP20Instance},
+    ITIP1060StorageCredits, STORAGE_CREDITS_ADDRESS,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, stablecoin_dex::MIN_ORDER_AMOUNT,
+    tip1060_storage_credits::STORAGE_CREDIT_VALUE,
 };
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+
+async fn receipt_storage_creation_gas<P: Provider>(
+    provider: &P,
+    block_number: u64,
+    receipt_gas_used: u64,
+) -> eyre::Result<u64> {
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .await?
+        .expect("receipt block should exist");
+    Ok(receipt_gas_used.saturating_sub(block.header.gas_used))
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bids() -> eyre::Result<()> {
@@ -432,6 +449,110 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         // Assert order does not exist
         assert!(err.to_string().contains("0x5dcaf2d7"));
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cancel_place_cycles_accumulate_dex_storage_credits() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let base = setup_test_token(provider.clone(), caller).await?;
+    let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, provider.clone());
+
+    let amount = MIN_ORDER_AMOUNT;
+    let cycles = 3u128;
+
+    base.mint(caller, U256::from(amount))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    base.approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let initial_protocol_credits = credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?;
+    assert_eq!(initial_protocol_credits, 0);
+
+    exchange
+        .place(*base.address(), amount, false, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let mut order_id = 1u128;
+    let mut cycle_gas_used = 0u64;
+    let mut cycle_storage_creation_gas = 0u64;
+    for cycle in 1..=cycles {
+        let cancel_receipt = exchange
+            .cancel(order_id)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        cycle_gas_used += cancel_receipt.gas_used;
+        cycle_storage_creation_gas += receipt_storage_creation_gas(
+            &provider,
+            cancel_receipt
+                .block_number
+                .expect("receipt should be mined"),
+            cancel_receipt.gas_used,
+        )
+        .await?;
+        assert_eq!(exchange.storageCredits(caller).call().await?, 5);
+
+        let place_receipt = exchange
+            .place(*base.address(), amount, false, 0)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        cycle_gas_used += place_receipt.gas_used;
+        cycle_storage_creation_gas += receipt_storage_creation_gas(
+            &provider,
+            place_receipt.block_number.expect("receipt should be mined"),
+            place_receipt.gas_used,
+        )
+        .await?;
+
+        assert_eq!(exchange.storageCredits(caller).call().await?, 0);
+        let protocol_credits = credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?;
+        assert_eq!(protocol_credits, 4 * cycle as u64);
+        order_id += 1;
+    }
+
+    let order = exchange.getOrder(order_id).call().await?;
+    let level = exchange
+        .getTickLevel(*base.address(), 0, false)
+        .call()
+        .await?;
+
+    assert_eq!(exchange.storageCredits(caller).call().await?, 0);
+    assert_eq!(credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?, 12);
+    assert_eq!(
+        cycle_storage_creation_gas, 0,
+        "cancel/place cycles used {cycle_gas_used} total gas and {cycle_storage_creation_gas} \
+         storage-creation gas to retain 12 protocol credits; one credit should cost at least \
+         {STORAGE_CREDIT_VALUE} storage-creation gas"
+    );
+    assert_eq!(order.orderId, order_id);
+    assert_eq!(order.maker, caller);
+    assert_eq!(level.head, order_id);
+    assert_eq!(level.totalLiquidity, amount);
 
     Ok(())
 }
