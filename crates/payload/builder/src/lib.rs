@@ -510,6 +510,7 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_tx = RootsFeed::new(roots_tx);
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -748,7 +749,7 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
-            let _ = roots_tx.send((
+            roots_tx.push((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
             ));
@@ -827,7 +828,7 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
+                roots_tx.push((
                     BuilderTx::Owned(Box::new(tx)),
                     executor.receipts().last().unwrap().clone(),
                 ));
@@ -867,7 +868,7 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
-            let _ = roots_tx.send((
+            roots_tx.push((
                 BuilderTx::Owned(Box::new(system_tx)),
                 executor.receipts().last().unwrap().clone(),
             ));
@@ -1173,11 +1174,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BuilderTx, TempoReceipt)>,
+        Sender<Vec<(BuilderTx, TempoReceipt)>>,
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BuilderTx, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
@@ -1191,7 +1192,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1253,6 +1254,51 @@ where
             msg_tx: task_tx,
             bal_rx,
         }
+    }
+}
+
+/// Number of executed transactions sent to the roots task per channel message.
+///
+/// Per-transaction sends wake the roots thread for every transaction, which is
+/// measurable at payload sizes of tens of thousands of transactions; batching
+/// amortizes the wakeups while keeping root computation overlapped with execution.
+const ROOTS_BATCH_SIZE: usize = 128;
+
+/// Batches executed transactions before handing them to the roots task.
+///
+/// The final partial batch is flushed on drop, which also disconnects the
+/// channel and lets the roots task finalize.
+struct RootsFeed {
+    tx: Sender<Vec<(BuilderTx, TempoReceipt)>>,
+    buf: Vec<(BuilderTx, TempoReceipt)>,
+}
+
+impl RootsFeed {
+    fn new(tx: Sender<Vec<(BuilderTx, TempoReceipt)>>) -> Self {
+        Self {
+            tx,
+            buf: Vec::with_capacity(ROOTS_BATCH_SIZE),
+        }
+    }
+
+    fn push(&mut self, item: (BuilderTx, TempoReceipt)) {
+        self.buf.push(item);
+        if self.buf.len() >= ROOTS_BATCH_SIZE {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.buf.is_empty() {
+            let batch = core::mem::replace(&mut self.buf, Vec::with_capacity(ROOTS_BATCH_SIZE));
+            let _ = self.tx.send(batch);
+        }
+    }
+}
+
+impl Drop for RootsFeed {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
