@@ -287,21 +287,17 @@ impl TipFeeManager {
             fee_payer,
             actual_spending,
             refund_amount,
-            fee_token,
             beneficiary,
         )
     }
 
     /// Like [`Self::collect_fee_post_tx`], using a prevalidated TIP20 fee-token handle.
-    ///
-    /// The supplied handle must be for `fee_token`.
     pub fn collect_fee_post_tx_with_token(
         &mut self,
         tip20_token: &mut TIP20Token,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
-        fee_token: Address,
         beneficiary: Address,
     ) -> Result<U256> {
         let validator_token = self.get_validator_token(beneficiary)?;
@@ -310,7 +306,6 @@ impl TipFeeManager {
             fee_payer,
             actual_spending,
             refund_amount,
-            fee_token,
             beneficiary,
             validator_token,
         )
@@ -323,11 +318,10 @@ impl TipFeeManager {
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
-        fee_token: Address,
         beneficiary: Address,
         validator_token: Address,
     ) -> Result<U256> {
-        debug_assert_eq!(tip20_token.address(), fee_token);
+        let fee_token = tip20_token.address();
 
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 

@@ -161,7 +161,6 @@ impl CachedFeeCollectorInner {
             fee_payer,
             actual_spending,
             refund_amount,
-            fee_token,
             beneficiary,
             validator_token,
         )
