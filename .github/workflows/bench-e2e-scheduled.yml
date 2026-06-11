@@ -1,6 +1,6 @@
 # Scheduled e2e regression benchmarks.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for the tip20 preset.
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each preset below.
 # Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
 # same preset.
@@ -58,7 +58,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
-          presets=(tip20)
+          presets=(tip20 tip20_existing_recipients)
           bench_entries=()
           save_entries=()
           stale_presets=()
