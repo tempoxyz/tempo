@@ -297,11 +297,11 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
-        return (latest-tempo-hardfork)
+        return ""
     }
     let state_hardfork = ($marker | get -o state_hardfork | default "")
     if $state_hardfork == "" {
-        return (latest-tempo-hardfork)
+        return ""
     }
     normalize-hardfork $state_hardfork
 }
@@ -398,11 +398,11 @@ def e2e-regenesis [
     hardfork: string,
     gas_limit: string,
 ] {
-    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
+    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { latest-tempo-hardfork }
     let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
     let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
-    let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
+    let hardfork_matches = $current_hardfork == $target_hardfork
     let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
     if $hardfork_matches and $gas_limit_matches {
         mut matches = []
@@ -1195,8 +1195,8 @@ def "main e2e" [
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary
-    --baseline-hardfork: string = ""                     # Latest active hardfork for baseline phases
-    --feature-hardfork: string = ""                      # Latest active hardfork for feature phases
+    --baseline-hardfork: string = ""                     # Latest active hardfork for baseline phases (default: latest)
+    --feature-hardfork: string = ""                      # Latest active hardfork for feature phases (default: latest)
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
@@ -1227,18 +1227,12 @@ def "main e2e" [
         print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
         exit 1
     }
-    let hardfork_mode = $baseline_hardfork != "" or $feature_hardfork != ""
-    if $hardfork_mode and ($baseline_hardfork == "" or $feature_hardfork == "") {
-        print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
-        exit 1
-    }
-    let baseline_hardfork_name = if $hardfork_mode { normalize-hardfork $baseline_hardfork } else { "" }
-    let feature_hardfork_name = if $hardfork_mode { normalize-hardfork $feature_hardfork } else { "" }
-    let snapshot_state_hardfork = if $hardfork_mode {
-        highest-hardfork [$baseline_hardfork_name $feature_hardfork_name]
-    } else {
-        latest-tempo-hardfork
-    }
+    # Empty inputs resolve to latest so new hardforks invalidate cached snapshots.
+    let default_hardfork = (latest-tempo-hardfork)
+    let baseline_hardfork_name = if $baseline_hardfork != "" { normalize-hardfork $baseline_hardfork } else { $default_hardfork }
+    let feature_hardfork_name = if $feature_hardfork != "" { normalize-hardfork $feature_hardfork } else { $default_hardfork }
+    let hardfork_mode = true
+    let snapshot_state_hardfork = (highest-hardfork [$baseline_hardfork_name $feature_hardfork_name])
     let snapshot_hardfork_args = (hardfork-to-genesis-args $snapshot_state_hardfork)
 
     let validator_list = (

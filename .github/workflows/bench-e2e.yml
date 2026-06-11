@@ -20,12 +20,12 @@ on:
         required: false
         default: ""
       baseline-hardfork:
-        description: Latest active hardfork for the baseline run. Empty = bench-e2e default.
+        description: Latest active hardfork for the baseline run. Empty = latest Tempo hardfork.
         type: string
         required: false
         default: ""
       feature-hardfork:
-        description: Latest active hardfork for the feature run. Empty = bench-e2e default.
+        description: Latest active hardfork for the feature run. Empty = latest Tempo hardfork.
         type: string
         required: false
         default: ""
