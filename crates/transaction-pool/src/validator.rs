@@ -97,9 +97,9 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
-    /// Tip-scoped cache of state reads shared across validation calls, replaced on each
+    /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
-    cached_state: RwLock<Arc<StateCache>>,
+    cached_state: RwLock<(B256, Arc<StateCache>)>,
     /// The chain spec, cached to avoid cloning the shared `Arc` on every validation.
     chain_spec: Arc<TempoChainSpec>,
 }
@@ -133,7 +133,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
-            cached_state: RwLock::new(Arc::new(StateCache::new(latest_header.hash()))),
+            cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             chain_spec,
         }
     }
@@ -367,11 +367,11 @@ where
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
-        let cached_state = self.cached_state.read().clone();
-        if cached_state.tip_hash() == tip_hash {
+        let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
+        if cached_tip_hash == tip_hash {
             cached_state
         } else {
-            Arc::new(StateCache::new(tip_hash))
+            Arc::new(StateCache::default())
         }
     }
 
@@ -721,7 +721,7 @@ where
             .expect("invalid block in on_new_head_block");
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
-        *self.cached_state.write() = Arc::new(StateCache::new(new_tip_block.hash()));
+        *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
     }
 }
 
@@ -993,8 +993,7 @@ mod tests {
     fn state_cache_for_tip_reuses_only_matching_tip_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
-        let shared_cache = validator.cached_state.read().clone();
-        let shared_tip_hash = shared_cache.tip_hash();
+        let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
 
         let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
         assert!(Arc::ptr_eq(&matching_cache, &shared_cache));
@@ -1005,7 +1004,6 @@ mod tests {
             B256::repeat_byte(0x42)
         };
         let ephemeral_cache = validator.state_cache_for_tip(mismatched_tip_hash);
-        assert_eq!(ephemeral_cache.tip_hash(), mismatched_tip_hash);
         assert!(!Arc::ptr_eq(&ephemeral_cache, &shared_cache));
     }
 
@@ -1019,12 +1017,11 @@ mod tests {
         } else {
             B256::repeat_byte(0x42)
         };
-        let shared_cache = Arc::new(StateCache::new(mismatched_tip_hash));
-        *validator.cached_state.write() = shared_cache.clone();
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
         let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
-        assert_eq!(validation_cache.tip_hash(), latest_hash);
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 

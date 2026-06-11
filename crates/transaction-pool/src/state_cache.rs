@@ -14,10 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// The validator replaces the cache whenever a new head block is processed, mirroring the
 /// lifecycle of its cached EVM environment.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct StateCache {
-    /// Tip hash this cache is valid for.
-    tip_hash: B256,
     /// Cached basic account info, including non-existent accounts (`None`).
     accounts: DashMap<Address, Option<AccountInfo>, DefaultHashBuilder>,
     /// Cached storage values keyed by account and slot.
@@ -32,24 +30,6 @@ pub(crate) struct StateCache {
 }
 
 impl StateCache {
-    /// Creates an empty cache anchored to `tip_hash`.
-    pub(crate) fn new(tip_hash: B256) -> Self {
-        Self {
-            tip_hash,
-            accounts: DashMap::with_hasher(DefaultHashBuilder::default()),
-            storage: DashMap::with_hasher(DefaultHashBuilder::default()),
-            contracts: DashMap::with_hasher(DefaultHashBuilder::default()),
-            account_count: AtomicUsize::new(0),
-            storage_count: AtomicUsize::new(0),
-            contract_count: AtomicUsize::new(0),
-        }
-    }
-
-    /// Returns the tip hash this cache is valid for.
-    pub(crate) const fn tip_hash(&self) -> B256 {
-        self.tip_hash
-    }
-
     /// Maximum number of cached accounts.
     ///
     /// The caps bound memory if a flood of unique accounts is validated within a single
@@ -59,12 +39,6 @@ impl StateCache {
     const MAX_STORAGE_SLOTS: usize = 1 << 18;
     /// Maximum number of cached contracts.
     const MAX_CONTRACTS: usize = 1 << 12;
-}
-
-impl Default for StateCache {
-    fn default() -> Self {
-        Self::new(B256::ZERO)
-    }
 }
 
 /// A [`DatabaseRef`] adapter that serves reads from a shared [`StateCache`], falling back
@@ -213,13 +187,5 @@ mod tests {
         assert_eq!(db.storage_ref(address, slot).unwrap(), U256::from(42));
         assert!(db.basic_ref(address).unwrap().is_some());
         assert_eq!(inner.reads.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn records_tip_hash() {
-        let tip_hash = B256::random();
-        let cache = StateCache::new(tip_hash);
-
-        assert_eq!(cache.tip_hash(), tip_hash);
     }
 }
