@@ -297,11 +297,11 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
-        return (latest-tempo-hardfork)
+        return ""
     }
     let state_hardfork = ($marker | get -o state_hardfork | default "")
     if $state_hardfork == "" {
-        return (latest-tempo-hardfork)
+        return ""
     }
     normalize-hardfork $state_hardfork
 }
@@ -398,11 +398,11 @@ def e2e-regenesis [
     hardfork: string,
     gas_limit: string,
 ] {
-    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
+    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { latest-tempo-hardfork }
     let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
     let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
-    let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
+    let hardfork_matches = $current_hardfork == $target_hardfork
     let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
     if $hardfork_matches and $gas_limit_matches {
         mut matches = []
