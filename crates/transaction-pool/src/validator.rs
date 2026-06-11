@@ -32,7 +32,10 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::nonce::{INonce, NonceManager};
+use tempo_precompiles::{
+    nonce::{INonce, NonceManager},
+    storage::StorageActions,
+};
 use tempo_primitives::{
     Block, TempoHeader,
     subblock::has_sub_block_nonce_key_prefix,
@@ -564,12 +567,16 @@ where
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
-                        state_nonce = match state_provider.with_read_only_storage_ctx(spec, || {
-                            NonceManager::new().get_nonce(INonce::getNonceCall {
-                                account: transaction.transaction().sender(),
-                                nonceKey: nonce_key,
-                            })
-                        }) {
+                        state_nonce = match state_provider.with_read_only_storage_ctx(
+                            spec,
+                            StorageActions::disabled(),
+                            || {
+                                NonceManager::new().get_nonce(INonce::getNonceCall {
+                                    account: transaction.transaction().sender(),
+                                    nonceKey: nonce_key,
+                                })
+                            },
+                        ) {
                             Ok(nonce) => nonce,
                             Err(err) => {
                                 return TransactionValidationOutcome::Error(
@@ -2475,7 +2482,7 @@ mod tests {
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Test that is_fee_token_paused returns true for paused tokens
-        let result = state.is_fee_token_paused(spec, fee_token);
+        let result = state.is_fee_token_paused(spec, fee_token, StorageActions::disabled());
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -2626,7 +2633,8 @@ mod tests {
         );
 
         // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
-        let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
+        let is_paused =
+            state.is_fee_token_paused(spec, paused_validator_token, StorageActions::disabled());
         assert!(is_paused.is_ok());
         assert!(
             is_paused.unwrap(),

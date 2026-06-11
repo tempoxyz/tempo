@@ -48,7 +48,8 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
@@ -430,6 +431,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.block,
             &ctx.cfg,
             &ctx.tx,
+            StorageActions::disabled(),
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
@@ -497,8 +499,13 @@ where
         };
 
         // It's fine to set reservoir to 0 because this won't create any state.
-        let (validation, gas_used) =
-            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, reservoir, || {
+        let actions = evm.actions.clone();
+        let (validation, gas_used) = StorageCtx::enter_ctx_with_gas_limit(
+            evm.ctx_mut(),
+            *remaining_gas,
+            reservoir,
+            actions,
+            || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -509,7 +516,8 @@ where
                     )?;
                 }
                 Ok::<(), TempoPrecompileError>(())
-            });
+            },
+        );
 
         match validation {
             Ok(()) => {
@@ -904,6 +912,7 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let actions = evm.actions.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -911,7 +920,7 @@ where
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
+            .get_fee_token(tx, fee_payer, cfg.spec, actions.clone())
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -925,7 +934,7 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+            journal.ensure_tip20_usd(cfg.spec, fee_token, actions.clone())?;
         }
 
         // Load the fee payer balance
@@ -1015,7 +1024,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, actions.clone(), || {
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
@@ -1071,7 +1080,7 @@ where
             })?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, actions.clone(), || {
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
@@ -1205,6 +1214,7 @@ where
                     block,
                     cfg,
                     tx,
+                    actions.clone(),
                     |mut keychain: AccountKeychain| {
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
@@ -1296,7 +1306,7 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
+            let result = StorageCtx::enter_evm(journal, block, cfg, tx, actions.clone(), || {
                 TipFeeManager::new().collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
@@ -1398,7 +1408,8 @@ where
                 amsterdam_eip8037_enabled,
                 false,
                 gas_params,
-            );
+            )
+            .with_actions(actions.clone());
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -1510,6 +1521,7 @@ where
                     block,
                     cfg,
                     tx,
+                    actions,
                     |mut keychain: AccountKeychain| {
                         keychain
                             .set_transaction_key(key_auth.key_id)
@@ -1538,6 +1550,7 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
+        let actions = evm.actions.clone();
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
@@ -1571,28 +1584,29 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
+        let credited =
+            StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, actions, || {
+                let mut fee_manager = TipFeeManager::new();
 
-            if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
-                // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_manager
-                    .collect_fee_post_tx(
-                        fee_payer,
-                        actual_spending,
-                        refund_amount,
-                        fee_token,
-                        beneficiary,
-                    )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
-            } else {
-                Ok(U256::ZERO)
-            }
-        })?;
+                if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                    let fee_token = evm
+                        .fee_token
+                        .expect("set in `validate_against_state_and_deduct_caller`");
+                    // Call collectFeePostTx (handles both refund and fee queuing)
+                    fee_manager
+                        .collect_fee_post_tx(
+                            fee_payer,
+                            actual_spending,
+                            refund_amount,
+                            fee_token,
+                            beneficiary,
+                        )
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                } else {
+                    Ok(U256::ZERO)
+                }
+            })?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
@@ -2564,13 +2578,14 @@ mod tests {
             tx_env.inner.gas_priority_fee = Some(1_000_000_000);
         });
 
-        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
-            TIP20Setup::create("Euro", "EUR", admin)
-                .currency("EUR")
-                .apply()
-                .map(|token| token.address())
-        })
-        .expect("EUR token setup succeeds");
+        let fee_token =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                TIP20Setup::create("Euro", "EUR", admin)
+                    .currency("EUR")
+                    .apply()
+                    .map(|token| token.address())
+            })
+            .expect("EUR token setup succeeds");
 
         test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
@@ -2600,16 +2615,17 @@ mod tests {
             tx_env.inner.gas_priority_fee = Some(1_000_000_000);
         });
 
-        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
-            let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
-                .with_issuer(admin)
-                .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
-                .with_mint(fee_payer, fee)
-                .apply()?;
-            token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
-            Ok::<_, TempoPrecompileError>(token.address())
-        })
-        .expect("paused USD token setup succeeds");
+        let fee_token =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+                    .with_mint(fee_payer, fee)
+                    .apply()?;
+                token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
+                Ok::<_, TempoPrecompileError>(token.address())
+            })
+            .expect("paused USD token setup succeeds");
 
         test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
@@ -2726,9 +2742,12 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                tempo_precompiles::storage::StorageActions::disabled(),
+            )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
@@ -2743,17 +2762,23 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                tempo_precompiles::storage::StorageActions::disabled(),
+            )?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            user,
+            ctx.cfg.spec,
+            tempo_precompiles::storage::StorageActions::disabled(),
+        )?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
@@ -3882,7 +3907,7 @@ mod tests {
             *cfg_override = cfg;
         });
 
-        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
+        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut keychain = AccountKeychain::new();
 
             keychain.initialize().expect("keychain initialized");
@@ -4004,7 +4029,7 @@ mod tests {
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
         let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
-        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
             let mut keychain = AccountKeychain::new();
 
             keychain.initialize().expect("keychain initialized");
@@ -4904,7 +4929,7 @@ mod tests {
 
             let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut kc = AccountKeychain::new();
                 kc.initialize().unwrap();
                 kc.set_transaction_key(Address::ZERO).unwrap();
@@ -5098,7 +5123,7 @@ mod tests {
                 "T5 witness authorization should pass: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     !keychain
@@ -5180,7 +5205,7 @@ mod tests {
                 "root-signed admin key authorization should not require account, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     keychain
@@ -5291,7 +5316,7 @@ mod tests {
                 "admin access key authorization should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5305,7 +5330,7 @@ mod tests {
                 "admin access key should authorize a different admin key, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     keychain
@@ -5401,7 +5426,7 @@ mod tests {
                 "admin-signed key authorization should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::WebAuthn, None)
@@ -5448,7 +5473,7 @@ mod tests {
                 "account-bound authorization should pass Alice stateless validation, got: {alice_env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(alice, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5461,7 +5486,7 @@ mod tests {
                 alice_result.is_ok(),
                 "account-bound admin-signed non-admin authorization should pass for Alice, got: {alice_result:?}"
             );
-            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 let key = keychain
                     .get_key(getKeyCall {
@@ -5529,7 +5554,7 @@ mod tests {
                 "admin delegation should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, fee * U256::from(2))
@@ -5577,7 +5602,7 @@ mod tests {
                 "admin delegation should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5591,7 +5616,7 @@ mod tests {
                 "admin delegation should pass, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 let transaction_key = keychain
                     .get_transaction_key(getTransactionKeyCall {}, user)
@@ -5715,7 +5740,7 @@ mod tests {
             evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
             evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, fee * U256::from(2))
@@ -5771,7 +5796,7 @@ mod tests {
             evm.inner.ctx.tx.inner.gas_price = 0;
             evm.inner.ctx.tx.inner.gas_priority_fee = Some(0);
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, stale_fee * U256::from(2))
