@@ -8,7 +8,7 @@ pub use gas_state::{StorageCreditsBackend, StorageCreditsError, sstore_storage_c
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, Storable, StorableType, packing::PackedSlot},
+    storage::{Handler, LayoutCtx, StorableType},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
@@ -61,7 +61,8 @@ impl From<CreditMode> for Mode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+// NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
     pub budget: u64,
     pub mode: CreditMode,
@@ -73,18 +74,19 @@ impl TryFrom<U256> for TransientState {
 
     #[inline]
     fn try_from(value: U256) -> Result<Self> {
-        Storable::load(&PackedSlot(value), U256::ZERO, LayoutCtx::FULL)
+        let limbs = value.as_limbs();
+        Ok(Self {
+            budget: limbs[0],
+            mode: (limbs[1] as u8).try_into()?,
+            pending_refunds: limbs[3],
+        })
     }
 }
 
-impl TryFrom<TransientState> for U256 {
-    type Error = TempoPrecompileError;
-
+impl From<TransientState> for U256 {
     #[inline]
-    fn try_from(value: TransientState) -> Result<Self> {
-        let mut slot = PackedSlot(Self::ZERO);
-        value.store(&mut slot, Self::ZERO, LayoutCtx::FULL)?;
-        Ok(slot.0)
+    fn from(value: TransientState) -> Self {
+        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
     }
 }
 
@@ -163,11 +165,13 @@ impl TIP1060StorageCredits {
 
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_read()
+        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+            .t_read()?
+            .try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state)
+        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
     }
 }

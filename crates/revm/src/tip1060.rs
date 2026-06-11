@@ -5,7 +5,7 @@ use crate::{
     evm::{TempoContext, TempoEvm},
 };
 use alloy_evm::Database;
-use alloy_primitives::{Address, IntoLogData, Log, U256};
+use alloy_primitives::{Address, Log, LogData, U256};
 use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
@@ -17,13 +17,10 @@ use revm::{
     },
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::TIP1060StorageCreditsEvent;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
-    tip1060_storage_credits::{
-        CreditMode, StorageCreditsBackend, TransientState, sstore_storage_credits,
-    },
+    tip1060_storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
 /// Applies storage-credit settlement at the end of a transaction.
@@ -107,49 +104,47 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 
     #[inline]
-    fn load_credits(
+    fn sload(
         &mut self,
+        address: Address,
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
         self.context
-            .load_account_info_skip_cold_load(STORAGE_CREDITS_ADDRESS, false, false)?;
+            .load_account_info_skip_cold_load(address, false, false)?;
         Ok(self
             .context
-            .sload_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, skip_cold_load)?)
+            .sload_skip_cold_load(address, key, skip_cold_load)?)
     }
 
     #[inline]
-    fn store_credits(
+    fn sstore(
         &mut self,
+        address: Address,
         key: U256,
         value: U256,
+        skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         Ok(self
             .context
-            .sstore_skip_cold_load(STORAGE_CREDITS_ADDRESS, key, value, false)?)
+            .sstore_skip_cold_load(address, key, value, skip_cold_load)?)
     }
 
     #[inline]
-    fn load_credit_state(&mut self, key: U256) -> U256 {
-        self.context.tload(STORAGE_CREDITS_ADDRESS, key)
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.context.tload(address, key)
     }
 
     #[inline]
-    fn store_credit_state(&mut self, key: U256, value: U256) {
-        self.context.tstore(STORAGE_CREDITS_ADDRESS, key, value);
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.context.tstore(address, key, value);
     }
 
     #[inline]
-    fn emit_mode_updated(
-        &mut self,
-        account: Address,
-        new_mode: CreditMode,
-    ) -> Result<(), Self::Error> {
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
         self.context.log(Log {
-            address: STORAGE_CREDITS_ADDRESS,
-            data: TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into())
-                .into_log_data(),
+            address,
+            data: event,
         });
         Ok(())
     }
