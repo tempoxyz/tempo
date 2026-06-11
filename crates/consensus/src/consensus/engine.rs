@@ -2,7 +2,7 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -82,6 +82,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+    pub consensus_dir: PathBuf,
 
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
@@ -139,18 +140,20 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
+        let mailbox_size =
+            NonZeroUsize::new(self.mailbox_size).ok_or_eyre("mailbox size must be non-zero")?;
 
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
             last_finalized_height,
         } = alias::marshal::init(
-            context.clone(),
+            &context,
             page_cache_ref.clone(),
             execution_node.clone(),
             alias::marshal::Config {
                 partition_prefix: self.partition_prefix.clone(),
-                mailbox_size: self.mailbox_size,
+                mailbox_size: NZUsize!(self.mailbox_size),
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
@@ -160,12 +163,13 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
+            &self.consensus_dir,
         )
         .await
         .wrap_err("failed to initialize marshal")?;
 
         let (executor, executor_mailbox) = crate::executor::init(
-            context.with_label("executor"),
+            context.child("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 last_finalized_height,
@@ -177,7 +181,7 @@ where
         .wrap_err("failed initialization executor actor")?;
 
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.with_label("peer_manager"),
+            context.child("peer_manager"),
             peer_manager::Config {
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
@@ -187,10 +191,10 @@ where
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            context.with_label("broadcast"),
+            context.child("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
-                mailbox_size: self.mailbox_size,
+                mailbox_size,
                 deque_size: self.deque_size,
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
@@ -204,7 +208,7 @@ where
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
             peer_provider: peer_manager_mailbox.clone(),
-            mailbox_size: self.mailbox_size,
+            mailbox_size,
             blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
@@ -215,7 +219,7 @@ where
 
         let subblocks = self.with_subblocks.then(|| {
             subblocks::Actor::new(subblocks::Config {
-                context: context.clone(),
+                context: context.child("subblocks"),
                 signer: self.signer.clone(),
                 scheme_provider: scheme_provider.clone(),
                 node: execution_node.clone(),
@@ -230,7 +234,7 @@ where
         });
 
         let (feed, feed_mailbox) = crate::feed::init(
-            context.with_label("feed"),
+            context.child("feed"),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
             execution_node.clone(),
@@ -238,7 +242,7 @@ where
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {
-            context: context.with_label("application"),
+            context: context.child("application"),
             public_key: self.signer.public_key(),
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -253,9 +257,10 @@ where
         .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            context.with_label("epoch_manager"),
+            context.child("epoch_manager"),
             epoch::manager::Config {
                 application: application_mailbox.clone(),
+                execution_node: execution_node.clone(),
                 blocker: self.blocker.clone(),
                 page_cache: page_cache_ref,
                 epoch_strategy: epoch_strategy.clone(),
@@ -275,7 +280,7 @@ where
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            context.with_label("dkg_manager"),
+            context.child("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
@@ -476,8 +481,11 @@ where
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
-        let resolver =
-            marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
+        let resolver = marshal::resolver::p2p::init(
+            self.context.child("resolver"),
+            self.resolver_config,
+            marshal_channel,
+        );
 
         let application = self.application.start(self.dkg_manager_mailbox.clone());
         let executor = self.executor.start();
@@ -514,7 +522,12 @@ where
         ];
 
         if let Some(subblocks) = self.subblocks {
-            tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+            tasks.push(
+                self.context
+                    .as_present()
+                    .child("subblocks_channel")
+                    .spawn(|_| subblocks.run(subblocks_channel)),
+            );
         } else {
             drop(subblocks_channel);
         }
