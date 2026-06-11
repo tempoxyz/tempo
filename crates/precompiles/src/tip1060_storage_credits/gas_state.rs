@@ -154,9 +154,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: slot create. The selected storage creation mode is transient.
-        let mut transient_state =
-            TransientState::from_word(backend.load_transient_state(account_slot))
-                .map_err(|_| B::Error::fatal_external())?;
+        let mut transient_state: TransientState = backend
+            .load_transient_state(account_slot)
+            .try_into()
+            .map_err(|_| B::Error::fatal_external())?;
 
         match transient_state.mode {
             CreditMode::Direct => {
@@ -178,11 +179,21 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                         transient_state.mode = CreditMode::Preserve;
                         backend.emit_mode_updated(owner, CreditMode::Preserve)?;
                     }
-                    backend.store_transient_state(account_slot, transient_state.into_word());
+                    backend.store_transient_state(
+                        account_slot,
+                        transient_state
+                            .try_into()
+                            .map_err(|_| B::Error::fatal_external())?,
+                    );
                 } else if transient_state.budget == 0 {
                     // Zero-budget Direct creations pay the full creation cost and then move to Preserve.
                     transient_state.mode = CreditMode::Preserve;
-                    backend.store_transient_state(account_slot, transient_state.into_word());
+                    backend.store_transient_state(
+                        account_slot,
+                        transient_state
+                            .try_into()
+                            .map_err(|_| B::Error::fatal_external())?,
+                    );
                     backend.emit_mode_updated(owner, CreditMode::Preserve)?;
                 }
                 // Otherwise, leave gas enabled so revm charges full creation costs.
@@ -192,7 +203,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Refund => {
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
-                backend.store_transient_state(account_slot, transient_state.into_word());
+                backend.store_transient_state(
+                    account_slot,
+                    transient_state
+                        .try_into()
+                        .map_err(|_| B::Error::fatal_external())?,
+                );
             }
         }
     }
