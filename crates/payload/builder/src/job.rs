@@ -290,6 +290,8 @@ where
     fn best_payload(&self) -> Result<Self::BuiltPayload, PayloadBuilderError> {
         if let Some(payload) = self.best_payload.payload() {
             Ok(payload.clone())
+        } else if self.has_controlled_pending_build() {
+            Err(PayloadBuilderError::MissingPayload)
         } else {
             self.builder.build_empty_payload(self.config.clone())
         }

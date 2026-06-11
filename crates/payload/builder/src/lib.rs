@@ -350,9 +350,13 @@ where
 
     fn on_missing_payload(
         &self,
-        _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> MissingPayloadBehaviour<Self::BuiltPayload> {
-        MissingPayloadBehaviour::AwaitInProgress
+        if args.config.attributes.payload_build_control().is_some() {
+            MissingPayloadBehaviour::RaceEmptyPayload
+        } else {
+            MissingPayloadBehaviour::AwaitInProgress
+        }
     }
 
     fn build_empty_payload(

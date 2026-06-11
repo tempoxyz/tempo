@@ -66,6 +66,11 @@ use tempo_primitives::TempoConsensusContext;
 use tokio::sync::{Mutex as AsyncMutex, oneshot as tokio_oneshot};
 use tracing::{Level, debug, info, info_span, instrument, warn};
 
+#[cfg(feature = "bal")]
+const SPECULATIVE_PAYLOAD_FALLBACK_RESERVE: Duration = Duration::from_millis(150);
+#[cfg(feature = "bal")]
+const SPECULATIVE_PAYLOAD_READY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 use super::{
     Mailbox,
     ingress::{Broadcast, Genesis, Message, Propose, Verify},
@@ -1527,10 +1532,61 @@ impl Inner<Init> {
         speculative_build.payload_id = Some(payload_id);
         *payload_id_rx = Some(PendingPayloadId::ready(payload_id));
 
+        let wait_budget = speculative_payload_resolution_wait_budget(
+            self.proposal_return_budget,
+            propose_start.elapsed(),
+            return_immediately,
+        );
+        let wait_start = Instant::now();
+        let mut payload_kind = PayloadKind::Earliest;
+        while wait_start.elapsed() < wait_budget {
+            match self
+                .execution_node
+                .payload_builder_handle
+                .best_payload(payload_id)
+                .pace(context, Duration::from_millis(5))
+                .await
+            {
+                Some(Ok(_)) => {
+                    payload_kind = PayloadKind::WaitForPending;
+                    break;
+                }
+                Some(Err(PayloadBuilderError::MissingPayload)) => {}
+                Some(Err(error)) => {
+                    return Err(error).wrap_err_with(|| {
+                        format!("failed checking speculative payload readiness for `{payload_id}`")
+                    });
+                }
+                None => {
+                    return Err(eyre!("no speculative payload found under provided id"));
+                }
+            }
+
+            let remaining = wait_budget.saturating_sub(wait_start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            context
+                .sleep_until(
+                    context.current() + remaining.min(SPECULATIVE_PAYLOAD_READY_POLL_INTERVAL),
+                )
+                .await;
+        }
+
+        if payload_kind == PayloadKind::Earliest {
+            debug!(
+                %payload_id,
+                waited = %display_duration(wait_start.elapsed().min(wait_budget)),
+                reserve = %display_duration(SPECULATIVE_PAYLOAD_FALLBACK_RESERVE),
+                return_immediately,
+                "resolving speculative payload with deadline-safe fallback"
+            );
+        }
+
         let payload = self
             .execution_node
             .payload_builder_handle
-            .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .resolve_kind(payload_id, payload_kind)
             .pace(context, Duration::from_millis(20))
             .await
             .ok_or_eyre("no speculative payload found under provided id")
@@ -2020,6 +2076,21 @@ fn proposal_return_delay(
     }
 }
 
+#[cfg(feature = "bal")]
+fn speculative_payload_resolution_wait_budget(
+    proposal_return_budget: Duration,
+    proposal_elapsed: Duration,
+    return_immediately: bool,
+) -> Duration {
+    if return_immediately {
+        Duration::ZERO
+    } else {
+        proposal_return_budget
+            .saturating_sub(proposal_elapsed)
+            .saturating_sub(SPECULATIVE_PAYLOAD_FALLBACK_RESERVE)
+    }
+}
+
 /// Marker type to signal that the actor is not fully initialized.
 #[derive(Clone, Debug)]
 pub(in crate::consensus) struct Uninit(());
@@ -2377,6 +2448,34 @@ mod tests {
                 false,
             ),
             Duration::from_millis(410)
+        );
+    }
+
+    #[test]
+    fn speculative_payload_resolution_wait_leaves_fallback_reserve() {
+        assert_eq!(
+            speculative_payload_resolution_wait_budget(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                false,
+            ),
+            Duration::from_millis(310)
+        );
+        assert_eq!(
+            speculative_payload_resolution_wait_budget(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                true,
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(
+            speculative_payload_resolution_wait_budget(
+                Duration::from_millis(100),
+                Duration::from_millis(40),
+                false,
+            ),
+            Duration::ZERO
         );
     }
 }
