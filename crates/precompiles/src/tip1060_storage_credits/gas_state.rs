@@ -75,10 +75,10 @@ pub trait StorageCreditsBackend {
     ) -> Result<StateLoad<SStoreResult>, Self::Error>;
 
     /// Loads the transaction-local storage credit state word at `key`.
-    fn load_transient_state(&mut self, key: U256) -> U256;
+    fn load_credit_state(&mut self, key: U256) -> U256;
 
     /// Stores the transaction-local storage credit state word at `key`.
-    fn store_transient_state(&mut self, key: U256, value: U256);
+    fn store_credit_state(&mut self, key: U256, value: U256);
 
     /// Emits `ModeUpdated(account, newMode)` from the storage credits precompile.
     fn emit_mode_updated(
@@ -153,7 +153,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     } else {
         // 0→x: slot create. The selected storage creation mode is transient.
         let mut transient_state: TransientState = backend
-            .load_transient_state(account_slot)
+            .load_credit_state(account_slot)
             .try_into()
             .map_err(|_| B::Error::fatal_external())?;
 
@@ -177,7 +177,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                         transient_state.mode = CreditMode::Preserve;
                         backend.emit_mode_updated(owner, CreditMode::Preserve)?;
                     }
-                    backend.store_transient_state(
+                    backend.store_credit_state(
                         account_slot,
                         transient_state
                             .try_into()
@@ -186,7 +186,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 } else if transient_state.budget == 0 {
                     // Zero-budget Direct creations pay the full creation cost and then move to Preserve.
                     transient_state.mode = CreditMode::Preserve;
-                    backend.store_transient_state(
+                    backend.store_credit_state(
                         account_slot,
                         transient_state
                             .try_into()
@@ -201,7 +201,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Refund => {
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
-                backend.store_transient_state(
+                backend.store_credit_state(
                     account_slot,
                     transient_state
                         .try_into()
