@@ -1403,8 +1403,8 @@ mod tests {
 
     type TempoCli = Cli<
         TempoChainSpecParser,
-        crate::TempoArgs,
-        crate::TempoRpcModuleValidator,
+        crate::cli::TempoArgs,
+        crate::cli::TempoRpcModuleValidator,
         TempoSubcommand,
     >;
 
@@ -1783,7 +1783,7 @@ mod tests {
     #[test]
     fn tempo_rpc_module_validator_allows_tempo_custom_modules() {
         for module in ["consensus", "operator", "tempo", "token"] {
-            let selection = crate::TempoRpcModuleValidator::parse_selection(module).unwrap();
+            let selection = crate::cli::TempoRpcModuleValidator::parse_selection(module).unwrap();
 
             assert_eq!(
                 selection,
@@ -1794,7 +1794,8 @@ mod tests {
 
     #[test]
     fn tempo_rpc_module_validator_rejects_unknown_modules() {
-        let err = crate::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
+        let err =
+            crate::cli::TempoRpcModuleValidator::parse_selection("not-a-real-module").unwrap_err();
 
         assert!(err.contains("Unknown RPC module: 'not-a-real-module'"));
     }
