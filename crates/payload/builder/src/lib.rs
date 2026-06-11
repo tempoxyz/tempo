@@ -363,9 +363,10 @@ where
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
+        let state_setup_elapsed = state_setup_start.elapsed();
         self.metrics
             .state_setup_duration_seconds
-            .record(state_setup_start.elapsed());
+            .record(state_setup_elapsed);
 
         check_cancel!();
 
@@ -545,9 +546,13 @@ where
         } else {
             Box::new(best_txs)
         });
+        let pool_fetch_elapsed = pool_fetch_start.elapsed();
         self.metrics
             .pool_fetch_duration_seconds
-            .record(pool_fetch_start.elapsed());
+            .record(pool_fetch_elapsed);
+        // Proposer-only setup that validators never replay; charged once in the
+        // budget instead of being projected as replayable builder and validator work.
+        let non_replayable_elapsed = state_setup_elapsed + pool_fetch_elapsed;
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -573,6 +578,7 @@ where
                 let budget_decision = payload_budget_decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
+                    non_replayable_elapsed,
                     build_time_multiplier,
                     marshal_persist,
                     block_size_used,
@@ -752,8 +758,9 @@ where
         drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
-        let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_at_tx_cutoff = elapsed_at_tx_cutoff
+            .saturating_sub(normal_transaction_fill_idle_elapsed)
+            .saturating_sub(non_replayable_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -1071,7 +1078,9 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = elapsed
+            .saturating_sub(normal_transaction_fill_idle_elapsed)
+            .saturating_sub(non_replayable_elapsed);
         if payload_build_budget.is_some() {
             self.update_build_time_multiplier(
                 validation_work_duration,
