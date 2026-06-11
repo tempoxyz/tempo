@@ -94,16 +94,6 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     type Error = InstructionResult;
 
     #[inline]
-    fn out_of_gas() -> Self::Error {
-        InstructionResult::OutOfGas
-    }
-
-    #[inline]
-    fn fatal_external() -> Self::Error {
-        InstructionResult::FatalExternalError
-    }
-
-    #[inline]
     fn gas_params(&self) -> &GasParams {
         self.context.gas_params()
     }

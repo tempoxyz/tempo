@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::tip20::TIP20Error;
+use crate::{tip20::TIP20Error, tip1060_storage_credits::StorageCreditsError};
 use alloy::{
     primitives::{FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
@@ -359,6 +359,16 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
             Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
             Err(err) => err.into_precompile_result(gas, reservoir),
         }
+    }
+}
+
+impl StorageCreditsError for TempoPrecompileError {
+    fn out_of_gas() -> Self {
+        Self::OutOfGas
+    }
+
+    fn fatal_external() -> Self {
+        Self::Fatal("invalid storage credits state".to_string())
     }
 }
 
