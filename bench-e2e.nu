@@ -218,6 +218,18 @@ def e2e-bloat-gib-to-mib [bloat: int] {
     exit 1
 }
 
+def e2e-validate-token-count [token_count: int] {
+    let available_token_count = ($TIP20_TOKEN_IDS | length)
+    if $token_count <= 0 {
+        print "Error: --token-count must be a positive integer"
+        exit 1
+    }
+    if $token_count > $available_token_count {
+        print $"Error: --token-count ($token_count) exceeds ($available_token_count) TIP20 token\(s\) available in state bloat"
+        exit 1
+    }
+}
+
 def validator-dirs-in-localnet [localnet_dir: string] {
     ls $localnet_dir
     | where type == "dir"
@@ -1016,7 +1028,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --platform "tempo"
                 --scenario $scenario
                 --bloat-mib $ctx.bloat
-                --bloat-token-count ($TIP20_TOKEN_IDS | length)
+                --bloat-token-count $ctx.token_count
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
@@ -1088,6 +1100,7 @@ def e2e-write-summary-config [
     baseline_label: string
     feature_label: string
     bloat_mib: int
+    token_count: int
     preset: string
     tps: int
     duration: int
@@ -1103,6 +1116,7 @@ def e2e-write-summary-config [
         baseline_label: $baseline_label
         feature_label: $feature_label
         bloat_mib: $bloat_mib
+        token_count: $token_count
         preset: $preset
         tps: $tps
         duration: $duration
@@ -1132,8 +1146,9 @@ def e2e-generate-summary [results_dir: string] {
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
         let feature_removed_args = ($config | get -o feature_removed_args | default "")
+        let token_count = ($config | get -o token_count | default 4 | into int)
         let summary = (open $summary_path)
-        let summary = ($summary | upsert config ($summary.config | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
         $summary | to json | save -f $summary_path
     }
 
@@ -1167,6 +1182,7 @@ def "main e2e" [
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+    --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1219,6 +1235,7 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
         exit 1
@@ -1477,6 +1494,7 @@ def "main e2e" [
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
         bloat: $bloat_mib
+        token_count: $token_count
         txgen: $txgen
         results_dir: $results_dir
         profile: $profile
@@ -1542,7 +1560,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

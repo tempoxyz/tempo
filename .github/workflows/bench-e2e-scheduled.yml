@@ -154,6 +154,7 @@ jobs:
       baseline-name: ${{ matrix.baseline_name }}
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
+      token-count: "1"
       duration: "600"
       tps: "50000"
       run-type: ${{ matrix.run_type }}

@@ -76,6 +76,11 @@ on:
         type: string
         required: false
         default: ""
+      token-count:
+        description: Number of TIP20 tokens to use in txgen presets.
+        type: string
+        required: true
+        default: "4"
       profiling:
         description: Profiling.
         type: choice
@@ -205,6 +210,10 @@ on:
         type: string
         required: false
         default: ""
+      token-count:
+        type: string
+        required: false
+        default: "4"
       baseline-name:
         type: string
         required: false
@@ -358,6 +367,7 @@ jobs:
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
+      BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
       BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
@@ -506,6 +516,7 @@ jobs:
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
+            const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
@@ -520,7 +531,7 @@ jobs:
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -698,6 +709,7 @@ jobs:
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
+            const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
@@ -712,7 +724,7 @@ jobs:
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -749,10 +761,19 @@ jobs:
             echo "::error::run-pairs must be a positive integer"
             exit 1
           fi
+          if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::token-count must be a positive integer"
+            exit 1
+          fi
+          if [ "$BENCH_TOKEN_COUNT" -gt 4 ]; then
+            echo "::error::token-count must be <= 4, matching the TIP20 tokens available in state bloat"
+            exit 1
+          fi
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
             --bloat "$BENCH_BLOAT"
+            --token-count "$BENCH_TOKEN_COUNT"
             --duration "$BENCH_DURATION"
             --run-pairs "$BENCH_RUN_PAIRS"
             --tps "$BENCH_TPS"
@@ -825,6 +846,7 @@ jobs:
             preset="$BENCH_PRESET"
             duration="$BENCH_DURATION"
             bloat="$BENCH_BLOAT"
+            token-count="$BENCH_TOKEN_COUNT"
             tps="$BENCH_TPS"
             accounts="$BENCH_ACCOUNTS"
             max-concurrent-requests="$BENCH_MAX_CONCURRENT_REQUESTS"
