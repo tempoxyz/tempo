@@ -1,16 +1,28 @@
 use alloy::{
-    primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
-    sol_types::SolError,
+    primitives::U256,
+    providers::{Provider, ProviderBuilder},
+    signers::local::MnemonicBuilder,
+    sol_types::{SolCall, SolError},
 };
+use alloy_eips::BlockNumberOrTag;
 use tempo_contracts::precompiles::{
     IStablecoinDEX,
     ITIP20::{self, ITIP20Instance},
+    ITIP1060StorageCredits, STORAGE_CREDITS_ADDRESS,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, stablecoin_dex::MIN_ORDER_AMOUNT,
 };
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+
+fn calldata_intrinsic_gas(calldata: &[u8]) -> u64 {
+    21_000
+        + calldata
+            .iter()
+            .map(|byte| if *byte == 0 { 4 } else { 16 })
+            .sum::<u64>()
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bids() -> eyre::Result<()> {
@@ -433,6 +445,205 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         assert!(err.to_string().contains("0x5dcaf2d7"));
     }
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_dex_swap_restoring_dirty_slots_mints_unbacked_tip1060_credit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+
+    let base = setup_test_token(provider.clone(), caller).await?;
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
+    let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, provider.clone());
+
+    let alice_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let alice = alice_signer.address();
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_signer)
+        .connect_http(http_url.clone());
+    let alice_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, alice_provider.clone());
+
+    let bob_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(2)?
+        .build()?;
+    let bob = bob_signer.address();
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_signer)
+        .connect_http(http_url.clone());
+    let bob_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, bob_provider.clone());
+
+    let amount = MIN_ORDER_AMOUNT;
+    let total_amount = amount * 2;
+    let mut pending = vec![
+        base.mint(alice, U256::from(total_amount)).send().await?,
+        quote.mint(alice, U256::from(total_amount)).send().await?,
+        quote.mint(bob, U256::from(amount)).send().await?,
+    ];
+    await_receipts(&mut pending).await?;
+
+    let alice_base = ITIP20::new(*base.address(), alice_provider.clone());
+    let alice_quote = ITIP20::new(*quote.address(), alice_provider);
+    let bob_base = ITIP20::new(*base.address(), bob_provider.clone());
+    let bob_quote = ITIP20::new(*quote.address(), bob_provider);
+
+    let mut pending = vec![
+        alice_base
+            .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+        alice_quote
+            .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+        bob_base
+            .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+        bob_quote
+            .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
+            .send()
+            .await?,
+    ];
+    await_receipts(&mut pending).await?;
+
+    exchange
+        .createPair(*base.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    alice_exchange
+        .place(*base.address(), amount, false, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    alice_exchange
+        .place(*base.address(), amount, true, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let pre_balance = credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?;
+    assert_eq!(pre_balance, 1);
+    let pre_deletion_backed_credits = exchange.storageCredits(alice).call().await?;
+    assert_eq!(pre_deletion_backed_credits, 0);
+
+    let amount_in = amount;
+    let amount_out = bob_exchange
+        .quoteSwapExactAmountIn(*quote.address(), *base.address(), amount_in)
+        .call()
+        .await?;
+    assert!(amount_out > 0);
+
+    let receipt = bob_exchange
+        .swapExactAmountIn(*quote.address(), *base.address(), amount_in, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status(), "first swap should succeed");
+
+    let block_number = receipt
+        .block_number
+        .expect("swap receipt should have a block number");
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .await?
+        .expect("swap block should exist");
+    let first_gas_used = block.header.inner.gas_used;
+    let first_intrinsic_gas = calldata_intrinsic_gas(
+        &IStablecoinDEX::swapExactAmountInCall {
+            tokenIn: *quote.address(),
+            tokenOut: *base.address(),
+            amountIn: amount_in,
+            minAmountOut: 0,
+        }
+        .abi_encode(),
+    );
+
+    let post_first_balance = credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?;
+    eprintln!(
+        "regular sequence: pre={pre_balance} post_first={post_first_balance} first_delta={}",
+        post_first_balance - pre_balance
+    );
+
+    let second_receipt = bob_exchange
+        .swapExactAmountIn(*base.address(), *quote.address(), amount_out, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(second_receipt.status(), "second swap should succeed");
+    let second_block_number = second_receipt
+        .block_number
+        .expect("second swap receipt should have a block number");
+    let second_block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(second_block_number))
+        .await?
+        .expect("second swap block should exist");
+    let second_gas_used = second_block.header.inner.gas_used;
+    let second_intrinsic_gas = calldata_intrinsic_gas(
+        &IStablecoinDEX::swapExactAmountInCall {
+            tokenIn: *base.address(),
+            tokenOut: *quote.address(),
+            amountIn: amount_out,
+            minAmountOut: 0,
+        }
+        .abi_encode(),
+    );
+    let post_balance = credits.balanceOf(STABLECOIN_DEX_ADDRESS).call().await?;
+    let post_deletion_backed_credits = exchange.storageCredits(alice).call().await?;
+    eprintln!(
+        "regular sequence: post_second={post_balance} second_delta={} total_delta={}",
+        post_balance - post_first_balance,
+        post_balance - pre_balance,
+    );
+
+    assert!(
+        post_first_balance > pre_balance,
+        "first swap should increase protocol storage credits"
+    );
+
+    let deletion_backed_credits =
+        post_deletion_backed_credits.saturating_sub(pre_deletion_backed_credits);
+    let deletion_backed_balance = pre_balance.saturating_add(deletion_backed_credits);
+    let unbacked_credit_increase = post_balance.saturating_sub(deletion_backed_balance);
+    let minimum_execution_gas = unbacked_credit_increase * 250_000;
+    let gas_used = first_gas_used + second_gas_used;
+    let intrinsic_gas = first_intrinsic_gas + second_intrinsic_gas;
+    let execution_gas = gas_used.saturating_sub(intrinsic_gas);
+
+    eprintln!(
+        "delta={} deletion_backed_credits={deletion_backed_credits} unbacked={unbacked_credit_increase} first_gas={first_gas_used} second_gas={second_gas_used} gas_used={gas_used} intrinsic={intrinsic_gas} execution={execution_gas} minimum={minimum_execution_gas}",
+        post_balance - pre_balance,
+    );
+
+    assert!(
+        unbacked_credit_increase > 0,
+        "DEX swaps should mint credits beyond deletion-backed balance"
+    );
+    assert!(
+        execution_gas >= minimum_execution_gas,
+        "TEMPO-STORAGE-CREDIT-BALANCE-BACKING unbacked_credit_increase={unbacked_credit_increase} \
+         gas_used={gas_used} intrinsic_gas={intrinsic_gas} execution_gas={execution_gas} \
+         minimum_execution_gas={minimum_execution_gas} pre_balance={pre_balance} \
+         post_balance={post_balance} deletion_backed_credits={deletion_backed_credits}"
+    );
     Ok(())
 }
 
