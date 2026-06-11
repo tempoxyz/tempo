@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate scatter plots for tempo e2e benchmark sample distributions."""
+"""Generate plots for tempo e2e benchmark sample distributions."""
 
 from __future__ import annotations
 
@@ -107,6 +107,15 @@ def group_name(label: str) -> str:
     return "other"
 
 
+def group_values(per_run: list[dict[str, Any]], sample_key: str, group: str) -> list[float]:
+    samples: list[float] = []
+    for run in per_run:
+        label = str(run.get("label") or "")
+        if group_name(label) == group:
+            samples.extend(values(run, sample_key))
+    return samples
+
+
 def scatter_samples(
     per_run: list[dict[str, Any]],
     output: Path,
@@ -162,6 +171,32 @@ def scatter_samples(
     plt.close(fig)
 
 
+def distribution_samples(
+    per_run: list[dict[str, Any]],
+    output: Path,
+    display_name: str,
+    *,
+    sample_key: str,
+    group: str,
+    title: str,
+    xlabel: str,
+) -> None:
+    samples = group_values(per_run, sample_key, group)
+    if not samples:
+        raise ValueError(f"summary.json has no {group} {sample_key} samples")
+
+    color = "#4c78a8" if group == "baseline" else "#f58518"
+    bins = min(60, max(10, int(len(samples) ** 0.5)))
+    fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
+    ax.hist(samples, bins=bins, density=True, alpha=0.72, color=color, edgecolor="white")
+    ax.set_title(f"{display_name}: {title}")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Density")
+    ax.grid(True, axis="y", alpha=0.25)
+    fig.savefig(output, dpi=160)
+    plt.close(fig)
+
+
 def maybe_scatter_samples(
     per_run: list[dict[str, Any]],
     output: Path,
@@ -188,6 +223,32 @@ def maybe_scatter_samples(
     return True
 
 
+def maybe_distribution_samples(
+    per_run: list[dict[str, Any]],
+    output: Path,
+    display_name: str,
+    *,
+    sample_key: str,
+    group: str,
+    title: str,
+    xlabel: str,
+) -> bool:
+    try:
+        distribution_samples(
+            per_run,
+            output,
+            display_name,
+            sample_key=sample_key,
+            group=group,
+            title=title,
+            xlabel=xlabel,
+        )
+    except ValueError as error:
+        print(f"Skipping {output.name}: {error}")
+        return False
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", required=True)
@@ -207,9 +268,8 @@ def main() -> None:
     if not per_run:
         raise SystemExit("summary.json has no per_run data")
 
-    written = [
-        {"file": chart["file"], "label": chart["label"]}
-        for chart in CHARTS
+    written: list[dict[str, str]] = []
+    for chart in CHARTS:
         if maybe_scatter_samples(
             per_run,
             output_dir / chart["file"],
@@ -218,8 +278,27 @@ def main() -> None:
             sample_key=chart["sample_key"],
             title=chart["title"],
             ylabel=chart["ylabel"],
-        )
-    ]
+        ):
+            written.append({"file": chart["file"], "label": chart["label"]})
+
+        stem = chart["file"].removesuffix("_scatter.png")
+        for group, display_name in [
+            ("baseline", args.baseline_name or "baseline"),
+            ("feature", args.feature_name or "feature"),
+        ]:
+            file_name = f"{stem}_{group}_distribution.png"
+            label = f"{chart['label'].removesuffix(' Scatter')} {group.title()} Distribution"
+            if maybe_distribution_samples(
+                per_run,
+                output_dir / file_name,
+                display_name,
+                sample_key=chart["sample_key"],
+                group=group,
+                title=chart["title"],
+                xlabel=chart["ylabel"],
+            ):
+                written.append({"file": file_name, "label": label})
+
     if not written:
         raise SystemExit("summary.json has no chartable samples")
     with (output_dir / "charts.json").open("w") as f:
