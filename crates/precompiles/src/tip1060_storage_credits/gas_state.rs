@@ -18,7 +18,7 @@ use revm::{
         instruction_context::GasStateOutcome,
     },
 };
-use tempo_chainspec::constants::gas::SSTORE_SET;
+use tempo_chainspec::constants::gas::{SSTORE_SET, STORAGE_CREDIT_VALUE};
 use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, TIP1060StorageCreditsEvent};
 
 /// Error mapping required by storage credit accounting.
@@ -163,8 +163,19 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         // x→0: slot clear (present non-zero set to zero).
         balance = balance.saturating_add(1);
         was_changed = true;
+    } else if !values.is_original_zero() {
+        // x→0→x: dirty slot restore. The slot was cleared earlier this tx (minting a credit) and
+        // is now reset non-zero. No net new state, so the earlier mint must be cancelled or it
+        // would subsidize a real creation. Burn one credit if available, else charge its value.
+        if balance > 0 {
+            balance -= 1;
+            was_changed = true;
+        } else {
+            backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+        }
+        // Leave gas enabled so revm charges normal dirty-restore gas.
     } else {
-        // 0→x: slot create. The selected storage creation mode is transient.
+        // 0→x: net slot creation. The selected storage creation mode is transient.
         let mut transient_state: TransientState = backend
             .tload(STORAGE_CREDITS_ADDRESS, account_slot)
             .try_into()
@@ -192,7 +203,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     }
                     store_credit_state(backend, account_slot, transient_state)?;
                 } else if transient_state.budget == 0 {
-                    // Zero-budget Direct creations pay the full creation cost and then move to Preserve.
+                    // Zero-budget `Direct` creations pay the full creation cost and then move to `Preserve`.
                     transient_state.mode = CreditMode::Preserve;
                     store_credit_state(backend, account_slot, transient_state)?;
                     emit_mode_updated(backend, owner, CreditMode::Preserve)?;
