@@ -15,6 +15,11 @@ ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2026-0173 proc-macro-error2 is unmaintained
   # and is pulled in transitively by upstream crates with no safe upgrade available.
   "RUSTSEC-2026-0173",
+  # https://rustsec.org/advisories/RUSTSEC-2025-0055 tracing-subscriber 0.2
+  # is pulled in by ark-relations 0.5.1, which is pinned by commonware-cryptography.
+  # ark-relations 0.5.1 requires tracing-subscriber ^0.2, so this cannot be upgraded
+  # without commonware moving to a newer arkworks release.
+  "RUSTSEC-2025-0055",
 ]
 
 # This section is considered when running `cargo deny check bans`.
