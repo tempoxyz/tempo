@@ -246,7 +246,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use sha2::{Digest, Sha256};
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
     use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -2271,16 +2271,20 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: repeatedly clearing and restoring the same slot in `Direct` mode must not mine
-    /// storage credits that can subsidize unrelated fresh slot creations.
+    /// TIP-1060: `Preserve`-mode churn of a pre-existing slot mints no spendable credits.
     ///
-    /// The hardcoded runtime is the original credit-mining reproducer. It bootstraps slot 0 to a
-    /// nonzero value during deployment, then the call transaction selects `Direct` mode, churns that
-    /// same slot 500 times (`x->0`, then `0->x`), and finally attempts to create 500 fresh slots.
-    /// The clear leg mints one credit, but the restore leg crosses the present zero boundary and
-    /// consumes it, so the churn loop has net-zero credits and the later fresh-slot writes OOG.
+    /// A slot bootstrapped to non-zero is churned in a later transaction (clear + restore) under
+    /// `Preserve` mode. Each clear mints a credit, but the restore — a `0->non-zero` write whose
+    /// *original* value is non-zero — is a dirty restore that cancels that mint, so the churn nets
+    /// to zero credits even though revm charges it only the cheap dirty-slot reset cost. Otherwise
+    /// net-zero churn would coin ~free credits for `Direct` mode to spend on genuinely fresh slots
+    /// at ~20k each, bypassing TIP-1000's 250k state-creation pricing.
+    ///
+    /// tx#2 churns 500 times and then switches to `Direct` to create 500 fresh slots: because the
+    /// churn yields no credits, the `Direct` phase finds an empty balance and the fresh creations
+    /// run out of gas, so the transaction reverts and only the single bootstrap slot survives.
     #[test]
-    fn test_tip1060_direct_clear_restore_churn_cannot_subsidize_fresh_slots() -> eyre::Result<()> {
+    fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
         use revm::{
             Context, Database, ExecuteCommitEvm, MainContext,
@@ -2296,21 +2300,22 @@ mod tests {
         use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
 
         // CREATE init-code:
-        //   constructor: SSTORE(0, 1)
+        //   constructor: SSTORE(0, 1) bootstrap
         //   runtime:
-        //     setMode(Direct)
+        //     setMode(Preserve)
         //     for 500: SSTORE(0, 0); SSTORE(0, 2)
+        //     setMode(Direct)
         //     for 500: SSTORE(0x100 + i, 1)
+        // selector 0x21175b4a = setMode(uint8); precompile 0x1060...0000.
         let init = Bytes::from(
             hex!(
-                "600160005561006b601360003961006b6000f3\
-                602160005360176001536\
-                05b600253604a600353\
-                6002602353\
+                "60016000556100a660136000396100a66000f3\
+                60216000536017600153605b600253604a6003536001602353\
                 6000600060246000600073106000000000000000000000000000000000000\
-                05af150\
-                6101f45b60006000556002600055600190038061003e5750\
-                6101f45b8061010001600190556001900380610056575000"
+                05af1506101f45b60006000556002600055600190038061003e5750\
+                60216000536017600153605b600253604a6003536002602353\
+                6000600060246000600073106000000000000000000000000000000000000\
+                05af1506101f45b8061010001600190556001900380610091575000"
             )
             .to_vec(),
         );
@@ -2336,8 +2341,7 @@ mod tests {
             },
         );
 
-        // First transaction: deploy the contract and create the bootstrap slot. This pays for one
-        // real storage slot so the second transaction can start with slot 0 nonzero.
+        // tx#1: deploy; constructor pays the one-time bootstrap creation.
         let deploy = evm.transact_commit(
             TxEnv {
                 caller,
@@ -2353,9 +2357,7 @@ mod tests {
             .created_address()
             .expect("CREATE should yield an address");
 
-        // Second transaction: clear/restore the bootstrap slot repeatedly, then attempt to create
-        // 500 unrelated slots. If clear/restore churn incorrectly minted surplus credits, this call
-        // would succeed under the block gas limit. It must instead OOG.
+        // tx#2: Preserve-churn-mint 500, then Direct-spend on 500 fresh slots.
         let call = evm.transact_commit(
             TxEnv {
                 caller,
@@ -2367,28 +2369,14 @@ mod tests {
             .into(),
         )?;
 
-        assert!(
-            !call.is_success(),
-            "credit-mining PoC must not create 500 fresh slots under one churned credit: {call:?}"
-        );
-        assert_eq!(
-            call.tx_gas_used(),
-            GAS_LIMIT,
-            "expected OOG at the tx gas limit"
-        );
-
-        // The OOG transaction must roll back both credit bookkeeping and attempted fresh-slot
-        // writes: no mined credits are retained, and only the deployment bootstrap slot remains.
-        let balance = u64::from_word(evm.ctx.db_mut().storage(
-            STORAGE_CREDITS_ADDRESS,
-            TIP1060StorageCredits::slot(contract),
-        )?)
-        .unwrap();
-        assert_eq!(
-            balance, 0,
-            "failed PoC must not leave mined storage credits behind"
-        );
-
+        let balance = evm
+            .ctx
+            .db_mut()
+            .storage(
+                STORAGE_CREDITS_ADDRESS,
+                TIP1060StorageCredits::slot(contract),
+            )?
+            .as_limbs()[0];
         let slots = evm
             .ctx
             .db_mut()
@@ -2397,11 +2385,141 @@ mod tests {
             .get(&contract)
             .map(|a| a.storage.iter().filter(|(_, v)| !v.is_zero()).count())
             .unwrap_or(0);
-        assert_eq!(
-            slots, 1,
-            "failed PoC must revert all fresh-slot writes and keep only the bootstrap slot"
+        eprintln!(
+            "tx#2 success/gas: {}/{}  slots: {slots}  bal: {balance}",
+            call.is_success(),
+            call.tx_gas_used()
         );
 
+        // Preserve-churn mints no spendable credits: each dirty restore cancels the credit minted
+        // by the clear, so `Direct` finds an empty balance and the 500 fresh creations exhaust gas.
+        assert!(!call.is_success());
+        assert_eq!(slots, 1);
+        assert_eq!(balance, 0);
+        Ok(())
+    }
+
+    /// TIP-1060 regression (burn path): same-transaction churn of a *pre-existing* slot mints zero
+    /// net credits.
+    ///
+    /// Slot 0 is non-zero at the start of the transaction (`original != 0`). In `Preserve` mode the
+    /// contract repeatedly clears it (each clear mints a credit) and restores it (a `0->non-zero`
+    /// dirty restore). The restore now cancels the just-minted credit, so the balance nets to zero
+    /// instead of growing by one per cycle (the pre-fix behavior, which coined ~free credits).
+    #[test]
+    fn test_tip1060_preserve_churn_mints_zero_net_credits() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x6c);
+
+        // body: (clear slot0; restore slot0 -> 2) x 3, then STOP.
+        let mut body = Vec::new();
+        for _ in 0..3 {
+            body.extend_from_slice(&bytes!("6000600055")); // SSTORE(0, 0)  clear
+            body.extend_from_slice(&bytes!("6002600055")); // SSTORE(0, 2)  dirty restore
+        }
+        body.push(opcode::STOP);
+
+        let mut evm = create_funded_evm_t7(caller);
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(CreditMode::Preserve, &body)),
+                ..Default::default()
+            },
+        );
+        // Slot 0 starts non-zero, so each clear deletes pre-existing committed storage.
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::from(1))
+            .unwrap();
+        seed_storage_credit_balance(&mut evm, contract, 0);
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(2_000_000)
+            .build();
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx)?,
+            caller,
+        ))?;
+        assert!(result.is_success(), "preserve churn tx should succeed");
+
+        assert_eq!(
+            storage_credit_balance(&evm, contract),
+            0,
+            "clear+restore of a pre-existing slot must net to zero minted credits"
+        );
+        Ok(())
+    }
+
+    /// TIP-1060 regression (repay path): a credit minted by a churn-clear and then spent in
+    /// `Direct` mode before the slot is restored cannot leave the discount in place.
+    ///
+    /// This is the reordered variant a plain "un-mint" misses: the provisional credit is already
+    /// gone when the dirty restore happens, so there is nothing to burn. The restore must instead
+    /// repay the storage credit value, making the genuinely new slot cost the full TIP-1000 price.
+    #[test]
+    fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x6d);
+
+        // body: clear slot0 (mint); create slot1 (Direct consumes the credit); restore slot0 -> 2
+        // (dirty restore with an empty balance -> must repay 230k); STOP.
+        let mut body = Vec::new();
+        body.extend_from_slice(&bytes!("6000600055")); // SSTORE(0, 0)  clear, mints
+        body.extend_from_slice(&bytes!("6001600155")); // SSTORE(1, 1)  fresh create, Direct spend
+        body.extend_from_slice(&bytes!("6002600055")); // SSTORE(0, 2)  dirty restore, repays
+        body.push(opcode::STOP);
+
+        let mut evm = create_funded_evm_t7(caller);
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(CreditMode::Direct, &body)),
+                ..Default::default()
+            },
+        );
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::from(1))
+            .unwrap();
+        seed_storage_credit_balance(&mut evm, contract, 0);
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(2_000_000)
+            .build();
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(tx)?,
+            caller,
+        ))?;
+        assert!(result.is_success(), "direct reorder tx should succeed");
+
+        // The fresh slot exists and the original slot is restored, but the churn nets to zero
+        // credits and the restore repaid the 230k value spent by the Direct creation.
+        assert_eq!(
+            evm.ctx.db().storage_ref(contract, U256::from(1)).unwrap(),
+            U256::from(1),
+            "the genuinely new slot must be created"
+        );
+        assert_eq!(
+            evm.ctx.db().storage_ref(contract, U256::ZERO).unwrap(),
+            U256::from(2),
+            "the churned slot must be restored"
+        );
+        assert_eq!(
+            storage_credit_balance(&evm, contract),
+            0,
+            "balance must net to zero after mint + Direct spend + dirty-restore repay"
+        );
+        assert!(
+            result.tx_gas_used() > STORAGE_CREDIT_VALUE,
+            "the dirty restore must repay the {STORAGE_CREDIT_VALUE} credit value, so the new slot \
+             costs full price; got {} gas",
+            result.tx_gas_used()
+        );
         Ok(())
     }
 
