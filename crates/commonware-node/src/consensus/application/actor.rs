@@ -1142,6 +1142,8 @@ impl Inner<Init> {
         #[cfg(feature = "bal")]
         let nullified_view_recovery =
             !is_genesis_parent && is_nullified_view_recovery(round, parent_view);
+        #[cfg(feature = "bal")]
+        let mut proposal_parent_verified = false;
 
         #[cfg(feature = "bal")]
         if let Some(mut speculative_build) = self
@@ -1155,6 +1157,7 @@ impl Inner<Init> {
                 .track_build_control(speculative_build.build_control.clone())
                 .await;
             let consensus_context = consensus_context
+                .clone()
                 .expect("proposal consensus context is constructed immediately above");
             let build_budget = if nullified_view_recovery {
                 Duration::ZERO
@@ -1164,7 +1167,11 @@ impl Inner<Init> {
             };
             speculative_build
                 .build_control
-                .attach_proposal_context_with_budget(extra_data, consensus_context, build_budget)
+                .attach_proposal_context_with_budget(
+                    extra_data.clone(),
+                    consensus_context,
+                    build_budget,
+                )
                 .map_err(|error| eyre!("failed attaching speculative proposal context: {error}"))?;
             self.metrics
                 .speculative_payload_builds_reused_by_propose
@@ -1187,9 +1194,10 @@ impl Inner<Init> {
                     );
                     return Err(error);
                 }
+                proposal_parent_verified = true;
             }
 
-            let (proposal, proposal_return) = self
+            if let Some((proposal, proposal_return)) = self
                 .resolve_speculative_proposal_payload(
                     &context,
                     &mut speculative_build,
@@ -1198,9 +1206,16 @@ impl Inner<Init> {
                     Instant::now(),
                     nullified_view_recovery,
                 )
-                .await?;
+                .await?
+            {
+                return Ok((proposal, Some(proposal_return)));
+            }
 
-            return Ok((proposal, Some(proposal_return)));
+            SpeculativeBuildRegistry::spawn_cancel(
+                self.execution_node.clone(),
+                speculative_build,
+                "speculative_payload_not_ready_for_proposal",
+            );
         }
 
         // Send the proposal parent to execution layer to cover edge cases when
@@ -1208,13 +1223,22 @@ impl Inner<Init> {
         // matching speculative build, proposal context is attached before this
         // check so replayable builder work can continue while validation runs.
         if !is_genesis_parent {
-            self.verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
-                .await?;
+            #[cfg(feature = "bal")]
+            if !proposal_parent_verified {
+                self.verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                    .await?;
+            }
+            #[cfg(not(feature = "bal"))]
+            {
+                self.verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                    .await?;
+            }
         }
 
         #[cfg(feature = "bal")]
         if !is_genesis_parent {
             let consensus_context = consensus_context
+                .clone()
                 .expect("proposal consensus context is constructed immediately above");
             let build_budget = if nullified_view_recovery {
                 Duration::ZERO
@@ -1250,7 +1274,7 @@ impl Inner<Init> {
                     &context,
                     &parent,
                     build_control,
-                    extra_data,
+                    extra_data.clone(),
                     Some(consensus_context),
                     "missing_slot_handle_propose",
                 )
@@ -1265,7 +1289,7 @@ impl Inner<Init> {
                 .speculative_payload_builds_started_from_propose_fallback
                 .inc();
 
-            let (proposal, proposal_return) = self
+            if let Some((proposal, proposal_return)) = self
                 .resolve_speculative_proposal_payload(
                     &context,
                     &mut speculative_build,
@@ -1274,9 +1298,16 @@ impl Inner<Init> {
                     Instant::now(),
                     nullified_view_recovery,
                 )
-                .await?;
+                .await?
+            {
+                return Ok((proposal, Some(proposal_return)));
+            }
 
-            return Ok((proposal, Some(proposal_return)));
+            SpeculativeBuildRegistry::spawn_cancel(
+                self.execution_node.clone(),
+                speculative_build,
+                "missing_slot_speculative_payload_not_ready_for_proposal",
+            );
         }
 
         // Give the builder only the proposal window that remains when payload
@@ -1509,7 +1540,7 @@ impl Inner<Init> {
         propose_start: Instant,
         payload_build_start: Instant,
         return_immediately: bool,
-    ) -> eyre::Result<(Block, ProposalReturn)> {
+    ) -> eyre::Result<Option<(Block, ProposalReturn)>> {
         if payload_id_rx.is_none() {
             *payload_id_rx = Some(if let Some(payload_id) = speculative_build.payload_id {
                 PendingPayloadId::ready(payload_id)
@@ -1538,7 +1569,7 @@ impl Inner<Init> {
             return_immediately,
         );
         let wait_start = Instant::now();
-        let mut payload_kind = PayloadKind::Earliest;
+        let mut payload_ready = false;
         while wait_start.elapsed() < wait_budget {
             match self
                 .execution_node
@@ -1548,7 +1579,7 @@ impl Inner<Init> {
                 .await
             {
                 Some(Ok(_)) => {
-                    payload_kind = PayloadKind::WaitForPending;
+                    payload_ready = true;
                     break;
                 }
                 Some(Err(PayloadBuilderError::MissingPayload)) => {}
@@ -1573,20 +1604,21 @@ impl Inner<Init> {
                 .await;
         }
 
-        if payload_kind == PayloadKind::Earliest {
+        if !payload_ready {
             debug!(
                 %payload_id,
                 waited = %display_duration(wait_start.elapsed().min(wait_budget)),
                 reserve = %display_duration(SPECULATIVE_PAYLOAD_FALLBACK_RESERVE),
                 return_immediately,
-                "resolving speculative payload with deadline-safe fallback"
+                "speculative payload not ready before proposal fallback deadline"
             );
+            return Ok(None);
         }
 
         let payload = self
             .execution_node
             .payload_builder_handle
-            .resolve_kind(payload_id, payload_kind)
+            .resolve_kind(payload_id, PayloadKind::WaitForPending)
             .pace(context, Duration::from_millis(20))
             .await
             .ok_or_eyre("no speculative payload found under provided id")
@@ -1655,7 +1687,7 @@ impl Inner<Init> {
             );
         }
 
-        Ok((
+        Ok(Some((
             proposal,
             ProposalReturn {
                 time: proposal_return_time,
@@ -1663,7 +1695,7 @@ impl Inner<Init> {
                 fast_path_executed_block,
                 successor_parent_ready,
             },
-        ))
+        )))
     }
 
     #[cfg(feature = "bal")]
