@@ -13,29 +13,39 @@ use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
-    interpreter::{SStoreResult, StateLoad, gas::GasTracker, instruction_context::GasStateOutcome},
+    interpreter::{
+        InstructionResult, SStoreResult, StateLoad, gas::GasTracker,
+        instruction_context::GasStateOutcome,
+    },
 };
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
 
 pub const STORAGE_CREDIT_VALUE: u64 = 230_000;
 const SSTORE_SET_WITHOUT_EXPANSION_COST: u64 = 20_000;
 
-/// Storage and gas operations required by [`sstore_storage_credits`].
-///
-/// All storage operations target the storage credits contract; the concrete
-/// address is supplied by the implementor so this trait stays free of revm
-/// host details. The associated [`Error`](StorageCreditsBackend::Error) lets each
-/// backend surface failures in its own error type (`InstructionResult` for the
-/// opcode path, `TempoPrecompileError` for the precompile path).
-pub trait StorageCreditsBackend {
-    /// Error type returned by the backend.
-    type Error;
-
+/// Error mapping required by storage credit accounting.
+pub trait StorageCreditsError: Sized {
     /// Constructs the backend's out-of-gas error.
-    fn out_of_gas() -> Self::Error;
+    fn out_of_gas() -> Self;
 
     /// Constructs the backend's fatal/external error (e.g. malformed state word).
-    fn fatal_external() -> Self::Error;
+    fn fatal_external() -> Self;
+}
+
+impl StorageCreditsError for InstructionResult {
+    fn out_of_gas() -> Self {
+        Self::OutOfGas
+    }
+
+    fn fatal_external() -> Self {
+        Self::FatalExternalError
+    }
+}
+
+/// Storage, gas, and event operations required by storage credit accounting.
+pub trait StorageCreditsBackend {
+    /// Error type returned by the backend.
+    type Error: StorageCreditsError;
 
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
@@ -43,13 +53,13 @@ pub trait StorageCreditsBackend {
     /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](Self::out_of_gas) if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsError::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
             .record_regular_cost(cost)
             .then_some(())
-            .ok_or_else(Self::out_of_gas)
+            .ok_or_else(Self::Error::out_of_gas)
     }
 
     /// SLOAD a slot of the storage credits contract, optionally skipping the cold load.
@@ -135,7 +145,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     let mut balance =
-        u64::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
+        u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
     if values.is_new_zero() {
@@ -146,7 +156,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         // 0→x: slot create. The selected storage creation mode is transient.
         let mut transient_state =
             TransientState::from_word(backend.load_transient_state(account_slot))
-                .map_err(|_| B::fatal_external())?;
+                .map_err(|_| B::Error::fatal_external())?;
 
         match transient_state.mode {
             CreditMode::Direct => {

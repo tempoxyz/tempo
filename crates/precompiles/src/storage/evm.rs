@@ -108,16 +108,6 @@ impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     type Error = TempoPrecompileError;
 
     #[inline]
-    fn out_of_gas() -> Self::Error {
-        TempoPrecompileError::OutOfGas
-    }
-
-    #[inline]
-    fn fatal_external() -> Self::Error {
-        TempoPrecompileError::Fatal("invalid storage credits state".to_string())
-    }
-
-    #[inline]
     fn gas_tracker(&mut self) -> &mut GasTracker {
         &mut self.gas_tracker
     }
