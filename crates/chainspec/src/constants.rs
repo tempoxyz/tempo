@@ -6,6 +6,8 @@
 pub mod gas {
     //! Gas-accounting constants shared with `spec.rs`.
 
+    use alloy_eips::eip1559::BaseFeeParams;
+
     const COLD_SLOAD: u64 = 2100;
     const SSTORE_SET: u64 = 20000;
     const WARM_SLOAD: u64 = 100;
@@ -28,28 +30,37 @@ pub mod gas {
     /// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
     pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
-    /// TIP-1059 discounted gas price for pure payment transfers: 12 billion attodollars.
-    pub const TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE: u64 = 12_000_000_000;
+    /// TIP-1067 base fee cap: below the T1 fixed base fee.
+    pub const TEMPO_T7_BASE_FEE_CAP: u64 = 12_000_000_000;
 
-    /// TIP-1059 pure-payment discount from the T6 base fee.
-    ///
-    /// T6 inherits the T1 base fee of 20 billion attodollars/gas and discounts eligible pure
-    /// payments to 12 billion attodollars/gas, so the discount is 8 billion attodollars/gas.
-    pub const TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT: u128 = 8_000_000_000;
+    /// TIP-1067 base fee floor: one twentieth of the TIP-1067 cap.
+    pub const TEMPO_T7_BASE_FEE_FLOOR: u64 = TEMPO_T7_BASE_FEE_CAP / 20;
 
-    /// Returns the TIP-1059 discounted effective gas price.
+    /// TIP-1067 gas target for the dynamic base fee controller.
+    pub const TEMPO_T7_BASE_FEE_GAS_TARGET: u64 = 10_000_000;
+
+    /// TIP-1067 uses EIP-1559's base-fee update formula with a fixed 10M gas target.
     ///
-    /// TIP-1059 subtracts the base-fee discount from the transaction-derived effective gas price.
-    /// Any effective priority-fee component remains payable, so high-priority bids cannot be
-    /// refunded away at settlement. This works because the discount is smaller than the T6 base fee
-    /// and is equivalent to computing EIP-1559 pricing with both the base fee and max fee reduced
-    /// by the fixed discount.
-    pub fn tempo_t6_discounted_payment_effective_gas_price(
-        original_effective_gas_price: u128,
-    ) -> u128 {
-        original_effective_gas_price.saturating_sub(TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT)
+    /// The params are `(max_change_denominator = 8, elasticity_multiplier = 1)`: `8` keeps the
+    /// standard EIP-1559 maximum 12.5% per-block base-fee delta, while `1` prevents EIP-1559's
+    /// usual target-halving because TIP-1067 supplies [`TEMPO_T7_BASE_FEE_GAS_TARGET`] directly.
+    ///
+    /// [TIP-1067]: <https://docs.tempo.xyz/protocol/tips/tip-1067>
+    pub const TEMPO_T7_BASE_FEE_PARAMS: BaseFeeParams = BaseFeeParams::new(8, 1);
+
+    /// Returns the TIP-1067 base fee for the child of a block.
+    ///
+    /// The update follows EIP-1559's integer formula against a fixed 10M gas target, then clamps the
+    /// result to `[TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_CAP]`.
+    pub fn tempo_t7_next_block_base_fee(parent_base_fee: u64, parent_gas_used: u64) -> u64 {
+        TEMPO_T7_BASE_FEE_PARAMS
+            .next_block_base_fee(
+                parent_gas_used,
+                TEMPO_T7_BASE_FEE_GAS_TARGET,
+                parent_base_fee,
+            )
+            .clamp(TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_CAP)
     }
-
     /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
     /// Cap for non-payment transactions.
     ///
@@ -78,48 +89,69 @@ pub mod gas {
         use super::*;
 
         #[test]
-        fn tip1059_discount_matches_t6_base_fee_delta() {
-            assert!(
-                u128::from(TEMPO_T1_BASE_FEE) > TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT,
-                "TIP-1059 discount must not exceed the T6 base fee"
-            );
+        fn tip1067_dynamic_base_fee_steady_state() {
             assert_eq!(
-                u128::from(TEMPO_T1_BASE_FEE),
-                u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE)
-                    + TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT
+                tempo_t7_next_block_base_fee(
+                    TEMPO_T7_BASE_FEE_CAP / 2,
+                    TEMPO_T7_BASE_FEE_GAS_TARGET
+                ),
+                TEMPO_T7_BASE_FEE_CAP / 2
             );
         }
 
         #[test]
-        fn tip1059_discounted_effective_gas_price_matches_eip1559_pricing() {
-            let discounted_base_fee = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE;
-
-            for (max_fee, priority_fee) in [
-                (u128::from(TEMPO_T1_BASE_FEE), 0),
-                (u128::from(TEMPO_T1_BASE_FEE) + 3_000_000_000, 3_000_000_000),
-                (u128::from(TEMPO_T1_BASE_FEE), 3_000_000_000),
-                (
-                    u128::from(TEMPO_T1_BASE_FEE) + 10_000_000_000,
-                    3_000_000_000,
-                ),
-            ] {
-                let original_effective_gas_price = alloy_eips::eip1559::calc_effective_gas_price(
-                    max_fee,
-                    priority_fee,
-                    Some(TEMPO_T1_BASE_FEE),
-                );
-                let discounted_effective_gas_price =
-                    tempo_t6_discounted_payment_effective_gas_price(original_effective_gas_price);
-
-                assert_eq!(
-                    discounted_effective_gas_price,
-                    alloy_eips::eip1559::calc_effective_gas_price(
-                        max_fee - TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT,
-                        priority_fee,
-                        Some(discounted_base_fee),
-                    )
-                );
+        fn tip1067_dynamic_base_fee_decays_to_floor() {
+            let mut base_fee = TEMPO_T7_BASE_FEE_CAP;
+            for _ in 0..64 {
+                base_fee = tempo_t7_next_block_base_fee(base_fee, 0);
             }
+            assert_eq!(base_fee, TEMPO_T7_BASE_FEE_FLOOR);
+            assert_eq!(
+                tempo_t7_next_block_base_fee(base_fee, 0),
+                TEMPO_T7_BASE_FEE_FLOOR
+            );
+        }
+
+        #[test]
+        fn tip1067_dynamic_base_fee_rises_to_cap() {
+            let mut base_fee = TEMPO_T7_BASE_FEE_FLOOR;
+            for _ in 0..16 {
+                base_fee = tempo_t7_next_block_base_fee(base_fee, 500_000_000);
+            }
+            assert_eq!(base_fee, TEMPO_T7_BASE_FEE_CAP);
+            assert_eq!(
+                tempo_t7_next_block_base_fee(base_fee, 500_000_000),
+                TEMPO_T7_BASE_FEE_CAP
+            );
+        }
+
+        #[test]
+        fn tip1067_dynamic_base_fee_minimum_increase() {
+            assert_eq!(
+                tempo_t7_next_block_base_fee(
+                    TEMPO_T7_BASE_FEE_FLOOR,
+                    TEMPO_T7_BASE_FEE_GAS_TARGET + 1
+                ),
+                TEMPO_T7_BASE_FEE_FLOOR + 7
+            );
+        }
+
+        #[test]
+        fn tip1067_dynamic_base_fee_clamps_equal_branch() {
+            assert_eq!(
+                tempo_t7_next_block_base_fee(
+                    TEMPO_T7_BASE_FEE_FLOOR - 1,
+                    TEMPO_T7_BASE_FEE_GAS_TARGET
+                ),
+                TEMPO_T7_BASE_FEE_FLOOR
+            );
+            assert_eq!(
+                tempo_t7_next_block_base_fee(
+                    TEMPO_T7_BASE_FEE_CAP + 1,
+                    TEMPO_T7_BASE_FEE_GAS_TARGET
+                ),
+                TEMPO_T7_BASE_FEE_CAP
+            );
         }
     }
 }
@@ -171,6 +203,9 @@ pub mod mainnet {
 
     /// T5 activation timestamp (Jun 9th 2026 14:00 UTC).
     pub const MAINNET_T5_TIMESTAMP: u64 = 1_781_013_600;
+
+    /// T6 activation timestamp (Jun 23rd 2026 14:00 UTC).
+    pub const MAINNET_T6_TIMESTAMP: u64 = 1_782_223_200;
 }
 
 pub mod moderato {
@@ -220,4 +255,7 @@ pub mod moderato {
 
     /// T5 activation timestamp (Jun 3rd 2026 14:00 UTC).
     pub const MODERATO_T5_TIMESTAMP: u64 = 1_780_495_200;
+
+    /// T6 activation timestamp (Jun 18th 2026 14:00 UTC).
+    pub const MODERATO_T6_TIMESTAMP: u64 = 1_781_791_200;
 }

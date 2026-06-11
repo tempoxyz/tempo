@@ -410,7 +410,7 @@ jobs:
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
+      BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
@@ -804,7 +804,7 @@ jobs:
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
-          [ "$BENCH_METRICS" = "true" ] && [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
+          { [ "$BENCH_METRICS" = "true" ] || [ "$BENCH_VALSCOPE" = "true" ]; } && [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")

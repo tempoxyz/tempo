@@ -40,9 +40,12 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
+mod follow;
 mod init_state;
 mod p2p_proxy;
 mod regenesis;
+mod snapshot_download;
+mod snapshot_manifest;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -60,7 +63,7 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::{
     args::FaucetArgs,
@@ -111,7 +114,7 @@ struct TempoArgs {
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
-    pub follow: Option<String>,
+    pub follow: Option<follow::FollowMode>,
 
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
@@ -143,7 +146,7 @@ struct TempoArgs {
     pub telemetry: defaults::TelemetryArgs,
 
     #[command(flatten)]
-    pub consensus: tempo_commonware_node::Args,
+    pub consensus: tempo_consensus::Args,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
@@ -225,13 +228,24 @@ impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParse
 }
 
 fn block_on_consensus_public_key(
-    args: &tempo_commonware_node::Args,
+    args: &tempo_consensus::Args,
 ) -> eyre::Result<Option<commonware_cryptography::ed25519::PublicKey>> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .wrap_err("failed building runtime for consensus key parsing")?
         .block_on(args.public_key())
+}
+
+fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd
+            .ext
+            .node_args
+            .engine_disable_execution_cache_sharing_with_builder
+    {
+        node_cmd.engine.share_execution_cache_with_payload_builder = false;
+    }
 }
 
 /// Print installed extensions as a footer after root help output.
@@ -291,13 +305,10 @@ async fn fetch_bootnodes(
         .await
         .wrap_err("failed to parse response as JSON")?;
 
-    let key = chain_id.to_string();
-    let enodes = match resp.get(&key) {
-        Some(enodes) => enodes,
-        None => return Ok(Vec::new()),
-    };
-
-    Ok(reth_network_peers::parse_nodes(enodes))
+    Ok(resp
+        .get(&chain_id.to_string())
+        .map(reth_network_peers::parse_nodes)
+        .unwrap_or_default())
 }
 
 fn main() -> eyre::Result<()> {
@@ -323,12 +334,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = match TempoCli::command()
+    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
+    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
+    let matches = match TempoCli::command()
         .about("Tempo")
+        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
+        .mut_subcommand("download", |_| snapshot_download::Args::command())
         .try_get_matches_from(std::env::args_os())
-        .and_then(|matches| TempoCli::from_arg_matches(&matches))
     {
-        Ok(cli) => cli,
+        Ok(matches) => matches,
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
                 // Unknown subcommand — try the extension launcher.
@@ -356,14 +370,20 @@ fn main() -> eyre::Result<()> {
         }
     };
 
-    if let Commands::Node(node_cmd) = &mut cli.command
-        && node_cmd
-            .ext
-            .node_args
-            .engine_disable_execution_cache_sharing_with_builder
-    {
-        node_cmd.engine.share_execution_cache_with_payload_builder = false;
+    // Detect overwritten subcommands and directly run them as
+    // `from_arg_matches` would map them to their original variants.
+    match matches.subcommand() {
+        Some(("snapshot-manifest", sub)) => return snapshot_manifest::run(sub),
+        Some(("download", sub)) => return snapshot_download::run(sub),
+        _ => {}
     }
+
+    let mut cli = match TempoCli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    };
+
+    apply_tempo_cli_overrides(&mut cli);
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -398,18 +418,16 @@ fn main() -> eyre::Result<()> {
             extra_attrs.push(format!("consensus_pubkey={pubkey}"));
         }
 
-        if !extra_attrs.is_empty() {
-            let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
-            let new_attrs = if current.is_empty() {
-                extra_attrs.join(",")
-            } else {
-                format!("{current},{}", extra_attrs.join(","))
-            };
+        let current = std::env::var("OTEL_RESOURCE_ATTRIBUTES").unwrap_or_default();
+        let new_attrs = if current.is_empty() {
+            extra_attrs.join(",")
+        } else {
+            format!("{current},{}", extra_attrs.join(","))
+        };
 
-            // SAFETY: called at startup before the OTEL SDK is initialised
-            unsafe {
-                std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
-            }
+        // SAFETY: called at startup before the OTEL SDK is initialised
+        unsafe {
+            std::env::set_var("OTEL_RESOURCE_ATTRIBUTES", &new_attrs);
         }
 
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
@@ -419,7 +437,7 @@ fn main() -> eyre::Result<()> {
             .parse()
             .wrap_err("invalid default logs filter")?;
 
-        telemetry_config.replace(config);
+        telemetry_config = Some(config);
     }
 
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -476,7 +494,7 @@ fn main() -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
-            let mut metrics_server = tempo_commonware_node::metrics::install(
+            let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.with_label("metrics"),
                 args.consensus.metrics_address,
             )
@@ -504,14 +522,9 @@ fn main() -> eyre::Result<()> {
             }
 
             let consensus_stack = if let Some(follow) = args.follow {
-                let follow_url = if follow == "auto" {
-                    node.chain_spec()
-                        .default_follow_url()
-                        .map(|s| s.to_string())
-                        .ok_or_eyre("No default follow URL for this chain")?
-                } else {
-                    follow
-                };
+                let follow_url = follow
+                    .resolve_url(&node.chain_spec())
+                    .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
                     ctx.with_label("follow"),
@@ -626,21 +639,12 @@ fn main() -> eyre::Result<()> {
 
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
-                    let follow_url = args.follow.clone().and_then(|v| {
-                        if v != "auto" {
-                            Some(v)
-                        } else {
-                            builder
-                                .config()
-                                .chain
-                                .default_follow_url()
-                                .map(|s| s.to_string())
-                        }
-                    });
-
+                    let follow_url = args
+                        .follow
+                        .as_ref()
+                        .and_then(|follow| follow.resolve_url(&builder.config().chain));
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
-
 
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
@@ -764,11 +768,39 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, defaults};
+    use super::{Commands, TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode};
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        let cli = TempoCli::try_parse_from(args).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        node_cmd.ext.follow
+    }
+
+    #[test]
+    fn follow_arg_parses_to_expected_mode() {
+        init_defaults_once();
+
+        assert_eq!(parse_follow(&["tempo", "node", "--dev"]), None);
+        // `--follow` without a value falls back to the `auto` default.
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "auto"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "ws://upstream:8546"]),
+            Some(FollowMode::Url("ws://upstream:8546".to_string()))
+        );
     }
 
     #[test]
@@ -803,13 +835,14 @@ mod tests {
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
-        let cli = TempoCli::try_parse_from([
+        let mut cli = TempoCli::try_parse_from([
             "tempo",
             "node",
             "--dev",
             "--engine.disable-execution-cache-sharing-with-builder",
         ])
         .unwrap();
+        apply_tempo_cli_overrides(&mut cli);
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };

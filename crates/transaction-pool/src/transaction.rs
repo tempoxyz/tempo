@@ -373,8 +373,7 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
-            let slot =
-                TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].base_slot();
+            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
     }
@@ -421,7 +420,7 @@ impl TempoPooledTransaction {
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {

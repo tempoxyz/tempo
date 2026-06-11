@@ -19,7 +19,7 @@ workspace = true
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
-tempo-commonware-node-config.workspace = true
+tempo-consensus-config.workspace = true
 tempo-validator-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true

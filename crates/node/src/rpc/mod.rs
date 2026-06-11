@@ -9,7 +9,7 @@ pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom, TransactionTrait};
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
@@ -22,12 +22,9 @@ use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{
-    TempoChainSpec, constants::gas::tempo_t6_discounted_payment_effective_gas_price,
-    hardfork::TempoHardforks,
-};
-use tempo_evm::{SSTORE_SET_COST, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::ITIP20};
+use tempo_chainspec::TempoChainSpec;
+use tempo_evm::TempoStateAccess;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -65,8 +62,8 @@ use reth_rpc_eth_types::{
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
-    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoAddressExt, TempoPrimitives, TempoReceipt,
-    TempoTxEnvelope, subblock::PartialValidatorKey,
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
 };
 use tokio::sync::{Mutex, broadcast};
 
@@ -427,13 +424,12 @@ pub struct TempoReceiptConverter {
         TempoChainSpec,
         fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
     >,
-    chain_spec: Arc<TempoChainSpec>,
 }
 
 impl TempoReceiptConverter {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
-            inner: EthReceiptConverter::new(chain_spec.clone()).with_builder(
+            inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
                     let mut log_index = next_log_index;
                     receipt
@@ -454,7 +450,6 @@ impl TempoReceiptConverter {
                         .into()
                 },
             ),
-            chain_spec,
         }
     }
 }
@@ -467,9 +462,6 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
-        let is_t6 = receipts
-            .first()
-            .is_some_and(|r| self.chain_spec.is_t6_active_at_timestamp(r.meta.timestamp));
         let receipt_context = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
@@ -484,21 +476,6 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
-                if is_t6
-                    && tx.is_payment_v2()
-                    && tx.calls().all(|(to, input)| {
-                        matches!(to.to(), Some(to) if to.is_tip20())
-                            && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
-                    })
-                    && tx.gas_limit() <= SSTORE_SET_COST
-                {
-                    // Mirror execution settlement: subtract only the base-fee discount and keep
-                    // the transaction-derived priority-fee component payable.
-                    // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
-                    receipt.effective_gas_price = tempo_t6_discounted_payment_effective_gas_price(
-                        receipt.effective_gas_price,
-                    );
-                }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
