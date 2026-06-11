@@ -40,6 +40,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
+mod effective_config_metrics;
 mod init_state;
 mod p2p_proxy;
 mod regenesis;
@@ -169,6 +170,12 @@ impl TempoArgs {
     fn has_consensus_engine(&self, dev: bool) -> bool {
         !dev && !self.is_following_uncertified()
     }
+}
+
+#[cfg(test)]
+fn init_defaults_once() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(defaults::init_defaults);
 }
 
 /// Command line arguments for configuring Pyroscope continuous profiling.
@@ -679,6 +686,8 @@ fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed launching execution node")?;
 
+        effective_config_metrics::record(&args, &node);
+
         // Fetch bootnodes from the endpoint in a background task and inject
         // them into the already-running discovery services.
         if let Some(endpoint) = bootnodes_endpoint {
@@ -769,16 +778,11 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Once, time::Duration};
+    use std::time::Duration;
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, defaults};
-
-    fn init_defaults_once() {
-        static INIT: Once = Once::new();
-        INIT.call_once(defaults::init_defaults);
-    }
+    use super::{Commands, TempoCli, init_defaults_once};
 
     #[test]
     fn consensus_block_budget_defaults_are_stable() {

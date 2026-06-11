@@ -12844,6 +12844,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "metrics",
  "opentelemetry-otlp",
  "pyroscope",
  "pyroscope_pprofrs",
