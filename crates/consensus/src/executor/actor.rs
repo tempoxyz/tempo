@@ -662,6 +662,14 @@ async fn run_canonicalize_task<TContext: Pacer>(
         HeadOrFinalized::Finalized => canonicalized.update_finalized(height, digest),
     };
 
+    if build_attributes
+        .as_ref()
+        .is_some_and(|(_, response)| response.is_canceled())
+    {
+        info!("dropping payload build request: the subscriber went away while it was queued");
+        build_attributes.take();
+    }
+
     // Only build on top of the most recent head. If the requested parent
     // could not be made the head (because a block above it was already
     // finalized), the build is stale, and submitting its attributes anyway
