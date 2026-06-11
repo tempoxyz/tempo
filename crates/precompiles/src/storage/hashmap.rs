@@ -1,6 +1,8 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
+    context_interface::cfg::GasParams,
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use std::collections::HashMap;
@@ -9,8 +11,8 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
-    storage::{FromWord, PrecompileStorageProvider},
-    tip1060_storage_credits::TIP1060StorageCredits,
+    storage::PrecompileStorageProvider,
+    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
 };
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
@@ -31,7 +33,8 @@ pub struct HashMapStorageProvider {
     counter_sload: u64,
     counter_sstore: u64,
     snapshots: Vec<Snapshot>,
-    storage_credit_budget: Option<u64>,
+    gas_tracker: GasTracker,
+    gas_params: GasParams,
 
     /// Emitted events keyed by contract address.
     pub events: HashMap<Address, Vec<LogData>>,
@@ -42,6 +45,7 @@ pub struct HashMapStorageProvider {
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
     internals: HashMap<(Address, U256), U256>,
+    transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
 }
 
@@ -75,7 +79,8 @@ impl HashMapStorageProvider {
             is_static: false,
             counter_sload: 0,
             counter_sstore: 0,
-            storage_credit_budget: None,
+            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            gas_params: GasParams::new_spec(spec.into()),
         }
     }
 
@@ -90,26 +95,80 @@ impl HashMapStorageProvider {
         self.amsterdam_eip8037_enabled = enabled;
         self
     }
+}
 
-    fn should_consume_storage_credit_budget(&self, owner: Address) -> bool {
-        if self
-            .storage_credit_budget
-            .is_none_or(|remaining| remaining == 0)
-        {
-            return false;
-        }
+impl StorageCreditsBackend for HashMapStorageProvider {
+    type Error = TempoPrecompileError;
 
-        let key = TIP1060StorageCredits::slot(owner);
-        let word = self
+    #[inline]
+    fn out_of_gas() -> Self::Error {
+        TempoPrecompileError::OutOfGas
+    }
+
+    #[inline]
+    fn fatal_external() -> Self::Error {
+        TempoPrecompileError::Fatal("invalid storage credits state".to_string())
+    }
+
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    #[inline]
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
+    }
+
+    #[inline]
+    fn load_credits(
+        &mut self,
+        key: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        Ok(StateLoad::new(
+            self.internals
+                .get(&(STORAGE_CREDITS_ADDRESS, key))
+                .copied()
+                .unwrap_or(U256::ZERO),
+            false,
+        ))
+    }
+
+    #[inline]
+    fn store_credits(
+        &mut self,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+        let present = self
             .internals
             .get(&(STORAGE_CREDITS_ADDRESS, key))
             .copied()
             .unwrap_or(U256::ZERO);
-        let Ok(balance) = u64::from_word(word) else {
-            return false;
-        };
+        self.internals.insert((STORAGE_CREDITS_ADDRESS, key), value);
 
-        balance > 0
+        Ok(StateLoad::new(
+            SStoreResult {
+                original_value: present,
+                present_value: present,
+                new_value: value,
+            },
+            false,
+        ))
+    }
+
+    #[inline]
+    fn load_transient_state(&mut self, key: U256) -> U256 {
+        self.transient
+            .get(&(STORAGE_CREDITS_ADDRESS, key))
+            .copied()
+            .unwrap_or(U256::ZERO)
+    }
+
+    #[inline]
+    fn store_transient_state(&mut self, key: U256, value: U256) {
+        self.transient.insert((STORAGE_CREDITS_ADDRESS, key), value);
     }
 }
 
@@ -154,20 +213,25 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.counter_sstore += 1;
-        if self.spec.is_t7()
-            && self
-                .internals
-                .get(&(address, key))
-                .copied()
-                .unwrap_or(U256::ZERO)
-                .is_zero()
-            && !value.is_zero()
-            && self.should_consume_storage_credit_budget(address)
-            && let Some(remaining) = &mut self.storage_credit_budget
-        {
-            *remaining -= 1;
-        }
+        let present = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
         self.internals.insert((address, key), value);
+
+        if self.spec.is_t7() {
+            let state_load = StateLoad::new(
+                SStoreResult {
+                    original_value: present,
+                    present_value: present,
+                    new_value: value,
+                },
+                false,
+            );
+            sstore_storage_credits(self, address, &state_load)?;
+        }
+
         Ok(())
     }
 
@@ -247,21 +311,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
-    fn storage_credit_budget(&self) -> Option<u64> {
-        self.storage_credit_budget
-    }
-
-    fn set_storage_credit_budget(
-        &mut self,
-        budget: Option<u64>,
-    ) -> Result<Option<u64>, TempoPrecompileError> {
-        Ok(std::mem::replace(&mut self.storage_credit_budget, budget))
-    }
-
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
+            transient: self.transient.clone(),
             events: self.events.clone(),
         });
         JournalCheckpoint {
@@ -288,6 +342,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
+            self.transient = snapshot.transient;
             self.events = snapshot.events;
         }
     }

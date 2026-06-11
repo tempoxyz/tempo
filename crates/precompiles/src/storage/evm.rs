@@ -24,7 +24,6 @@ pub struct EvmPrecompileStorageProvider<'a> {
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
-    storage_credit_budget: Option<u64>,
     tip1060_storage_credits_enabled: bool,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
@@ -49,7 +48,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
-            storage_credit_budget: None,
             tip1060_storage_credits_enabled: spec.is_t7(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
@@ -414,19 +412,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
-    }
-
-    #[inline]
-    fn storage_credit_budget(&self) -> Option<u64> {
-        self.storage_credit_budget
-    }
-
-    #[inline]
-    fn set_storage_credit_budget(
-        &mut self,
-        budget: Option<u64>,
-    ) -> Result<Option<u64>, TempoPrecompileError> {
-        Ok(std::mem::replace(&mut self.storage_credit_budget, budget))
     }
 
     #[inline]

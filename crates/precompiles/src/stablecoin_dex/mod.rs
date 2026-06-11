@@ -335,7 +335,7 @@ impl StablecoinDEX {
         }
 
         self.transfer(token_out, sender, amount)?;
-        storage_credits.flush(&mut self.dex_storage_credits)?;
+        storage_credits.flush(self.address, &mut self.dex_storage_credits)?;
 
         Ok(amount)
     }
@@ -383,7 +383,7 @@ impl StablecoinDEX {
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, sender, amount_out)?;
-        storage_credits.flush(&mut self.dex_storage_credits)?;
+        storage_credits.flush(self.address, &mut self.dex_storage_credits)?;
 
         Ok(amount)
     }
@@ -619,6 +619,7 @@ impl StablecoinDEX {
             debug_assert_eq!(storage_credits.user, order.maker());
             storage_credits.spend(
                 order.non_empty_slots(),
+                self.address,
                 |user, credits| self.dex_storage_credits[user].write(credits),
                 || self.orders[order.order_id()].write(order),
             )
@@ -1331,7 +1332,7 @@ impl StablecoinDEX {
         if let Some(mut storage_credits) = storage_credits {
             debug_assert_eq!(storage_credits.user, order.maker());
             self.orders[order.order_id()].delete()?;
-            storage_credits.add(order.non_empty_slots(), |user, credits| {
+            storage_credits.add(order.non_empty_slots(), self.address, |user, credits| {
                 self.dex_storage_credits[user].write(credits)
             })?;
         } else {

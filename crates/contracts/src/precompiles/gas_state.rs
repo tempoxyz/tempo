@@ -25,5 +25,6 @@ crate::sol! {
         function modeOf(address account) external view returns (Mode);
 
         function setMode(Mode newMode) external;
+        function setBudget(uint64 credits) external;
     }
 }

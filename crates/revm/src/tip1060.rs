@@ -49,7 +49,7 @@ pub fn apply_refund<DB: Database, I>(
 
     let mut refunds = 0;
     for (key, word) in slots {
-        let pending = word.as_limbs()[0];
+        let pending = word.as_limbs()[2];
         if pending == 0 {
             continue;
         }

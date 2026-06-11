@@ -143,18 +143,24 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         match transient_state.mode {
             CreditMode::Direct => {
-                // Only if there is a credit available, skip gas
-                if balance > 0 {
+                // Only if both a credit and direct budget are available, skip state gas.
+                if balance > 0 && transient_state.budget > 0 {
                     // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
                     if is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
                     }
                     backend.charge_gas(SSTORE_SET_WITHOUT_EXPANSION_COST)?;
                     balance -= 1;
+                    transient_state.budget -= 1;
+                    if transient_state.budget == 0 {
+                        transient_state.mode = CreditMode::Preserve;
+                    }
+                    backend.store_transient_state(account_slot, transient_state.into_word());
                     was_changed = true;
                     outcome.skip_gas = true;
                 }
-                // Otherwise, leave gas enabled so revm charges full creation costs.
+                // Otherwise, leave gas enabled so revm charges full creation costs. Exhausted
+                // budget is moved back to Preserve rather than Refund.
             }
             CreditMode::Preserve => {
                 // Do nothing, so revm takes care of gas accounting after this hook.

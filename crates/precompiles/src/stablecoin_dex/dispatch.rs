@@ -5,7 +5,8 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, mutate_preserving_storage_credits,
+    mutate_void_preserving_storage_credits,
     stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
     view,
 };
@@ -21,12 +22,16 @@ impl Precompile for StablecoinDEX {
             &[],
             IStablecoinDEXCalls::abi_decode,
             |call| match call {
-                IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
-                    self.place(s, c.token, c.amount, c.isBid, c.tick)
-                }),
-                IStablecoinDEXCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
-                    self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
-                }),
+                IStablecoinDEXCalls::place(call) => {
+                    mutate_preserving_storage_credits(call, msg_sender, self.address, |s, c| {
+                        self.place(s, c.token, c.amount, c.isBid, c.tick)
+                    })
+                }
+                IStablecoinDEXCalls::placeFlip(call) => {
+                    mutate_preserving_storage_credits(call, msg_sender, self.address, |s, c| {
+                        self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                    })
+                }
                 IStablecoinDEXCalls::balanceOf(call) => {
                     view(call, |c| self.balance_of(c.user, c.token))
                 }
@@ -48,22 +53,43 @@ impl Precompile for StablecoinDEX {
                 }
                 IStablecoinDEXCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
                 IStablecoinDEXCalls::createPair(call) => {
-                    mutate(call, msg_sender, |_, c| self.create_pair(c.base))
+                    mutate_preserving_storage_credits(call, msg_sender, self.address, |_, c| {
+                        self.create_pair(c.base)
+                    })
                 }
-                IStablecoinDEXCalls::withdraw(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.withdraw(s, c.token, c.amount))
-                }
-                IStablecoinDEXCalls::cancel(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.cancel(s, c.orderId))
-                }
+                IStablecoinDEXCalls::withdraw(call) => mutate_void_preserving_storage_credits(
+                    call,
+                    msg_sender,
+                    self.address,
+                    |s, c| self.withdraw(s, c.token, c.amount),
+                ),
+                IStablecoinDEXCalls::cancel(call) => mutate_void_preserving_storage_credits(
+                    call,
+                    msg_sender,
+                    self.address,
+                    |s, c| self.cancel(s, c.orderId),
+                ),
                 IStablecoinDEXCalls::cancelStaleOrder(call) => {
-                    mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
+                    mutate_void_preserving_storage_credits(
+                        call,
+                        msg_sender,
+                        self.address,
+                        |_, c| self.cancel_stale_order(c.orderId),
+                    )
                 }
-                IStablecoinDEXCalls::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
-                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
-                }),
+                IStablecoinDEXCalls::swapExactAmountIn(call) => {
+                    mutate_preserving_storage_credits(call, msg_sender, self.address, |s, c| {
+                        self.swap_exact_amount_in(
+                            s,
+                            c.tokenIn,
+                            c.tokenOut,
+                            c.amountIn,
+                            c.minAmountOut,
+                        )
+                    })
+                }
                 IStablecoinDEXCalls::swapExactAmountOut(call) => {
-                    mutate(call, msg_sender, |s, c| {
+                    mutate_preserving_storage_credits(call, msg_sender, self.address, |s, c| {
                         self.swap_exact_amount_out(
                             s,
                             c.tokenIn,

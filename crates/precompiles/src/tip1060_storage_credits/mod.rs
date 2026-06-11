@@ -61,33 +61,39 @@ impl From<CreditMode> for Mode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    pub pending_refunds: u64,
+    /// Remaining direct-spend budget for Direct mode. If applicable.
+    pub budget: u64,
+    /// Credit Mode.
     pub mode: CreditMode,
+    // Pending refund-eligible creations for Refund mode.
+    pub pending_refunds: u64,
 }
 
 impl TransientState {
     /// Decodes a packed transient state word.
     ///
     /// Layout:
-    /// - bits `0..=63`: pending refund-eligible creations (`uint64`)
+    /// - bits `0..=63`: remaining direct-spend budget (`uint64`)
     /// - bits `64..=71`: storage creation mode
-    /// - bits `72..=255`: reserved for future hardfork-gated extensions
+    /// - bits `128..=191`: pending refund-eligible creations (`uint64`)
+    /// - all other bits: reserved for future hardfork-gated extensions
     #[inline]
     pub fn from_word(value: U256) -> Result<Self> {
         // `U256` limbs are little-endian: limb 0 holds bits 0..=63,
-        // limb 1 holds bits 64..=127.
+        // limb 1 holds bits 64..=127, limb 2 holds bits 128..=191.
         let limbs = value.as_limbs();
         Ok(Self {
-            pending_refunds: limbs[0],
+            budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
+            pending_refunds: limbs[2],
         })
     }
 
     #[inline]
     pub fn into_word(self) -> U256 {
-        U256::from_limbs([self.pending_refunds, self.mode as u64, 0, 0])
+        U256::from_limbs([self.budget, self.mode as u64, self.pending_refunds, 0])
     }
 }
 
@@ -102,8 +108,8 @@ impl TransientState {
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 ///
-/// Storage creation mode and pending refund counters are transaction-local transient state
-/// at the same account-derived slot.
+/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
+/// transient state at the same account-derived slot.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct TIP1060StorageCredits {}
 
@@ -120,15 +126,65 @@ impl TIP1060StorageCredits {
         self.transient_state_of(account).map(|state| state.mode)
     }
 
+    /// Sets the transaction-local storage-creation mode for the caller.
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
-        let mut state = self.transient_state_of(msg_sender)?;
-        state.mode = CreditMode::try_from(mode)?;
-        self.write_transient_state_of(msg_sender, state)?;
+        let mode = CreditMode::try_from(mode)?;
+        let budget = if matches!(mode, CreditMode::Direct) {
+            u64::MAX
+        } else {
+            0
+        };
+        if self.write_mode_with_budget(msg_sender, mode, budget)? {
+            self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+                msg_sender,
+                mode.into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
 
-        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
-            msg_sender,
-            state.mode.into(),
-        ))
+    /// Sets a transaction-local Direct budget for the caller.
+    ///
+    /// A positive budget switches to `Direct` and allows at most `credits` credit-backed storage
+    /// creates. A zero budget switches to `Preserve`, matching the post-exhaustion behavior.
+    pub fn set_budget(&mut self, msg_sender: Address, credits: u64) -> Result<()> {
+        let mode = if credits == 0 {
+            CreditMode::Preserve
+        } else {
+            CreditMode::Direct
+        };
+
+        if self.write_mode_with_budget(msg_sender, mode, credits)? {
+            self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+                msg_sender,
+                mode.into(),
+            ))?;
+        }
+        Ok(())
+    }
+
+    fn write_mode_with_budget(
+        &mut self,
+        account: Address,
+        mode: CreditMode,
+        budget: u64,
+    ) -> Result<bool> {
+        let (mode, budget) = match (mode, budget) {
+            (CreditMode::Direct, 0) => (CreditMode::Preserve, 0),
+            (CreditMode::Direct, budget) => (CreditMode::Direct, budget),
+            (mode, _) => (mode, 0),
+        };
+
+        let mut state = self.transient_state_of(account)?;
+        if state.mode == mode && state.budget == budget {
+            return Ok(false);
+        }
+
+        state.mode = mode;
+        state.budget = budget;
+        self.write_transient_state_of(account, state)?;
+        Ok(true)
     }
 
     #[inline]
@@ -138,12 +194,13 @@ impl TIP1060StorageCredits {
 
     #[inline]
     fn transient_state_of(&self, account: Address) -> Result<TransientState> {
-        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_read()
+        TransientState::from_word(self.storage.tload(self.address, Self::slot(account))?)
     }
 
     #[inline]
     fn write_transient_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state)
+        self.storage
+            .tstore(self.address, Self::slot(account), state.into_word())
     }
 }
 
@@ -170,27 +227,35 @@ impl StorageCreditAccount {
         Ok(Some(Self::new(user, read_credit(user)?)))
     }
 
-    fn with_budget<T>(budget: u64, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let mut storage = StorageCtx;
-        let previous = storage.set_storage_credit_budget(Some(budget))?;
-        debug_assert!(previous.is_none());
+    fn with_budget<T>(
+        credit_owner: Address,
+        budget: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let mut storage_credits = TIP1060StorageCredits::new();
+        storage_credits.set_budget(credit_owner, budget)?;
 
-        let res = f();
-        if storage.set_storage_credit_budget(None)?.unwrap_or_default() != 0 {
-            return Err(TempoPrecompileError::Fatal(
+        let result = f();
+        let remaining_budget = storage_credits.transient_state_of(credit_owner)?.budget;
+
+        match result {
+            Ok(value) if remaining_budget == 0 => Ok(value),
+            Ok(_) => Err(TempoPrecompileError::Fatal(
                 "TIP-1060 direct budget was not fully consumed".to_string(),
-            ));
+            )),
+            Err(err) => Err(err),
         }
-        res
     }
 
-    /// Runs `write_storage` while allowing up to `slots.min(budget)` TIP-1060 token consumptions.
+    /// Runs `write_storage` while allowing up to `slots.min(budget)` TIP-1060 token consumptions
+    /// from `credit_owner`'s storage-credit balance.
     ///
     /// If spending all credits, the `dex_storage_credits[user]` counter is cleared first so the
     /// credit embodied by that nonzero counter slot becomes available for the storage creation.
     pub fn spend<T>(
         &mut self,
         slots: u64,
+        credit_owner: Address,
         mut write_credit: impl FnMut(Address, u64) -> Result<()>,
         write_storage: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
@@ -205,7 +270,7 @@ impl StorageCreditAccount {
             self.amount = 0;
         }
 
-        match Self::with_budget(budget, write_storage) {
+        match Self::with_budget(credit_owner, budget, write_storage) {
             Ok(value) => {
                 if budget < old.amount {
                     self.amount -= budget;
@@ -223,20 +288,21 @@ impl StorageCreditAccount {
     pub fn add(
         &mut self,
         slots: u64,
+        credit_owner: Address,
         write_credit: impl FnOnce(Address, u64) -> Result<()>,
     ) -> Result<()> {
         let was_empty = self.amount == 0;
         self.amount = self.amount.saturating_add(slots);
 
         if was_empty && self.amount > 0 {
-            Self::with_budget(1, || write_credit(self.user, self.amount))
+            Self::with_budget(credit_owner, 1, || write_credit(self.user, self.amount))
         } else {
             write_credit(self.user, self.amount)
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StorageCreditDeltas {
     enabled: bool,
     deltas: Vec<(Address, u64)>,
@@ -262,7 +328,11 @@ impl StorageCreditDeltas {
         self.deltas.push((user, slots));
     }
 
-    pub fn flush(mut self, credits: &mut Mapping<Address, u64>) -> Result<()> {
+    pub fn flush(
+        mut self,
+        credit_owner: Address,
+        credits: &mut Mapping<Address, u64>,
+    ) -> Result<()> {
         self.deltas.sort_by_key(|(user, _)| *user);
 
         for group in self.deltas.chunk_by(|a, b| a.0 == b.0) {
@@ -270,8 +340,11 @@ impl StorageCreditDeltas {
             let slots = group
                 .iter()
                 .fold(0u64, |total, (_, slots)| total.saturating_add(*slots));
-            StorageCreditAccount::new(user, credits[user].read()?)
-                .add(slots, |user, value| credits[user].write(value))?;
+            StorageCreditAccount::new(user, credits[user].read()?).add(
+                slots,
+                credit_owner,
+                |user, value| credits[user].write(value),
+            )?;
         }
 
         Ok(())

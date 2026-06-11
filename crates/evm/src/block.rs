@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, IntoLogData, Log, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -21,15 +21,14 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::{JournalTr, result::ResultAndState},
+    context::result::ResultAndState,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, ITIP1060StorageCredits::Mode, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, TIP1060StorageCreditsEvent, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -496,25 +495,8 @@ where
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
             _ = self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
         }
-        if self.inner.spec.is_t7_active_at_timestamp(timestamp)
-            && self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?
-        {
-            // TIP-1064 order-storage credits consume tokens through a direct bounded budget.
-            // Must keep DEX storage creations in `Mode::Preserve` by default by writing at
-            // `uint256(bytes32(account))` as `[balance: u64, mode: u64, 0, 0]`.
-            let key = U256::from_be_bytes(STABLECOIN_DEX_ADDRESS.into_word().0);
-            let value = U256::from_limbs([0, 1, 0, 0]);
-            let log_data =
-                TIP1060StorageCreditsEvent::mode_updated(STABLECOIN_DEX_ADDRESS, Mode::Preserve)
-                    .into_log_data();
-            let journal = &mut self.inner.evm.ctx_mut().journaled_state;
-            journal
-                .sstore(STORAGE_CREDITS_ADDRESS, key, value)
-                .map_err(BlockExecutionError::other)?;
-            journal.log(Log {
-                address: STORAGE_CREDITS_ADDRESS,
-                data: log_data,
-            });
+        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
+            _ = self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
         }
 
         Ok(())
