@@ -13,7 +13,7 @@ use reth_transaction_pool::{
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
+use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -165,14 +165,11 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
-                let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
+                if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
-                        .insert((address, slot), present_balance);
+                        .insert((address, slot), storage_slot.present_value);
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
+                    *balance = storage_slot.present_value;
                 }
             }
         }
@@ -246,7 +243,7 @@ mod tests {
         test_utils::OkValidator,
     };
     use std::sync::Arc;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -256,7 +253,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .nonce(nonce)
                 .max_priority_fee(priority)
-                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
                 .build(),
             TransactionOrigin::External,
         ))
@@ -313,7 +310,7 @@ mod tests {
                 .or_insert(id.nonce);
         }
 
-        pool.set_base_fee(TempoHardfork::T1.base_fee());
+        pool.set_base_fee(TEMPO_T1_BASE_FEE);
         for tx in txs {
             let id = tx
                 .transaction
@@ -333,7 +330,7 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
-            TempoHardfork::T1.base_fee(),
+            TEMPO_T1_BASE_FEE,
         )
     }
 

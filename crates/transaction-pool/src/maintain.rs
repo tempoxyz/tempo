@@ -620,11 +620,16 @@ where
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
+                // Removed transactions are collected here and dropped at the end of the
+                // iteration: deallocating them (input data, signatures, allocator work) is
+                // expensive and there is a block time of slack after the updates are done.
+                let mut removed_txs: Vec<Vec<_>> = Vec::with_capacity(1);
+
                 // 1. Update 2D nonce pool before scan-based maintenance.
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
+                removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.
@@ -667,7 +672,7 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    pool.remove_transactions(updates.expired_txs.clone());
+                    removed_txs.push(pool.remove_transactions(updates.expired_txs.clone()));
                     metrics.expired_transactions_evicted.increment(expired_count as u64);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
@@ -913,10 +918,11 @@ where
                                 .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                         )
                     };
-                    for hash in &evicted {
-                        state.untrack(hash);
+                    for tx in &evicted {
+                        state.untrack(tx.hash());
                     }
                     metrics.transactions_invalidated.increment(evicted.len() as u64);
+                    removed_txs.push(evicted);
                     metrics
                         .invalidation_eviction_duration_seconds
                         .record(invalidation_start.elapsed());
@@ -942,12 +948,15 @@ where
                         for hash in &stale_to_evict {
                             state.untrack(hash);
                         }
-                        pool.remove_transactions(stale_to_evict);
+                        removed_txs.push(pool.remove_transactions(stale_to_evict));
                     }
                 }
 
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
+
+                // Deallocating removed transactions is expensive, so do it after all updates are done.
+                drop(removed_txs);
             }
         }
     }

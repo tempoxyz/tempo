@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -189,6 +189,10 @@ pub(crate) struct GenesisArgs {
     /// T7 hardfork activation time.
     #[arg(long, default_value = "0")]
     t7_time: u64,
+
+    /// T8 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t8_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -598,6 +602,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t7Time".to_string(), self.t7_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t8Time".to_string(), self.t8_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -614,9 +621,9 @@ impl GenesisArgs {
 
         // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
         let base_fee: u128 = if self.t1_time == 0 {
-            TempoHardfork::T1.base_fee().into()
+            u128::from(TEMPO_T1_BASE_FEE)
         } else {
-            TempoHardfork::T0.base_fee().into()
+            u128::from(TEMPO_T0_BASE_FEE)
         };
 
         let mut genesis = Genesis::default()
