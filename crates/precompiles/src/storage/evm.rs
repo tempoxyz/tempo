@@ -175,6 +175,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        // T7+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
+        if self.spec.is_t7() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -967,6 +972,41 @@ mod tests {
             expected_state_gas,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T6, TempoHardfork::T7] {
+            let mut evm = TestEvm::new(spec);
+            let gas_params = evm.ctx().cfg.gas_params.clone();
+            let address = Address::random();
+            let key = U256::from(42);
+
+            {
+                let mut provider = evm.provider_max_gas();
+                provider.sstore(address, key, U256::ONE)?;
+            }
+
+            let result = {
+                let mut provider = evm.provider_with_gas_limit(gas_params.call_stipend(), 0);
+                provider.sstore(address, key, U256::from(2))
+            };
+
+            let expected = if spec.is_t7() {
+                assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+                U256::ONE
+            } else {
+                result.expect("pre-T7 SSTORE at stipend should preserve historical behavior");
+                U256::from(2)
+            };
+
+            {
+                let mut provider = evm.provider_max_gas();
+                assert_eq!(provider.sload(address, key)?, expected);
+            }
+        }
 
         Ok(())
     }
