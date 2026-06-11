@@ -1102,7 +1102,7 @@ jobs:
               }
 
               const chartOrder = ['scatter', 'baseline_distribution', 'feature_distribution'];
-              chartsSection = '\n\n### Metric Distribution Plots\n\n';
+              chartsSection = '\n\n<details><summary>Metric distribution plots</summary>\n\n';
               for (const [metric, metricCharts] of groupedCharts) {
                 metricCharts.sort((a, b) => chartOrder.indexOf(a.kind) - chartOrder.indexOf(b.kind));
                 chartsSection += `<details><summary>${metric}</summary>\n\n`;
@@ -1113,6 +1113,7 @@ jobs:
                 }
                 chartsSection += `</details>\n\n`;
               }
+              chartsSection += '</details>\n';
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
