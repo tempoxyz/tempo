@@ -226,7 +226,7 @@ mod tests {
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
-    use alloy_sol_types::SolCall;
+    use alloy_sol_types::{SolCall, SolEvent};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
         ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
@@ -1957,13 +1957,7 @@ mod tests {
         }
     }
 
-    /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
-    fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
-        let input_bytes = ITIP1060StorageCredits::setModeCall {
-            newMode: tip1060_abi_mode(mode),
-        }
-        .abi_encode();
-
+    fn append_tip1060_precompile_call(bytecode_bytes: &mut Vec<u8>, input_bytes: &[u8]) {
         for (i, &byte) in input_bytes.iter().enumerate() {
             assert!(i <= u8::MAX as usize);
             // PUSH1 <byte> PUSH1 <offset> MSTORE8  (write calldata byte at memory[offset])
@@ -1986,6 +1980,16 @@ mod tests {
         bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
         // PUSH3 0x0f4240 CALL POP  (call with 1_000_000 gas and discard success flag)
         bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
+    }
+
+    /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
+    fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
+        let input_bytes = ITIP1060StorageCredits::setModeCall {
+            newMode: tip1060_abi_mode(mode),
+        }
+        .abi_encode();
+
+        append_tip1060_precompile_call(bytecode_bytes, &input_bytes);
     }
 
     fn bytecode_with_tip1060_mode(mode: CreditMode, body: &[u8]) -> Bytecode {
@@ -2510,6 +2514,97 @@ mod tests {
                 "storage credit balance after the create-only tx should be exact in {mode:?} mode"
             );
         }
+
+        Ok(())
+    }
+
+    /// TIP-1060: `setBudget(n)` selects bounded Direct mode. Only `n` zero-to-nonzero
+    /// creations can consume storage credits synchronously; once the budget is exhausted the
+    /// account switches to Preserve, emits `ModeUpdated(account, Preserve)`, and later creates pay
+    /// full state gas without spending credits.
+    #[test]
+    fn test_tip1060_direct_budget_caps_credit_consumption_and_emits_preserve() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let budgeted_contract = Address::repeat_byte(0x86);
+        let unlimited_contract = Address::repeat_byte(0x87);
+
+        let mut budgeted_bytecode = Vec::new();
+        let set_budget_input =
+            ITIP1060StorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
+        budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
+
+        let unlimited_bytecode =
+            bytecode_with_tip1060_mode(CreditMode::Direct, &bytes!("6001600055600160015500"));
+
+        let mut evm = create_funded_evm_t7(caller);
+        evm.ctx.db_mut().insert_account_info(
+            budgeted_contract,
+            AccountInfo {
+                code: Some(Bytecode::new_raw(budgeted_bytecode.into())),
+                ..Default::default()
+            },
+        );
+        evm.ctx.db_mut().insert_account_info(
+            unlimited_contract,
+            AccountInfo {
+                code: Some(unlimited_bytecode),
+                ..Default::default()
+            },
+        );
+        seed_storage_credit_balance(&mut evm, budgeted_contract, 2);
+        seed_storage_credit_balance(&mut evm, unlimited_contract, 2);
+
+        let budgeted_tx = TxBuilder::new()
+            .call(budgeted_contract, &[])
+            .nonce(0)
+            .gas_limit(2_000_000)
+            .build();
+        let budgeted_result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(budgeted_tx)?,
+            caller,
+        ))?;
+        assert!(budgeted_result.is_success());
+        assert_eq!(
+            storage_credit_balance(&evm, budgeted_contract),
+            1,
+            "budget 1 must consume exactly one of the two available credits"
+        );
+
+        let budgeted_mode_updates = budgeted_result
+            .logs()
+            .iter()
+            .filter(|log| log.address == STORAGE_CREDITS_ADDRESS)
+            .map(|log| ITIP1060StorageCredits::ModeUpdated::decode_log(log))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(budgeted_mode_updates.len(), 2);
+        // `setBudget(1)` first selects Direct mode. Exhausting that budget on the first
+        // credit-backed create then automatically switches the account to Preserve.
+        assert_eq!(budgeted_mode_updates[0].account, budgeted_contract);
+        assert_eq!(budgeted_mode_updates[0].newMode, Mode::Direct);
+        assert_eq!(budgeted_mode_updates[1].account, budgeted_contract);
+        assert_eq!(budgeted_mode_updates[1].newMode, Mode::Preserve);
+
+        let unlimited_tx = TxBuilder::new()
+            .call(unlimited_contract, &[])
+            .nonce(1)
+            .gas_limit(2_000_000)
+            .build();
+        let unlimited_result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+            &key_pair.sign_tx(unlimited_tx)?,
+            caller,
+        ))?;
+        assert!(unlimited_result.is_success());
+        assert_eq!(
+            storage_credit_balance(&evm, unlimited_contract),
+            0,
+            "setMode(Direct) has unlimited budget and must consume both available credits"
+        );
+        assert!(
+            budgeted_result.tx_gas_used() > unlimited_result.tx_gas_used(),
+            "the budgeted second create should pay full creation gas after switching to Preserve"
+        );
 
         Ok(())
     }

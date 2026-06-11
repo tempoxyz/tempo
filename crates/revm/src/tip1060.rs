@@ -5,7 +5,7 @@ use crate::{
     evm::{TempoContext, TempoEvm},
 };
 use alloy_evm::Database;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, IntoLogData, Log, U256};
 use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
@@ -16,11 +16,12 @@ use revm::{
         interpreter::EthInterpreter,
     },
 };
+use tempo_contracts::precompiles::TIP1060StorageCreditsEvent;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
     tip1060_storage_credits::{
-        STORAGE_CREDIT_VALUE, StorageCreditsBackend, sstore_storage_credits,
+        CreditMode, STORAGE_CREDIT_VALUE, StorageCreditsBackend, sstore_storage_credits,
     },
 };
 
@@ -144,6 +145,20 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     #[inline]
     fn store_transient_state(&mut self, key: U256, value: U256) {
         self.context.tstore(STORAGE_CREDITS_ADDRESS, key, value);
+    }
+
+    #[inline]
+    fn emit_mode_updated(
+        &mut self,
+        account: Address,
+        new_mode: CreditMode,
+    ) -> Result<(), Self::Error> {
+        self.context.log(Log {
+            address: STORAGE_CREDITS_ADDRESS,
+            data: TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into())
+                .into_log_data(),
+        });
+        Ok(())
     }
 }
 

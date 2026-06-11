@@ -63,31 +63,34 @@ impl From<CreditMode> for Mode {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub struct TransientState {
-    pub pending_refunds: u64,
+    pub budget: u64,
     pub mode: CreditMode,
+    pub pending_refunds: u64,
 }
 
 impl TransientState {
     /// Decodes a packed transient state word.
     ///
     /// Layout:
-    /// - bits `0..=63`: pending refund-eligible creations (`uint64`)
+    /// - bits `0..=63`: remaining direct-spend budget (`uint64`)
     /// - bits `64..=71`: storage creation mode
-    /// - bits `72..=255`: reserved for future hardfork-gated extensions
+    /// - bits `128..=191`: pending refund-eligible creations (`uint64`)
+    /// - remaining bits: reserved for future hardfork-gated extensions
     #[inline]
     pub fn from_word(value: U256) -> Result<Self> {
         // `U256` limbs are little-endian: limb 0 holds bits 0..=63,
         // limb 1 holds bits 64..=127.
         let limbs = value.as_limbs();
         Ok(Self {
-            pending_refunds: limbs[0],
+            budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
+            pending_refunds: limbs[2],
         })
     }
 
     #[inline]
     pub fn into_word(self) -> U256 {
-        U256::from_limbs([self.pending_refunds, self.mode as u64, 0, 0])
+        U256::from_limbs([self.budget, self.mode as u64, self.pending_refunds, 0])
     }
 }
 
@@ -102,8 +105,8 @@ impl TransientState {
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 ///
-/// Storage creation mode and pending refund counters are transaction-local transient state
-/// at the same account-derived slot.
+/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
+/// transient state at the same account-derived slot.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct TIP1060StorageCredits {}
 
@@ -120,15 +123,43 @@ impl TIP1060StorageCredits {
         self.transient_state_of(account).map(|state| state.mode)
     }
 
-    pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
-        let mut state = self.transient_state_of(msg_sender)?;
-        state.mode = CreditMode::try_from(mode)?;
-        self.write_transient_state_of(msg_sender, state)?;
+    pub fn credit_budget_of(&self, account: Address) -> Result<u64> {
+        self.transient_state_of(account).map(|state| state.budget)
+    }
 
+    pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
+        let mode = CreditMode::try_from(mode)?;
+        let budget = if matches!(mode, CreditMode::Direct) {
+            u64::MAX
+        } else {
+            0
+        };
+
+        self.write_mode_with_budget(msg_sender, mode, budget)?;
         self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
             msg_sender,
-            state.mode.into(),
+            mode.into(),
         ))
+    }
+
+    pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
+        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)?;
+        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+            msg_sender,
+            Mode::Direct,
+        ))
+    }
+
+    fn write_mode_with_budget(
+        &mut self,
+        msg_sender: Address,
+        mode: CreditMode,
+        budget: u64,
+    ) -> Result<()> {
+        let mut state = self.transient_state_of(msg_sender)?;
+        state.mode = mode;
+        state.budget = budget;
+        self.write_transient_state_of(msg_sender, state)
     }
 
     #[inline]
