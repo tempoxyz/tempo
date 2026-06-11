@@ -164,11 +164,28 @@ def parse_workspace_package(ws_toml_path):
     """Parse [workspace.package] metadata from a workspace Cargo.toml."""
     ws_text = Path(ws_toml_path).read_text(encoding='utf-8')
     meta = {}
-    for key in ('version', 'edition', 'rust-version', 'license'):
-        m = re.search(rf'^{re.escape(key)}\s*=\s*"([^"]+)"', ws_text, re.MULTILINE)
+    for key in (
+        'version',
+        'edition',
+        'rust-version',
+        'authors',
+        'license',
+        'homepage',
+        'repository',
+        'categories',
+        'keywords',
+    ):
+        m = re.search(rf'^{re.escape(key)}\s*=\s*(.+)$', ws_text, re.MULTILINE)
         if m:
-            meta[key] = m.group(1)
+            meta[key] = m.group(1).strip()
     return meta
+
+
+def unquote_toml_string(value):
+    """Return the contents of a simple TOML string value."""
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
 
 
 def parse_workspace_deps(ws_toml_path):
@@ -308,21 +325,36 @@ def main():
 
         if ws_toml_path:
             meta = parse_workspace_package(ws_toml_path)
-            rust_version = meta.get('rust-version', '1.93.0')
-            edition = meta.get('edition', '2024')
-            license_val = meta.get('license', 'MIT OR Apache-2.0')
         else:
-            rust_version = '1.93.0'
-            edition = '2024'
-            license_val = 'MIT OR Apache-2.0'
+            meta = {
+                'edition': '"2024"',
+                'rust-version': '"1.93.0"',
+                'authors': '["Tempo Contributors"]',
+                'license': '"MIT OR Apache-2.0"',
+                'homepage': '"https://docs.tempo.xyz"',
+                'repository': '"https://github.com/tempoxyz/tempo"',
+                'categories': '["cryptography::cryptocurrencies"]',
+                'keywords': '["blockchain", "ethereum", "evm", "payments", "tempo"]',
+            }
 
         # Remove [lints] section
         text = re.sub(r'\n\[lints\]\nworkspace = true\n', '\n', text)
         # Resolve workspace package fields (order matters: longer keys first)
-        text = text.replace('rust-version.workspace = true', f'rust-version = "{rust_version}"')
-        text = text.replace('version.workspace = true', f'version = "{ws_version}"')
-        text = text.replace('edition.workspace = true', f'edition = "{edition}"')
-        text = text.replace('license.workspace = true', f'license = "{license_val}"')
+        for key in (
+            'rust-version',
+            'version',
+            'edition',
+            'authors',
+            'license',
+            'homepage',
+            'repository',
+            'categories',
+            'keywords',
+        ):
+            if key == 'version':
+                text = text.replace('version.workspace = true', f'version = "{ws_version}"')
+            elif key in meta:
+                text = text.replace(f'{key}.workspace = true', f'{key} = {meta[key]}')
         # Remove publish.workspace = true
         text = re.sub(r'publish\.workspace = true\n', '', text)
 
@@ -495,6 +527,7 @@ def main():
         out_path = sys.argv[3]
         publish_crates = set(sys.argv[4].split(',')) if len(sys.argv) > 4 else set()
 
+        workspace_package = parse_workspace_package(ws_toml_path)
         ws_deps, ws_no_default, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
 
         # Read the [workspace.dependencies] section text
@@ -518,6 +551,21 @@ def main():
 
         # Build output
         existing = Path(out_path).read_text(encoding='utf-8')
+        if workspace_package:
+            existing += '\n[workspace.package]\n'
+            for key in (
+                'version',
+                'edition',
+                'rust-version',
+                'authors',
+                'license',
+                'homepage',
+                'repository',
+                'categories',
+                'keywords',
+            ):
+                if key in workspace_package:
+                    existing += f'{key} = {workspace_package[key]}\n'
         existing += '\n[workspace.dependencies]\n'
         existing += filtered + '\n'
         for crate in sorted(publish_crates):
@@ -537,7 +585,7 @@ def main():
         if not version:
             print("error: could not find workspace version", file=sys.stderr)
             sys.exit(1)
-        print(version)
+        print(unquote_toml_string(version))
         sys.exit(0)
 
     else:

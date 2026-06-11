@@ -13,7 +13,7 @@ use reth_transaction_pool::{
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
+use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -94,6 +94,23 @@ impl Iterator for MergeBestTransactions {
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let buffered = usize::from(self.next_protocol_pool.is_some())
+            + usize::from(self.next_aa_2d_pool.is_some());
+        let (protocol_lower, protocol_upper) = self.protocol_pool.size_hint();
+        let (aa_2d_lower, aa_2d_upper) = self.aa_2d_pool.size_hint();
+
+        (
+            buffered
+                .saturating_add(protocol_lower)
+                .saturating_add(aa_2d_lower),
+            protocol_upper
+                .zip(aa_2d_upper)
+                .and_then(|(protocol_upper, aa_2d_upper)| protocol_upper.checked_add(aa_2d_upper))
+                .and_then(|upper| upper.checked_add(buffered)),
+        )
+    }
 }
 
 impl BestTransactions for MergeBestTransactions {
@@ -148,14 +165,11 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
-                let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
+                if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
-                        .insert((address, slot), present_balance);
+                        .insert((address, slot), storage_slot.present_value);
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
+                    *balance = storage_slot.present_value;
                 }
             }
         }
@@ -229,7 +243,7 @@ mod tests {
         test_utils::OkValidator,
     };
     use std::sync::Arc;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -239,7 +253,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .nonce(nonce)
                 .max_priority_fee(priority)
-                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + priority)
                 .build(),
             TransactionOrigin::External,
         ))
@@ -296,7 +310,7 @@ mod tests {
                 .or_insert(id.nonce);
         }
 
-        pool.set_base_fee(TempoHardfork::T1.base_fee());
+        pool.set_base_fee(TEMPO_T1_BASE_FEE);
         for tx in txs {
             let id = tx
                 .transaction
@@ -316,7 +330,7 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
-            TempoHardfork::T1.base_fee(),
+            TEMPO_T1_BASE_FEE,
         )
     }
 
@@ -344,6 +358,36 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash())); // priority 3
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_f.hash())); // priority 1
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_size_hint() {
+        let protocol_sender = Address::random();
+        let protocol_tx_0 = protocol_tx_for_sender(protocol_sender, 0, 10);
+        let protocol_tx_1 = protocol_tx_for_sender(protocol_sender, 1, 9);
+        let aa_2d_tx = aa_2d_tx(0, 8);
+        let mut merged = merged_best_transactions(
+            vec![protocol_tx_0.clone(), protocol_tx_1.clone()],
+            vec![aa_2d_tx.clone()],
+        );
+        merged.no_updates();
+
+        assert_eq!(merged.size_hint(), (0, Some(3)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_0.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(2)));
+
+        assert_eq!(
+            merged.next().map(|tx| *tx.hash()),
+            Some(*protocol_tx_1.hash())
+        );
+        assert_eq!(merged.size_hint(), (1, Some(1)));
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*aa_2d_tx.hash()));
+        assert_eq!(merged.size_hint(), (0, Some(0)));
     }
 
     #[test]
