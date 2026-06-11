@@ -10,7 +10,7 @@ pub use gas_state::{
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{Handler, LayoutCtx, Storable, StorableType, packing::PackedSlot},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
@@ -70,29 +70,23 @@ pub struct TransientState {
     pub pending_refunds: u64,
 }
 
-impl TransientState {
-    /// Decodes a packed transient state word.
-    ///
-    /// Layout:
-    /// - bits `0..=63`: remaining direct-spend budget (`uint64`)
-    /// - bits `64..=71`: storage creation mode
-    /// - bits `128..=191`: pending refund-eligible creations (`uint64`)
-    /// - remaining bits: reserved for future hardfork-gated extensions
-    #[inline]
-    pub fn from_word(value: U256) -> Result<Self> {
-        // `U256` limbs are little-endian: limb 0 holds bits 0..=63,
-        // limb 1 holds bits 64..=127.
-        let limbs = value.as_limbs();
-        Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[2],
-        })
-    }
+impl TryFrom<U256> for TransientState {
+    type Error = TempoPrecompileError;
 
     #[inline]
-    pub fn into_word(self) -> U256 {
-        U256::from_limbs([self.budget, self.mode as u64, self.pending_refunds, 0])
+    fn try_from(value: U256) -> Result<Self> {
+        Storable::load(&PackedSlot(value), U256::ZERO, LayoutCtx::FULL)
+    }
+}
+
+impl TryFrom<TransientState> for U256 {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn try_from(value: TransientState) -> Result<Self> {
+        let mut slot = PackedSlot(Self::ZERO);
+        value.store(&mut slot, Self::ZERO, LayoutCtx::FULL)?;
+        Ok(slot.0)
     }
 }
 
