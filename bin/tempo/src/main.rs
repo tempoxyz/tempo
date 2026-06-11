@@ -40,6 +40,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 mod defaults;
+mod follow;
 mod init_state;
 mod p2p_proxy;
 mod regenesis;
@@ -113,7 +114,7 @@ struct TempoArgs {
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
-    pub follow: Option<String>,
+    pub follow: Option<follow::FollowMode>,
 
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
@@ -508,9 +509,8 @@ fn main() -> eyre::Result<()> {
             }
 
             let consensus_stack = if let Some(follow) = args.follow {
-                let follow_url = node
-                    .chain_spec()
-                    .resolve_follow_url(&follow)
+                let follow_url = follow
+                    .resolve_url(&node.chain_spec())
                     .ok_or_eyre("No default follow URL for this chain")?;
 
                 Either::Left(run_follow_stack(
@@ -628,8 +628,8 @@ fn main() -> eyre::Result<()> {
                 if args.is_following_uncertified() {
                     let follow_url = args
                         .follow
-                        .as_deref()
-                        .and_then(|follow| builder.config().chain.resolve_follow_url(follow));
+                        .as_ref()
+                        .and_then(|follow| follow.resolve_url(&builder.config().chain));
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
 
