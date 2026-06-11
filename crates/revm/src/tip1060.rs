@@ -51,8 +51,8 @@ pub fn apply_refund<DB: Database, I>(
 
     let mut refunds = 0;
     for (key, word) in slots {
-        let transient_state = TransientState::try_from(word)
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        let transient_state =
+            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let pending = transient_state.pending_refunds;
         if pending == 0 {
             continue;
@@ -131,12 +131,12 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 
     #[inline]
-    fn load_transient_state(&mut self, key: U256) -> U256 {
+    fn load_credit_state(&mut self, key: U256) -> U256 {
         self.context.tload(STORAGE_CREDITS_ADDRESS, key)
     }
 
     #[inline]
-    fn store_transient_state(&mut self, key: U256, value: U256) {
+    fn store_credit_state(&mut self, key: U256, value: U256) {
         self.context.tstore(STORAGE_CREDITS_ADDRESS, key, value);
     }
 

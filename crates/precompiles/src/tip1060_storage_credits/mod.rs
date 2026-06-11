@@ -114,11 +114,11 @@ impl TIP1060StorageCredits {
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
-        self.transient_state_of(account).map(|state| state.mode)
+        self.credit_state_of(account).map(|state| state.mode)
     }
 
     pub fn credit_budget_of(&self, account: Address) -> Result<u64> {
-        self.transient_state_of(account).map(|state| state.budget)
+        self.credit_state_of(account).map(|state| state.budget)
     }
 
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
@@ -150,10 +150,10 @@ impl TIP1060StorageCredits {
         mode: CreditMode,
         budget: u64,
     ) -> Result<()> {
-        let mut state = self.transient_state_of(msg_sender)?;
+        let mut state = self.credit_state_of(msg_sender)?;
         state.mode = mode;
         state.budget = budget;
-        self.write_transient_state_of(msg_sender, state)
+        self.write_credit_state_of(msg_sender, state)
     }
 
     #[inline]
@@ -162,12 +162,12 @@ impl TIP1060StorageCredits {
     }
 
     #[inline]
-    fn transient_state_of(&self, account: Address) -> Result<TransientState> {
+    fn credit_state_of(&self, account: Address) -> Result<TransientState> {
         TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_read()
     }
 
     #[inline]
-    fn write_transient_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
+    fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         TransientState::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state)
     }
 }
