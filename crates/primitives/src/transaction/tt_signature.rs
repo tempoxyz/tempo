@@ -327,7 +327,11 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
     }
 }
 
@@ -728,7 +732,11 @@ impl alloy_rlp::Encodable for TempoSignature {
     }
 
     fn length(&self) -> usize {
-        self.to_bytes().length()
+        alloy_rlp::Header {
+            list: false,
+            payload_length: self.encoded_length(),
+        }
+        .length_with_payload()
     }
 }
 
@@ -972,11 +980,14 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::hex;
+    use alloy_rlp::Encodable;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,
     };
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -1011,6 +1022,18 @@ mod tests {
             format!("{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge}\"}}").as_bytes(),
         );
         data
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_primitive_signature_rlp_length_matches_to_bytes(signature in arb::<PrimitiveSignature>()) {
+            prop_assert_eq!(signature.to_bytes().length(), signature.length());
+        }
+
+        #[test]
+        fn proptest_tempo_signature_rlp_length_matches_to_bytes(signature in arb::<TempoSignature>()) {
+            prop_assert_eq!(signature.to_bytes().length(), signature.length());
+        }
     }
 
     #[test]

@@ -97,6 +97,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &self.inner.inner.ctx
     }
 
+    /// Consumes this EVM wrapper and returns the EVM context.
+    pub fn into_ctx(self) -> TempoContext<DB> {
+        self.inner.inner.ctx
+    }
+
     /// Returns the [`EvmEnv`] for the current block.
     pub fn evm_env(&self) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
         EvmEnv {

@@ -287,6 +287,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
+        self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
     }
@@ -1126,7 +1127,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(100_000));
+        assert_eq!(slot, U256::from(100_000));
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
@@ -1142,7 +1143,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(97_132));
+        assert_eq!(slot, U256::from(97_132));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -1171,7 +1172,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(94_003));
+        assert_eq!(slot, U256::from(94_003));
 
         Ok(())
     }

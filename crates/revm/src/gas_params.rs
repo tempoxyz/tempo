@@ -5,7 +5,7 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 
 // TIP-1000 total gas costs (used by T1)
-pub const SSTORE_SET_COST: u64 = 250_000;
+const SSTORE_SET_COST: u64 = 250_000;
 const CREATE_COST: u64 = 500_000;
 const NEW_ACCOUNT_COST: u64 = 250_000;
 const CODE_DEPOSIT_COST_T1: u64 = 1_000;
