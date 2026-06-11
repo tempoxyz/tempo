@@ -37,6 +37,14 @@ type PoolUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+
+/// Maximum number of expiring nonce transactions included in a best-transactions snapshot.
+///
+/// A snapshot only needs to cover what a single payload build can consume (with headroom);
+/// transactions arriving later stream in through the new-transaction feed. Bounding the
+/// snapshot keeps its cost proportional to block capacity instead of pool capacity and
+/// shortens how long the pool read lock is held while block building starts.
+const EXPIRING_NONCE_SNAPSHOT_LIMIT: usize = 32_768;
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -644,12 +652,39 @@ impl AA2dPool {
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.expiring_nonce_eviction_order.clone()
+            if self.expiring_nonce_eviction_order.len() <= EXPIRING_NONCE_SNAPSHOT_LIMIT {
+                self.expiring_nonce_eviction_order.clone()
+            } else {
+                // Only snapshot the best transactions instead of cloning the entire
+                // eviction set, which scales with pool capacity (hundreds of thousands
+                // of transactions at saturation) while a block can only ever include a
+                // fraction of that. Collect descending, then reverse so the set is
+                // bulk-built from ascending input.
+                self.expiring_nonce_eviction_order
+                    .iter()
+                    .rev()
+                    .take(EXPIRING_NONCE_SNAPSHOT_LIMIT)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            }
         } else {
-            self.expiring_nonce_txs
+            let mut keys = self
+                .expiring_nonce_txs
                 .values()
                 .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
-                .collect()
+                .collect::<Vec<_>>();
+            if keys.len() > EXPIRING_NONCE_SNAPSHOT_LIMIT {
+                // Keep only the highest-priority transactions; `select_nth_unstable`
+                // partitions in linear time so the cost stays bounded by pool size
+                // without a full sort.
+                let cut = keys.len() - EXPIRING_NONCE_SNAPSHOT_LIMIT;
+                keys.select_nth_unstable(cut - 1);
+                keys.drain(..cut);
+            }
+            keys.into_iter().collect()
         };
         let independent = self
             .independent_transactions
