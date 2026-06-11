@@ -328,7 +328,14 @@ where
                 best_payload: None,
             };
 
-            match self.builder.on_missing_payload(args) {
+            let missing_payload_behavior =
+                if kind == PayloadKind::Earliest && self.has_controlled_pending_build() {
+                    MissingPayloadBehaviour::RaceEmptyPayload
+                } else {
+                    self.builder.on_missing_payload(args)
+                };
+
+            match missing_payload_behavior {
                 MissingPayloadBehaviour::AwaitInProgress => {
                     debug!(target: "payload_builder", id=%self.config.payload_id(), "awaiting in progress payload build job");
                 }

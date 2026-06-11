@@ -67,7 +67,7 @@ use tokio::sync::{Mutex as AsyncMutex, oneshot as tokio_oneshot};
 use tracing::{Level, debug, info, info_span, instrument, warn};
 
 #[cfg(feature = "bal")]
-const SPECULATIVE_PAYLOAD_FALLBACK_RESERVE: Duration = Duration::from_millis(150);
+const SPECULATIVE_PAYLOAD_FALLBACK_RESERVE: Duration = Duration::from_millis(300);
 #[cfg(feature = "bal")]
 const SPECULATIVE_PAYLOAD_READY_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -1144,6 +1144,8 @@ impl Inner<Init> {
             !is_genesis_parent && is_nullified_view_recovery(round, parent_view);
         #[cfg(feature = "bal")]
         let mut proposal_parent_verified = false;
+        #[cfg(feature = "bal")]
+        let mut matched_speculative_build_was_not_ready = false;
 
         #[cfg(feature = "bal")]
         if let Some(mut speculative_build) = self
@@ -1216,6 +1218,7 @@ impl Inner<Init> {
                 speculative_build,
                 "speculative_payload_not_ready_for_proposal",
             );
+            matched_speculative_build_was_not_ready = true;
         }
 
         // Send the proposal parent to execution layer to cover edge cases when
@@ -1236,34 +1239,37 @@ impl Inner<Init> {
         }
 
         #[cfg(feature = "bal")]
-        if !is_genesis_parent {
+        if !is_genesis_parent
+            && (matched_speculative_build_was_not_ready || nullified_view_recovery)
+        {
+            debug!(
+                parent.digest = %parent.digest(),
+                parent.height = %parent.height(),
+                parent.view = %parent_view,
+                round.view = %round.view(),
+                matched_speculative_build_was_not_ready,
+                nullified_view_recovery,
+                "skipping missing-slot BAL speculative fallback"
+            );
+        }
+
+        #[cfg(feature = "bal")]
+        if !is_genesis_parent
+            && !matched_speculative_build_was_not_ready
+            && !nullified_view_recovery
+        {
             let consensus_context = consensus_context
                 .clone()
                 .expect("proposal consensus context is constructed immediately above");
-            let build_budget = if nullified_view_recovery {
-                Duration::ZERO
-            } else {
-                self.proposal_return_budget
-                    .saturating_sub(propose_start.elapsed())
-            };
+            let build_budget = self
+                .proposal_return_budget
+                .saturating_sub(propose_start.elapsed());
             let build_control = PayloadBuildControl::new(build_budget);
             build_control
                 .attach_proposal_context(extra_data.clone(), consensus_context)
                 .map_err(|error| {
                     eyre!("failed attaching propose-time speculative proposal context: {error}")
                 })?;
-            if nullified_view_recovery {
-                self.metrics
-                    .speculative_payload_builds_started_from_propose_recovery
-                    .inc();
-                debug!(
-                    parent.digest = %parent.digest(),
-                    parent.height = %parent.height(),
-                    parent.view = %parent_view,
-                    round.view = %round.view(),
-                    "limiting missing-slot BAL proposal fallback after nullified view recovery"
-                );
-            }
 
             self.state
                 .speculative_builds
@@ -1367,10 +1373,15 @@ impl Inner<Init> {
         // unconditionally waiting for a `PayloadId` and immediately get this job.
         *payload_id_rx = Some(PendingPayloadId::ready(payload_id));
 
+        #[cfg(feature = "bal")]
+        let payload_kind = reth_node_builder::PayloadKind::Earliest;
+        #[cfg(not(feature = "bal"))]
+        let payload_kind = reth_node_builder::PayloadKind::WaitForPending;
+
         let payload = self
             .execution_node
             .payload_builder_handle
-            .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
+            .resolve_kind(payload_id, payload_kind)
             .pace(&context, Duration::from_millis(20))
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
@@ -2354,8 +2365,6 @@ struct Metrics {
     #[cfg(feature = "bal")]
     speculative_payload_builds_started_from_propose_fallback: Counter,
     #[cfg(feature = "bal")]
-    speculative_payload_builds_started_from_propose_recovery: Counter,
-    #[cfg(feature = "bal")]
     speculative_payload_builds_started_from_propose_successor: Counter,
 }
 
@@ -2401,16 +2410,6 @@ impl Metrics {
             counter
         };
         #[cfg(feature = "bal")]
-        let speculative_payload_builds_started_from_propose_recovery = {
-            let counter = Counter::default();
-            context.register(
-                "speculative_payload_builds_started_from_propose_recovery",
-                "number of BAL proposal fallback builds limited after nullified view recovery",
-                counter.clone(),
-            );
-            counter
-        };
-        #[cfg(feature = "bal")]
         let speculative_payload_builds_started_from_propose_successor = {
             let counter = Counter::default();
             context.register(
@@ -2429,8 +2428,6 @@ impl Metrics {
             speculative_payload_builds_reused_by_propose,
             #[cfg(feature = "bal")]
             speculative_payload_builds_started_from_propose_fallback,
-            #[cfg(feature = "bal")]
-            speculative_payload_builds_started_from_propose_recovery,
             #[cfg(feature = "bal")]
             speculative_payload_builds_started_from_propose_successor,
         }
@@ -2491,7 +2488,7 @@ mod tests {
                 Duration::from_millis(40),
                 false,
             ),
-            Duration::from_millis(310)
+            Duration::from_millis(160)
         );
         assert_eq!(
             speculative_payload_resolution_wait_budget(
