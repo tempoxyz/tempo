@@ -755,11 +755,39 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, defaults};
+    use super::{Commands, TempoCli, defaults, follow::FollowMode};
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
+    }
+
+    fn parse_follow(args: &[&str]) -> Option<FollowMode> {
+        let cli = TempoCli::try_parse_from(args).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        node_cmd.ext.follow
+    }
+
+    #[test]
+    fn follow_arg_parses_to_expected_mode() {
+        init_defaults_once();
+
+        assert_eq!(parse_follow(&["tempo", "node", "--dev"]), None);
+        // `--follow` without a value falls back to the `auto` default.
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "auto"]),
+            Some(FollowMode::Auto)
+        );
+        assert_eq!(
+            parse_follow(&["tempo", "node", "--dev", "--follow", "ws://upstream:8546"]),
+            Some(FollowMode::Url("ws://upstream:8546".to_string()))
+        );
     }
 
     #[test]
