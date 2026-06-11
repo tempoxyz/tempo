@@ -341,7 +341,7 @@ async fn wait_for_height(
             }
 
             let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
+            let metric = crate::metric_name(parts.next().unwrap());
             let value = parts.next().unwrap();
 
             // Check if this is a height metric
@@ -366,15 +366,14 @@ async fn wait_for_height(
 
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
-    let baseline = {
-        let metrics = context.encode();
+    let max_processed_height = |metrics: &str| {
         let mut height = None;
         for line in metrics.lines() {
             if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                 continue;
             }
             let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
+            let metric = crate::metric_name(parts.next().unwrap());
             let value = parts.next().unwrap();
             if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
@@ -383,29 +382,20 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
                 }
             }
         }
-        height.expect("processed height is a metric")
+        height
     };
+
+    let Some(baseline) = max_processed_height(&context.encode()) else {
+        return;
+    };
+
     for _ in 0..=tries {
         context.sleep(Duration::from_secs(1)).await;
+        let Some(height) = max_processed_height(&context.encode()) else {
+            continue;
+        };
 
-        let metrics = context.encode();
-        let mut height = None;
-        for line in metrics.lines() {
-            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-            if metric.ends_with("_marshal_processed_height") {
-                let value = value.parse::<u64>().unwrap();
-                if Some(value) > height {
-                    height.replace(value);
-                }
-            }
-        }
-        let height = height.expect("processed height is a metric");
-        if height != baseline {
+        if height > baseline {
             panic!(
                 "height has changed, progress was made while the network was \
                 stopped: baseline = `{baseline}`, progressed_to = `{height}`"
@@ -497,9 +487,10 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     }
                     let mut parts = line.split_whitespace();
                     let metric = parts.next().unwrap();
+                    let name = crate::metric_name(metric);
                     let value = parts.next().unwrap();
 
-                    if metric.ends_with("_marshal_processed_height") {
+                    if name.ends_with("_marshal_processed_height") {
                         let value = value.parse::<u64>().unwrap();
                         if shutdown_after_finalizing
                             .is_target_height(setup.epoch_length, Height::new(value))
@@ -536,14 +527,15 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     }
                     let mut parts = line.split_whitespace();
                     let metric = parts.next().unwrap();
+                    let name = crate::metric_name(metric);
                     let value = parts.next().unwrap();
                     if metric.contains(&uid)
-                        && metric.ends_with("_marshal_processed_height")
+                        && name.ends_with("_marshal_processed_height")
                         && value.parse::<u64>().unwrap() > height + 10
                     {
                         break 'look_for_progress;
                     }
-                    if metric.ends_with("ceremony_bad_dealings") {
+                    if name.ends_with("ceremony_bad_dealings") {
                         assert_eq!(value.parse::<u64>().unwrap(), 0);
                     }
                 }

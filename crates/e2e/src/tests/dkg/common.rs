@@ -49,7 +49,7 @@ pub(crate) fn parse_metric_line(line: &str) -> Option<(&str, u64)> {
     }
 
     let mut parts = line.split_whitespace();
-    let metric = parts.next()?;
+    let metric = crate::metric_name(parts.next()?);
     let value = parts.next()?.parse().ok()?;
 
     Some((metric, value))
@@ -139,7 +139,7 @@ pub(crate) fn assert_no_dkg_failures(context: &Context) {
 /// Asserts that no DKG ceremony failures have occurred.
 #[track_caller]
 pub(crate) fn assert_no_dkg_failure(metric: &str, value: &str) {
-    if metric.ends_with("_dkg_manager_ceremony_failures_total") {
+    if crate::metric_name(metric).ends_with("_dkg_manager_ceremony_failures_total") {
         assert_eq!(0, value.parse::<u64>().unwrap(),);
     }
 }

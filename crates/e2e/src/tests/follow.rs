@@ -53,11 +53,15 @@ async fn wait_for_height(context: &Context, prefix: &str, target_height: u64) {
     loop {
         let metrics = context.encode();
         for line in metrics.lines() {
-            if !line.starts_with(prefix) {
+            if line.starts_with('#') {
                 continue;
             }
             let mut parts = line.split_whitespace();
             let metric = parts.next().unwrap();
+            if !metric.starts_with(prefix) && !metric.contains(prefix) {
+                continue;
+            }
+            let metric = crate::metric_name(metric);
             let value = parts.next().unwrap();
             if metric.ends_with("_marshal_processed_height") {
                 let height = value.parse::<u64>().unwrap();
@@ -169,7 +173,7 @@ impl FollowerBuilder {
             .expect("must be able to spawn follower execution node");
 
         let (upstream, upstream_mailbox) = in_process::init(
-            context.with_label("upstream"),
+            context.child("upstream"),
             in_process::Config {
                 execution_node: node.node.clone().into(),
                 feed: upstream.feed_state(),
@@ -190,6 +194,7 @@ impl FollowerBuilder {
             execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
+            consensus_dir: runtime.nodes_dir().join(&name).join("consensus"),
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -199,7 +204,7 @@ impl FollowerBuilder {
         };
 
         let handle = config
-            .try_init(context.with_label(&name))
+            .try_init(context.child("follow").with_attribute("name", &name))
             .await
             .expect("failed to initialize follow engine")
             .start();
@@ -432,7 +437,7 @@ fn follower_starts_from_validator_archives() {
         connect_execution_peers(&validators).await;
 
         // Wait for validator[0] specifically since we'll donate its archive.
-        wait_for_height(&context, &validators[0].metric_prefix(), target_height).await;
+        wait_for_height(&context, validators[0].uid(), target_height).await;
 
         // Stop validator[0] and donate both its consensus archive and EL chaindata
         // to the follower. Block production continues with 3/4 validators.

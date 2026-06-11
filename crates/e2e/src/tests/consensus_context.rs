@@ -35,8 +35,9 @@ fn blocks_have_consensus_context() {
 
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
+                let name = crate::metric_name(metric);
                 let value = parts.next().unwrap();
-                if metric.contains(uid) && metric.ends_with("_marshal_processed_height") {
+                if metric.contains(uid) && name.ends_with("_marshal_processed_height") {
                     let height = value.parse::<u64>().unwrap();
                     if height >= 5 {
                         break 'setup;

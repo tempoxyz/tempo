@@ -3,13 +3,13 @@
 use crate::execution_runtime::{
     self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle, test_db_args,
 };
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, hex};
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
-use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
+use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
 use reth_db::{Database, DatabaseEnv, open_db_read_only};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
@@ -37,7 +37,7 @@ use tempo_consensus::{
     consensus,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_node::node::TempoNode;
+use tempo_node::{node::TempoNode, rpc::consensus::ConsensusFeed as _};
 use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
@@ -79,6 +79,10 @@ where
     /// The chain address of the node. Used for executing validator-config smart
     /// contract calls.
     pub chain_address: Address,
+    /// Raw encoded finalization to write to the bootstrap certificate path
+    /// before the next start. Used when tests attach an already-finalized EL
+    /// database to fresh consensus storage.
+    bootstrap_finalization: Option<Vec<u8>>,
 
     n_starts: u32,
 }
@@ -127,6 +131,7 @@ where
             last_db_block_on_stop: None,
             network_address,
             chain_address,
+            bootstrap_finalization: None,
 
             n_starts: 0,
         }
@@ -206,9 +211,44 @@ where
     }
 
     async fn start_inner(&mut self, context: &Context) {
+        self.write_bootstrap_finalization();
         self.start_execution().await;
         self.start_consensus(context).await;
         self.n_starts += 1;
+    }
+
+    /// Stage the node's latest in-memory finalization certificate for the next
+    /// start against fresh consensus storage.
+    ///
+    /// The staged certificate is written to the consensus bootstrap path just
+    /// before the node starts. This lets snapshot-style tests move a finalized
+    /// EL database under a new consensus identity without forcing the consensus
+    /// engine to boot from genesis.
+    pub async fn stage_bootstrap_finalization(&mut self) {
+        let latest = self
+            .consensus_config
+            .feed_state
+            .get_latest()
+            .await
+            .finalized
+            .expect("node must have a finalized certificate to bootstrap from");
+
+        self.bootstrap_finalization = Some(
+            hex::decode(&latest.certificate)
+                .expect("latest finalization certificate must be valid hex"),
+        );
+    }
+
+    fn write_bootstrap_finalization(&mut self) {
+        let Some(finalization) = self.bootstrap_finalization.take() else {
+            return;
+        };
+
+        tempo_consensus::write_bootstrap_finalization(
+            &self.consensus_config.consensus_dir,
+            &finalization,
+        )
+        .expect("failed to write bootstrap finalization certificate");
     }
 
     /// Start the execution node and update consensus config to reference it.
@@ -283,7 +323,12 @@ where
         let engine = self
             .consensus_config
             .clone()
-            .try_init(context.with_label(&format!("{}_{}", self.uid, self.n_starts)))
+            .try_init(
+                context
+                    .child("consensus")
+                    .with_attribute("uid", &self.uid)
+                    .with_attribute("start", self.n_starts),
+            )
             .await
             .expect("must be able to start the engine");
 

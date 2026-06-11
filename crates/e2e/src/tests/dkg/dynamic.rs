@@ -126,12 +126,12 @@ impl AssertValidatorIsAdded {
 
                     let mut parts = line.split_whitespace();
                     let key = parts.next().unwrap();
+                    let name = crate::metric_name(key);
                     let value = parts.next().unwrap();
 
                     assert_no_dkg_failure(key, value);
 
-                    if key.ends_with("_epoch_manager_latest_epoch")
-                    {
+                    if name.ends_with("_epoch_manager_latest_epoch") {
                         let epoch = value.parse::<u64>().unwrap();
                         if key.contains(&added_uid) {
                             added_epoch.replace(epoch);
@@ -140,17 +140,17 @@ impl AssertValidatorIsAdded {
                         }
                     }
 
-                    if key.ends_with("_dkg_manager_ceremony_players")
+                    if name.ends_with("_dkg_manager_ceremony_players")
                     && key.contains(&added_uid)
                     {
                         players.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                    if name.ends_with("_dkg_manager_ceremony_dealers")
                     && key.contains(&added_uid)
                     {
                         dealers.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("_epoch_manager_how_often_signer_total")
+                    if name.ends_with("_epoch_manager_how_often_signer_total")
                     && key.contains(&added_uid) {
                         added_signer.replace(value.parse::<u64>().unwrap());
                     }
@@ -251,22 +251,23 @@ impl AssertValidatorIsRemoved {
 
                     let mut parts = line.split_whitespace();
                     let key = parts.next().unwrap();
+                    let name = crate::metric_name(key);
                     let value = parts.next().unwrap();
 
                     assert_no_dkg_failure(key, value);
 
-                    if key.ends_with("_epoch_manager_latest_epoch")
+                    if name.ends_with("_epoch_manager_latest_epoch")
                         && !key.contains(&removed_validator.uid)
                     {
                         network_epoch.replace(value.parse::<u64>().unwrap());
                     }
 
-                    if key.ends_with("_dkg_manager_ceremony_players")
+                    if name.ends_with("_dkg_manager_ceremony_players")
                         && !key.contains(&removed_validator.uid)
                     {
                         players.replace(value.parse::<u32>().unwrap());
                     }
-                    if key.ends_with("_dkg_manager_ceremony_dealers")
+                    if name.ends_with("_dkg_manager_ceremony_dealers")
                         && !key.contains(&removed_validator.uid)
                     {
                         dealers.replace(value.parse::<u32>().unwrap());

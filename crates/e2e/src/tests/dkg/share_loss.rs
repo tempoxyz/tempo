@@ -16,8 +16,9 @@ fn metric_value(metrics: &str, uid: &str, metric_suffix: &str) -> Option<u64> {
         }
         let mut parts = line.split_whitespace();
         let metric = parts.next()?;
+        let name = crate::metric_name(metric);
         let value = parts.next()?;
-        if metric.contains(uid) && metric.ends_with(metric_suffix) {
+        if metric.contains(uid) && name.ends_with(metric_suffix) {
             value.parse::<u64>().ok()
         } else {
             None
@@ -130,6 +131,7 @@ fn validator_loses_consensus_state_becomes_observer() {
         }
 
         specimen.stop().await;
+        specimen.stage_bootstrap_finalization().await;
 
         // Rename the storage prefix to simulate loss of consensus storage.
         specimen.consensus_config.partition_prefix =
@@ -141,7 +143,7 @@ fn validator_loses_consensus_state_becomes_observer() {
 
         specimen.start(&context).await;
 
-        let uid = specimen.metric_prefix();
+        let uid = specimen.uid.clone();
 
         'recover: for iteration in 1.. {
             let metrics = context.encode();

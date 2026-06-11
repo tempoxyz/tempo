@@ -210,7 +210,7 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
             .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
             .filter_map(|line| {
                 let mut parts = line.split_whitespace();
-                let metric = parts.next()?;
+                let metric = crate::metric_name(parts.next()?);
                 let value = parts.next()?;
                 metric
                     .ends_with("_marshal_processed_height")
@@ -234,7 +234,7 @@ fn consensus_metric_sum(context: &Context, metric_suffix: &str) -> u64 {
         .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
-            let metric = parts.next()?;
+            let metric = crate::metric_name(parts.next()?);
             let value = parts.next()?;
             metric
                 .ends_with(metric_suffix)
@@ -251,7 +251,7 @@ fn prometheus_histogram_count(recorder: &PrometheusRecorder, metric: &str) -> u6
         .lines()
         .find_map(|line| {
             let mut parts = line.split_whitespace();
-            (parts.next()? == metric).then(|| parts.next()?.parse().ok())?
+            (crate::metric_name(parts.next()?) == metric).then(|| parts.next()?.parse().ok())?
         })
         .unwrap_or(0)
 }
@@ -260,6 +260,6 @@ fn prometheus_metric_value(recorder: &PrometheusRecorder, metric: &str) -> Optio
     recorder.handle().run_upkeep();
     recorder.handle().render().lines().find_map(|line| {
         let mut parts = line.split_whitespace();
-        (parts.next()? == metric).then(|| parts.next()?.parse().ok())?
+        (crate::metric_name(parts.next()?) == metric).then(|| parts.next()?.parse().ok())?
     })
 }
