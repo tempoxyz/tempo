@@ -13209,6 +13209,7 @@ version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-eips",
+ "alloy-evm",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
