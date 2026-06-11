@@ -30,7 +30,10 @@ use revm::{
         result::{EVMError, InvalidTransaction},
     },
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -100,8 +103,12 @@ pub struct TempoTransactionValidator<Client> {
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
-    /// The chain spec, cached to avoid cloning the shared `Arc` on every validation.
-    chain_spec: Arc<TempoChainSpec>,
+    /// The Tempo hardfork active at the current tip, stored as an index into
+    /// [`TempoHardfork::VARIANTS`] and updated on each `on_new_head_block`.
+    ///
+    /// Cached here so hot paths can resolve the active hardfork with a single atomic load
+    /// instead of walking the chain spec's fork schedule.
+    active_hardfork: AtomicU8,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -126,7 +133,7 @@ where
             .evm_config()
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
-        let chain_spec = inner.client().chain_spec();
+        let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
         Self {
             inner,
             aa_valid_after_max_secs,
@@ -134,8 +141,16 @@ where
             amm_liquidity_cache,
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
-            chain_spec,
+            active_hardfork,
         }
+    }
+
+    /// Returns the Tempo hardfork active at the current tip.
+    ///
+    /// Updated on each `on_new_head_block`.
+    pub fn active_hardfork(&self) -> TempoHardfork {
+        TempoHardfork::from_variant_index(self.active_hardfork.load(Ordering::Relaxed))
+            .expect("stored hardfork index is valid")
     }
 
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
@@ -387,10 +402,8 @@ where
     where
         DB: Database<Error = ProviderError> + DatabaseRef<Error = ProviderError>,
     {
-        // Get the current hardfork based on tip timestamp
-        let spec = self
-            .chain_spec
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+        // Get the hardfork active at the current tip
+        let spec = self.active_hardfork();
 
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -580,7 +593,10 @@ where
 
                     // Check if T1 hardfork is active for expiring nonce handling
                     let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self.chain_spec.is_t1_active_at_timestamp(current_time);
+                    let is_t1_active = self
+                        .inner
+                        .chain_spec()
+                        .is_t1_active_at_timestamp(current_time);
 
                     if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
@@ -714,11 +730,14 @@ where
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
-        *self.cached_evm_env.write() = self
+        let evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        self.active_hardfork
+            .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
+        *self.cached_evm_env.write() = evm_env;
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
@@ -779,7 +798,9 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    use tempo_chainspec::spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP};
+    use tempo_chainspec::spec::{
+        MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         tip20::{TIP20Token, slots as tip20_slots},
@@ -953,7 +974,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("PATH_USD_ADDRESS is a valid TIP20 token")
             .balances[transaction.sender()]
-        .base_slot();
+        .slot();
         // Give the sender enough balance to cover the transaction cost
         let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
         provider.add_account(
@@ -1998,10 +2019,9 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Create a transaction with max_fee_per_gas exactly at minimum
-        let active_fork = MODERATO.tempo_hardfork_at(current_time);
+        // Create a transaction with max_fee_per_gas exactly at the fixed T1+ minimum.
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(u128::from(active_fork.base_fee()))
+            .max_fee(u128::from(TEMPO_T1_BASE_FEE))
             .max_priority_fee(1_000_000_000)
             .build();
 
