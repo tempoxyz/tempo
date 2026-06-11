@@ -31,6 +31,13 @@ CHARTS = [
         "ylabel": "Serialized bytes per transaction",
     },
     {
+        "file": "block_tx_count_scatter.png",
+        "sample_key": "serialized_block_tx_count",
+        "label": "Transactions per Block Scatter",
+        "title": "Transactions per block samples",
+        "ylabel": "Transactions per block",
+    },
+    {
         "file": "builder_latency_scatter.png",
         "sample_key": "builder_latency_ms",
         "label": "Builder Latency Scatter",
