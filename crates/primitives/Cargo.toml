@@ -49,6 +49,7 @@ once_cell = { version = "1.21", default-features = false }
 # Cryptography
 aws-lc-rs = { version = "1.16.2", optional = true, default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 base64.workspace = true
+commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
