@@ -186,7 +186,7 @@ def distribution_samples(
         raise ValueError(f"summary.json has no {group} {sample_key} samples")
 
     color = "#4c78a8" if group == "baseline" else "#f58518"
-    bins = min(60, max(10, int(len(samples) ** 0.5)))
+    bins = min(90, max(16, int((len(samples) ** 0.5) * 1.6)))
     fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
     ax.hist(samples, bins=bins, density=True, alpha=0.72, color=color, edgecolor="white")
     ax.set_title(f"{display_name}: {title}")
