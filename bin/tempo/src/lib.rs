@@ -41,7 +41,7 @@ pub(crate) use crate::cli::TempoRpcModuleValidator;
 pub(crate) use crate::cli::{TempoArgs, TempoCli};
 
 use crate::{
-    cli::NodeCommandExt as _,
+    cli::NodeCommandExt,
     utils::{
         block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
         print_extensions_footer,
@@ -180,7 +180,7 @@ pub fn tempo_main() -> eyre::Result<()> {
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
-        let peer_id = format!("{:x}", node_cmd.peer_id());
+        let peer_id = format!("{:x}", NodeCommandExt::peer_id(&**node_cmd));
 
         // VictoriaMetrics does not support merging `extra_fields` query args like `extra_labels` for
         // metrics. A workaround for now is to directly hook into the `OTEL_RESOURCE_ATTRIBUTES` env var

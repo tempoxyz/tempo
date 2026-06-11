@@ -541,6 +541,9 @@ where
                 parent_header.hash(),
                 executor.evm().evm_env(),
                 best_txs,
+                trie_handle
+                    .as_ref()
+                    .map(|handle| handle.updates_tx().clone()),
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
             Box::new(best_txs)
