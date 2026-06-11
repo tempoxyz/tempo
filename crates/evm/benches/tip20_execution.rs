@@ -73,6 +73,10 @@ use tempo_primitives::{
 };
 use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const CHAIN_ID: u64 = 1337;
 const TXGEN_MNEMONIC: &str = "test test test test test test test test test test test junk";
 const DEFAULT_ACCOUNT_COUNT: usize = 1_024;

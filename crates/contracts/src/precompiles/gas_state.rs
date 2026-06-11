@@ -14,6 +14,7 @@ crate::sol! {
         }
 
         error InvalidMode();
+        error OnlyDirectCall();
 
         event ModeUpdated(address indexed account, Mode newMode);
 

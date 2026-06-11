@@ -125,6 +125,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
+        self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
     }
@@ -246,21 +247,14 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN,
-        ITIP1060StorageCredits::{self, Mode},
-    };
+    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        account_keychain::{
-            AccountKeychain, KeyRestrictions, SignatureType as KeychainSignatureType, TokenLimit,
-            getRemainingLimitCall,
-        },
         nonce::NonceManager,
-        storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip1060_storage_credits::{AccountState, CreditMode, TIP1060StorageCredits},
+        tip1060_storage_credits::{CreditMode, TIP1060StorageCredits},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -993,7 +987,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(100_000));
+        assert_eq!(slot, U256::from(100_000));
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
@@ -1009,7 +1003,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(97_132));
+        assert_eq!(slot, U256::from(97_132));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -1038,7 +1032,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot.amount(), U256::from(94_003));
+        assert_eq!(slot, U256::from(94_003));
 
         Ok(())
     }
@@ -1923,66 +1917,36 @@ mod tests {
         Ok(())
     }
 
-    /// Seed the TIP-1060 storage credits state (storage credit balance + storage-creation mode)
-    /// for `owner` directly into the storage credits contract's storage. This lets a test select
-    /// a mode without first sending a `setMode` transaction. The mode that governs an SSTORE
-    /// is the one stored for the contract that owns the slot being written (`owner`).
-    fn seed_storage_credits_state(
+    /// Seed the TIP-1060 persistent storage credit balance for `owner` directly into the storage
+    /// credits contract's storage. Storage creation mode is transient and must be selected inside
+    /// each transaction with `setMode`.
+    fn seed_storage_credit_balance(
         evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
         owner: Address,
         balance: u64,
-        mode: CreditMode,
     ) {
         // The storage credits contract account must exist before we can write storage to it.
         evm.ctx
             .db_mut()
             .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
         let slot = TIP1060StorageCredits::slot(owner);
-        let word = AccountState { balance, mode }.into_word();
         evm.ctx
             .db_mut()
-            .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, word)
+            .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, U256::from(balance))
             .unwrap();
     }
 
-    /// Read back the TIP-1060 storage credits state stored for `owner` from the storage credits contract.
-    fn storage_credits_state(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> AccountState {
+    fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
         let slot = TIP1060StorageCredits::slot(owner);
-        let word = evm
-            .ctx
+        evm.ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
-            .unwrap();
-        AccountState::from_word(word).unwrap()
+            .unwrap()
     }
 
     /// Read back the TIP-1060 storage credit balance stored for `owner` from the storage credits contract.
     fn storage_credit_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
-        storage_credits_state(evm, owner).balance
-    }
-
-    fn storage_credit_balance_live(
-        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
-        owner: Address,
-    ) -> eyre::Result<u64> {
-        let ctx = &mut evm.ctx;
-        let word = StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            || StorageCtx.sload(STORAGE_CREDITS_ADDRESS, TIP1060StorageCredits::slot(owner)),
-        )?;
-        Ok(AccountState::from_word(word)?.balance)
-    }
-
-    fn storage_credit_pending_refund(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
-        evm.ctx
-            .journaled_state
-            .transient_storage
-            .get(&STORAGE_CREDITS_ADDRESS)
-            .and_then(|slots| slots.get(&TIP1060StorageCredits::slot(owner)).copied())
-            .unwrap_or_default()
+        u64::from_word(storage_credit_word(evm, owner)).unwrap()
     }
 
     fn tip1060_abi_mode(mode: CreditMode) -> Mode {
@@ -2024,150 +1988,42 @@ mod tests {
         bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
     }
 
-    /// Protocol fee collection is not settlement-eligible for TIP-1060.
-    ///
-    /// Regression for the reported flow:
-    /// - pre-tx fee collection debits an access-key spending limit down to zero (`x -> 0`),
-    /// - user execution fails/reverts under its own execution checkpoint,
-    /// - TIP-1060 settlement runs at execution end,
-    /// - post-tx fee refund restores the spending limit (`0 -> x`) after settlement.
-    ///
-    /// This uses the real handler transaction path so drift in `collect_fee_pre_tx`, `execution`,
-    /// or `reimburse_caller` wiring is caught.
-    #[test]
-    fn test_tip1060_fee_collection_keychain_limit_zero_restore_is_not_settlement_eligible()
-    -> eyre::Result<()> {
-        let root_key = P256KeyPair::random();
-        let access_key = P256KeyPair::random();
-        let user = root_key.address;
-        let gas_limit = 1_000_000u64;
-        let max_fee = U256::from(gas_limit);
-
-        let mut evm = create_funded_evm_t7(user);
-
-        // Set up an existing access key whose fee-token spending limit equals the transaction's
-        // max fee. The real handler path will debit this to zero during collect_fee_pre_tx and
-        // restore the unused portion during reimburse_caller.
-        {
-            let ctx = &mut evm.ctx;
-            StorageCtx::enter_evm(
-                &mut ctx.journaled_state,
-                &ctx.block,
-                &ctx.cfg,
-                &ctx.tx,
-                || -> eyre::Result<()> {
-                    TIP20Setup::path_usd(user)
-                        .with_issuer(user)
-                        .with_mint(user, max_fee)
-                        .apply()?;
-
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
-                    keychain.set_tx_origin(user)?;
-                    keychain.set_transaction_key(Address::ZERO)?;
-                    keychain.authorize_key(
-                        user,
-                        access_key.address,
-                        KeychainSignatureType::WebAuthn,
-                        KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: true,
-                            limits: vec![TokenLimit {
-                                token: DEFAULT_FEE_TOKEN,
-                                amount: max_fee,
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: Vec::new(),
-                        },
-                        None,
-                    )?;
-
-                    Ok(())
-                },
-            )?;
+    fn bytecode_with_tip1060_mode(mode: CreditMode, body: &[u8]) -> Bytecode {
+        let mut bytecode = Vec::new();
+        if mode != CreditMode::Refund {
+            append_tip1060_set_mode_call(&mut bytecode, mode);
         }
-
-        // Test setup writes through the keychain; isolate the full transaction below from setup's
-        // legitimate TIP-1060 accounting.
-        evm.ctx
-            .journaled_state
-            .transient_storage
-            .remove(&STORAGE_CREDITS_ADDRESS);
-        let starting_keychain_credits =
-            storage_credit_balance_live(&mut evm, ACCOUNT_KEYCHAIN_ADDRESS)?;
-
-        // Real failed AA multicall: validation runs collect_fee_pre_tx, the first user call
-        // performs an SSTORE, the second user call fails and reverts the user-call checkpoint,
-        // the handler runs apply_refund at execution end, then reimburse_caller restores the
-        // unused keychain spending limit via collect_fee_post_tx.
-        let storage_writer = Address::repeat_byte(0xA3);
-        evm.ctx.db_mut().insert_account_info(
-            storage_writer,
-            AccountInfo {
-                // PUSH1 0x01 PUSH1 0x00 SSTORE STOP
-                code: Some(Bytecode::new_raw(bytes!("600160005500"))),
-                ..Default::default()
-            },
-        );
-
-        let tx = TxBuilder::new()
-            .call(storage_writer, &[])
-            .call(PATH_USD_ADDRESS, &[0x01, 0x02])
-            .gas_limit(gas_limit)
-            .with_max_fee_per_gas(1)
-            .with_max_priority_fee_per_gas(1)
-            .build();
-        let signed_tx = access_key.sign_tx_keychain_for_user(tx, user)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, user);
-
-        let result = evm.transact_commit(tx_env)?;
-        assert!(!result.is_success(), "user AA call should fail");
-        assert!(
-            result.tx_gas_used() < gas_limit,
-            "failed call should leave an unused fee refund to restore the keychain limit"
-        );
-
-        let remaining_limit = {
-            let ctx = &mut evm.ctx;
-            StorageCtx::enter_evm(
-                &mut ctx.journaled_state,
-                &ctx.block,
-                &ctx.cfg,
-                &ctx.tx,
-                || {
-                    AccountKeychain::new().get_remaining_limit(getRemainingLimitCall {
-                        account: user,
-                        keyId: access_key.address,
-                        token: DEFAULT_FEE_TOKEN,
-                    })
-                },
-            )?
-        };
-        assert!(
-            !remaining_limit.is_zero() && remaining_limit < max_fee,
-            "post-tx fee refund must restore the access-key limit from zero to a non-zero remainder"
-        );
-
-        assert_eq!(
-            storage_credit_balance_live(&mut evm, ACCOUNT_KEYCHAIN_ADDRESS)?,
-            starting_keychain_credits,
-            "pre/post fee collection must not change keychain storage credits"
-        );
-        assert_eq!(
-            storage_credit_pending_refund(&evm, ACCOUNT_KEYCHAIN_ADDRESS),
-            U256::ZERO,
-            "post-tx fee refund must not accrue pending TIP-1060 settlement after apply_refund"
-        );
-
-        Ok(())
+        bytecode.extend_from_slice(body);
+        Bytecode::new_raw(bytecode.into())
     }
 
-    /// TIP-1060: First SSTORE runs in Refund (default) mode  and creates a pending refund-eligible
-    /// creation, then a precompile call selects the final mode. Since no account slot is cleared,
-    /// it ends the transaction with zero storage credit balance.
+    fn branching_bytecode_with_tip1060_mode(mode: CreditMode) -> Bytecode {
+        let mut bytecode = Vec::new();
+        if mode != CreditMode::Refund {
+            append_tip1060_set_mode_call(&mut bytecode, mode);
+        }
+
+        let create_only_dest = bytecode.len() + 15;
+        assert!(create_only_dest <= u8::MAX as usize);
+
+        bytecode.extend_from_slice(&[
+            opcode::CALLDATASIZE,
+            opcode::PUSH1,
+            create_only_dest as u8,
+            opcode::JUMPI,
+        ]);
+        bytecode.extend_from_slice(&bytes!("6001600055600060005500"));
+        bytecode.push(opcode::JUMPDEST);
+        bytecode.extend_from_slice(&bytes!("600160005500"));
+        Bytecode::new_raw(bytecode.into())
+    }
+
+    /// TIP-1060: First SSTORE runs in Refund (default) mode and increments the pending-refund
+    /// field, then a precompile call updates the mode field in the same transient word. Since no
+    /// account slot is cleared, it ends the transaction with zero storage credit balance and no
+    /// persistent mode.
     #[test]
-    fn test_tip1060_pending_refund_settlement_ignores_mode_bits() -> eyre::Result<()> {
+    fn test_tip1060_refund_settlement_uses_pending_field_not_mode() -> eyre::Result<()> {
         for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
             let key_pair = P256KeyPair::random();
             let caller = key_pair.address;
@@ -2198,25 +2054,26 @@ mod tests {
             let result = evm.transact_commit(tx_env)?;
             assert!(result.is_success());
 
-            let state = storage_credits_state(&evm, contract);
             assert_eq!(
-                state.balance, 0,
-                "settlement must not consume mode bits as storage credit balance in {mode:?} mode"
+                storage_credit_balance(&evm, contract),
+                0,
+                "settlement must not consume the transient mode field as storage credit balance in {mode:?} mode"
             );
             assert_eq!(
-                state.mode, mode,
-                "settlement must preserve the final storage-creation mode in {mode:?} mode"
+                storage_credit_word(&evm, contract),
+                U256::ZERO,
+                "mode is transient and must not persist in the storage credit state word in {mode:?} mode"
             );
         }
 
         Ok(())
     }
 
-    /// TIP-1060 storage-credit bookkeeping regression: writes to the storage-credits precompile's
-    /// own storage are protocol bookkeeping and must not be treated as TIP-1000 storage creation or
-    /// recursively fed back into TIP-1060 accounting.
+    /// TIP-1060 `setMode` writes only transient mode state: it must not create persistent
+    /// storage-credit state, mint credits, consume credits, or require the TIP-1000 storage
+    /// creation charge.
     #[test]
-    fn test_tip1060_storage_credits_address_exempt_from_tip1000_and_tip1060() -> eyre::Result<()> {
+    fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let mut evm = create_funded_evm_t7(caller);
@@ -2230,7 +2087,7 @@ mod tests {
         );
 
         // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
-        seed_storage_credits_state(&mut evm, STORAGE_CREDITS_ADDRESS, 1, CreditMode::Refund);
+        seed_storage_credit_balance(&mut evm, STORAGE_CREDITS_ADDRESS, 1);
 
         let calldata = ITIP1060StorageCredits::setModeCall {
             newMode: Mode::Preserve,
@@ -2240,7 +2097,7 @@ mod tests {
         let tx = TxBuilder::new()
             .call(STORAGE_CREDITS_ADDRESS, &calldata)
             .nonce(1)
-            // should succeed because the storage-credits precompile is exempt from TIP-1000.
+            // should succeed because setMode is a transient write with no TIP-1000 component.
             .gas_limit(50_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
@@ -2253,23 +2110,26 @@ mod tests {
         );
         assert!(
             result.tx_gas_used() < 50_000,
-            "setMode should fit under the low gas limit when storage-credit state is exempt"
+            "setMode should fit under the low gas limit as a transient write"
         );
 
-        let caller_state = storage_credits_state(&evm, caller);
         assert_eq!(
-            caller_state.balance, 0,
+            storage_credit_balance(&evm, caller),
+            0,
             "setMode must not mint caller credits"
         );
-        assert_eq!(caller_state.mode, CreditMode::Preserve);
-
-        // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
-        let self_state = storage_credits_state(&evm, STORAGE_CREDITS_ADDRESS);
         assert_eq!(
-            self_state.balance, 1,
+            storage_credit_word(&evm, caller),
+            U256::ZERO,
+            "setMode must not create or update persistent caller state"
+        );
+
+        // Sentinel: setMode must not consume the precompile's own pre-seeded credit.
+        assert_eq!(
+            storage_credit_balance(&evm, STORAGE_CREDITS_ADDRESS),
+            1,
             "storage-credits bookkeeping must not recursively consume its own storage credits"
         );
-        assert_eq!(self_state.mode, CreditMode::Refund);
 
         Ok(())
     }
@@ -2334,9 +2194,9 @@ mod tests {
     /// deferred create storage credit at end-of-tx, so it lands at 0 while the others stay at 1.
     #[test]
     fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
-        // Contract bytecode: SSTORE 1 at slot 0 (0->1), then SSTORE 0 at slot 0 (1->0), STOP.
+        // Contract bytecode body: SSTORE 1 at slot 0 (0->1), then SSTORE 0 at slot 0 (1->0), STOP.
         // PUSH1 0x01 PUSH1 0x00 SSTORE  PUSH1 0x00 PUSH1 0x00 SSTORE  STOP
-        let create_clear_bytecode = Bytecode::new_raw(bytes!("6001600055600060005500"));
+        let create_clear_body = bytes!("6001600055600060005500");
 
         // (mode, expected gas used, expected post-tx storage credit balance).
         //
@@ -2352,8 +2212,8 @@ mod tests {
         // credit, so it lands at 0 while the others keep the minted storage credit at 1.
         let cases = [
             (CreditMode::Refund, 305_968u64, 0u64),
-            (CreditMode::Preserve, 535_968u64, 1u64),
-            (CreditMode::Direct, 535_968u64, 1u64),
+            (CreditMode::Preserve, 540_514u64, 1u64),
+            (CreditMode::Direct, 540_514u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
@@ -2366,13 +2226,14 @@ mod tests {
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
-                    code: Some(create_clear_bytecode.clone()),
+                    code: Some(bytecode_with_tip1060_mode(mode, &create_clear_body)),
                     ..Default::default()
                 },
             );
 
-            // Select the storage-creation mode for the contract that owns the slot.
-            seed_storage_credits_state(&mut evm, contract, 0, mode);
+            // Seed only the persistent credit balance; non-default modes are selected by the
+            // bytecode's transaction-local `setMode` prefix.
+            seed_storage_credit_balance(&mut evm, contract, 0);
 
             let tx = TxBuilder::new()
                 .call(contract, &[])
@@ -2390,7 +2251,7 @@ mod tests {
             let gas_used = result.tx_gas_used();
             assert_eq!(
                 gas_used, expected_gas,
-                "T6 create+clear gas should be exact in {mode:?} mode"
+                "TIP-1060 create+clear gas should be exact in {mode:?} mode"
             );
 
             // The storage credit balance corroborates the per-mode gas: Refund consumes its
@@ -2399,9 +2260,143 @@ mod tests {
             assert_eq!(
                 storage_credit_balance(&evm, contract),
                 expected_balance,
-                "T6 post-tx storage credit balance should be exact in {mode:?} mode"
+                "TIP-1060 post-tx storage credit balance should be exact in {mode:?} mode"
             );
         }
+
+        Ok(())
+    }
+
+    /// TIP-1060: repeatedly clearing and restoring the same slot in `Direct` mode must not mine
+    /// storage credits that can subsidize unrelated fresh slot creations.
+    ///
+    /// The hardcoded runtime is the original credit-mining reproducer. It bootstraps slot 0 to a
+    /// nonzero value during deployment, then the call transaction selects `Direct` mode, churns that
+    /// same slot 500 times (`x->0`, then `0->x`), and finally attempts to create 500 fresh slots.
+    /// The clear leg mints one credit, but the restore leg crosses the present zero boundary and
+    /// consumes it, so the churn loop has net-zero credits and the later fresh-slot writes OOG.
+    #[test]
+    fn test_tip1060_direct_clear_restore_churn_cannot_subsidize_fresh_slots() -> eyre::Result<()> {
+        use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+        use revm::{
+            Context, Database, ExecuteCommitEvm, MainContext,
+            context::{CfgEnv, TxEnv},
+            database::{CacheDB, EmptyDB},
+            state::AccountInfo,
+        };
+        use tempo_chainspec::hardfork::TempoHardfork;
+        use tempo_precompiles::{
+            STORAGE_CREDITS_ADDRESS, tip1060_storage_credits::TIP1060StorageCredits,
+        };
+
+        use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
+
+        // CREATE init-code:
+        //   constructor: SSTORE(0, 1)
+        //   runtime:
+        //     setMode(Direct)
+        //     for 500: SSTORE(0, 0); SSTORE(0, 2)
+        //     for 500: SSTORE(0x100 + i, 1)
+        let init = Bytes::from(
+            hex!(
+                "600160005561006b601360003961006b6000f3\
+                602160005360176001536\
+                05b600253604a600353\
+                6002602353\
+                6000600060246000600073106000000000000000000000000000000000000\
+                05af150\
+                6101f45b60006000556002600055600190038061003e5750\
+                6101f45b8061010001600190556001900380610056575000"
+            )
+            .to_vec(),
+        );
+
+        let caller = Address::repeat_byte(0x11);
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T7;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T7);
+        const GAS_LIMIT: u64 = 16_777_216;
+        let mut block = TempoBlockEnv::default();
+        block.inner.gas_limit = GAS_LIMIT;
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::new()))
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+        let mut evm = TempoEvm::new(ctx, ());
+        evm.ctx.db_mut().insert_account_info(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                ..Default::default()
+            },
+        );
+
+        // First transaction: deploy the contract and create the bootstrap slot. This pays for one
+        // real storage slot so the second transaction can start with slot 0 nonzero.
+        let deploy = evm.transact_commit(
+            TxEnv {
+                caller,
+                kind: TxKind::Create,
+                data: init,
+                gas_limit: GAS_LIMIT,
+                ..Default::default()
+            }
+            .into(),
+        )?;
+        assert!(deploy.is_success(), "deploy reverted/halted: {deploy:?}");
+        let contract = deploy
+            .created_address()
+            .expect("CREATE should yield an address");
+
+        // Second transaction: clear/restore the bootstrap slot repeatedly, then attempt to create
+        // 500 unrelated slots. If clear/restore churn incorrectly minted surplus credits, this call
+        // would succeed under the block gas limit. It must instead OOG.
+        let call = evm.transact_commit(
+            TxEnv {
+                caller,
+                nonce: 1,
+                kind: TxKind::Call(contract),
+                gas_limit: GAS_LIMIT,
+                ..Default::default()
+            }
+            .into(),
+        )?;
+
+        assert!(
+            !call.is_success(),
+            "credit-mining PoC must not create 500 fresh slots under one churned credit: {call:?}"
+        );
+        assert_eq!(
+            call.tx_gas_used(),
+            GAS_LIMIT,
+            "expected OOG at the tx gas limit"
+        );
+
+        // The OOG transaction must roll back both credit bookkeeping and attempted fresh-slot
+        // writes: no mined credits are retained, and only the deployment bootstrap slot remains.
+        let balance = u64::from_word(evm.ctx.db_mut().storage(
+            STORAGE_CREDITS_ADDRESS,
+            TIP1060StorageCredits::slot(contract),
+        )?)
+        .unwrap();
+        assert_eq!(
+            balance, 0,
+            "failed PoC must not leave mined storage credits behind"
+        );
+
+        let slots = evm
+            .ctx
+            .db_mut()
+            .cache
+            .accounts
+            .get(&contract)
+            .map(|a| a.storage.iter().filter(|(_, v)| !v.is_zero()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            slots, 1,
+            "failed PoC must revert all fresh-slot writes and keep only the bootstrap slot"
+        );
 
         Ok(())
     }
@@ -2422,14 +2417,14 @@ mod tests {
     /// untouched (1).
     #[test]
     fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
-        // Bytecode:
-        //   CALLDATASIZE PUSH1 0x0f JUMPI            ; if calldata non-empty, jump to create-only
+        // Bytecode body:
+        //   CALLDATASIZE PUSH1 <create-only> JUMPI   ; if calldata non-empty, jump to create-only
         //   PUSH1 0x01 PUSH1 0x00 SSTORE             ; 0->1 (create)
         //   PUSH1 0x00 PUSH1 0x00 SSTORE             ; 1->0 (clear, mints a storage credit)
         //   STOP
-        //   JUMPDEST(0x0f) PUSH1 0x01 PUSH1 0x00 SSTORE STOP  ; create-only path
-        let branching_bytecode =
-            Bytecode::new_raw(bytes!("36600f5760016000556000600055005b600160005500"));
+        //   JUMPDEST PUSH1 0x01 PUSH1 0x00 SSTORE STOP  ; create-only path
+        // Non-default modes prefix a `setMode` call, so the jump destination is computed by
+        // `branching_bytecode_with_tip1060_mode`.
 
         // (mode, expected second-tx gas, expected balance after tx1, expected balance after tx2).
         //
@@ -2446,8 +2441,8 @@ mod tests {
         //   is exactly why the second tx is cheap.
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
-            (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
-            (CreditMode::Direct, 55_794u64, 1u64, 0u64),
+            (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
+            (CreditMode::Direct, 60_340u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -2460,11 +2455,11 @@ mod tests {
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
-                    code: Some(branching_bytecode.clone()),
+                    code: Some(branching_bytecode_with_tip1060_mode(mode)),
                     ..Default::default()
                 },
             );
-            seed_storage_credits_state(&mut evm, contract, 0, mode);
+            seed_storage_credit_balance(&mut evm, contract, 0);
 
             // First transaction (empty calldata): create+clear, minting a storage credit.
             let tx1 = TxBuilder::new()
@@ -2503,7 +2498,7 @@ mod tests {
             let second_gas = result2.tx_gas_used();
             assert_eq!(
                 second_gas, expected_second_gas,
-                "T6 second-tx create gas should be exact in {mode:?} mode"
+                "TIP-1060 second-tx create gas should be exact in {mode:?} mode"
             );
 
             // The post-tx2 balance shows the mechanism behind the gas: `Direct` spends the minted
@@ -2554,7 +2549,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            seed_storage_credits_state(&mut evm, contract, starting_balance, CreditMode::Refund);
+            seed_storage_credit_balance(&mut evm, contract, starting_balance);
 
             let tx = TxBuilder::new()
                 .call(contract, &[])
@@ -2613,8 +2608,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        seed_storage_credits_state(&mut evm, account_a, 2, CreditMode::Refund);
-        seed_storage_credits_state(&mut evm, account_b, 0, CreditMode::Refund);
+        seed_storage_credit_balance(&mut evm, account_a, 2);
+        seed_storage_credit_balance(&mut evm, account_b, 0);
 
         let tx = TxBuilder::new()
             .call(account_a, &[])
@@ -2664,7 +2659,7 @@ mod tests {
         evm.ctx
             .db_mut()
             .insert_account_storage(contract, U256::from(1), U256::ONE)?;
-        seed_storage_credits_state(&mut evm, contract, 0, CreditMode::Refund);
+        seed_storage_credit_balance(&mut evm, contract, 0);
 
         let tx = TxBuilder::new()
             .call(contract, &[])
@@ -2699,23 +2694,28 @@ mod tests {
         let direct_contract = Address::repeat_byte(0x65);
         let refund_contract = Address::repeat_byte(0x66);
 
-        // Contract bytecode: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
-        let create_bytecode = Bytecode::new_raw(bytes!("600160005500"));
+        // Contract bytecode body: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
+        let create_body = bytes!("600160005500");
 
         let mut evm = create_funded_evm_t7(caller);
-        for contract in [direct_contract, refund_contract] {
-            evm.ctx.db_mut().insert_account_info(
-                contract,
-                AccountInfo {
-                    code: Some(create_bytecode.clone()),
-                    ..Default::default()
-                },
-            );
-        }
+        evm.ctx.db_mut().insert_account_info(
+            direct_contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(CreditMode::Direct, &create_body)),
+                ..Default::default()
+            },
+        );
+        evm.ctx.db_mut().insert_account_info(
+            refund_contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(CreditMode::Refund, &create_body)),
+                ..Default::default()
+            },
+        );
         // Direct starts with two storage credits: one should be consumed synchronously, and the
         // other must remain after the transaction if no deferred settlement entry was created.
-        seed_storage_credits_state(&mut evm, direct_contract, 2, CreditMode::Direct);
-        seed_storage_credits_state(&mut evm, refund_contract, 1, CreditMode::Refund);
+        seed_storage_credit_balance(&mut evm, direct_contract, 2);
+        seed_storage_credit_balance(&mut evm, refund_contract, 1);
 
         let direct_tx = TxBuilder::new()
             .call(direct_contract, &[])
@@ -2743,7 +2743,7 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            305_762,
+            310_308,
             "Direct gets the synchronous discount without an additional 230k settlement refund \
              (plus the retained cold access cost and 2.8k nonzero->nonzero credit-slot store)"
         );
@@ -2778,7 +2778,7 @@ mod tests {
         evm.ctx
             .db_mut()
             .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
-        seed_storage_credits_state(&mut evm, contract, u64::MAX, CreditMode::Refund);
+        seed_storage_credit_balance(&mut evm, contract, u64::MAX);
 
         let tx = TxBuilder::new()
             .call(contract, &[])

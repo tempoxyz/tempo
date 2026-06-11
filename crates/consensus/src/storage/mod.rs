@@ -4,29 +4,22 @@
 //! merges a prunable archive (holding the most recently finalized blocks) with
 //! a lookup into the execution layer (used for blocks below the prunable
 //! retention window).
-//!
-//! Older deployments stored finalized blocks in an immutable archive. To
-//! preserve the ability to roll back to one of those releases, the
-//! [`legacy`] module is opened on every restart and every newly
-//! finalized block is dual-written to it from [`Hybrid`]. The
-//! legacy archive is read-only from this binary's perspective; it
-//! exists purely so the previous binary can still serve traffic if an
-//! operator rolls back. The whole legacy code path is slated for
-//! removal in an upcoming release.
 
 use std::time::Instant;
 
+use alloy_consensus::Sealable as _;
 use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as _, ed25519::PublicKey,
 };
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
-    archive::{immutable, prunable},
+    archive::{Archive as _, Identifier, immutable, prunable},
     translator::TwoCap,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{WrapErr as _, ensure};
+use reth_provider::{BlockIdReader, BlockReader};
 use tracing::{info, instrument};
 
 use crate::{
@@ -35,7 +28,6 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
-pub(in crate::storage) mod legacy;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 
@@ -129,21 +121,13 @@ where
 /// Initialize the [`Hybrid`] finalized blocks store backed by a prunable
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
-///
-/// If `with_legacy`, also opens the legacy immutable finalized-blocks archive
-/// for write-through, creating its partitions on disk if they don't yet exist.
-#[instrument(
-    skip_all,
-    fields(partition_prefix, retention_blocks, with_legacy),
-    err(Display)
-)]
+#[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
 pub(crate) async fn init_finalized_blocks<TContext, P>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
     provider: P,
     retention_blocks: u64,
-    with_legacy: bool,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -159,19 +143,8 @@ where
             .await
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
-    let legacy = if with_legacy {
-        Some(
-            legacy::init_legacy_finalized_blocks_archive(context, partition_prefix, page_cache)
-                .await
-                .wrap_err("failed to initialize legacy immutable finalized blocks archive")?,
-        )
-    } else {
-        None
-    };
-
     Ok(Hybrid::new(hybrid::Config {
         prunable,
-        legacy,
         execution_block_provider: provider,
         retention_blocks,
     }))
@@ -214,4 +187,65 @@ where
     );
 
     archive
+}
+
+/// Finds the latest finalization certificate backed by finalized execution storage.
+///
+/// Searches backwards from the execution provider's finalized tip. At
+/// most `max_depth` blocks behind that starting height are inspected.
+///
+/// Returns `None` if no persisted finalization certificate has a matching
+/// finalized execution block.
+pub async fn find_last_finalized_marker<TContext, P>(
+    context: &TContext,
+    execution_provider: &P,
+    max_depth: u64,
+) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
+{
+    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
+        .await
+        .wrap_err("failed to open finalizations-by-height archive")?;
+
+    if archive.last_index().is_none() {
+        return Ok(None);
+    }
+    let Some(finalized_tip) = execution_provider
+        .finalized_block_number()
+        .wrap_err("failed reading finalized block number from execution provider")?
+    else {
+        return Ok(None);
+    };
+
+    let search_end = finalized_tip.saturating_sub(max_depth);
+    for height in (search_end..=finalized_tip).rev() {
+        let Some(finalization) = archive
+            .get(Identifier::Index(height))
+            .await
+            .wrap_err_with(|| format!("failed reading finalization at height {height}"))?
+        else {
+            continue;
+        };
+
+        let Some(block) = execution_provider
+            .block_by_number(height)
+            .wrap_err_with(|| format!("failed reading block at height {height}"))?
+        else {
+            continue;
+        };
+
+        let finalization_digest = finalization.proposal.payload;
+        let block_digest = Digest(block.header.hash_slow());
+        ensure!(
+            finalization_digest == block_digest,
+            "digest mismatch at height `{height}`. finalization: {finalization_digest}, execution: {block_digest}",
+        );
+
+        return Ok(Some((height, finalization)));
+    }
+
+    Ok(None)
 }

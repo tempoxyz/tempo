@@ -43,6 +43,8 @@ mod defaults;
 mod init_state;
 mod p2p_proxy;
 mod regenesis;
+mod snapshot_download;
+mod snapshot_manifest;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -60,9 +62,8 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
-use tempo_consensus::TempoConsensus;
-use tempo_evm::TempoEvmConfig;
+use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
@@ -144,7 +145,7 @@ struct TempoArgs {
     pub telemetry: defaults::TelemetryArgs,
 
     #[command(flatten)]
-    pub consensus: tempo_commonware_node::Args,
+    pub consensus: tempo_consensus::Args,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
@@ -226,7 +227,7 @@ impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParse
 }
 
 fn block_on_consensus_public_key(
-    args: &tempo_commonware_node::Args,
+    args: &tempo_consensus::Args,
 ) -> eyre::Result<Option<commonware_cryptography::ed25519::PublicKey>> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -324,12 +325,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = match TempoCli::command()
+    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
+    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
+    let matches = match TempoCli::command()
         .about("Tempo")
+        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
+        .mut_subcommand("download", |_| snapshot_download::Args::command())
         .try_get_matches_from(std::env::args_os())
-        .and_then(|matches| TempoCli::from_arg_matches(&matches))
     {
-        Ok(cli) => cli,
+        Ok(matches) => matches,
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
                 // Unknown subcommand — try the extension launcher.
@@ -355,6 +359,19 @@ fn main() -> eyre::Result<()> {
 
             err.exit();
         }
+    };
+
+    // Detect overwritten subcommands and directly run them as
+    // `from_arg_matches` would map them to their original variants.
+    match matches.subcommand() {
+        Some(("snapshot-manifest", sub)) => return snapshot_manifest::run(sub),
+        Some(("download", sub)) => return snapshot_download::run(sub),
+        _ => {}
+    }
+
+    let mut cli = match TempoCli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
     };
 
     if let Commands::Node(node_cmd) = &cli.command
@@ -468,7 +485,7 @@ fn main() -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
-            let mut metrics_server = tempo_commonware_node::metrics::install(
+            let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.with_label("metrics"),
                 args.consensus.metrics_address,
             )

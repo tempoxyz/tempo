@@ -8,13 +8,17 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{AccountState, CreditMode, TIP1060StorageCredits};
+use super::{CreditMode, TIP1060StorageCredits, TransientState};
+use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
-    interpreter::{SStoreResult, StateLoad, instruction_context::GasStateOutcome},
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker, instruction_context::GasStateOutcome},
 };
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
+
+pub const STORAGE_CREDIT_VALUE: u64 = 230_000;
+const SSTORE_SET_WITHOUT_EXPANSION_COST: u64 = 20_000;
 
 /// Storage and gas operations required by [`sstore_storage_credits`].
 ///
@@ -36,14 +40,17 @@ pub trait StorageCreditsBackend {
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
 
-    /// Remaining regular gas.
-    fn remaining_gas(&self) -> u64;
+    /// Gas tracker for the active execution context.
+    fn gas_tracker(&mut self) -> &mut GasTracker;
 
     /// Charges `cost` regular gas, returning [`out_of_gas`](Self::out_of_gas) if insufficient.
-    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error>;
-
-    /// Loads (warms) the storage credits contract account.
-    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error>;
+    #[inline]
+    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
+        self.gas_tracker()
+            .record_regular_cost(cost)
+            .then_some(())
+            .ok_or_else(Self::out_of_gas)
+    }
 
     /// SLOAD a slot of the storage credits contract, optionally skipping the cold load.
     fn load_credits(
@@ -59,19 +66,11 @@ pub trait StorageCreditsBackend {
         value: U256,
     ) -> Result<StateLoad<SStoreResult>, Self::Error>;
 
-    /// Increments the pending refund count held in the storage credits contract's
-    /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
-    fn credit_tstore_increment(&mut self, key: U256);
+    /// Loads the transaction-local storage credit state word at `key`.
+    fn load_transient_state(&mut self, key: U256) -> U256;
 
-    /// Returns the active scoped direct TIP-1060 budget, if any.
-    fn storage_credit_budget(&self) -> Option<u64> {
-        None
-    }
-
-    /// Consumes one unit from the active scoped direct TIP-1060 budget.
-    fn consume_storage_credit_budget(&mut self) -> bool {
-        false
-    }
+    /// Stores the transaction-local storage credit state word at `key`.
+    fn store_transient_state(&mut self, key: U256, value: U256);
 }
 
 /// Applies the TIP-1060 storage credits policy for a single SSTORE.
@@ -106,7 +105,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         if is_cold {
             backend.charge_gas(backend.gas_params().cold_storage_cost())?;
         }
-        if values.new_values_changes_present() && values.is_original_eq_present() {
+        if values.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         }
 
@@ -116,61 +115,53 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         });
     }
 
-    // Load token_state for the contract
+    // Load the persistent storage credit balance for the storage-owning account.
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    backend.load_storage_credit_account()?;
-
     let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
-    let skip_cold = backend.remaining_gas() < additional_cold_cost;
+    let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load = backend.load_credits(account_slot, skip_cold)?;
     if storage_credit_state_load.is_cold {
         backend.charge_gas(additional_cold_cost)?;
     }
 
-    let mut storage_credits =
-        AccountState::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
+    let mut balance =
+        u64::from_word(storage_credit_state_load.data).map_err(|_| B::fatal_external())?;
 
     let mut was_changed = false;
     if values.is_new_zero() {
         // x→0: slot clear (present non-zero set to zero).
-        storage_credits.balance = storage_credits.balance.saturating_add(1);
+        balance = balance.saturating_add(1);
         was_changed = true;
     } else {
-        // 0→x: slot create (charged EIP-8037 state gas today).
-        let credit_action = match backend.storage_credit_budget() {
-            Some(0) => None,
-            Some(_) => Some((CreditMode::Direct, true)),
-            None => Some((storage_credits.mode, false)),
-        };
+        // 0→x: slot create. The selected storage creation mode is transient.
+        let mut transient_state =
+            TransientState::from_word(backend.load_transient_state(account_slot))
+                .map_err(|_| B::fatal_external())?;
 
-        match credit_action {
-            Some((CreditMode::Direct, with_budget)) => {
-                // Only if there is a credit available, skip gas.
-                if storage_credits.balance > 0 {
-                    if with_budget {
-                        let consumed = backend.consume_storage_credit_budget();
-                        debug_assert!(consumed);
-                    }
-
+        match transient_state.mode {
+            CreditMode::Direct => {
+                // Only if there is a credit available, skip gas
+                if balance > 0 {
                     // Consume the storage credit and charge 20k for the SSTORE + cold access cost.
                     if is_cold {
                         backend.charge_gas(backend.gas_params().cold_storage_cost())?;
                     }
-                    backend.charge_gas(20_000)?;
-                    storage_credits.balance -= 1;
+                    backend.charge_gas(SSTORE_SET_WITHOUT_EXPANSION_COST)?;
+                    balance -= 1;
                     was_changed = true;
                     outcome.skip_gas = true;
                 }
                 // Otherwise, leave gas enabled so revm charges full creation costs.
             }
-            Some((CreditMode::Preserve, _)) | None => {
+            CreditMode::Preserve => {
                 // Do nothing, so revm takes care of gas accounting after this hook.
             }
-            Some((CreditMode::Refund, _)) => {
-                backend.credit_tstore_increment(account_slot);
+            CreditMode::Refund => {
+                transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
+                backend.store_transient_state(account_slot, transient_state.into_word());
             }
         }
     }
@@ -178,12 +169,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     if was_changed {
         // cold load is already checked above when we loaded the storage credits account.
         let result = backend
-            .store_credits(account_slot, storage_credits.into_word())?
+            .store_credits(account_slot, U256::from(balance))?
             .data;
 
         // Only when change happens charge additional gas.
-        // Creation of credit slot is compensated by creation of the contract creation.
-        // And creation and deletion of credit is compensated by EIP-1060, so no additional gas is charged.
+        // Creating or updating the protocol credit-balance slot is TIP-1060 bookkeeping and
+        // does not incur the extra TIP-1000 storage creation component.
         if result.new_values_changes_present() && result.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };

@@ -50,7 +50,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             storage_credit_budget: None,
-            tip1060_storage_credits_enabled: true,
+            tip1060_storage_credits_enabled: spec.is_t7(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
@@ -61,7 +61,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     /// This is intentionally provider-scoped so protocol-internal phases such as fee collection can
     /// opt out without affecting user execution or other precompile calls.
     pub fn with_tip1060_storage_credits(mut self, enabled: bool) -> Self {
-        self.tip1060_storage_credits_enabled = enabled;
+        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
         self
     }
 
@@ -105,7 +105,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
+impl StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     type Error = TempoPrecompileError;
 
     #[inline]
@@ -115,28 +115,17 @@ impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn fatal_external() -> Self::Error {
-        TempoPrecompileError::Fatal("invalid storage credits account state".to_string())
+        TempoPrecompileError::Fatal("invalid storage credits state".to_string())
+    }
+
+    #[inline]
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
     }
 
     #[inline]
     fn gas_params(&self) -> &GasParams {
         &self.gas_params
-    }
-
-    #[inline]
-    fn remaining_gas(&self) -> u64 {
-        self.gas_tracker.remaining()
-    }
-
-    #[inline]
-    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
-        self.deduct_gas(cost)
-    }
-
-    #[inline]
-    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error> {
-        self.internals.load_account(STORAGE_CREDITS_ADDRESS)?;
-        Ok(())
     }
 
     #[inline]
@@ -163,27 +152,13 @@ impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn credit_tstore_increment(&mut self, key: U256) {
-        let pending = self.internals.tload(STORAGE_CREDITS_ADDRESS, key);
-        self.internals.tstore(
-            STORAGE_CREDITS_ADDRESS,
-            key,
-            pending.saturating_add(U256::from(1)),
-        );
+    fn load_transient_state(&mut self, key: U256) -> U256 {
+        self.internals.tload(STORAGE_CREDITS_ADDRESS, key)
     }
 
-    fn storage_credit_budget(&self) -> Option<u64> {
-        self.storage_credit_budget
-    }
-
-    fn consume_storage_credit_budget(&mut self) -> bool {
-        match &mut self.storage_credit_budget {
-            Some(remaining) if *remaining > 0 => {
-                *remaining -= 1;
-                true
-            }
-            _ => false,
-        }
+    #[inline]
+    fn store_transient_state(&mut self, key: U256, value: U256) {
+        self.internals.tstore(STORAGE_CREDITS_ADDRESS, key, value);
     }
 }
 
@@ -294,17 +269,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
-        let outcome = if self.spec.is_t7() {
-            if self.tip1060_storage_credits_enabled {
-                sstore_storage_credits(self, address, &result)?
-            } else {
-                // TIP-1060 is intentionally disabled for this provider, but T7 still removes
-                // legacy SSTORE refunds.
-                revm::interpreter::instruction_context::GasStateOutcome {
-                    skip_gas: false,
-                    skip_refund: true,
-                }
-            }
+        let outcome = if self.tip1060_storage_credits_enabled {
+            sstore_storage_credits(self, address, &result)?
         } else {
             Default::default()
         };

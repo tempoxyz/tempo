@@ -14,15 +14,15 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_exhausted, scaled_build_time_multiplier,
+        payload_budget_decision, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
-use alloy_eip7928::compute_block_access_list_hash;
+use alloy_eip7928::bal::Bal;
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -36,7 +36,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -48,7 +48,7 @@ use reth_primitives_traits::{
 };
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention,
+    db::states::bundle_state::BundleRetention, state::EvmState,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -60,12 +60,15 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
+use tempo_payload_types::{
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
@@ -78,17 +81,6 @@ use tempo_transaction_pool::{
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
-
-/// Returns true if a subblock has any expired transactions for the given timestamp.
-fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
-    subblock.transactions.iter().any(|tx| {
-        tx.as_aa().is_some_and(|tx| {
-            tx.tx()
-                .valid_before
-                .is_some_and(|valid| valid.get() <= timestamp)
-        })
-    })
-}
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -326,6 +318,7 @@ where
             parent_header,
             attributes,
             payload_id,
+            ..
         } = config;
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
@@ -368,7 +361,6 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
-            .with_bal_builder_if(self.enable_bal)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -430,7 +422,7 @@ where
             // We pre-validate all of the subblocks on top of parent state in subblocks service
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
-            if has_expired_transactions(subblock, attributes.timestamp) {
+            if subblock.has_expired_transactions(attributes.timestamp) {
                 self.metrics.inc_subblocks_expired();
                 return false;
             }
@@ -486,18 +478,31 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        if let Some(ref handle) = trie_handle {
+        let bal_task_handle = if self.enable_bal {
+            let bal_task_handle =
+                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
             executor
                 .evm_mut()
                 .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
-        }
+                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
+            Some(bal_task_handle)
+        } else {
+            if let Some(ref handle) = trie_handle {
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .set_state_hook(Some(Box::new(handle.state_hook())));
+            }
+            None
+        };
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        executor.evm_mut().db_mut().bump_bal_index();
+        if let Some(bal_task_handle) = &bal_task_handle {
+            bal_task_handle.bump_bal_index();
+        }
 
         check_cancel!();
 
@@ -555,26 +560,38 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
+        let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
-                if payload_budget_exhausted(
+                let current_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used,
+                    pool_transactions_included as usize,
+                );
+                let budget_decision = payload_budget_decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
-                    build_budget,
                     marshal_persist,
                     block_size_used,
-                ) {
-                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                    validation_latency,
+                    current_workload,
+                );
+                if budget_decision.total_reserved >= build_budget {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
-                        ?estimated_marshal_persist,
+                        predicted_builder_work = ?budget_decision.predicted_builder_work,
+                        predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        total_reserved = ?budget_decision.total_reserved,
+                        marshal_persist = ?budget_decision.marshal_persist,
+                        ?current_workload,
+                        gas_used = cumulative_gas_used,
+                        transactions = pool_transactions_included,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -719,7 +736,9 @@ where
                 }
             };
             trace!("Transaction executed");
-            executor.evm_mut().db_mut().bump_bal_index();
+            if let Some(bal_task_handle) = &bal_task_handle {
+                bal_task_handle.bump_bal_index();
+            }
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
@@ -796,7 +815,9 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
-                executor.evm_mut().db_mut().bump_bal_index();
+                if let Some(bal_task_handle) = &bal_task_handle {
+                    bal_task_handle.bump_bal_index();
+                }
 
                 subblock_tx_count += 1.0;
                 let _ = roots_tx.send((
@@ -835,7 +856,9 @@ where
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
-            executor.evm_mut().db_mut().bump_bal_index();
+            if let Some(bal_task_handle) = &bal_task_handle {
+                bal_task_handle.bump_bal_index();
+            }
 
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
@@ -879,6 +902,9 @@ where
         // finalize the state root.
         db.set_state_hook(None);
 
+        // Drop the BAL task sender to trigger finalization.
+        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
@@ -921,10 +947,12 @@ where
             }
             .unzip();
 
-        let block_access_list = db.take_built_alloy_bal();
-        let block_access_list_hash = block_access_list
-            .as_ref()
-            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
+            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
+            (Some(bal), Some(bal_hash))
+        } else {
+            (None, None)
+        };
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -1052,6 +1080,10 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+        let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
+        let validation_latency_duration = validation_latency
+            .and_then(|estimate| estimate.estimate(final_workload))
+            .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -1083,6 +1115,7 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
+            ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
@@ -1094,8 +1127,6 @@ where
         );
 
         let block = Arc::new(block);
-        let block_access_list: Option<Bytes> =
-            block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
@@ -1115,7 +1146,7 @@ where
             block_access_list,
             Some(executed_block),
             validation_work_duration,
-            rlp_length,
+            validation_latency_duration,
         );
 
         drop(db);
@@ -1179,6 +1210,68 @@ where
 
         (transactions_tx, result_rx)
     }
+
+    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+        let (bal_tx, bal_rx) = oneshot::channel();
+        self.executor.spawn_blocking_named("builder-bal-task", || {
+            let mut bal_state =
+                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+            for msg in task_rx {
+                match msg {
+                    BalMessage::BumpIndex => {
+                        bal_state.bump_bal_index();
+                    }
+                    BalMessage::State(state) => {
+                        bal_state.commit(&state);
+                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                            state_root_task_hook.on_state(state);
+                        }
+                    }
+                }
+            }
+
+            drop(state_root_task_hook);
+            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+            let mut encoded = Vec::new();
+            bal.encode(&mut encoded);
+            let bal_hash = keccak256(&encoded);
+
+            let _ = bal_tx.send((encoded.into(), bal_hash));
+        });
+
+        BalTaskHandle {
+            msg_tx: task_tx,
+            bal_rx,
+        }
+    }
+}
+
+struct BalTaskHandle {
+    msg_tx: mpsc::Sender<BalMessage>,
+    bal_rx: oneshot::Receiver<(Bytes, B256)>,
+}
+
+impl BalTaskHandle {
+    fn state_hook(&self) -> impl OnStateHook {
+        let msg_tx = self.msg_tx.clone();
+        move |state: EvmState| {
+            let _ = msg_tx.send(BalMessage::State(state));
+        }
+    }
+
+    fn bump_bal_index(&self) {
+        let _ = self.msg_tx.send(BalMessage::BumpIndex);
+    }
+
+    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
+        self.bal_rx
+    }
+}
+
+enum BalMessage {
+    State(EvmState),
+    BumpIndex,
 }
 
 pub fn is_more_subblocks(
@@ -1359,9 +1452,8 @@ mod tests {
         }
         .try_into_recovered()
         .unwrap();
-        let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
     }
 
     #[test]
@@ -1417,19 +1509,19 @@ mod tests {
     }
 
     #[test]
-    fn test_has_expired_transactions_boundary() {
+    fn test_recovered_subblock_has_expired_transactions_boundary() {
         // valid_before == timestamp → expired
         let subblock = RecoveredSubBlock::with_valid_before(Some(nz(1000)));
-        assert!(has_expired_transactions(&subblock, 1000));
+        assert!(subblock.has_expired_transactions(1000));
 
         // valid_before < timestamp → expired
-        assert!(has_expired_transactions(&subblock, 1001));
+        assert!(subblock.has_expired_transactions(1001));
 
         // valid_before > timestamp → NOT expired
-        assert!(!has_expired_transactions(&subblock, 999));
+        assert!(!subblock.has_expired_transactions(999));
 
         // No valid_before → NOT expired
         let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
-        assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
+        assert!(!subblock_no_expiry.has_expired_transactions(1000));
     }
 }

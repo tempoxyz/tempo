@@ -9,8 +9,8 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
-    storage::PrecompileStorageProvider,
-    tip1060_storage_credits::{AccountState, TIP1060StorageCredits},
+    storage::{FromWord, PrecompileStorageProvider},
+    tip1060_storage_credits::TIP1060StorageCredits,
 };
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
@@ -105,11 +105,11 @@ impl HashMapStorageProvider {
             .get(&(STORAGE_CREDITS_ADDRESS, key))
             .copied()
             .unwrap_or(U256::ZERO);
-        let Ok(state) = AccountState::from_word(word) else {
+        let Ok(balance) = u64::from_word(word) else {
             return false;
         };
 
-        state.balance > 0
+        balance > 0
     }
 }
 
@@ -154,7 +154,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.counter_sstore += 1;
-        if self.spec.is_t6()
+        if self.spec.is_t7()
             && self
                 .internals
                 .get(&(address, key))

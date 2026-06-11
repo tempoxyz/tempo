@@ -11,7 +11,7 @@ pub mod dispatch;
 pub use slots as tip403_registry_slots;
 
 use crate::{
-    StorageCtx,
+    StorageCtx, is_precompile_address,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
@@ -415,9 +415,6 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(TIP403RegistryError::invalid_recovery_authority().into());
-        }
         if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
@@ -425,8 +422,7 @@ impl TIP403Registry {
         let recovery_address = call.recoveryAuthority;
         let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
 
-        if recovery_address == RECEIVE_POLICY_GUARD_ADDRESS
-            || recovery_address.is_tip20()
+        if is_precompile_address(recovery_address, self.storage.spec())
             || recovery_address.is_virtual()
         {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
@@ -704,7 +700,7 @@ impl TIP403Registry {
 
     /// Core role-based authorization check ([TIP-1015]). Resolves built-in policies (0 = reject,
     /// 1 = allow) immediately, delegates compound policies to their sub-policies, and evaluates
-    /// simple policies via `is_simple`. (T6+) introduces protocol addresses that can't be policed.
+    /// simple policies. (T6+) introduces protocol addresses that can't be policed.
     ///
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
@@ -756,7 +752,7 @@ impl TIP403Registry {
             };
         }
 
-        self.is_simple(policy_id, user, &data)
+        self.is_authorized_simple_inner(policy_id, user, &data)
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
@@ -786,11 +782,16 @@ impl TIP403Registry {
             Some(data) => data,
             None => self.get_policy_data(policy_id)?,
         };
-        self.is_simple(policy_id, user, &data)
+        self.is_authorized_simple_inner(policy_id, user, &data)
     }
 
-    /// Authorization check for simple (non-compound) policies
-    fn is_simple(&self, policy_id: u64, user: Address, data: &PolicyData) -> Result<bool> {
+    /// Authorization check for simple (non-compound) policies.
+    fn is_authorized_simple_inner(
+        &self,
+        policy_id: u64,
+        user: Address,
+        data: &PolicyData,
+    ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
@@ -946,6 +947,7 @@ impl PolicyTypeExt for PolicyType {
 mod tests {
     use super::*;
     use crate::{
+        SYSTEM_PRECOMPILES,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     };
@@ -1290,25 +1292,10 @@ mod tests {
     }
 
     #[test]
-    fn test_set_receive_policy_rejects_invalid_account() -> eyre::Result<()> {
+    fn test_set_receive_policy_rejects_virtual_account() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            let block_result = registry.set_receive_policy(
-                RECEIVE_POLICY_GUARD_ADDRESS,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: REJECT_ALL_POLICY_ID,
-                    tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAuthority: Address::ZERO,
-                },
-            );
-            assert!(matches!(
-                block_result,
-                Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::InvalidRecoveryAuthority(_)
-                ))
-            ));
 
             let virtual_result = registry.set_receive_policy(
                 Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
@@ -1338,7 +1325,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            for recovery_address in [RECEIVE_POLICY_GUARD_ADDRESS, PATH_USD_ADDRESS, virtual_addr] {
+            let rejected = SYSTEM_PRECOMPILES
+                .iter()
+                .filter_map(|&(address, hf)| (hf <= StorageCtx.spec()).then_some(address))
+                .chain([PATH_USD_ADDRESS, virtual_addr]);
+
+            for recovery_address in rejected {
                 let result = registry.set_receive_policy(
                     account,
                     ITIP403Registry::setReceivePolicyCall {
@@ -2417,8 +2409,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_simple_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
-        // This test verifies that is_simple explicitly errors for __Invalid
+    fn test_is_authorized_simple_inner_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
+        // This test verifies that is_authorized_simple_inner explicitly errors for __Invalid
         // rather than returning false. We need to manually create a policy
         // with an invalid type to test this edge case.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
