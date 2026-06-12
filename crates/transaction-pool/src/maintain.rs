@@ -617,8 +617,7 @@ where
                 let block_update_start = Instant::now();
 
                 let tip = &new;
-                let execution_outcome = tip.execution_outcome();
-                let bundle_state = execution_outcome.state().state();
+                let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
                 // Removed transactions are collected here and dropped at the end of the
@@ -956,18 +955,42 @@ where
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
 
-                // Reseed the validator's state cache from this block's post-state so the next
-                // block's validations start warm on the entries the block touched. This runs
-                // after the pool-mutating steps above so it never delays mined-tx removal or
-                // eviction, which would otherwise let the builder pick up stale transactions.
-                let seed_start = Instant::now();
-                pool.seed_validation_state_cache(tip.tip().hash(), execution_outcome.state());
-                metrics.state_cache_seed_duration_seconds.record(seed_start.elapsed());
-
                 // Deallocating removed transactions is expensive, so do it after all updates are done.
                 drop(removed_txs);
             }
         }
+    }
+}
+
+/// Standalone task that reseeds the validator's tip-scoped state cache from each committed
+/// block's post-execution state.
+///
+/// Kept separate from [`maintain_tempo_pool`] so that building the seeded cache (iterating the
+/// block's touched accounts and storage) never delays the latency-critical pool updates there
+/// (mined-tx removal, eviction), which would otherwise let the builder pick up stale
+/// transactions. Reacting to the canonical stream directly also anchors the cache to the new
+/// tip as early as possible, maximizing the window in which validations can reuse it.
+pub async fn maintain_state_cache<Client>(pool: TempoTransactionPool<Client>)
+where
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + 'static,
+{
+    let metrics = TempoPoolMaintenanceMetrics::default();
+    let mut chain_events = pool.client().canonical_state_stream();
+
+    while let Some(event) = chain_events.next().await {
+        let new = match event {
+            CanonStateNotification::Reorg { new, .. } | CanonStateNotification::Commit { new } => {
+                new
+            }
+        };
+        let seed_start = Instant::now();
+        pool.seed_validation_state_cache(new.tip().hash(), new.execution_outcome().state());
+        metrics
+            .state_cache_seed_duration_seconds
+            .record(seed_start.elapsed());
     }
 }
 

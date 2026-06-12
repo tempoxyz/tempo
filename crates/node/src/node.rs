@@ -541,6 +541,14 @@ where
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
 
+        // Spawn the validator state cache reseed task separately so building the seeded cache
+        // never competes with the latency-critical pool maintenance above.
+        ctx.task_executor().spawn_critical_os_thread(
+            "tempo-txpool-state-cache",
+            "txpool maintenance - state cache",
+            tempo_transaction_pool::maintain::maintain_state_cache(transaction_pool.clone()),
+        );
+
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 

@@ -1,5 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
+    metrics::TempoValidatorMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -111,6 +112,8 @@ pub struct TempoTransactionValidator<Client> {
     /// Cached here so hot paths can resolve the active hardfork with a single atomic load
     /// instead of walking the chain spec's fork schedule.
     active_hardfork: AtomicU8,
+    /// Validator metrics, including state cache hit/miss counters.
+    metrics: TempoValidatorMetrics,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -144,6 +147,7 @@ where
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
+            metrics: TempoValidatorMetrics::default(),
         }
     }
 
@@ -389,8 +393,10 @@ where
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
+            self.metrics.state_cache_hits.increment(1);
             cached_state
         } else {
+            self.metrics.state_cache_misses.increment(1);
             Arc::new(StateCache::default())
         }
     }
