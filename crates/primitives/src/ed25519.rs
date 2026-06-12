@@ -1,6 +1,5 @@
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
-use commonware_codec::ReadExt as _;
 
 #[derive(Debug)]
 pub struct InvalidPublicKey;
@@ -60,7 +59,7 @@ impl From<PublicKey> for B256 {
 
 impl<'a> From<&'a PublicKey> for B256 {
     fn from(value: &'a PublicKey) -> Self {
-        Self::from_slice(value.0.as_ref())
+        Self::from(<[u8; 32]>::from(&value.0))
     }
 }
 
@@ -68,8 +67,9 @@ impl TryFrom<B256> for PublicKey {
     type Error = InvalidPublicKey;
 
     fn try_from(value: B256) -> Result<Self, Self::Error> {
-        let key = commonware_cryptography::ed25519::PublicKey::read(&mut value.as_slice())
+        let key = commonware_cryptography::ed25519::PublicKey::try_from(value.as_slice())
             .map_err(|_| InvalidPublicKey)?;
+
         Ok(Self(key))
     }
 }
