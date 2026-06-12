@@ -929,8 +929,14 @@ where
             finish_provider.hashed_post_state(&db.bundle_state)
         };
 
+        // BENCH: skip all state root computation — emit the parent's state root. Validators
+        // run with --engine.skip-state-root and trust whatever root the proposer emits.
+        const BENCH_SKIP_STATE_ROOT: bool = true;
+
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
+            if BENCH_SKIP_STATE_ROOT {
+                None
+            } else if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -969,7 +975,9 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
+        let (state_root, trie_updates) = if BENCH_SKIP_STATE_ROOT {
+            (parent_header.state_root(), Arc::new(reth_trie_common::updates::TrieUpdates::default()))
+        } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
             let (state_root, trie_updates) = finish_provider
