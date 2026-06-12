@@ -1105,14 +1105,14 @@ jobs:
             }
 
             // Tracy profile links (URLs produced by tempo.nu upload-tracy-profile).
-            // Single-runner e2e captures both local validators in one phase-level file.
+            // Local e2e enables Tracy only on validator a to keep one node per capture.
             let tracySection = '';
             if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
               const links = [];
               for (const run of runs) {
                 try {
                   const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run} / local validators**: [Tracy Viewer](${url})`);
+                  if (url) links.push(`- **${run} / validator a**: [Tracy Viewer](${url})`);
                 } catch (e) {}
               }
               if (links.length > 0) {
