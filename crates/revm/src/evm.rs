@@ -548,28 +548,18 @@ mod tests {
             )
         }
 
-        /// Sign a transaction with KeychainSignature wrapper (V2).
         fn sign_tx_keychain(
             &self,
             tx: TempoTransaction,
         ) -> eyre::Result<tempo_primitives::AASigned> {
-            self.sign_tx_keychain_for_user(tx, self.address)
-        }
-
-        /// Sign a keychain transaction as this access key for the given root user.
-        fn sign_tx_keychain_for_user(
-            &self,
-            tx: TempoTransaction,
-            user: Address,
-        ) -> eyre::Result<tempo_primitives::AASigned> {
             // V2: sign keccak256(0x04 || sig_hash || user_address)
             let sig_hash = tx.signature_hash();
             let effective_hash = alloy_primitives::keccak256(
-                [&[0x04], sig_hash.as_slice(), user.as_slice()].concat(),
+                [&[0x04], sig_hash.as_slice(), self.address.as_slice()].concat(),
             );
             let webauthn_sig = self.sign_webauthn(effective_hash.as_slice())?;
             let keychain_sig =
-                KeychainSignature::new(user, PrimitiveSignature::WebAuthn(webauthn_sig));
+                KeychainSignature::new(self.address, PrimitiveSignature::WebAuthn(webauthn_sig));
             Ok(tx.into_signed(TempoSignature::Keychain(keychain_sig)))
         }
     }
@@ -2096,10 +2086,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: First SSTORE runs in Refund (default) mode and increments the pending-refund
-    /// field, then a precompile call updates the mode field in the same transient word. Since no
-    /// account slot is cleared, it ends the transaction with zero storage credit balance and no
-    /// persistent mode.
+    /// TIP-1060: mode changes must not overwrite the pending-refund counter or persist mode state.
+    ///
+    /// The tx first creates a slot in default Refund mode, then calls `setMode`. Settlement must
+    /// read only `pending_refunds`, not confuse the transient mode bits with a credit balance.
     #[test]
     fn test_tip1060_refund_settlement_uses_pending_field_not_mode() -> eyre::Result<()> {
         for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
@@ -2147,9 +2137,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060 `setMode` writes only transient mode state: it must not create persistent
-    /// storage-credit state, mint credits, consume credits, or require the TIP-1000 storage
-    /// creation charge.
+    /// TIP-1060: `setMode` only updates transient state and must not touch persistent credits.
+    ///
+    /// A low gas limit proves `setMode` does not pay TIP-1000 storage creation gas. The pre-seeded
+    /// self-credit sentinel proves TIP-1060 bookkeeping does not recursively consume itself.
     #[test]
     fn test_tip1060_set_mode_uses_transient_state_only() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -2212,8 +2203,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060 clearing regression: deleting a nonzero slot should mint one storage credit, but the
-    /// pre-existing SSTORE clearing refund must be removed.
+    /// TIP-1060: clearing a nonzero slot mints one credit and disables legacy SSTORE refunds.
+    ///
+    /// Slot 0 is seeded non-zero before the tx. The clear should mint a storage credit instead of
+    /// using the legacy EVM refund counter.
     #[test]
     fn test_tip1060_sstore_clear_mints_storage_credit_without_legacy_refund() -> eyre::Result<()> {
         // PUSH1 0x00 PUSH1 0x00 SSTORE STOP: clear slot 0.
@@ -2258,36 +2251,16 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: a single transaction that creates then clears the same storage slot
-    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation modes.
-    /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
-    /// - `Preserve` charges the full EVM/state gas as normal,
-    /// - `Direct` has no storage credit to spend at create time (balance starts at 0), so it also
-    ///   charges the full create cost (identical to `Preserve`),
-    /// - `Refund` charges the full create gas but accrues a deferred storage credit that
-    ///   `apply_refund` settles at end-of-tx, erasing 230_000 gas, so it ends up the cheapest.
+    /// TIP-1060: `0->1->0` pays creation cost, then mints/settles according to mode.
     ///
-    /// The storage credit balance corroborates the mechanism: the clear (x->0) leg mints one
-    /// storage credit in every mode, but `Refund` consumes that minted storage credit against its
-    /// deferred create storage credit at end-of-tx, so it lands at 0 while the others stay at 1.
+    /// Preserve/Direct keep the clear-minted credit. Refund consumes it against the deferred
+    /// creation refund at end-of-tx.
     #[test]
     fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
-        // Contract bytecode body: SSTORE 1 at slot 0 (0->1), then SSTORE 0 at slot 0 (1->0), STOP.
         // PUSH1 0x01 PUSH1 0x00 SSTORE  PUSH1 0x00 PUSH1 0x00 SSTORE  STOP
         let create_clear_body = bytes!("6001600055600060005500");
 
-        // (mode, expected gas used, expected post-tx storage credit balance).
-        //
-        // Gas: `Preserve` and `Direct` both charge the full create cost (`Direct` has no storage
-        // credit to spend at create time), so their gas matches. The credit-slot bookkeeping write
-        // is charged a flat reset cost in every mode, so it does not skew the comparison. `Refund`
-        // additionally erases 230_000 at end-of-tx via the deferred storage credit, so it ends up
-        // the cheapest by exactly that amount.
-        //
-        // Balance: the clear (x->0) leg mints one storage credit in every mode. `Refund`
-        // *additionally* accrues a deferred storage credit on the create (0->x) leg into transient
-        // storage; at end-of-tx `apply_refund` consumes the minted storage credit against that
-        // credit, so it lands at 0 while the others keep the minted storage credit at 1.
+        // (mode, gas used, final credit balance).
         let cases = [
             (CreditMode::Refund, 305_968u64, 0u64),
             (CreditMode::Preserve, 540_514u64, 1u64),
@@ -2309,8 +2282,6 @@ mod tests {
                 },
             );
 
-            // Seed only the persistent credit balance; non-default modes are selected by the
-            // bytecode's transaction-local `setMode` prefix.
             seed_storage_credit_balance(&mut evm, contract, 0);
 
             let tx = TxBuilder::new()
@@ -2332,9 +2303,6 @@ mod tests {
                 "TIP-1060 create+clear gas should be exact in {mode:?} mode"
             );
 
-            // The storage credit balance corroborates the per-mode gas: Refund consumes its
-            // minted storage credit against the deferred create storage credit (lands at 0), the
-            // others keep it (1).
             assert_eq!(
                 storage_credit_balance(&evm, contract),
                 expected_balance,
@@ -2345,18 +2313,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: `Preserve`-mode churn of a pre-existing slot mints no spendable credits.
+    /// TIP-1060: Preserve churn of a pre-existing slot cannot subsidize fresh Direct creates.
     ///
-    /// A slot bootstrapped to non-zero is churned in a later transaction (clear + restore) under
-    /// `Preserve` mode. Each clear mints a credit, but the restore — a `0->non-zero` write whose
-    /// *original* value is non-zero — is a dirty restore that cancels that mint, so the churn nets
-    /// to zero credits even though revm charges it only the cheap dirty-slot reset cost. Otherwise
-    /// net-zero churn would coin ~free credits for `Direct` mode to spend on genuinely fresh slots
-    /// at ~20k each, bypassing TIP-1000's 250k state-creation pricing.
-    ///
-    /// tx#2 churns 500 times and then switches to `Direct` to create 500 fresh slots: because the
-    /// churn yields no credits, the `Direct` phase finds an empty balance and the fresh creations
-    /// run out of gas, so the transaction reverts and only the single bootstrap slot survives.
+    /// Dirty restores must cancel the clear-minted credits. Otherwise churned credits could be
+    /// spent on genuinely fresh Direct creates below the intended storage-creation price.
     #[test]
     fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
@@ -2373,14 +2333,10 @@ mod tests {
 
         use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
 
-        // CREATE init-code:
-        //   constructor: SSTORE(0, 1) bootstrap
-        //   runtime:
-        //     setMode(Preserve)
-        //     for 500: SSTORE(0, 0); SSTORE(0, 2)
-        //     setMode(Direct)
-        //     for 500: SSTORE(0x100 + i, 1)
-        // selector 0x21175b4a = setMode(uint8); precompile 0x1060...0000.
+        // Initcode:
+        //   constructor: SSTORE(0, 1)
+        //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
+        // Selector 0x21175b4a = setMode(uint8); precompile = 0x1060...0000.
         let init = Bytes::from(
             hex!(
                 "60016000556100a660136000396100a66000f3\
@@ -2431,7 +2387,7 @@ mod tests {
             .created_address()
             .expect("CREATE should yield an address");
 
-        // tx#2: Preserve-churn-mint 500, then Direct-spend on 500 fresh slots.
+        // tx#2: churn in Preserve, then try to spend credits in Direct.
         let call = evm.transact_commit(
             TxEnv {
                 caller,
@@ -2465,28 +2421,24 @@ mod tests {
             call.tx_gas_used()
         );
 
-        // Preserve-churn mints no spendable credits: each dirty restore cancels the credit minted
-        // by the clear, so `Direct` finds an empty balance and the 500 fresh creations exhaust gas.
+        // Dirty restores cancel the clear-minted credits, so the Direct create phase OOGs.
         assert!(!call.is_success());
         assert_eq!(slots, 1);
         assert_eq!(balance, 0);
         Ok(())
     }
 
-    /// TIP-1060 regression (burn path): same-transaction churn of a *pre-existing* slot mints zero
-    /// net credits.
+    /// TIP-1060: Preserve clear+restore churn of a pre-existing slot nets zero credits.
     ///
-    /// Slot 0 is non-zero at the start of the transaction (`original != 0`). In `Preserve` mode the
-    /// contract repeatedly clears it (each clear mints a credit) and restores it (a `0->non-zero`
-    /// dirty restore). The restore now cancels the just-minted credit, so the balance nets to zero
-    /// instead of growing by one per cycle (the pre-fix behavior, which coined ~free credits).
+    /// Slot 0 starts non-zero. Each clear mints a credit, and each dirty restore must burn it so
+    /// repeated churn cannot grow the account's credit balance.
     #[test]
     fn test_tip1060_preserve_churn_mints_zero_net_credits() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x6c);
 
-        // body: (clear slot0; restore slot0 -> 2) x 3, then STOP.
+        // Bytecode body: (SSTORE(0, 0); SSTORE(0, 2)) x 3; STOP.
         let mut body = Vec::new();
         for _ in 0..3 {
             body.extend_from_slice(&bytes!("6000600055")); // SSTORE(0, 0)  clear
@@ -2502,7 +2454,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Slot 0 starts non-zero, so each clear deletes pre-existing committed storage.
+        // Slot 0 starts non-zero.
         evm.ctx
             .db_mut()
             .insert_account_storage(contract, U256::ZERO, U256::from(1))
@@ -2527,20 +2479,17 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060 regression (repay path): a credit minted by a churn-clear and then spent in
-    /// `Direct` mode before the slot is restored cannot leave the discount in place.
+    /// TIP-1060: if a churn credit is spent before restore, the restore repays its value.
     ///
-    /// This is the reordered variant a plain "un-mint" misses: the provisional credit is already
-    /// gone when the dirty restore happens, so there is nothing to burn. The restore must instead
-    /// repay the storage credit value, making the genuinely new slot cost the full TIP-1000 price.
+    /// This exercises the reordered case: clear slot 0, spend the credit on a fresh Direct create,
+    /// then restore slot 0. With no credit left to burn, the dirty restore must charge repayment.
     #[test]
     fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x6d);
 
-        // body: clear slot0 (mint); create slot1 (Direct consumes the credit); restore slot0 -> 2
-        // (dirty restore with an empty balance -> must repay 230k); STOP.
+        // Bytecode body: SSTORE(0,0); SSTORE(1,1); SSTORE(0,2); STOP.
         let mut body = Vec::new();
         body.extend_from_slice(&bytes!("6000600055")); // SSTORE(0, 0)  clear, mints
         body.extend_from_slice(&bytes!("6001600155")); // SSTORE(1, 1)  fresh create, Direct spend
@@ -2571,8 +2520,7 @@ mod tests {
         ))?;
         assert!(result.is_success(), "direct reorder tx should succeed");
 
-        // The fresh slot exists and the original slot is restored, but the churn nets to zero
-        // credits and the restore repaid the 230k value spent by the Direct creation.
+        // The fresh slot exists, the original slot is restored, and the credit balance nets to zero.
         assert_eq!(
             evm.ctx.db().storage_ref(contract, U256::from(1)).unwrap(),
             U256::from(1),
@@ -2597,44 +2545,14 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: the storage credits minted by clearing a slot in a first transaction change the
-    /// cost of creating a slot in a *later* transaction, and that dependence is mode-specific.
+    /// TIP-1060: credits minted in one tx affect later creates according to the selected mode.
     ///
-    /// The contract branches on calldata: with empty calldata it does the create+clear pair
-    /// (SSTORE 0->1 then 1->0), minting a storage credit; with non-empty calldata it does a single
-    /// create (SSTORE 0->1) that can consume a previously minted storage credit. We run the minting
-    /// transaction first, then the create-only transaction, and assert the create-only gas
-    /// depends on the mode: `Direct` spends the storage credit for a flat charge, while
-    /// `Preserve`/`Refund` pay the full creation cost regardless of balance.
-    ///
-    /// The storage credit balance is checked after each transaction to make the mechanism explicit:
-    /// `Direct` consumes the minted storage credit (balance drops to 0), `Refund` settles its
-    /// deferred storage credits against minted ones (also 0), and `Preserve` leaves the create leg
-    /// untouched (1).
+    /// Empty calldata runs create+clear to mint a credit. Non-empty calldata runs create-only;
+    /// Direct spends the prior credit, while Preserve/Refund pay the full creation path.
     #[test]
     fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
-        // Bytecode body:
-        //   CALLDATASIZE PUSH1 <create-only> JUMPI   ; if calldata non-empty, jump to create-only
-        //   PUSH1 0x01 PUSH1 0x00 SSTORE             ; 0->1 (create)
-        //   PUSH1 0x00 PUSH1 0x00 SSTORE             ; 1->0 (clear, mints a storage credit)
-        //   STOP
-        //   JUMPDEST PUSH1 0x01 PUSH1 0x00 SSTORE STOP  ; create-only path
-        // Non-default modes prefix a `setMode` call, so the jump destination is computed by
-        // `branching_bytecode_with_tip1060_mode`.
-
-        // (mode, expected second-tx gas, expected balance after tx1, expected balance after tx2).
-        //
-        // Gas: the storage credit minted by the first tx's clear leg is only *spent* on the second
-        // tx's create leg under `Direct` (flat charge instead of full state gas); `Refund` and
-        // `Preserve` ignore the balance on a create and pay the full cost.
-        //
-        // Balance traces the mechanism behind the gas:
-        // - `Refund`: tx1 mints a storage credit on the clear leg and accrues a deferred create
-        //   credit; `apply_refund` settles the minted credit against it → 0. tx2's create accrues
-        //   another deferred credit but there is no minted credit to settle it against → stays 0.
-        // - `Preserve`: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
-        // - `Direct`: tx1 → 1 (clear mint); tx2's create *consumes* the storage credit → 0, which
-        //   is exactly why the second tx is cheap.
+        // Branching bytecode: empty calldata -> create+clear; non-empty -> create-only.
+        // (mode, tx2 gas, balance after tx1/tx2).
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
@@ -2657,7 +2575,7 @@ mod tests {
             );
             seed_storage_credit_balance(&mut evm, contract, 0);
 
-            // First transaction (empty calldata): create+clear, minting a storage credit.
+            // First tx: create+clear to mint.
             let tx1 = TxBuilder::new()
                 .call(contract, &[])
                 .nonce(0)
@@ -2676,8 +2594,7 @@ mod tests {
                 "storage credit balance after the minting tx should be exact in {mode:?} mode"
             );
 
-            // Second transaction (non-empty calldata): a single 0->1 create that can spend
-            // the previously minted storage credit, depending on the mode.
+            // Second transaction: create one slot; only Direct spends the prior credit.
             let tx2 = TxBuilder::new()
                 .call(contract, &[0x01])
                 .nonce(1)
@@ -2697,9 +2614,6 @@ mod tests {
                 "TIP-1060 second-tx create gas should be exact in {mode:?} mode"
             );
 
-            // The post-tx2 balance shows the mechanism behind the gas: `Direct` spends the minted
-            // storage credit (→ 0), `Refund` settles its deferred storage credits to 0, and
-            // `Preserve` leaves the create leg untouched (→ 1).
             assert_eq!(
                 storage_credit_balance(&evm, contract),
                 expected_credit_tx2,
@@ -2710,10 +2624,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: `setBudget(n)` selects bounded Direct mode. Only `n` zero-to-nonzero
-    /// creations can consume storage credits synchronously; once the budget is exhausted the
-    /// account switches to Preserve, emits `ModeUpdated(account, Preserve)`, and later creates pay
-    /// full state gas without spending credits.
+    /// TIP-1060: `setBudget(n)` caps Direct credit spending, then switches back to Preserve.
+    ///
+    /// Both contracts start with two credits and create two slots. `setBudget(1)` should discount
+    /// only the first create; plain `setMode(Direct)` has unlimited budget and discounts both.
     #[test]
     fn test_tip1060_direct_budget_caps_credit_consumption_and_emits_preserve() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -2771,8 +2685,7 @@ mod tests {
             .map(ITIP1060StorageCredits::ModeUpdated::decode_log)
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(budgeted_mode_updates.len(), 2);
-        // `setBudget(1)` first selects Direct mode. Exhausting that budget on the first
-        // credit-backed create then automatically switches the account to Preserve.
+        // First event selects Direct; second event is the budget-exhausted Preserve switch.
         assert_eq!(budgeted_mode_updates[0].account, budgeted_contract);
         assert_eq!(budgeted_mode_updates[0].newMode, Mode::Direct);
         assert_eq!(budgeted_mode_updates[1].account, budgeted_contract);
@@ -2802,11 +2715,12 @@ mod tests {
     }
 
     /// TIP-1060: Refund settlement consumes exactly `min(pending_creations, balance)`.
-    /// Each case uses actual 0->x SSTORE creates to accrue the deferred refund-eligible
-    /// creations, then checks the post-settlement storage credit balance.
+    ///
+    /// End-of-tx settlement may consume no more credits than either pending creations or starting
+    /// balance.
     #[test]
     fn test_tip1060_refund_settlement_min_pending_balance() -> eyre::Result<()> {
-        // (number of 0->x creates, starting storage credit balance, expected post-tx storage credit balance).
+        // (creates, starting balance, final balance).
         let cases = [(2u8, 1u64, 0u64), (1u8, 2u64, 1u64)];
 
         for (creates, starting_balance, expected_balance) in cases {
@@ -2814,8 +2728,7 @@ mod tests {
             let caller = key_pair.address;
             let contract = Address::repeat_byte(0x70 + creates);
 
-            // Contract bytecode: write 0x01 to `creates` fresh slots, then STOP.
-            // Per create: PUSH1 0x01 PUSH1 <slot> SSTORE.
+            // Write 0x01 to `creates` fresh slots, then STOP.
             let mut bytecode = Vec::new();
             for slot in 0..creates {
                 bytecode.extend_from_slice(&[
@@ -2857,9 +2770,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: pending Refund creations and storage credit balances settle per account.
-    /// Account A starts with two storage credits and creates one slot; account B starts with none
-    /// and creates one slot via a nested CALL. B must not consume A's extra storage credit.
+    /// TIP-1060: Refund settlement is per-account, including across nested calls.
+    ///
+    /// A creates one slot and calls B, which creates one slot too. A's surplus credits must not be
+    /// used to settle B's pending Refund creation.
     #[test]
     fn test_tip1060_refund_settlement_is_per_account() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -2867,17 +2781,13 @@ mod tests {
         let account_a = Address::repeat_byte(0xa0);
         let account_b = Address::repeat_byte(0xb0);
 
-        // Account A bytecode:
-        //   PUSH1 0x01 PUSH1 0x00 SSTORE             (A creates slot 0)
-        //   PUSH1 0x00 PUSH1 0x00 PUSH1 0x00         (retSize, retOffset, argsSize)
-        //   PUSH1 0x00 PUSH1 0x00 PUSH20 account_b   (argsOffset, value, to)
-        //   PUSH3 0x0f4240 CALL POP STOP             (call B and discard success flag)
+        // A bytecode: SSTORE(0,1), then CALL B.
         let mut account_a_bytecode = bytes!("600160005560006000600060006000").to_vec();
         account_a_bytecode.push(opcode::PUSH20);
         account_a_bytecode.extend_from_slice(account_b.as_slice());
         account_a_bytecode.extend_from_slice(&bytes!("620f4240f15000"));
 
-        // Account B bytecode: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
+        // B bytecode: SSTORE(0,1); STOP.
         let account_b_bytecode = Bytecode::new_raw(bytes!("600160005500"));
 
         let mut evm = create_funded_evm_t7(caller);
@@ -2921,18 +2831,17 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: a storage credit minted by clearing one slot later in the same transaction can fund an
-    /// earlier Refund-mode creation on a different slot at end-of-tx settlement.
+    /// TIP-1060: same-tx clear can settle an earlier Refund create on another slot.
+    ///
+    /// The tx creates slot 0 in Refund mode, then clears pre-existing slot 1. Settlement should use
+    /// the later clear-minted credit to refund the earlier creation.
     #[test]
     fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x64);
 
-        // Contract bytecode:
-        //   PUSH1 0x01 PUSH1 0x00 SSTORE  (create slot 0 (0->1))
-        //   PUSH1 0x00 PUSH1 0x01 SSTORE  (delete pre-existing slot 1 (1->0))
-        //   STOP
+        // Bytecode: SSTORE(0,1); SSTORE(1,0); STOP.
         let bytecode = Bytecode::new_raw(bytes!("6001600055600060015500"));
 
         let mut evm = create_funded_evm_t7(caller);
@@ -2970,10 +2879,10 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: Direct consumes a storage credit synchronously for the create discount and must
-    /// not also accrue a deferred Refund settlement storage credit for the same 0->x SSTORE.
-    /// The Direct case starts with a surplus storage credit so an accidental pending settlement
-    /// would have a remaining balance to consume.
+    /// TIP-1060: Direct spends synchronously and must not also get Refund settlement.
+    ///
+    /// Direct and Refund each create one slot. Direct starts with a surplus credit so an accidental
+    /// deferred settlement would consume an observable extra credit.
     #[test]
     fn test_tip1060_direct_storage_credits_no_end_of_tx_double_benefit() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -2981,7 +2890,7 @@ mod tests {
         let direct_contract = Address::repeat_byte(0x65);
         let refund_contract = Address::repeat_byte(0x66);
 
-        // Contract bytecode body: PUSH1 0x01 PUSH1 0x00 SSTORE STOP (create slot 0).
+        // Bytecode body: SSTORE(0,1); STOP.
         let create_body = bytes!("600160005500");
 
         let mut evm = create_funded_evm_t7(caller);
@@ -2999,8 +2908,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        // Direct starts with two storage credits: one should be consumed synchronously, and the
-        // other must remain after the transaction if no deferred settlement entry was created.
+        // Start with a surplus credit so accidental settlement would be observable.
         seed_storage_credit_balance(&mut evm, direct_contract, 2);
         seed_storage_credit_balance(&mut evm, refund_contract, 1);
 
@@ -3031,8 +2939,7 @@ mod tests {
         assert_eq!(
             direct.tx_gas_used(),
             310_308,
-            "Direct gets the synchronous discount without an additional 230k settlement refund \
-             (plus the retained cold access cost and 2.8k nonzero->nonzero credit-slot store)"
+            "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(
             refund.tx_gas_used(),
@@ -3043,15 +2950,17 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: clearing a nonzero slot mints a storage credit with saturating arithmetic, so a balance
-    /// already at `u64::MAX` remains pinned at the maximum instead of overflowing.
+    /// TIP-1060: clear-mint saturates at `u64::MAX`.
+    ///
+    /// Slot 0 starts non-zero and the credit balance starts at max. Clearing the slot must keep the
+    /// balance pinned at `u64::MAX` rather than overflowing.
     #[test]
     fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x67);
 
-        // Contract bytecode: PUSH1 0x00 PUSH1 0x00 SSTORE STOP (clear slot 0).
+        // Bytecode: SSTORE(0,0); STOP.
         let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
 
         let mut evm = create_funded_evm_t7(caller);
