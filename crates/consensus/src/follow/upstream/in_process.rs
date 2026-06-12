@@ -68,19 +68,21 @@ where
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
         let feed = self.config.feed.clone();
-        let context = self.context.clone();
+        let context = self.context.as_present();
         let mut pending_subscription = OptionFuture::some(
             async move {
                 loop {
                     if let Some(subscription) = feed.subscribe().await {
                         break subscription;
                     }
+
                     info!("feed state not yet ready, retrying in 1s");
                     context.sleep(Duration::from_secs(1)).await;
                 }
             }
             .boxed(),
         );
+
         let mut connected = false;
         loop {
             select!(
@@ -98,7 +100,9 @@ where
                         ?event, "received consensus event, forwarding to reporter"
                     ));
                     match event {
-                        Ok(event) => reporter.report(event).await,
+                        Ok(event) => {
+                            reporter.report(event);
+                        }
                         Err(BroadcastStreamRecvError::Lagged(events_skipped)) => {
                             debug_span!("subscription").in_scope(|| debug!(
                                 events_skipped,
@@ -116,11 +120,12 @@ where
                     }
                 }
             );
+
             if connected {
                 for (height, response) in self.waiters.drain(..) {
                     let feed = self.config.feed.clone();
                     self.context
-                        .with_label("get_finalization")
+                        .child("get_finalization")
                         .spawn(move |_| get_finalization(feed, height, response));
                 }
             }

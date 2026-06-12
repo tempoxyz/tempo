@@ -101,6 +101,7 @@ mod codec {
         {
             let trailing = self
                 .consensus_context
+                .clone()
                 .map(|ctx| TempoHeaderTrailingCompact {
                     consensus_context: Some(ctx),
                 });

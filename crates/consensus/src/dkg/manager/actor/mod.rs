@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, num::NonZeroU32, task::Poll};
+use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc, task::Poll};
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
@@ -12,8 +12,9 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{
-            self, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog, observe,
+        dkg::feldman_desmedt::{
+            self as dkg, DealerLog, DealerPrivMsg, DealerPubMsg, Logs, PlayerAck, SignedDealerLog,
+            observe,
         },
         primitives::{group::Share, variant::MinSig},
     },
@@ -26,14 +27,19 @@ use commonware_p2p::{
     utils::mux::{self, MuxHandle},
 };
 use commonware_parallel::Sequential;
-use commonware_runtime::{Clock, ContextCell, Handle, IoBuf, Metrics as _, Spawner, spawn_cell};
+use commonware_runtime::{
+    Clock, ContextCell, Handle, IoBuf, Spawner, spawn_cell,
+    telemetry::metrics::{
+        Counter, Gauge, MetricsExt as _,
+        histogram::{Buckets, Timed},
+    },
+};
 use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     FutureExt as _, Stream, StreamExt as _, channel::mpsc, select_biased, stream::FusedStream,
 };
-use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
@@ -141,8 +147,7 @@ where
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let context = ContextCell::new(context);
-
-        let metrics = Metrics::init(&context);
+        let metrics = Metrics::init(context.as_present());
 
         Ok(Self {
             config,
@@ -172,23 +177,21 @@ where
         let Ok(mut storage) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
             .initial_state({
-                let mut context = self.context.clone();
+                let mut context = self.context.child("initial_state");
                 let execution_node = self.config.execution_node.clone();
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
-                let mut marshal = self.config.marshal.clone();
                 async move {
-                    read_initial_state_and_set_floor(
+                    read_initial_state(
                         &mut context,
                         &execution_node,
                         initial_share.clone(),
                         &epoch_strategy,
-                        &mut marshal,
                     )
                     .await
                 }
             })
-            .init(self.context.with_label("state"))
+            .init(self.context.child("state"))
             .await
         else {
             // NOTE: Builder::init emits en error event.
@@ -196,7 +199,7 @@ where
         };
 
         let (mux, mut dkg_mux) = mux::Muxer::new(
-            self.context.with_label("dkg_mux"),
+            self.context.child("dkg_mux"),
             sender,
             receiver,
             self.config.mailbox_size,
@@ -231,8 +234,14 @@ where
 
         self.metrics.reset();
 
-        self.metrics.dealers.set(state.dealers().len() as i64);
-        self.metrics.players.set(state.players().len() as i64);
+        self.metrics
+            .dealers
+            .metric()
+            .set(state.dealers().len() as i64);
+        self.metrics
+            .players
+            .metric()
+            .set(state.players().len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
             // NOTE: State::prune emits an error event.
@@ -257,7 +266,7 @@ where
             .wrap_err("unable to instantiate dealer state")?;
 
         if dealer_state.is_some() {
-            self.metrics.how_often_dealer.inc();
+            self.metrics.how_often_dealer.metric().inc();
         }
 
         let mut player_state = storage
@@ -265,7 +274,7 @@ where
             .wrap_err("unable to instantiate player state")?;
 
         if player_state.is_some() {
-            self.metrics.how_often_player.inc();
+            self.metrics.how_often_player.metric().inc();
         }
 
         // Register a channel for this round
@@ -277,6 +286,7 @@ where
                 )
             })?;
 
+        let ancestry_ctx = Arc::new(self.context.child("ancestry_stream"));
         let mut ancestry_stream = AncestorStream::new();
 
         info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
@@ -334,7 +344,7 @@ where
                                             height,
                                         ).await;
                                         if skip_to_boundary {
-                                            self.metrics.rounds_skipped.inc();
+                                            self.metrics.rounds_skipped.metric().inc();
                                         }
                                     }
                                 }
@@ -431,14 +441,20 @@ where
                                 )
                                 .await
                             {
-                                let stream = match self.config.marshal.ancestry((None, hole)).await {
+                                let stream = match self
+                                    .config
+                                    .marshal
+                                    .ancestry(
+                                        ancestry_ctx.clone(),
+                                        (marshal::core::DigestFallback::Wait, hole),
+                                        self.metrics.ancestor_fetch_duration.clone(),
+                                    )
+                                    .await
+                                {
                                     Some(stream) => stream,
                                     None => break Err(eyre!("marshal mailbox is closed")),
                                 };
-                                ancestry_stream.set(
-                                    (msg.cause, request),
-                                    stream,
-                                );
+                                ancestry_stream.set((msg.cause, request), stream);
                             }
                         }
                         Command::VerifyDealerLog(verify) => {
@@ -461,14 +477,20 @@ where
                             .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
                             .await
                         {
-                            let stream = match self.config.marshal.ancestry((None, hole)).await {
+                            let stream = match self
+                                .config
+                                .marshal
+                                .ancestry(
+                                    ancestry_ctx.clone(),
+                                    (marshal::core::DigestFallback::Wait, hole),
+                                    self.metrics.ancestor_fetch_duration.clone(),
+                                )
+                                .await
+                            {
                                 Some(stream) => stream,
                                 None => break Err(eyre!("marshal mailbox is closed")),
                             };
-                            ancestry_stream.set(
-                                (cause, request),
-                                stream,
-                            );
+                            ancestry_stream.set((cause, request), stream);
                         }
                     }
                 }
@@ -505,10 +527,10 @@ where
                 .ok_or_eyre("not a dealer in the current round")
         })
         .inspect(|_| {
-            self.metrics.dealings_read.inc();
+            self.metrics.dealings_read.metric().inc();
         })
         .inspect_err(|_| {
-            self.metrics.bad_dealings.inc();
+            self.metrics.bad_dealings.metric().inc();
         });
         let _ = response.send(res);
     }
@@ -556,11 +578,17 @@ where
                 skipped",
             );
 
-            // NOTE: `set_floor(height)` implies that the next block sent by
-            // marshal will be height + 1.
-            if let Some(one_before_boundary) = boundary_height.previous() {
-                self.config.marshal.set_floor(one_before_boundary).await;
-            }
+            // TODO(hamdi): We're relying on the fact that when in catch up we `hint_finalized` the
+            // boundary height in the epoch manager thus the finalization for this height should
+            // eventually be resolved.
+            //
+            // This deserves some clean up to consolidate the hint and set_floor. As well as factoring
+            // in the network idenetity in scenarios where jumping from boundary to boundary is no longer
+            // possible (no cert/block among peers).
+            match self.config.marshal.get_finalization(boundary_height).await {
+                Some(finalization) => self.config.marshal.set_floor(finalization),
+                None => debug!("missing boundary finalization for {boundary_height} to skip"),
+            };
         }
         should_skip_round
     }
@@ -726,17 +754,15 @@ where
                 logs.record(k.clone(), v.clone());
             }
 
+            let ctx_mut = self.context.as_present_mut();
             let player_outcome = if let Some(player) = player_state.take() {
                 info!("we were a player in the ceremony; finalizing share");
-                match player.finalize(&mut self.context, logs.clone(), &Sequential) {
+                match player.finalize(ctx_mut, logs.clone(), &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         Some((new_output, state::ShareState::Plaintext(Some(new_share))))
                     }
-                    Err(
-                        reason
-                        @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
-                    ) => {
+                    Err(reason @ dkg::Error::MissingPlayerDealing) => {
                         warn!(
                             reason = %eyre::Report::new(reason),
                             "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -761,7 +787,7 @@ where
             if let Some(outcome) = player_outcome {
                 outcome
             } else {
-                match observe::<_, _, N3f1, ed25519::Batch>(&mut self.context, logs, &Sequential) {
+                match observe::<_, _, N3f1, ed25519::Batch>(ctx_mut, logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, state::ShareState::Plaintext(None))
@@ -797,14 +823,14 @@ where
         // if the on-chain output is the same as the input into the loop (which
         // is just state.output), then we know the DKG failed.
         if onchain_outcome.output == state.output {
-            self.metrics.failures.inc();
+            self.metrics.failures.metric().inc();
         } else {
-            self.metrics.successes.inc();
+            self.metrics.successes.metric().inc();
         }
 
         Ok(Some(state::State {
             epoch: onchain_outcome.epoch,
-            seed: Summary::random(&mut self.context),
+            seed: Summary::random(self.context.as_present_mut()),
             output: onchain_outcome.output.clone(),
             share,
             players: onchain_outcome.next_players,
@@ -882,7 +908,7 @@ where
 
         Ok(Some(state::State {
             epoch: onchain_outcome.epoch,
-            seed: Summary::random(&mut self.context),
+            seed: Summary::random(&mut *self.context),
             output: onchain_outcome.output.clone(),
             share: state::ShareState::Plaintext(None),
             players: onchain_outcome.next_players,
@@ -910,8 +936,8 @@ where
                         .receive_dealing(storage, epoch, me.clone(), pub_msg, priv_msg)
                         .await
                         .inspect(|_| {
-                            self.metrics.shares_distributed.inc();
-                            self.metrics.shares_received.inc();
+                            self.metrics.shares_distributed.metric().inc();
+                            self.metrics.shares_received.metric().inc();
                         })
                         .inspect_err(|error| warn!(%error, "failed to store our own dealing"))
                     && let Ok(()) = dealer_state
@@ -919,31 +945,22 @@ where
                         .await
                         .inspect_err(|error| warn!(%error, "failed to store our own ACK"))
                 {
-                    self.metrics.acks_received.inc();
-                    self.metrics.acks_sent.inc();
+                    self.metrics.acks_received.metric().inc();
+                    self.metrics.acks_sent.metric().inc();
                     info!("stored our own ACK and share");
                 }
             } else {
                 // Send to remote player
                 let payload = Message::Dealer(pub_msg, priv_msg).encode();
-                match round_channel
-                    .send(Recipients::One(player.clone()), payload, true)
-                    .await
-                {
-                    Ok(success) => {
-                        if success.is_empty() {
-                            // TODO(janis): figure out what it means if the response
-                            // is empty. Does it just mean the other party failed
-                            // to respond?
-                            info!(%player, "failed to send share");
-                        } else {
-                            self.metrics.shares_distributed.inc();
-                            info!(%player, "share sent");
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%player, %error, "error sending share");
-                    }
+                let success = round_channel.send(Recipients::One(player.clone()), payload, true);
+                if success.is_empty() {
+                    // TODO(janis): figure out what it means if the response
+                    // is empty. Does it just mean the other party failed
+                    // to respond?
+                    info!(%player, "failed to send share");
+                } else {
+                    self.metrics.shares_distributed.metric().inc();
+                    info!(%player, "share sent");
                 }
             }
         }
@@ -981,32 +998,24 @@ where
             Message::Dealer(pub_msg, priv_msg) => {
                 if let Some(player_state) = player_state {
                     info!("received message from a dealer");
-                    self.metrics.shares_received.inc();
+                    self.metrics.shares_received.metric().inc();
                     let ack = player_state
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
                         .wrap_err("failed storing dealing")?;
 
-                    if let Err(error) = round_channel
-                        .send(
-                            Recipients::One(from.clone()),
-                            Message::Ack(ack).encode(),
-                            true,
-                        )
-                        .await
-                    {
-                        // FIXME(janis): the GATs in the Sender (and LimitedSender)
-                        // lead to `borrowed data escapes outside of method` errors.
-                        // `wrap_err` with early return does not work, and neither
-                        // does `Report::new` nor `&error as &dyn std::error::Error`.
-                        warn!(
-                            reason = ?error,
-                            "failed returning ACK to dealer",
-                        );
+                    let sent = round_channel.send(
+                        Recipients::One(from.clone()),
+                        Message::Ack(ack).encode(),
+                        true,
+                    );
+
+                    if sent.is_empty() {
                         bail!("failed returning ACK to dealer");
                     }
+
                     info!("returned ACK to dealer");
-                    self.metrics.acks_sent.inc();
+                    self.metrics.acks_sent.metric().inc();
                 } else {
                     info!("received a dealer message, but we are not a player");
                 }
@@ -1014,7 +1023,7 @@ where
             Message::Ack(ack) => {
                 if let Some(dealer_state) = dealer_state {
                     info!("received an ACK");
-                    self.metrics.acks_received.inc();
+                    self.metrics.acks_received.metric().inc();
                     dealer_state
                         .receive_ack(storage, round.epoch(), from, ack)
                         .await
@@ -1133,15 +1142,12 @@ where
             let (output, share) = {
                 let player_outcome = if let Some(player) = player_state {
                     info!("we were a player in the ceremony; finalizing share");
-                    match player.finalize(&mut self.context, logs.clone(), &Sequential) {
+                    match player.finalize(&mut *self.context, logs.clone(), &Sequential) {
                         Ok((new_output, new_share)) => {
                             info!("local DKG ceremony was a success");
                             Some((new_output, state::ShareState::Plaintext(Some(new_share))))
                         }
-                        Err(
-                            reason
-                            @ commonware_cryptography::bls12381::dkg::Error::MissingPlayerDealing,
-                        ) => {
+                        Err(reason @ dkg::Error::MissingPlayerDealing) => {
                             warn!(
                                 reason = %eyre::Report::new(reason),
                                 "missing critical DKG state to reconstruct a share in this epoch; has \
@@ -1167,7 +1173,7 @@ where
                     outcome
                 } else {
                     match observe::<_, _, N3f1, ed25519::Batch>(
-                        &mut self.context,
+                        &mut *self.context,
                         logs,
                         &Sequential,
                     ) {
@@ -1243,12 +1249,11 @@ where
 }
 
 #[instrument(skip_all, err)]
-async fn read_initial_state_and_set_floor<TContext>(
+async fn read_initial_state<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
     share: Option<Share>,
     epoch_strategy: &FixedEpocher,
-    marshal: &mut crate::alias::marshal::Mailbox,
 ) -> eyre::Result<State>
 where
     TContext: Clock + CryptoRngCore,
@@ -1322,9 +1327,6 @@ where
         Some(share)
     });
 
-    info!(%latest_boundary, "setting sync floor");
-    marshal.set_floor(Height::new(latest_boundary)).await;
-
     Ok(State {
         epoch: onchain_outcome.epoch,
         seed: Summary::random(context),
@@ -1354,6 +1356,7 @@ struct Metrics {
     how_often_player: Counter,
 
     rounds_skipped: Counter,
+    ancestor_fetch_duration: Timed,
 }
 
 impl Metrics {
@@ -1361,94 +1364,73 @@ impl Metrics {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let failures = Counter::default();
-        context.register(
+        let failures = context.counter(
             "ceremony_failures",
             "the number of failed ceremonies a node participated in",
-            failures.clone(),
         );
 
-        let successes = Counter::default();
-        context.register(
+        let successes = context.counter(
             "ceremony_successes",
             "the number of successful ceremonies a node participated in",
-            successes.clone(),
         );
 
-        let dealers = Gauge::default();
-        context.register(
+        let dealers = context.gauge(
             "ceremony_dealers",
             "the number of dealers in the currently running ceremony",
-            dealers.clone(),
         );
-        let players = Gauge::default();
-        context.register(
+        let players = context.gauge(
             "ceremony_players",
             "the number of players in the currently running ceremony",
-            players.clone(),
         );
 
-        let how_often_dealer = Counter::default();
-        context.register(
+        let how_often_dealer = context.counter(
             "how_often_dealer",
             "number of the times as node was active as a dealer",
-            how_often_dealer.clone(),
         );
-        let how_often_player = Counter::default();
-        context.register(
+        let how_often_player = context.counter(
             "how_often_player",
             "number of the times as node was active as a player",
-            how_often_player.clone(),
         );
 
-        let shares_distributed = Gauge::default();
-        context.register(
+        let shares_distributed = context.gauge(
             "ceremony_shares_distributed",
             "the number of shares distributed by this node as a dealer in the current ceremony",
-            shares_distributed.clone(),
         );
 
-        let shares_received = Gauge::default();
-        context.register(
+        let shares_received = context.gauge(
             "ceremony_shares_received",
             "the number of shares received by this node as a player in the current ceremony",
-            shares_received.clone(),
         );
 
-        let acks_received = Gauge::default();
-        context.register(
+        let acks_received = context.gauge(
             "ceremony_acks_received",
             "the number of acknowledgments received by this node as a dealer in the current ceremony",
-            acks_received.clone(),
         );
 
-        let acks_sent = Gauge::default();
-        context.register(
+        let acks_sent = context.gauge(
             "ceremony_acks_sent",
             "the number of acknowledgments sent by this node as a player in the current ceremony",
-            acks_sent.clone(),
         );
 
-        let dealings_read = Gauge::default();
-        context.register(
+        let dealings_read = context.gauge(
             "ceremony_dealings_read",
             "the number of dealings read from the blockchain in the current ceremony",
-            dealings_read.clone(),
         );
 
-        let bad_dealings = Gauge::default();
-        context.register(
+        let bad_dealings = context.gauge(
             "ceremony_bad_dealings",
             "the number of blocks where decoding and verifying dealings failed in the current ceremony",
-            bad_dealings.clone(),
         );
 
-        let rounds_skipped = Counter::default();
-        context.register(
+        let rounds_skipped = context.counter(
             "rounds_skipped",
             "how many DKG rounds were skipped because the node fell too far behind and tried to catch up",
-            rounds_skipped.clone(),
         );
+        let ancestor_fetch_duration = Timed::new(context.histogram(
+            "ancestor_fetch_duration",
+            "Histogram of time taken to fetch a block via the DKG ancestry stream, in seconds",
+            Buckets::LOCAL,
+        ));
 
         Self {
             shares_distributed,
@@ -1464,30 +1446,34 @@ impl Metrics {
             failures,
             successes,
             rounds_skipped,
+            ancestor_fetch_duration,
         }
     }
 
     fn reset(&self) {
-        self.shares_distributed.set(0);
-        self.shares_received.set(0);
-        self.acks_received.set(0);
-        self.acks_sent.set(0);
-        self.dealings_read.set(0);
-        self.bad_dealings.set(0);
+        self.shares_distributed.metric().set(0);
+        self.shares_received.metric().set(0);
+        self.acks_received.metric().set(0);
+        self.acks_sent.metric().set(0);
+        self.dealings_read.metric().set(0);
+        self.bad_dealings.metric().set(0);
     }
 }
 
-/// A wrapper around [`marshal::ancestry::AncestorStream`] wrapped in
-/// an option to make it easier to work with select macros.
+/// A wrapper around a marshal ancestry stream to make it easier to work with
+/// select macros.
 ///
 /// Invariants: if the inner stream is set, then the matching original request
 /// is also set.
-struct AncestorStream {
+struct AncestorStream<T> {
     pending_request: Option<(Span, GetDkgOutcome)>,
-    inner: Option<marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>>,
+    inner: Option<T>,
 }
 
-impl AncestorStream {
+impl<T> AncestorStream<T>
+where
+    T: marshal::ancestry::Ancestry<Block>,
+{
     fn new() -> Self {
         Self {
             pending_request: None,
@@ -1500,11 +1486,7 @@ impl AncestorStream {
         self.pending_request.take()
     }
 
-    fn set(
-        &mut self,
-        pending_request: (Span, GetDkgOutcome),
-        stream: marshal::ancestry::AncestorStream<crate::alias::marshal::Mailbox, Block>,
-    ) {
+    fn set(&mut self, pending_request: (Span, GetDkgOutcome), stream: T) {
         self.pending_request.replace(pending_request);
         self.inner.replace(stream);
     }
@@ -1518,7 +1500,10 @@ impl AncestorStream {
     }
 }
 
-impl Stream for AncestorStream {
+impl<T> Stream for AncestorStream<T>
+where
+    T: marshal::ancestry::Ancestry<Block>,
+{
     type Item = Block;
 
     fn poll_next(
@@ -1542,7 +1527,10 @@ impl Stream for AncestorStream {
     }
 }
 
-impl FusedStream for AncestorStream {
+impl<T> FusedStream for AncestorStream<T>
+where
+    T: marshal::ancestry::Ancestry<Block>,
+{
     fn is_terminated(&self) -> bool {
         self.inner.is_none()
     }

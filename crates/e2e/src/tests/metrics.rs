@@ -33,7 +33,7 @@ fn no_duplicate_metrics() {
                 }
 
                 let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
+                let metric = crate::metric_name(parts.next().unwrap());
                 let value = parts.next().unwrap();
                 if metric.ends_with("_epoch_manager_latest_epoch")
                     && value.parse::<u64>().unwrap() >= 2

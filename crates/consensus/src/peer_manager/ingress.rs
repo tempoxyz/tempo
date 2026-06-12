@@ -1,3 +1,4 @@
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update};
 use commonware_p2p::{
     Address, AddressableManager, AddressableTrackedPeers, PeerSetSubscription, Provider,
@@ -108,7 +109,7 @@ impl Provider for Mailbox {
 }
 
 impl AddressableManager for Mailbox {
-    async fn track<R>(&mut self, id: u64, peers: R)
+    fn track<R>(&mut self, id: u64, peers: R) -> Feedback
     where
         R: Into<AddressableTrackedPeers<Self::PublicKey>> + Send,
     {
@@ -122,10 +123,13 @@ impl AddressableManager for Mailbox {
             .wrap_err("actor no longer running")
         {
             error!(%error, "failed to send message to peer_manager");
+            Feedback::Closed
+        } else {
+            Feedback::Ok
         }
     }
 
-    async fn overwrite(&mut self, peers: Map<Self::PublicKey, Address>) {
+    fn overwrite(&mut self, peers: Map<Self::PublicKey, Address>) -> Feedback {
         if let Err(error) = self
             .inner
             .unbounded_send(MessageWithCause::in_current_span(Message::Overwrite {
@@ -134,6 +138,9 @@ impl AddressableManager for Mailbox {
             .wrap_err("actor no longer running")
         {
             error!(%error, "failed to send message to peer_manager");
+            Feedback::Closed
+        } else {
+            Feedback::Ok
         }
     }
 }
@@ -141,12 +148,15 @@ impl AddressableManager for Mailbox {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, activity: Self::Activity) {
+    fn report(&mut self, activity: Self::Activity) -> Feedback {
         if let Err(error) = self
             .inner
             .unbounded_send(MessageWithCause::in_current_span(activity))
         {
             error!(%error, "failed to send message to peer_manager");
+            Feedback::Closed
+        } else {
+            Feedback::Ok
         }
     }
 }

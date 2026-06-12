@@ -16,6 +16,7 @@
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
+    marshal::core::DigestFallback,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
     types::{Epoch, FixedEpocher, Round, View},
 };
@@ -158,7 +159,8 @@ impl<TContext: Spawner> Actor<TContext> {
                     if let Some(p) = oldest.take() {
                         self.pending.insert(p.round, p);
                     }
-                    self.subscribe(activity).await;
+
+                    self.subscribe(activity);
                 },
             );
         };
@@ -166,7 +168,7 @@ impl<TContext: Spawner> Actor<TContext> {
         info_span!("feed_actor").in_scope(|| error!(%reason, "shutting down"));
     }
 
-    async fn subscribe(&mut self, activity: FeedActivity) {
+    fn subscribe(&mut self, activity: FeedActivity) {
         let (round, payload) = match &activity {
             Activity::Notarization(n) => (n.proposal.round, n.proposal.payload),
             Activity::Finalization(f) => (f.proposal.round, f.proposal.payload),
@@ -192,7 +194,10 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         }
 
-        let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
+        let block_rx = self
+            .marshal
+            .subscribe_by_digest(payload, DigestFallback::FetchByRound { round });
+
         let pending = PendingSubscription::new(round, activity, block_rx);
         self.pending.insert(round, pending);
     }
@@ -227,18 +232,34 @@ impl<TContext: Spawner> Actor<TContext> {
             .latest_finalized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+        let latest_finalized_height = state
+            .latest_finalized
+            .as_ref()
+            .map(|b| b.block.inner.number);
+
         let latest_notarized_round = state
             .latest_notarized
             .as_ref()
             .map(|b| Round::new(Epoch::new(b.epoch), View::new(b.view)));
+        let latest_notarized_height = state
+            .latest_notarized
+            .as_ref()
+            .map(|b| b.block.inner.number);
 
         // Update state and broadcast events
+        let height = certified.block.inner.number;
+        let subscribers = self.state.events_tx().receiver_count();
         match activity {
             Activity::Notarization(_) => {
-                let _ = self.state.events_tx().send(Event::Notarized {
-                    block: certified.clone(),
-                    seen: now_millis(),
-                });
+                if latest_notarized_height
+                    .is_none_or(|height| certified.block.inner.number > height)
+                {
+                    debug!(subscribers, height, "sending new notarized event");
+                    let _ = self.state.events_tx().send(Event::Notarized {
+                        block: certified.clone(),
+                        seen: now_millis(),
+                    });
+                }
 
                 if latest_finalized_round.is_none_or(|r| r < round)
                     && latest_notarized_round.is_none_or(|r| r < round)
@@ -248,14 +269,15 @@ impl<TContext: Spawner> Actor<TContext> {
             }
 
             Activity::Finalization(_) => {
-                debug!(
-                    subscribers = self.state.events_tx().receiver_count(),
-                    "sending finalized event",
-                );
-                let _ = self.state.events_tx().send(Event::Finalized {
-                    block: certified.clone(),
-                    seen: now_millis(),
-                });
+                if latest_finalized_height
+                    .is_none_or(|height| certified.block.inner.number > height)
+                {
+                    debug!(subscribers, height, "sending new finalized event",);
+                    let _ = self.state.events_tx().send(Event::Finalized {
+                        block: certified.clone(),
+                        seen: now_millis(),
+                    });
+                }
 
                 if latest_finalized_round.is_none_or(|r| r < round) {
                     if latest_notarized_round.is_none_or(|r| r < round) {

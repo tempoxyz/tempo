@@ -256,7 +256,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
-            consensus_context: block.header().consensus_context,
+            consensus_context: block.header().consensus_context.clone(),
             subblock_fee_recipients,
         })
     }
@@ -283,7 +283,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
-            consensus_context: attributes.consensus_context,
+            consensus_context: attributes.consensus_context.clone(),
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }

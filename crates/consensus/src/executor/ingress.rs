@@ -1,10 +1,8 @@
 use alloy_rpc_types_engine::PayloadId;
+use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::WrapErr as _;
-use futures::{
-    SinkExt as _,
-    channel::{mpsc, oneshot},
-};
+use futures::channel::{mpsc, oneshot};
 use tempo_payload_types::TempoPayloadAttributes;
 use tracing::Span;
 
@@ -118,10 +116,10 @@ impl From<Update<Block>> for Command {
 impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
-    async fn report(&mut self, update: Self::Activity) {
-        self.inner
-            .send(Message::in_current_span(update))
-            .await
-            .expect("actor is present and ready to receive broadcasts");
+    fn report(&mut self, update: Self::Activity) -> Feedback {
+        match self.inner.unbounded_send(Message::in_current_span(update)) {
+            Ok(()) => Feedback::Ok,
+            Err(_) => Feedback::Closed,
+        }
     }
 }

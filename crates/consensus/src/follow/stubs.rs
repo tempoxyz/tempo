@@ -3,6 +3,8 @@
 //! The null broadcast stub satisfies marshal's type requirements but is never
 //! actually used because the follower never broadcasts blocks.
 
+use std::num::NonZeroUsize;
+
 use commonware_broadcast::buffered;
 use commonware_cryptography::{
     Signer as _,
@@ -32,7 +34,7 @@ pub(super) fn null_broadcast<E: Clock + Spawner + Metrics + BufferPooler>(
 
     let config = buffered::Config {
         public_key,
-        mailbox_size,
+        mailbox_size: NonZeroUsize::new(mailbox_size).expect("mailbox size must be non-zero"),
         deque_size: 0,
         priority: false,
         codec_config: (),

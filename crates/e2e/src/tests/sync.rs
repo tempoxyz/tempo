@@ -102,9 +102,10 @@ fn joins_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        receiver.stop().await;
         let last_epoch_before_stop = latest_epoch_of_validator(&context, &receiver.uid);
+        receiver.stop().await;
         info!(%last_epoch_before_stop, "stopped the original validator");
+        receiver.stage_bootstrap_finalization().await;
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
@@ -138,10 +139,11 @@ fn joins_from_snapshot() {
 
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
+                let name = crate::metric_name(metric);
                 let value = parts.next().unwrap();
 
                 // Check if this is a height metric
-                if metric.ends_with("_epoch_manager_latest_epoch") {
+                if name.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
 
                     assert!(
@@ -247,15 +249,15 @@ fn can_restart_after_joining_from_snapshot() {
 
         info!("new validator was added to the committee, but not started");
 
-        receiver.stop().await;
-
         let last_epoch_before_stop = latest_epoch_of_validator(&context, &receiver.uid);
+        receiver.stop().await;
 
         info!(
             %last_epoch_before_stop,
             id = %receiver.uid,
             "stopped the original validator",
         );
+        receiver.stage_bootstrap_finalization().await;
 
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
@@ -289,9 +291,10 @@ fn can_restart_after_joining_from_snapshot() {
 
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
+                let name = crate::metric_name(metric);
                 let value = parts.next().unwrap();
 
-                if metric.ends_with("_epoch_manager_latest_epoch") {
+                if name.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
 
                     assert!(
@@ -344,10 +347,11 @@ fn can_restart_after_joining_from_snapshot() {
 
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
+                let name = crate::metric_name(metric);
                 let value = parts.next().unwrap();
 
                 if metric.contains(&receiver.uid)
-                    && metric.ends_with("_marshal_processed_height")
+                    && name.ends_with("_marshal_processed_height")
                     && value.parse::<u64>().unwrap() > network_head
                 {
                     break 'progress;
@@ -367,7 +371,7 @@ async fn wait_for_participants(context: &Context, target: u32) {
             }
 
             let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
+            let metric = crate::metric_name(parts.next().unwrap());
             let value = parts.next().unwrap();
 
             // Check if this is a height metric
@@ -391,9 +395,10 @@ fn latest_epoch_of_validator(context: &Context, id: &str) -> u64 {
 
         let mut parts = line.split_whitespace();
         let metric = parts.next().unwrap();
+        let name = crate::metric_name(metric);
         let value = parts.next().unwrap();
 
-        if metric.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {
+        if name.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {
             return value.parse::<u64>().unwrap();
         }
     }

@@ -27,10 +27,7 @@ use jsonrpsee::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
 use tempo_consensus::consensus::Digest;
 use tempo_node::rpc::consensus::{Event, Query, TempoConsensusApiClient};
 
-/// Test that subscribing to consensus events works and that finalization
-/// can be queried via HTTP after receiving a finalization event.
 #[tokio::test]
-#[test_traced]
 async fn consensus_subscribe_and_query_finalization() {
     let _ = tempo_eyre::install();
 
@@ -62,17 +59,19 @@ async fn consensus_subscribe_and_query_finalization() {
     });
 
     let (http_addr, ws_addr) = addr_rx.await.unwrap();
-    let ws_url = format!("ws://{ws_addr}");
-    let http_url = format!("http://{http_addr}");
-    let ws_client = WsClientBuilder::default().build(&ws_url).await.unwrap();
-    let mut subscription = ws_client.subscribe_events().await.unwrap();
 
+    let ws_url = format!("ws://{ws_addr}");
+    let ws_client = WsClientBuilder::default().build(&ws_url).await.unwrap();
+
+    let http_url = format!("http://{http_addr}");
     let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
 
     let mut saw_notarized = false;
     let mut saw_finalized = false;
-    let mut current_height = initial_height;
+    let mut notarized_height = initial_height;
+    let mut finalized_height = initial_height;
 
+    let mut subscription = ws_client.subscribe_events().await.unwrap();
     while !saw_notarized || !saw_finalized {
         let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
             .await
@@ -81,17 +80,17 @@ async fn consensus_subscribe_and_query_finalization() {
             .unwrap();
 
         match event {
+            Event::Nullified { .. } => {}
             Event::Notarized { block, .. } => {
-                if block.block.inner.number > current_height {
-                    saw_notarized = true;
-                }
+                let height = block.block.inner.number;
+                assert!(height > notarized_height);
+
+                notarized_height = height;
+                saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
                 let height = block.block.inner.number;
-                assert!(
-                    height > current_height,
-                    "finalized height should be > {current_height}"
-                );
+                assert!(height > finalized_height);
 
                 let queried_block = http_client
                     .get_finalization(Query::Height(height))
@@ -100,17 +99,15 @@ async fn consensus_subscribe_and_query_finalization() {
 
                 assert_eq!(queried_block, block);
 
-                current_height = height;
+                finalized_height = height;
                 saw_finalized = true;
             }
-            Event::Nullified { .. } => {}
         }
     }
 
     let _ = http_client.get_finalization(Query::Latest).await.unwrap();
 
     let state = http_client.get_latest().await.unwrap();
-
     assert!(state.finalized.is_some());
 
     drop(done_tx);
@@ -126,7 +123,7 @@ async fn wait_for_height(context: &Context, target_height: u64) {
                 continue;
             }
             let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
+            let metric = crate::metric_name(parts.next().unwrap());
             let value = parts.next().unwrap();
             if metric.ends_with("_marshal_processed_height") {
                 let height = value.parse::<u64>().unwrap();

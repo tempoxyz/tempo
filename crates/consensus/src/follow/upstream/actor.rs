@@ -71,6 +71,7 @@ where
             }
             .boxed()
         });
+
         loop {
             select!(
                 biased;
@@ -110,11 +111,13 @@ where
                                 url = self.url,
                                 "connecting to upstream node failed, attempting again",
                             ));
+
+                            let sleep = self.context.sleep(reconnect_in);
                             self.pending_connect.replace({
-                                let context = self.context.clone();
                                 let url = self.url;
                                 async move {
-                                    context.sleep(reconnect_in).await;
+                                    sleep.await;
+
                                     (
                                         attempts.saturating_add(1),
                                         WsClientBuilder::default().build(&url).await.map_err(Report::new),
@@ -151,7 +154,9 @@ where
                         ?event, "received consensus event, forwarding to reporter"
                     ));
                     match event {
-                        Ok(event) => reporter.report(event).await,
+                        Ok(event) => {
+                            reporter.report(event);
+                        }
                         Err(error) => warn_span!("event").in_scope(|| warn!(
                             %error,
                             "event stream encountered an error",
@@ -172,7 +177,7 @@ where
                 for (height, response) in self.waiters.drain(..) {
                     let client = client.clone();
                     self.context
-                        .with_label("get_finalization")
+                        .child("get_finalization")
                         .spawn(move |_| get_finalization(client, height, response));
                 }
             }

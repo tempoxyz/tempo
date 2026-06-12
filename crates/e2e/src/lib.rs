@@ -17,7 +17,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self},
+        dkg::feldman_desmedt as dkg,
         primitives::{group::Share, sharing::Mode},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -27,7 +27,7 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Clock, Metrics as _, Runner as _, Supervisor as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -49,6 +49,12 @@ mod tests;
 
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
+
+pub fn metric_name(metric: &str) -> &str {
+    metric
+        .split_once('{')
+        .map_or(metric, |(metric_name, _)| metric_name)
+}
 
 fn generate_consensus_node_config(
     rng: &mut impl CryptoRngCore,
@@ -239,7 +245,7 @@ pub async fn setup_validators(
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
-        context.with_label("network"),
+        context.child("network"),
         simulated::Config {
             max_size: 1024 * 1024,
             disconnect_on_block: true,
@@ -285,11 +291,18 @@ pub async fn setup_validators(
         execution_config.validator_key = Some(public_key.encode().as_ref().try_into().unwrap());
         execution_config.feed_state = Some(feed_state.clone());
 
+        let execution_runtime_handle = execution_runtime.handle();
+        let consensus_dir = execution_runtime_handle
+            .nodes_dir()
+            .join(&uid)
+            .join("consensus");
+
         let engine_config = consensus::Builder {
             execution_node: None,
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
+            consensus_dir,
             share,
             signer: private_key.clone(),
             mailbox_size: 1024,
@@ -316,7 +329,7 @@ pub async fn setup_validators(
             private_key,
             oracle.clone(),
             engine_config,
-            execution_runtime.handle(),
+            execution_runtime_handle,
             execution_config,
             ingress,
             address,
@@ -348,7 +361,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
                 }
 
                 let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
+                let metric = metric_name(parts.next().unwrap());
                 let value = parts.next().unwrap();
 
                 if metric.ends_with("_peers_blocked") {

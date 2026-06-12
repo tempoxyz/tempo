@@ -39,7 +39,7 @@ fn assert_no_new_epoch(context: &impl Metrics, max_epoch: u64) {
     let metrics = context.encode();
     for line in metrics.lines() {
         let mut parts = line.split_whitespace();
-        let metric = parts.next().unwrap();
+        let metric = crate::metric_name(parts.next().unwrap());
         let value = parts.next().unwrap();
 
         if metric.ends_with("_peers_blocked") {
