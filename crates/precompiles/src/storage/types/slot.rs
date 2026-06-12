@@ -124,6 +124,16 @@ impl<T> StorageOps for Slot<T> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
     }
+
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let mut storage = StorageCtx;
+        storage.sinc(self.address, slot, delta)
+    }
+
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let mut storage = StorageCtx;
+        storage.sdec(self.address, slot, delta)
+    }
 }
 
 /// Wrapper that routes storage operations through transient storage (TLOAD/TSTORE).
