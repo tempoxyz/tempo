@@ -640,7 +640,7 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 3. Collect all block-level invalidation events
-                let mut updates = TempoPoolUpdates::from_chain(tip);
+                let updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
                 state.untrack_many(tip.transaction_hashes());
