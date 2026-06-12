@@ -226,11 +226,11 @@ impl AccountKeychain {
     }
 
     /// Registers a new access key with signature type, expiry, and optional per-token spending
-    /// limits. Only callable with the account's main key or, on T6+, an admin access key.
+    /// limits. Only callable with the account's root key or, on T6+, an admin access key.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the main key can authorize/revoke and, for contract
-    ///   callers on T2+, `msg.sender` must match `tx.origin`
+    /// - `UnauthorizedCaller` — only the root key or, on T6+, an admin access key can
+    ///   authorize keys, and for contract callers on T2+, `msg.sender` must match `tx.origin`
     /// - `ZeroPublicKey` — `keyId` cannot be the zero address
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
@@ -718,7 +718,8 @@ impl AccountKeychain {
     /// - If key_id is a specific key address, this should store that key
     ///
     /// This creates a secure channel between validation and the precompile to ensure
-    /// only the main key can authorize/revoke other keys.
+    /// root/admin checks can distinguish root-signed transactions from access-key-signed
+    /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
         self.transaction_key.t_write(key_id)
@@ -1067,11 +1068,12 @@ impl AccountKeychain {
     /// Ensures admin operations are authorized for this caller.
     ///
     /// Rules:
-    /// - transaction must be signed by the main key (`transaction_key == Address::ZERO`)
+    /// - transaction must be signed by the root key (`transaction_key == Address::ZERO`) or,
+    ///   on T6+, an active admin access key
     /// - T2+: caller must match tx.origin
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` when called via an access key
+    /// - `UnauthorizedCaller` when the transaction is signed by a non-admin access key
     /// - `UnauthorizedCaller` on T2+ when `msg.sender != tx.origin`
     /// - storage read errors from transient key/origin or account metadata lookups
     ///

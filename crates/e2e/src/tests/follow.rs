@@ -22,7 +22,7 @@ use commonware_runtime::{
 use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand_core::CryptoRngCore;
-use tempo_commonware_node::{feed::FeedStateHandle, follow};
+use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
 
 static EPOCH_LENGTH: u64 = 10;
@@ -121,7 +121,7 @@ impl FollowerBuilder {
     where
         TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Pacer + Spawner + Storage,
     {
-        use tempo_commonware_node::follow::upstream::in_process;
+        use tempo_consensus::follow::upstream::in_process;
         let Self {
             name,
             partition_prefix,

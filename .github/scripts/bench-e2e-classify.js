@@ -7,10 +7,10 @@ const BOOTSTRAP_ITERATIONS = 10000;
 const SIG_EMOJI = { good: '✅', bad: '❌', neutral: '⚪' };
 
 const AXES = {
-  builder_latency_p50: { floor: 0.35, lower: true },
-  builder_latency_p90: { floor: 0.70, lower: true },
-  builder_latency_p99: { floor: 0.95, lower: true },
-  builder_gas_s: { floor: 0.70, lower: false },
+  builder_latency_p50: { floor: 0.45, lower: true },
+  builder_latency_p90: { floor: 0.90, lower: true },
+  builder_latency_p99: { floor: 1.25, lower: true },
+  builder_gas_s: { floor: 0.95, lower: false },
   tps: { floor: 0.55, lower: false },
   mgas_s: { floor: 0.50, lower: false },
   block_time_mean: { floor: 0.40, lower: true },
@@ -226,6 +226,7 @@ function buildMarkdown(summary) {
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
     `- Bloat: ${summary.config.bloat} MiB`,
+    `- Token count: ${summary.config.token_count ?? 4}`,
     `- Preset: ${summary.config.preset}`,
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,

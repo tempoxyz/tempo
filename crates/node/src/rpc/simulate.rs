@@ -4,6 +4,7 @@ use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
+use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{BlockIdReader, ChainSpecProvider, HeaderProvider};
 use reth_rpc_eth_api::{
@@ -69,11 +70,11 @@ pub trait TempoSimulateApi {
 /// Implementation of `tempo_simulateV1`.
 #[derive(Debug, Clone)]
 pub struct TempoSimulate<N: FullNodeTypes<Types = TempoNode>> {
-    eth_api: TempoEthApi<N>,
+    eth_api: TempoEthApi<NodeAdapter<N>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
-    pub fn new(eth_api: TempoEthApi<N>) -> Self {
+    pub fn new(eth_api: TempoEthApi<NodeAdapter<N>>) -> Self {
         Self { eth_api }
     }
 }

@@ -124,7 +124,14 @@ impl TempoPooledTransaction {
     }
 
     /// Resolves the transaction fee payer.
+    ///
+    /// This reuses the cached transaction environment once validation has prepared it,
+    /// so repeated pool-maintenance checks do not recover the fee payer again.
     pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        if let Some(tx_env) = self.cached_tx_env() {
+            return tx_env.fee_payer().map_err(|_| RecoveryError::new());
+        }
+
         self.inner().fee_payer(self.inner().signer())
     }
 
@@ -258,7 +265,7 @@ impl TempoPooledTransaction {
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
-    fn tx_env_slow(&self) -> TempoTxEnv {
+    pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
         TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
     }
 
@@ -268,6 +275,16 @@ impl TempoPooledTransaction {
     /// ahead of time, avoiding it during payload building.
     pub fn tx_env(&self) -> &TempoTxEnv {
         self.tx_env.get_or_init(|| self.tx_env_slow())
+    }
+
+    /// Returns the cached [`TempoTxEnv`] if already prepared.
+    pub(crate) fn cached_tx_env(&self) -> Option<&TempoTxEnv> {
+        self.tx_env.get()
+    }
+
+    /// Attempts to cache a prepared [`TempoTxEnv`].
+    pub(crate) fn cache_tx_env(&self, tx_env: TempoTxEnv) {
+        let _ = self.tx_env.set(tx_env);
     }
 
     /// Returns a cloned [`TempoTxEnv`] for this transaction.
@@ -363,8 +380,7 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
-            let slot =
-                TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].base_slot();
+            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
     }
@@ -411,7 +427,7 @@ impl TempoPooledTransaction {
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {
@@ -419,7 +435,7 @@ impl TempoPooledTransaction {
         }
 
         let sender = self.sender();
-        let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
+        let fee_payer = self.fee_payer().unwrap_or(sender);
         let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
 
         // For payment transactions, warm sender + recipient balance and allowance slots.

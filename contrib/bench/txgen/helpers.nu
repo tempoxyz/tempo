@@ -7,6 +7,22 @@ const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
+def txgen-tip20-token-address [token_id: int] {
+    ^printf "0x20c000000000000000000000%016x" $token_id
+}
+
+def txgen-tip20-token-choices [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count | each { |id| txgen-tip20-token-address $id } | to json -r
+}
+
+def --env txgen-configure-tip20-token-env [token_count: int] {
+    $env.TXGEN_TIP20_TOKENS = (txgen-tip20-token-choices $token_count)
+}
+
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
     let escaped = ($s | str replace -a "'" "'\"'\"'")
@@ -258,6 +274,7 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
+    txgen-configure-tip20-token-env $bloat_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url

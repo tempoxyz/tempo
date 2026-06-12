@@ -7,7 +7,25 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "crates/primitives/**"
+      - "crates/alloy/**"
+      - "crates/precompiles/**"
+      - "crates/revm/**"
+      - "crates/evm/**"
   pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "crates/primitives/**"
+      - "crates/alloy/**"
+      - "crates/precompiles/**"
+      - "crates/revm/**"
+      - "crates/evm/**"
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
