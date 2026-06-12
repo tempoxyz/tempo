@@ -1249,7 +1249,7 @@ def "main e2e" [
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-sampling-hz: int = 1                        # Tracy CPU sampling frequency for full mode
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
-    --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
+    --tracy-offset: int = 30                            # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
