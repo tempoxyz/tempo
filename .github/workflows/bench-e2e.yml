@@ -92,6 +92,16 @@ on:
           - Tracy
           - Tracy Full
           - Both
+      tracy:
+        description: Tracy mode for API dispatches (off, on, full).
+        type: string
+        required: false
+        default: ""
+      tracy-sampling-hz:
+        description: Tracy CPU sampling frequency for full mode.
+        type: string
+        required: false
+        default: "1"
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -374,7 +384,7 @@ jobs:
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ inputs.profiling == 'Tracy Full' && 'full' || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy)) }}
+      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || (inputs.profiling == 'Tracy Full' && 'full' || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || 'off'))) }}
       BENCH_TRACY_SAMPLING_HZ: ${{ inputs.tracy-sampling-hz || '1' }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
