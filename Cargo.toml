@@ -25,6 +25,7 @@ members = [
   "crates/evm",
   "crates/e2e",
   "crates/faucet",
+  "crates/invariants",
   "crates/node",
   "crates/payload/builder",
   "crates/payload/types",

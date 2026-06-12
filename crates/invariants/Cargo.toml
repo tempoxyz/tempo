@@ -1,0 +1,26 @@
+[package]
+name = "tempo-invariants"
+description = "Shared invariant library with self-registering checks over PrecompileStorageProvider snapshots"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+# Source of truth for storage layout + typed accessors; the checks read through it.
+tempo-precompiles.workspace = true
+# Hardfork enum, so invariants can declare the fork they activate at (`since:`).
+tempo-chainspec.workspace = true
+# Compile-time, distributed self-registration of invariants (no central dispatch table).
+inventory = "0.3"
+
+[lints]
+workspace = true
