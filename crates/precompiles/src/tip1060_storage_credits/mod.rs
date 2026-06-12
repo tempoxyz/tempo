@@ -64,8 +64,11 @@ impl From<CreditMode> for Mode {
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
+    /// Remaining number of credits that may be spent directly in `Direct` mode.
     pub budget: u64,
+    /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
 
