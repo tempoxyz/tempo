@@ -211,6 +211,9 @@ fn init_engine_defaults() {
         .with_always_process_payload_attributes_on_canonical_head(true)
         // Defer persistence I/O during active payload builds.
         .with_suppress_persistence_during_build(true)
+        // BENCH: Skip state root computation during validation — trust the proposer's state root.
+        // Only prewarming remains active. This isolates execution performance from trie overhead.
+        .with_skip_state_root(true)
         .with_share_sparse_trie_with_payload_builder(true)
         .with_share_execution_cache_with_payload_builder(true)
         .try_init()
