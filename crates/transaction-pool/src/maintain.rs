@@ -34,6 +34,11 @@ use tracing::{debug, error};
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
+/// Maximum number of buffered new-transaction events to drain in a single maintenance
+/// wakeup before yielding back to the event loop. Bounds the per-wakeup work so a sustained
+/// burst of new transactions cannot starve block-commit processing.
+const NEW_TX_DRAIN_LIMIT: usize = 4096;
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -139,8 +144,33 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
+            // Fee token pause events and balance changes.
+            //
+            // Checked first because TIP-20 `Transfer` logs dominate block receipts; this avoids
+            // three address comparisons per transfer before reaching the matching branch.
+            if log.address.is_tip20() {
+                match Tip20PoolEvent::decode(log) {
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        updates.pause_events.push((log.address, event.isPaused));
+                    }
+                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
+                        updates.transfer_policy_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
+                        updates.quote_token_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::Transfer { from }) => {
+                        updates
+                            .fee_balance_changes
+                            .entry(log.address)
+                            .or_default()
+                            .insert(from);
+                    }
+                    None => {}
+                }
+            }
             // Key revocations and spending limit changes
-            if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
+            else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 match AccountKeychainPoolEvent::decode(log) {
                     Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
                         updates.revoked_keys.insert(event.account, event.publicKey);
@@ -210,28 +240,6 @@ impl TempoPoolUpdates {
                             .push((event.policyId, event.account));
                     }
                     Some(_) | None => {}
-                }
-            }
-            // Fee token pause events and balance changes
-            else if log.address.is_tip20() {
-                match Tip20PoolEvent::decode(log) {
-                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
-                        updates.pause_events.push((log.address, event.isPaused));
-                    }
-                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
-                        updates.transfer_policy_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
-                        updates.quote_token_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::Transfer(event)) => {
-                        updates
-                            .fee_balance_changes
-                            .entry(log.address)
-                            .or_default()
-                            .insert(event.from);
-                    }
-                    None => {}
                 }
             }
         }
@@ -352,14 +360,20 @@ enum Tip20PoolEvent {
     TransferPolicyUpdate,
     /// [`ITIP20::QuoteTokenUpdate`] log.
     QuoteTokenUpdate,
-    /// [`ITIP20::Transfer`] log.
-    Transfer(ITIP20::Transfer),
+    /// [`ITIP20::Transfer`] log; only the debited `from` account is retained.
+    Transfer { from: Address },
 }
 
 impl Tip20PoolEvent {
     /// Decodes only TIP-20 events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
+            // `Transfer` is by far the most common TIP-20 log, so avoid a full event decode
+            // and read the indexed `from` directly from `topics[1]`. We only need the debited
+            // account for `fee_balance_changes`; `to` and `amount` are unused.
+            ITIP20::Transfer::SIGNATURE_HASH => log.topics().get(1).map(|topic| Self::Transfer {
+                from: Address::from_word(*topic),
+            }),
             ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
                 decode_event(log).map(Self::PauseStateUpdate)
             }
@@ -370,7 +384,6 @@ impl Tip20PoolEvent {
             ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
                 decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
             }
-            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
             _ => None,
         }
     }
@@ -444,6 +457,13 @@ impl TempoPoolState {
     /// This avoids repeating the `expiry_map` lookup for every mined hash while
     /// preserving O(1)-ish removal from each `B256Set` bucket.
     fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        // Nothing is tracked for expiry (the common case in throughput-heavy blocks where
+        // few/no AA transactions carry `valid_before` or key expiry), so skip iterating the
+        // block's mined hashes entirely.
+        if self.tx_to_expiry.is_empty() {
+            return;
+        }
+
         let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
 
         for hash in hashes {
@@ -597,6 +617,19 @@ where
                 };
 
                 state.track(&tx_event.transaction.transaction);
+
+                // At high TPS the listener fires constantly and each wakeup re-polls the
+                // whole select loop. Drain already-buffered events in this wakeup so the
+                // select/poll overhead is amortized across many transactions instead of paid
+                // per transaction. The drain is bounded so a sustained burst cannot starve
+                // the block-processing branch below.
+                let mut drained = 0;
+                while drained < NEW_TX_DRAIN_LIMIT
+                    && let Ok(tx_event) = new_txs.try_recv()
+                {
+                    state.track(&tx_event.transaction.transaction);
+                    drained += 1;
+                }
             }
 
             // Process all maintenance operations on new block commit or reorg
@@ -652,28 +685,29 @@ where
                 // broadcasting near-expiry txs that peers would reject.
                 let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
-                // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(max_expiry);
-                if !expired.is_empty() {
-                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
-                    updates.expired_txs = expired
-                        .into_iter()
-                        .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
-                        .collect();
-                }
+                // Add expired transactions (from local tracking state).
+                //
+                // Mined transactions were already untracked above, so the drained set cannot
+                // contain hashes mined in this block. Hashes that have since left the pool by
+                // other means are handled by `remove_transactions` as no-ops, so no pre-filter
+                // (and no mined-hash set) is needed here.
+                updates.expired_txs = state.drain_expired(max_expiry);
 
                 // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
-                let expired_count = updates.expired_txs.len();
-                if expired_count > 0 {
-                    debug!(
-                        target: "txpool",
-                        count = expired_count,
-                        tip_timestamp,
-                        "Evicting expired AA transactions (valid_before)"
-                    );
-                    removed_txs.push(pool.remove_transactions(updates.expired_txs.clone()));
-                    metrics.expired_transactions_evicted.increment(expired_count as u64);
+                if !updates.expired_txs.is_empty() {
+                    let evicted =
+                        pool.remove_transactions(std::mem::take(&mut updates.expired_txs));
+                    if !evicted.is_empty() {
+                        debug!(
+                            target: "txpool",
+                            count = evicted.len(),
+                            tip_timestamp,
+                            "Evicting expired AA transactions (valid_before)"
+                        );
+                        metrics.expired_transactions_evicted.increment(evicted.len() as u64);
+                        removed_txs.push(evicted);
+                    }
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
@@ -700,7 +734,7 @@ where
                     let mut by_token = {
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs.iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
                             .fold(
                                 AddressMap::<Vec<TxHash>>::default(),
                                 |mut by_token, tx| {
@@ -850,7 +884,7 @@ where
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs
                             .iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
                             .filter(|tx| {
                                 tx.transaction
                                     .resolved_fee_token()
@@ -915,7 +949,7 @@ where
                             &updates,
                             all_txs
                                 .iter()
-                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                                .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash())),
                         )
                     };
                     for tx in &evicted {
@@ -955,8 +989,12 @@ where
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
 
-                // Deallocating removed transactions is expensive, so do it after all updates are done.
-                drop(removed_txs);
+                // Deallocating removed transactions is expensive (input data, signatures,
+                // allocator and kernel work), so move it off the maintenance task entirely,
+                // freeing the loop to immediately continue processing pool events.
+                if removed_txs.iter().any(|txs| !txs.is_empty()) {
+                    tokio::task::spawn_blocking(move || drop(removed_txs));
+                }
             }
         }
     }
@@ -1411,7 +1449,13 @@ mod tests {
                     amount: U256::from(42),
                 },
             );
-            assert_decodes_like_generated!(Tip20PoolEvent, Transfer, ITIP20::Transfer, log);
+            // `Transfer` decoding is specialized to read only the indexed `from` topic, so
+            // compare that against the field a full event decode would produce.
+            let expected = generated_decode::<ITIP20::Transfer>(&log);
+            match Tip20PoolEvent::decode(&log) {
+                Some(Tip20PoolEvent::Transfer { from }) => assert_eq!(from, expected.from),
+                _ => panic!("unexpected decoded event"),
+            }
         }
     }
 
