@@ -733,7 +733,7 @@ where
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
-                skip_state_root: ctx.config().tree_config().skip_state_root(),
+                skip_state_root: ctx.config().engine.tree_config().skip_state_root(),
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))

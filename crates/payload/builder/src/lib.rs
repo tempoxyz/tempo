@@ -113,6 +113,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether payload builds should skip state-root computation.
+    skip_state_root: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
@@ -147,6 +149,7 @@ impl Default for TempoPayloadBuilderConfig {
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: true,
+            skip_state_root: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -171,6 +174,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
+            skip_state_root: config.skip_state_root,
             enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
@@ -923,46 +927,45 @@ where
             finish_provider.hashed_post_state(&db.bundle_state)
         };
 
-        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if self.config.skip_state_root {
-                debug!(
-                    target: "payload_builder",
-                    id = %payload_id,
-                    state_root = ?parent_header.state_root(),
-                    "skipping payload state-root computation"
-                );
-                None
-            } else if let Some(mut handle) = trie_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
+        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) = if self.skip_state_root {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                state_root = ?parent_header.state_root(),
+                "skipping payload state-root computation"
+            );
+            None
+        } else if let Some(mut handle) = trie_handle {
+            let state_root_wait_start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
+            match handle.state_root() {
+                Ok(outcome) => {
+                    let elapsed = state_root_wait_start.elapsed();
+                    self.metrics
+                        .sparse_trie_state_root_wait_duration_seconds
+                        .record(elapsed);
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from sparse trie"
+                    );
+                    Some((outcome, elapsed))
                 }
-            } else {
-                None
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "sparse trie failed, falling back to sync state root"
+                    );
+                    None
+                }
             }
-            .unzip();
+        } else {
+            None
+        }
+        .unzip();
 
         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
             let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
@@ -971,7 +974,7 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if self.config.skip_state_root {
+        let (state_root, trie_updates) = if self.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
