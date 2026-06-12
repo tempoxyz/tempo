@@ -211,7 +211,13 @@ fn init_engine_defaults() {
         .with_always_process_payload_attributes_on_canonical_head(true)
         // Defer persistence I/O during active payload builds.
         .with_suppress_persistence_during_build(true)
-        .with_share_sparse_trie_with_payload_builder(true)
+        // BENCH: Skip state root computation during validation — trust the proposer's state root.
+        // Only prewarming remains active. This isolates execution performance from trie overhead.
+        .with_skip_state_root(true)
+        // BENCH: sparse-trie sharing assumes the validator runs the state root task each
+        // block and hands the trie back; with skip_state_root that handoff never happens
+        // and the payload builder stalls waiting for it.
+        .with_share_sparse_trie_with_payload_builder(false)
         .with_share_execution_cache_with_payload_builder(true)
         .try_init()
         .expect("failed to initialize engine defaults");
