@@ -258,6 +258,7 @@ async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
+blake3 = "1.8"
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
@@ -299,6 +300,7 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
+tar = "0.4"
 tempfile = "3.24.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
@@ -318,6 +320,7 @@ rayon = "1.11"
 url = "2.5"
 test-case = "3"
 zeroize = "1"
+zstd = "0.13"
 age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 
