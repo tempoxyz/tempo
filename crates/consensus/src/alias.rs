@@ -16,9 +16,7 @@ pub(crate) mod marshal {
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
         types::{Epoch, Epocher as _, FixedEpocher, Height, ViewDelta},
     };
-    use commonware_cryptography::{
-        bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
-    };
+    use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_parallel::Sequential;
     use commonware_runtime::{
         BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef,
@@ -27,7 +25,10 @@ pub(crate) mod marshal {
     use commonware_utils::acknowledgement::Exact;
     use eyre::{OptionExt, WrapErr as _, ensure};
     use rand_08::{CryptoRng, Rng};
-    use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
+    use rand_core::CryptoRngCore;
+    use reth_ethereum::{
+        chainspec::EthChainSpec, network::types::HashOrNumber, provider::db::DatabaseEnv,
+    };
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_node_core::primitives::SealedBlock;
     use reth_provider::{
@@ -35,6 +36,7 @@ pub(crate) mod marshal {
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
+    use tempo_primitives::TempoHeader;
     use tracing::instrument;
 
     use crate::{
@@ -157,6 +159,7 @@ pub(crate) mod marshal {
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         let (last_finalized_height, start) = start(
+            &mut context.child("marshal_start"),
             &finalizations_by_height,
             &finalized_blocks,
             &execution_node,
@@ -196,7 +199,13 @@ pub(crate) mod marshal {
         })
     }
 
+    /// Return the starting marker for marshal.
+    ///
+    /// If no finalization certificates are available in the consensus archive,
+    /// this attempts to read a bootstrap finalization at the expected
+    /// [crate::bootstrap::FINALIZATION_PATH] path.
     async fn start<TContext>(
+        context: &mut TContext,
         finalizations_by_height: &FinalizationsByHeight<TContext>,
         finalized_blocks: &FinalizedBlocks<TContext>,
         execution_node: &TempoFullNode,
@@ -212,13 +221,13 @@ pub(crate) mod marshal {
 
         let finalization = if last_finalized_height > Height::zero() {
             let index = Identifier::Index(last_finalized_height.get());
-            Some(
-                Certificates::get(finalizations_by_height, index)
-                    .await?
-                    .expect("archive must have the last index"),
-            )
+            let cert = Certificates::get(finalizations_by_height, index)
+                .await?
+                .expect("archive must have the last index");
+
+            Some(cert)
         } else {
-            bootstrap::read_finalization(consensus_dir)
+            bootstrap::read_bootstrap_finalization(consensus_dir)
                 .wrap_err("failed reading bootstrap finalization")?
         };
 
@@ -227,8 +236,34 @@ pub(crate) mod marshal {
             return Ok((last_finalized_height, Start::Genesis(genesis)));
         };
 
+        let id = HashOrNumber::Hash(finalization.proposal.payload.0);
+        let header = get_header(finalized_blocks, execution_node, id)
+            .await
+            .wrap_err("failed to get finalized header")?
+            .ok_or_eyre(format!("missing finalized header {id}"))?;
+
+        let height = header.number();
+        let header_epoch = config
+            .epoch_strategy
+            .containing(Height::new(height))
+            .expect("epoch strategy is for all heights")
+            .epoch();
+
+        let finalization_epoch = finalization.epoch();
+        ensure!(
+            finalization.epoch() == header_epoch,
+            "CL <> EL state mismatch!!! Finalization epoch {finalization_epoch}; execution header epoch {header_epoch}"
+        );
+
         let epoch = finalization.epoch();
-        register_outcome(finalized_blocks, execution_node, config, epoch).await?;
+        let scheme = register_outcome(finalized_blocks, execution_node, config, epoch).await?;
+
+        // Even though marshal validates the floor via the same scheme, we check here to
+        // avoid the panic and return a proper error
+        ensure!(
+            finalization.verify(context, &scheme, &Sequential),
+            "Unable to verify starting finalization for {height} with the last boundary"
+        );
 
         Ok((last_finalized_height, Start::Floor(finalization)))
     }
@@ -238,50 +273,66 @@ pub(crate) mod marshal {
         execution_node: &TempoFullNode,
         config: &Config,
         epoch: Epoch,
-    ) -> eyre::Result<()>
+    ) -> eyre::Result<Scheme<PublicKey, MinSig>>
     where
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
-        if config.scheme_provider.scoped(epoch).is_some() {
-            return Ok(());
-        }
-
-        let height = epoch.previous().map_or_else(Height::zero, |previous| {
+        let boundary_height = epoch.previous().map_or_else(Height::zero, |previous| {
             config
                 .epoch_strategy
                 .last(previous)
-                .expect("epoch strategy is for all epochs")
+                .expect("epoch strategy is for all heights")
         });
 
-        let extra_data = if let Some(block) = finalized_blocks
-            .get(Identifier::Index(height.get()))
-            .await?
-        {
-            block.extra_data().clone()
-        } else {
-            execution_node
-                .provider
-                .header_by_number(height.get())
-                .wrap_err("failed to get boundary header")?
-                .ok_or_eyre("missing boundary header for marshal verifier registration")?
-                .extra_data()
-                .clone()
-        };
+        let id = HashOrNumber::Number(boundary_height.get());
+        let header = get_header(finalized_blocks, execution_node, id)
+            .await
+            .wrap_err("failed to get boundary header")?
+            .ok_or_eyre(format!("missing boundary header {id}"))?;
 
-        let mut extra_data = extra_data.as_ref();
-        let onchain_outcome = OnchainDkgOutcome::read(&mut extra_data)
+        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("boundary block did not contain on-chain DKG outcome")?;
 
-        config.scheme_provider.register(
-            onchain_outcome.epoch,
-            Scheme::certificate_verifier(
-                crate::config::NAMESPACE,
-                *onchain_outcome.sharing().public(),
-            ),
+        let scheme = Scheme::verifier(
+            crate::config::NAMESPACE,
+            onchain_outcome.players().clone(),
+            onchain_outcome.sharing().clone(),
         );
 
-        Ok(())
+        config
+            .scheme_provider
+            .register(onchain_outcome.epoch, scheme.clone());
+
+        Ok(scheme)
+    }
+
+    async fn get_header<TContext>(
+        finalized_blocks: &FinalizedBlocks<TContext>,
+        execution_node: &TempoFullNode,
+        id: HashOrNumber,
+    ) -> eyre::Result<Option<TempoHeader>>
+    where
+        TContext:
+            Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
+    {
+        let finalized_blocks_id = match id {
+            HashOrNumber::Hash(hash) => Identifier::Key(&Digest(hash)),
+            HashOrNumber::Number(number) => Identifier::Index(number),
+        };
+
+        if let Some(block) = finalized_blocks
+            .get(finalized_blocks_id)
+            .await
+            .wrap_err("failed to get block from marshal")?
+        {
+            return Ok(Some(block.header().clone()));
+        };
+
+        execution_node
+            .provider
+            .header_by_hash_or_number(id)
+            .wrap_err("failed to get header from execution node")
     }
 
     fn genesis_start(execution_node: &TempoFullNode) -> eyre::Result<Block> {
@@ -293,7 +344,7 @@ pub(crate) mod marshal {
 
         ensure!(
             finalized_block_num == 0,
-            "Genesis start with finalized execution state; finalized height: `{finalized_block_num}` \
+            "Genesis start with finalized execution state up to height `{finalized_block_num}`. \
             Finalization certificates or bootstrap finalization must be available.",
         );
 
@@ -301,7 +352,7 @@ pub(crate) mod marshal {
         let genesis_block = execution_node
             .provider
             .block_by_hash(genesis_hash)?
-            .expect("genesis block must exist");
+            .ok_or_eyre("gensis block unavailable")?;
 
         Ok(Block::from_execution_block_unchecked(
             SealedBlock::seal_slow(genesis_block),

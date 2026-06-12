@@ -73,6 +73,7 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
         let consensus_manifest = load_consensus_manifest(manifest_url, manifest_path).await?;
         let path =
             write_bootstrap_finalization(&consensus_dir, consensus_manifest.finalization.as_ref())?;
+
         eprintln!("persisted bootstrap finalization: {}", path.display());
 
         Ok(())

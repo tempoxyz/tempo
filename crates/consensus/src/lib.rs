@@ -21,7 +21,7 @@ pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};

@@ -11,7 +11,7 @@ use crate::consensus::Digest;
 
 pub(crate) const FINALIZATION_PATH: &str = "bootstrap/finalization.cert";
 
-pub(crate) fn read_finalization(
+pub(crate) fn read_bootstrap_finalization(
     consensus_dir: &Path,
 ) -> eyre::Result<Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>> {
     let path = consensus_dir.join(FINALIZATION_PATH);
