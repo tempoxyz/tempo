@@ -1,0 +1,6 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages": [],
+ "name": "tempo_formal",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}
