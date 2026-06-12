@@ -1,7 +1,7 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
-use core::{cell::RefCell, fmt};
+use core::cell::RefCell;
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -12,164 +12,58 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    error::Result as PrecompileResult, tip_fee_manager::TipFeeManager, tip20::TIP20Token,
-};
+use tempo_precompiles::{error::Result as PrecompileResult, tip_fee_manager::TipFeeManager};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct CachedValidatorFeeToken {
     beneficiary: Address,
     token: Address,
+    /// Storage slot backing the cached value, used for change-based invalidation.
+    slot: U256,
 }
 
-struct CachedFeeCollectorInner {
-    fee_manager: TipFeeManager,
-    validator_fee_token: Option<CachedValidatorFeeToken>,
-}
-
-/// Cached fee-collection state used by internal fee collection.
+/// Cached resolved validator fee token used by internal fee collection.
 ///
-/// Keeps a generated fee-manager handle so deterministic storage handlers and derived slots can be
-/// reused. The resolved validator fee token is also cached and invalidated when the cached
-/// validator-token storage slot changes.
-pub(crate) struct CachedFeeCollector {
-    inner: RefCell<CachedFeeCollectorInner>,
+/// The cached value is invalidated when its backing storage slot changes.
+#[derive(Debug, Default)]
+pub(crate) struct ValidatorFeeTokenCache {
+    cached: RefCell<Option<CachedValidatorFeeToken>>,
 }
 
-impl CachedFeeCollector {
-    fn new() -> Self {
-        Self {
-            inner: RefCell::new(CachedFeeCollectorInner {
-                fee_manager: TipFeeManager::new(),
-                validator_fee_token: None,
-            }),
-        }
-    }
-
-    pub(crate) fn collect_fee_pre_tx(
+impl ValidatorFeeTokenCache {
+    /// Resolves the validator fee token for `beneficiary`, reusing the cached value when present.
+    ///
+    /// Must be called within a precompile storage context.
+    pub(crate) fn validator_fee_token(
         &self,
-        fee_payer: Address,
-        fee_token: Address,
-        max_amount: U256,
-        beneficiary: Address,
-        skip_liquidity_check: bool,
-    ) -> PrecompileResult<Address> {
-        self.inner.borrow_mut().collect_fee_pre_tx(
-            fee_payer,
-            fee_token,
-            max_amount,
-            beneficiary,
-            skip_liquidity_check,
-        )
-    }
-
-    pub(crate) fn collect_fee_post_tx(
-        &self,
-        fee_payer: Address,
-        actual_spending: U256,
-        refund_amount: U256,
-        fee_token: Address,
-        beneficiary: Address,
-    ) -> PrecompileResult<U256> {
-        self.inner.borrow_mut().collect_fee_post_tx(
-            fee_payer,
-            actual_spending,
-            refund_amount,
-            fee_token,
-            beneficiary,
-        )
-    }
-
-    pub(crate) fn cached_validator_fee_token_slot(&self) -> Option<U256> {
-        self.inner.borrow().cached_validator_fee_token_slot()
-    }
-
-    pub(crate) fn invalidate_validator_fee_token(&self) {
-        self.inner.borrow_mut().validator_fee_token = None;
-    }
-}
-
-impl CachedFeeCollectorInner {
-    fn validator_fee_token(
-        fee_manager: &mut TipFeeManager,
-        cached_validator_fee_token: &mut Option<CachedValidatorFeeToken>,
+        fee_manager: &TipFeeManager,
         beneficiary: Address,
     ) -> PrecompileResult<Address> {
-        if let Some(cached) = cached_validator_fee_token.as_ref()
+        if let Some(cached) = *self.cached.borrow()
             && cached.beneficiary == beneficiary
         {
             return Ok(cached.token);
         }
 
         let token = fee_manager.get_validator_token(beneficiary)?;
-        *cached_validator_fee_token = Some(CachedValidatorFeeToken { beneficiary, token });
+        let slot = fee_manager.validator_token_slot(beneficiary);
+        *self.cached.borrow_mut() = Some(CachedValidatorFeeToken {
+            beneficiary,
+            token,
+            slot,
+        });
         Ok(token)
     }
 
-    fn cached_validator_fee_token_slot(&self) -> Option<U256> {
-        self.validator_fee_token
-            .map(|cached| self.fee_manager.validator_token_slot(cached.beneficiary))
+    pub(crate) fn slot(&self) -> Option<U256> {
+        self.cached.borrow().map(|cached| cached.slot)
     }
 
-    fn collect_fee_pre_tx(
-        &mut self,
-        fee_payer: Address,
-        fee_token: Address,
-        max_amount: U256,
-        beneficiary: Address,
-        skip_liquidity_check: bool,
-    ) -> PrecompileResult<Address> {
-        let Self {
-            fee_manager,
-            validator_fee_token: cached_validator_token,
-        } = self;
-        let validator_token =
-            Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
-        let mut token = TIP20Token::from_address(fee_token)?;
-
-        fee_manager.collect_fee_pre_tx_with_token_and_validator_token(
-            &mut token,
-            fee_payer,
-            fee_token,
-            max_amount,
-            validator_token,
-            skip_liquidity_check,
-        )
-    }
-
-    fn collect_fee_post_tx(
-        &mut self,
-        fee_payer: Address,
-        actual_spending: U256,
-        refund_amount: U256,
-        fee_token: Address,
-        beneficiary: Address,
-    ) -> PrecompileResult<U256> {
-        let Self {
-            fee_manager,
-            validator_fee_token: cached_validator_token,
-        } = self;
-        let validator_token =
-            Self::validator_fee_token(fee_manager, cached_validator_token, beneficiary)?;
-        let mut token = TIP20Token::from_address(fee_token)?;
-
-        fee_manager.collect_fee_post_tx_with_token_and_validator_token(
-            &mut token,
-            fee_payer,
-            actual_spending,
-            refund_amount,
-            beneficiary,
-            validator_token,
-        )
-    }
-}
-
-impl fmt::Debug for CachedFeeCollector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedFeeCollector").finish_non_exhaustive()
+    pub(crate) fn invalidate(&self) {
+        *self.cached.borrow_mut() = None;
     }
 }
 
@@ -196,8 +90,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
-    /// Cached generated handles for internal fee collection.
-    pub(crate) fee_collector: CachedFeeCollector,
+    /// Cached resolved validator fee token for internal fee collection.
+    pub(crate) validator_fee_token_cache: ValidatorFeeTokenCache,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -244,7 +138,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
-            fee_collector: CachedFeeCollector::new(),
+            validator_fee_token_cache: ValidatorFeeTokenCache::default(),
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -293,12 +187,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Returns the cached validator-token storage slot, if one is currently cached.
     pub fn cached_validator_fee_token_slot(&self) -> Option<U256> {
-        self.fee_collector.cached_validator_fee_token_slot()
+        self.validator_fee_token_cache.slot()
     }
 
     /// Clears the cached validator-token value.
     pub fn invalidate_validator_fee_token(&self) {
-        self.fee_collector.invalidate_validator_fee_token();
+        self.validator_fee_token_cache.invalidate();
     }
 }
 

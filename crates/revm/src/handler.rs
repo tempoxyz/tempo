@@ -50,6 +50,7 @@ use tempo_precompiles::{
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
+    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -1295,13 +1296,16 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let fee_collector = &evm.fee_collector;
+            let validator_fee_token_cache = &evm.validator_fee_token_cache;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                fee_collector.collect_fee_pre_tx(
+                let mut fee_manager = TipFeeManager::new();
+                let validator_token = validator_fee_token_cache
+                    .validator_fee_token(&fee_manager, block.beneficiary())?;
+                fee_manager.collect_fee_pre_tx_with_validator_token(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
-                    block.beneficiary(),
+                    validator_token,
                     skip_liquidity_check,
                 )
             });
@@ -1570,7 +1574,7 @@ where
         // Enter precompile storage context for fee settlement.
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
-        let fee_collector = &evm.fee_collector;
+        let validator_fee_token_cache = &evm.validator_fee_token_cache;
 
         let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1578,15 +1582,20 @@ where
                 let fee_token = evm
                     .fee_token
                     .expect("set in `validate_against_state_and_deduct_caller`");
+                let mut fee_manager = TipFeeManager::new();
                 // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_collector
-                    .collect_fee_post_tx(
-                        fee_payer,
-                        actual_spending,
-                        refund_amount,
-                        fee_token,
-                        beneficiary,
-                    )
+                validator_fee_token_cache
+                    .validator_fee_token(&fee_manager, beneficiary)
+                    .and_then(|validator_token| {
+                        fee_manager.collect_fee_post_tx_with_validator_token(
+                            fee_payer,
+                            actual_spending,
+                            refund_amount,
+                            fee_token,
+                            beneficiary,
+                            validator_token,
+                        )
+                    })
                     .map_err(|e| EVMError::Custom(format!("{e:?}")))
             } else {
                 Ok(U256::ZERO)
@@ -2432,7 +2441,6 @@ mod tests {
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
-        tip_fee_manager::TipFeeManager,
     };
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
