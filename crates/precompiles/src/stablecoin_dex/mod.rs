@@ -3492,6 +3492,108 @@ mod tests {
     }
 
     #[test]
+    fn test_quote_exact_out_walks_across_ticks() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let order_amount = MIN_ORDER_AMOUNT;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 10)?;
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            // Two ask levels: best (lowest) at tick 0, next at tick 10.
+            exchange.place(alice, base_token, order_amount, false, 0)?;
+            exchange.place(alice, base_token, order_amount, false, 10)?;
+
+            // Request more base than the tick-0 level holds so the quote has to
+            // walk to the worse-priced tick-10 level (cross-tick branch).
+            let remainder = order_amount / 2;
+            let amount_out = order_amount + remainder;
+            let amount_in =
+                exchange.quote_swap_exact_amount_out(quote_token, base_token, amount_out)?;
+
+            // tick 0 is 1:1; the remainder is priced at tick 10 (rounded up, in
+            // the maker's favor), matching quote_exact_out's per-tick math.
+            let expected = order_amount
+                + base_to_quote(remainder, 10, RoundingDirection::Up)
+                    .expect("conversion fits in u128");
+            assert_eq!(amount_in, expected);
+            // Crossing into a worse-priced tick must cost strictly more than 1:1.
+            assert!(amount_in > amount_out);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_swap_exact_in_walks_across_ticks() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let order_amount = MIN_ORDER_AMOUNT;
+
+            // Alice provides ask liquidity; bob is the taker.
+            let quote = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(order_amount * 10))
+                .with_approval(alice, exchange.address, U256::from(order_amount * 10))
+                .with_mint(bob, U256::from(order_amount * 10))
+                .with_approval(bob, exchange.address, U256::from(order_amount * 10))
+                .apply()?;
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(order_amount * 10))
+                .with_approval(alice, exchange.address, U256::from(order_amount * 10))
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = quote.address();
+
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            // Two ask orders at distinct ticks.
+            exchange.place(alice, base_token, order_amount, false, 0)?;
+            exchange.place(alice, base_token, order_amount, false, 10)?;
+
+            // Pay enough quote to fully consume the tick-0 order and roll over to
+            // the tick-10 order (cross-order/cross-tick branch of the exact-in
+            // fill loop).
+            let amount_in = order_amount + order_amount / 2;
+            let bob_base_before = base.balance_of(ITIP20::balanceOfCall { account: bob })?;
+            let amount_out =
+                exchange.swap_exact_amount_in(bob, quote_token, base_token, amount_in, 0)?;
+            let bob_base_after = base.balance_of(ITIP20::balanceOfCall { account: bob })?;
+
+            // Filled beyond the first tick's liquidity, and the credited output
+            // matches the wallet delta.
+            assert!(
+                amount_out > order_amount,
+                "swap should fill past the first tick"
+            );
+            assert_eq!(
+                bob_base_after - bob_base_before,
+                U256::from(amount_out),
+                "received base must equal reported amount_out"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_swap_exact_in_multi_hop_transitory_balances() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
