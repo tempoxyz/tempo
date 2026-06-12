@@ -34,6 +34,11 @@ use tracing::{debug, error};
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
+/// Maximum number of new-transaction events to receive in a single maintenance wakeup
+/// before yielding back to the event loop. Bounds the per-wakeup work so a sustained
+/// burst of new transactions cannot starve block-commit processing.
+const NEW_TX_DRAIN_LIMIT: usize = 4096;
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -587,16 +592,21 @@ where
     }
 
     let amm_cache = pool.amm_liquidity_cache();
+    let mut new_tx_events = Vec::with_capacity(NEW_TX_DRAIN_LIMIT);
 
     loop {
         tokio::select! {
             // Track new transactions for expiry (valid_before and key expiry)
-            tx_event = new_txs.recv() => {
-                let Some(tx_event) = tx_event else {
+            n = new_txs.recv_many(&mut new_tx_events, NEW_TX_DRAIN_LIMIT) => {
+                if n == 0 {
                     break;
-                };
+                }
 
-                state.track(&tx_event.transaction.transaction);
+                // Batch already-buffered events to amortize select/poll overhead while bounding
+                // per-wakeup work so block processing can still make progress.
+                for tx_event in new_tx_events.drain(..) {
+                    state.track(&tx_event.transaction.transaction);
+                }
             }
 
             // Process all maintenance operations on new block commit or reorg
