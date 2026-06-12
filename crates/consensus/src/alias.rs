@@ -10,7 +10,7 @@ pub(crate) mod marshal {
         Epochable as _,
         marshal::{
             self, Start, core,
-            standard::Standard,
+            standard::{Inline, Standard},
             store::{Blocks as _, Certificates},
         },
         simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
@@ -40,7 +40,7 @@ pub(crate) mod marshal {
 
     use crate::{
         bootstrap,
-        consensus::{Digest, block::Block},
+        consensus::{Digest, application::TempoApplication, block::Block},
         epoch::SchemeProvider,
         storage::{self, Hybrid},
     };
@@ -64,6 +64,9 @@ pub(crate) mod marshal {
     >;
 
     pub(crate) type Mailbox = core::Mailbox<CertificateScheme, Standard<Block>>;
+
+    pub(crate) type InlineApplication<TContext> =
+        Inline<TContext, CertificateScheme, TempoApplication, Block, FixedEpocher>;
 
     /// Settings shared by both engines when initializing the marshal actor
     /// and its backing finalized-blocks store.
