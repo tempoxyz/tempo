@@ -399,6 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn validation_latency_estimate_ignores_zero_elapsed_samples() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        estimator.observe(1, ValidationLatencyWorkload::new(100, 1), Duration::ZERO);
+
+        assert_eq!(estimator.estimate(), None);
+    }
+
+    #[test]
+    fn validation_latency_estimate_evicts_oldest_sample_ids() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        let workload = ValidationLatencyWorkload::new(100, 1);
+
+        for sample_id in 1..=VALIDATION_LATENCY_SAMPLE_WINDOW as u64 {
+            estimator.observe(sample_id, workload, Duration::from_nanos(sample_id));
+        }
+
+        estimator.observe(0, workload, Duration::from_nanos(10_000));
+
+        assert_eq!(
+            estimator
+                .estimate()
+                .and_then(|estimate| estimate.estimate(workload)),
+            Some(Duration::from_nanos(58))
+        );
+    }
+
+    #[test]
     fn validation_latency_estimate_does_not_scale_down() {
         assert_eq!(
             estimate_with_sample(

@@ -419,6 +419,40 @@ mod tests {
     }
 
     #[test]
+    fn payload_budget_and_validation_latency_are_explicitly_carried() {
+        use crate::{ValidationLatencyEstimator, ValidationLatencyWorkload};
+        use std::time::Duration;
+
+        let mut estimator = ValidationLatencyEstimator::default();
+        let workload = ValidationLatencyWorkload::new(123, 4);
+        estimator.observe(1, workload, Duration::from_millis(7));
+        let estimate = estimator.estimate();
+
+        let attrs = TempoPayloadAttributes::random()
+            .with_payload_build_budget(Duration::from_millis(25))
+            .with_validation_latency_estimate(estimate);
+
+        assert_eq!(
+            attrs.payload_build_budget(),
+            Some(Duration::from_millis(25))
+        );
+        assert_eq!(attrs.validation_latency_estimate(), estimate);
+        assert_eq!(
+            attrs
+                .validation_latency_estimate()
+                .and_then(|estimate| estimate.estimate(workload)),
+            Some(Duration::from_millis(7))
+        );
+
+        let attrs = attrs.with_validation_latency_estimate(None);
+        assert_eq!(
+            attrs.payload_build_budget(),
+            Some(Duration::from_millis(25))
+        );
+        assert_eq!(attrs.validation_latency_estimate(), None);
+    }
+
+    #[test]
     fn test_tempo_payload_attributes_serde() {
         let timestamp = 1234567890;
         let timestamp_millis_part = 999;
