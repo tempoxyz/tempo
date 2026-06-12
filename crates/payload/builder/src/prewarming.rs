@@ -28,6 +28,23 @@ use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+struct PrewarmWorkerState {
+    evm: PrewarmEvmState,
+    storage_touches: Vec<StorageTouch>,
+}
+
+impl PrewarmWorkerState {
+    fn new<Provider>(prewarm: &PrewarmingExecutionContext<Provider>) -> Self
+    where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        Self {
+            evm: prewarm.evm_for_ctx(),
+            storage_touches: Vec::with_capacity(32),
+        }
+    }
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -102,7 +119,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.init::<PrewarmWorkerState>(|_| PrewarmWorkerState::new(&prewarm));
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -185,20 +202,27 @@ impl BestTransactionsPrewarming {
         }
 
         WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+            let worker_state =
+                worker.get_or_init::<PrewarmWorkerState>(|| PrewarmWorkerState::new(&prewarm));
+            let PrewarmWorkerState {
+                evm,
+                storage_touches,
+            } = worker_state;
+            let Some(evm) = evm.as_mut() else {
                 return;
             };
 
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches = storage_touches_for_transaction(
+                storage_touches_for_transaction(
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
+                    storage_touches,
                 );
 
-                for touch in &touches {
+                for touch in storage_touches.iter() {
                     if prewarm.is_stopped() {
                         return;
                     }
@@ -213,7 +237,7 @@ impl BestTransactionsPrewarming {
                     }
                 }
 
-                Some(touches.len())
+                Some(storage_touches.len())
             } else {
                 if prewarm.is_stopped() {
                     return;
@@ -446,8 +470,9 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
     expiring_nonce_offset: Option<usize>,
-) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
+    touches: &mut Vec<StorageTouch>,
+) {
+    touches.clear();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -457,18 +482,16 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+    add_tip20_fee_touches(touches, fee_token, fee_payer);
+    add_fee_manager_touches(touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+            add_tip20_call_touches(touches, sender, kind, input);
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
-
-    touches
+    add_expiring_nonce_touches(touches, tx, expiring_nonce_offset);
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
