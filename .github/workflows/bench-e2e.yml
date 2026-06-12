@@ -92,21 +92,16 @@ on:
           - Tracy
           - Tracy Full
           - Both
-      tracy:
-        description: Tracy mode for API dispatches (off, on, full).
-        type: string
-        required: false
-        default: ""
-      tracy-sampling-hz:
-        description: Tracy CPU sampling frequency for full mode.
-        type: string
-        required: false
-        default: "1"
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
         required: true
         default: true
+      valscope:
+        description: Generate and publish ValScope static reports.
+        type: boolean
+        required: true
+        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -122,6 +117,11 @@ on:
         type: string
         required: true
         default: "1000000000"
+      force-bloat:
+        description: Force regeneration of local benchmark state.
+        type: boolean
+        required: true
+        default: false
       no-cache:
         description: Skip binary cache.
         type: boolean
