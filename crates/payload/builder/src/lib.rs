@@ -918,40 +918,39 @@ where
         // run with --engine.skip-state-root and trust whatever root the proposer emits.
         const BENCH_SKIP_STATE_ROOT: bool = true;
 
-        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if BENCH_SKIP_STATE_ROOT {
-                None
-            } else if let Some(mut handle) = trie_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
+        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) = if BENCH_SKIP_STATE_ROOT {
+            None
+        } else if let Some(mut handle) = trie_handle {
+            let state_root_wait_start = Instant::now();
+            let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
+            match handle.state_root() {
+                Ok(outcome) => {
+                    let elapsed = state_root_wait_start.elapsed();
+                    self.metrics
+                        .sparse_trie_state_root_wait_duration_seconds
+                        .record(elapsed);
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from sparse trie"
+                    );
+                    Some((outcome, elapsed))
                 }
-            } else {
-                None
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "sparse trie failed, falling back to sync state root"
+                    );
+                    None
+                }
             }
-            .unzip();
+        } else {
+            None
+        }
+        .unzip();
 
         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
             let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
@@ -961,7 +960,10 @@ where
         };
 
         let (state_root, trie_updates) = if BENCH_SKIP_STATE_ROOT {
-            (parent_header.state_root(), Arc::new(reth_trie_common::updates::TrieUpdates::default()))
+            (
+                parent_header.state_root(),
+                Arc::new(reth_trie_common::updates::TrieUpdates::default()),
+            )
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
