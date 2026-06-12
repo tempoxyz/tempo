@@ -40,3 +40,6 @@ _
 # LLVM coverage profraw files
 *.profraw
 __pycache__/
+
+# Lean build artifacts
+formal/lean/.lake/
