@@ -136,47 +136,6 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     precompiles
 }
 
-/// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
-/// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
-/// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
-/// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
-pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
-    let cfg = cfg.clone();
-
-    precompiles.set_precompile_lookup(move |address: &Address| {
-        if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &cfg))
-        } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5() {
-            Some(TIP20ChannelReserve::create_precompile(&cfg))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
-            Some(AddressRegistry::create_precompile(&cfg))
-        } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create_precompile(&cfg))
-        } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManager::create_precompile(&cfg))
-        } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEX::create_precompile(&cfg))
-        } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NonceManager::create_precompile(&cfg))
-        } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfig::create_precompile(&cfg))
-        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychain::create_precompile(&cfg))
-        } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2::create_precompile(&cfg))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
-            Some(SignatureVerifier::create_precompile(&cfg))
-        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
-            Some(ReceivePolicyGuard::create_precompile(&cfg))
-        } else {
-            None
-        }
-    });
-}
-
 sol! {
     error DelegateCallNotAllowed();
     error StaticCallNotAllowed();
@@ -211,97 +170,122 @@ macro_rules! tempo_precompile {
     }};
 }
 
-impl TipFeeManager {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", cfg, |input| { Self::new() })
-    }
+macro_rules! tempo_precompiles {
+    (
+        $(
+            $precompile:ty {
+                selector: |$selector_address:ident, $selector_cfg:ident| $selector:expr,
+                $(create($constructor_address:ident) => $constructor:block,)?
+            }
+        ),+ $(,)?
+    ) => {
+        /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`].
+        ///
+        /// The lookup predicates and constructors are generated from the `tempo_precompiles!`
+        /// registry below. Each precompile is wrapped via the `tempo_precompile!` macro which
+        /// enforces direct-call-only (no delegatecall) and sets up the storage context.
+        pub fn extend_tempo_precompiles(
+            precompiles: &mut PrecompilesMap,
+            cfg: &CfgEnv<TempoHardfork>,
+        ) {
+            let cfg = cfg.clone();
+
+            precompiles.set_precompile_lookup(move |address: &Address| {
+                $(
+                    let matches = |$selector_address: &Address,
+                                   $selector_cfg: &CfgEnv<TempoHardfork>| $selector;
+                    if matches(address, &cfg) {
+                        return Some(tempo_precompiles!(
+                            @create $precompile,
+                            address,
+                            &cfg
+                            $(, $constructor_address)?
+                        ));
+                    }
+                )+
+
+                None
+            });
+        }
+
+        $(
+            tempo_precompiles!(@impl $precompile $(, $constructor_address, $constructor)?);
+        )+
+    };
+
+    (@create $precompile:ty, $address:ident, $cfg:expr, $constructor_address:ident) => {
+        <$precompile>::create_precompile(*$address, $cfg)
+    };
+
+    (@create $precompile:ty, $address:ident, $cfg:expr) => {
+        <$precompile>::create_precompile($cfg)
+    };
+
+    (@impl $precompile:ty, $constructor_address:ident, $constructor:block) => {
+        impl $precompile {
+            /// Creates the EVM precompile for this type.
+            pub fn create_precompile(
+                $constructor_address: Address,
+                cfg: &CfgEnv<TempoHardfork>,
+            ) -> DynPrecompile {
+                tempo_precompile!(stringify!($precompile), cfg, |input| $constructor)
+            }
+        }
+    };
+
+    (@impl $precompile:ty) => {
+        impl $precompile {
+            /// Creates the EVM precompile for this type.
+            pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+                tempo_precompile!(stringify!($precompile), cfg, |input| { Self::new() })
+            }
+        }
+    };
 }
 
-impl AddressRegistry {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("AddressRegistry", cfg, |input| { Self::new() })
-    }
-}
-
-impl TIP403Registry {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", cfg, |input| { Self::new() })
-    }
-}
-
-impl TIP20Factory {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", cfg, |input| { Self::new() })
-    }
-}
-
-impl TIP20Token {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Token", cfg, |input| {
+tempo_precompiles! {
+    TIP20Token {
+        selector: |address, _cfg| address.is_tip20(),
+        create(address) => {
             Self::from_address(address).expect("TIP20 prefix already verified")
-        })
-    }
-}
-
-impl StablecoinDEX {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("StablecoinDEX", cfg, |input| { Self::new() })
-    }
-}
-
-impl NonceManager {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("NonceManager", cfg, |input| { Self::new() })
-    }
-}
-
-impl AccountKeychain {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", cfg, |input| { Self::new() })
-    }
-}
-
-impl ValidatorConfig {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", cfg, |input| { Self::new() })
-    }
-}
-
-impl ValidatorConfigV2 {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfigV2", cfg, |input| { Self::new() })
-    }
-}
-
-impl SignatureVerifier {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("SignatureVerifier", cfg, |input| { Self::new() })
-    }
-}
-
-impl TIP20ChannelReserve {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20ChannelReserve", cfg, |input| { Self::new() })
-    }
-}
-
-impl ReceivePolicyGuard {
-    /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ReceivePolicyGuard", cfg, |input| { Self::new() })
-    }
+        },
+    },
+    TIP20Factory {
+        selector: |address, _cfg| *address == TIP20_FACTORY_ADDRESS,
+    },
+    TIP20ChannelReserve {
+        selector: |address, cfg| *address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5(),
+    },
+    AddressRegistry {
+        selector: |address, cfg| *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3(),
+    },
+    TIP403Registry {
+        selector: |address, _cfg| *address == TIP403_REGISTRY_ADDRESS,
+    },
+    TipFeeManager {
+        selector: |address, _cfg| *address == TIP_FEE_MANAGER_ADDRESS,
+    },
+    StablecoinDEX {
+        selector: |address, _cfg| *address == STABLECOIN_DEX_ADDRESS,
+    },
+    NonceManager {
+        selector: |address, _cfg| *address == NONCE_PRECOMPILE_ADDRESS,
+    },
+    ValidatorConfig {
+        selector: |address, _cfg| *address == VALIDATOR_CONFIG_ADDRESS,
+    },
+    AccountKeychain {
+        selector: |address, _cfg| *address == ACCOUNT_KEYCHAIN_ADDRESS,
+    },
+    ValidatorConfigV2 {
+        selector: |address, _cfg| *address == VALIDATOR_CONFIG_V2_ADDRESS,
+    },
+    SignatureVerifier {
+        selector: |address, cfg| *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3(),
+    },
+    ReceivePolicyGuard {
+        selector: |address, cfg| *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6(),
+    },
 }
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
