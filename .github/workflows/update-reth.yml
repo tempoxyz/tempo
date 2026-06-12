@@ -111,10 +111,13 @@ jobs:
         run: |
           # Wrapper that runs amp with --stream-json, extracts the thread URL,
           # logs it, and still prints the final result text.
+          # Must NOT use `set -e`: if amp exits non-zero, we still want to print
+          # its output (otherwise failures are silent) and propagate the code.
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
-          set -euo pipefail
-          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          set -uo pipefail
+          OUTPUT=$(amp "$@" --stream-json 2>&1)
+          AMP_EXIT=$?
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
@@ -122,6 +125,11 @@ jobs:
           fi
           # Print the final result text
           echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          if [ "$AMP_EXIT" -ne 0 ]; then
+            echo "amp exited with code $AMP_EXIT; raw output:" >&2
+            echo "$OUTPUT" >&2
+            exit "$AMP_EXIT"
+          fi
           # Propagate error if amp failed
           IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
           if [ "$IS_ERROR" = "true" ]; then
@@ -129,6 +137,16 @@ jobs:
           fi
           WRAPPER
           chmod +x /usr/local/bin/amp-run
+
+      # ── amp smoke test ────────────────────────────────────────
+      - name: Verify Amp CLI
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+        run: |
+          amp --version
+          # Fail fast and loudly if auth or flags are broken, before the
+          # expensive fix loops run.
+          amp-run -x "Reply with exactly: OK"
 
       # ── update reth rev ─────────────────────────────────────────
       - name: Update reth rev in Cargo.toml
@@ -212,8 +230,15 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
             echo "::endgroup::"
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::amp-run failed with exit code $amp_exit on attempt $attempt — retrying"
+              continue
+            fi
 
             echo "::group::Verify cargo clippy"
             set +e
@@ -276,8 +301,15 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
             echo "::endgroup::"
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::amp-run failed with exit code $amp_exit on attempt $attempt — retrying"
+              continue
+            fi
 
             echo "::group::Verify test compilation"
             set +e
@@ -523,8 +555,14 @@ jobs:
                 PRE_SHA=$(git rev-parse HEAD)
 
                 echo "::group::Amp stuck CI investigation"
+                set +e
                 amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
+                amp_exit=$?
+                set -e
                 echo "::endgroup::"
+                if [ "$amp_exit" -ne 0 ]; then
+                  echo "::warning::amp-run failed with exit code $amp_exit during stuck CI investigation"
+                fi
 
                 if [ -n "$(git status --porcelain)" ]; then
                   git add -A
@@ -571,8 +609,14 @@ jobs:
             PRE_SHA=$(git rev-parse HEAD)
 
             echo "::group::Amp CI fix"
+            set +e
             amp-run --dangerously-allow-all -x < /tmp/amp-prompt.txt
+            amp_exit=$?
+            set -e
             echo "::endgroup::"
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::amp-run failed with exit code $amp_exit during CI fix attempt"
+            fi
 
             # Amp may have committed+pushed already; also handle uncommitted changes
             if [ -n "$(git status --porcelain)" ]; then
