@@ -3,7 +3,7 @@ use revm::{
     context::journaled_state::JournalCheckpoint,
     state::{AccountInfo, Bytecode},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
@@ -23,8 +23,15 @@ pub struct HashMapStorageProvider {
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    accessed_storage: HashSet<(Address, U256)>,
     counter_sload: u64,
+    counter_cold_sload: u64,
+    counter_warm_sload: u64,
     counter_sstore: u64,
+    counter_cold_sstore: u64,
+    counter_warm_sstore: u64,
+    counter_zero_to_nonzero_sstore: u64,
+    counter_nonzero_to_zero_sstore: u64,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -67,8 +74,15 @@ impl HashMapStorageProvider {
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
+            accessed_storage: HashSet::new(),
             counter_sload: 0,
+            counter_cold_sload: 0,
+            counter_warm_sload: 0,
             counter_sstore: 0,
+            counter_cold_sstore: 0,
+            counter_warm_sstore: 0,
+            counter_zero_to_nonzero_sstore: 0,
+            counter_nonzero_to_zero_sstore: 0,
         }
     }
 
@@ -125,6 +139,23 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        if self.accessed_storage.insert((address, key)) {
+            self.counter_cold_sstore += 1;
+        } else {
+            self.counter_warm_sstore += 1;
+        }
+
+        let previous = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        if previous.is_zero() && !value.is_zero() {
+            self.counter_zero_to_nonzero_sstore += 1;
+        } else if !previous.is_zero() && value.is_zero() {
+            self.counter_nonzero_to_zero_sstore += 1;
+        }
+
         self.counter_sstore += 1;
         self.internals.insert((address, key), value);
         Ok(())
@@ -151,6 +182,12 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
 
         self.counter_sload += 1;
+        if self.accessed_storage.insert((address, key)) {
+            self.counter_cold_sload += 1;
+        } else {
+            self.counter_warm_sload += 1;
+        }
+
         Ok(self
             .internals
             .get(&(address, key))
@@ -303,15 +340,52 @@ impl HashMapStorageProvider {
         self.counter_sload
     }
 
+    /// Returns the amount of counted cold SLOADs.
+    pub fn counter_cold_sload(&self) -> u64 {
+        self.counter_cold_sload
+    }
+
+    /// Returns the amount of counted warm SLOADs.
+    pub fn counter_warm_sload(&self) -> u64 {
+        self.counter_warm_sload
+    }
+
     /// Returns the amount of counted SSTOREs.
     pub fn counter_sstore(&self) -> u64 {
         self.counter_sstore
     }
 
+    /// Returns the amount of counted cold SSTOREs.
+    pub fn counter_cold_sstore(&self) -> u64 {
+        self.counter_cold_sstore
+    }
+
+    /// Returns the amount of counted warm SSTOREs.
+    pub fn counter_warm_sstore(&self) -> u64 {
+        self.counter_warm_sstore
+    }
+
+    /// Returns the amount of counted zero-to-nonzero SSTOREs.
+    pub fn counter_zero_to_nonzero_sstore(&self) -> u64 {
+        self.counter_zero_to_nonzero_sstore
+    }
+
+    /// Returns the amount of counted nonzero-to-zero SSTOREs.
+    pub fn counter_nonzero_to_zero_sstore(&self) -> u64 {
+        self.counter_nonzero_to_zero_sstore
+    }
+
     /// Resets the SLOAD and SSTORE counters.
     pub fn reset_counters(&mut self) {
+        self.accessed_storage.clear();
         self.counter_sload = 0;
+        self.counter_cold_sload = 0;
+        self.counter_warm_sload = 0;
         self.counter_sstore = 0;
+        self.counter_cold_sstore = 0;
+        self.counter_warm_sstore = 0;
+        self.counter_zero_to_nonzero_sstore = 0;
+        self.counter_nonzero_to_zero_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.
