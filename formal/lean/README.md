@@ -21,3 +21,7 @@ Run the checker from the repository root:
 ```sh
 ./scripts/check-formal.sh
 ```
+
+The checker builds the Lean proofs, regenerates the nonce conformance fixture
+with `lake exe nonceFixtures`, verifies the committed fixture is current, and
+runs the Rust `NonceManager` conformance test against that fixture.

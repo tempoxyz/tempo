@@ -190,6 +190,76 @@ mod tests {
     use super::*;
     use alloy::primitives::address;
 
+    #[derive(Debug, serde::Deserialize)]
+    struct NonceConformanceCase {
+        name: String,
+        capacity: u64,
+        now: u64,
+        ptr: u64,
+        seen: Vec<FixtureMapEntry>,
+        ring: Vec<FixtureMapEntry>,
+        hash: u64,
+        valid_before: u64,
+        expected: FixtureExpected,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct FixtureExpected {
+        result: String,
+        ptr: u64,
+        seen: Vec<FixtureMapEntry>,
+        ring: Vec<FixtureMapEntry>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct FixtureMapEntry {
+        key: u64,
+        value: u64,
+    }
+
+    fn fixture_hash(hash: u64) -> B256 {
+        let hash = u8::try_from(hash).expect("fixture hash id must fit in one byte");
+        assert_ne!(
+            hash, 0,
+            "fixture hash id 0 is reserved for empty ring slots"
+        );
+        B256::repeat_byte(hash)
+    }
+
+    fn fixture_hash_id(hash: B256) -> u64 {
+        if hash == B256::ZERO {
+            return 0;
+        }
+
+        let bytes = hash.as_slice();
+        let first = bytes[0];
+        assert!(
+            bytes.iter().all(|byte| *byte == first),
+            "fixture hash must use repeat_byte encoding"
+        );
+        u64::from(first)
+    }
+
+    fn fixture_ptr(ptr: u64) -> u32 {
+        u32::try_from(ptr).expect("fixture pointer must fit in u32")
+    }
+
+    fn expected_error(result: &str) -> TempoPrecompileError {
+        match result {
+            "invalid_expiry" => {
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            }
+            "replay" => TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay()),
+            "set_full" => TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full()),
+            other => panic!("unknown fixture result {other:?}"),
+        }
+    }
+
+    fn load_nonce_conformance_cases() -> Vec<NonceConformanceCase> {
+        serde_json::from_str(include_str!("../../testdata/nonce_replay_conformance.json"))
+            .expect("nonce replay conformance fixture must be valid JSON")
+    }
+
     #[test]
     fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -292,6 +362,90 @@ mod tests {
     }
 
     // ========== Expiring Nonce Tests ==========
+
+    #[test]
+    fn nonce_replay_conforms_to_lean_fixture() -> eyre::Result<()> {
+        for test_case in load_nonce_conformance_cases() {
+            assert_eq!(
+                test_case.capacity,
+                u64::from(EXPIRING_NONCE_SET_CAPACITY),
+                "{}: fixture capacity must match Rust capacity",
+                test_case.name
+            );
+
+            let mut storage = HashMapStorageProvider::new(1);
+            storage.set_timestamp(U256::from(test_case.now));
+
+            StorageCtx::enter(&mut storage, || {
+                let mut mgr = NonceManager::new();
+
+                mgr.expiring_nonce_ring_ptr
+                    .write(fixture_ptr(test_case.ptr))?;
+
+                for entry in &test_case.seen {
+                    mgr.expiring_nonce_seen[fixture_hash(entry.key)].write(entry.value)?;
+                }
+
+                for entry in &test_case.ring {
+                    mgr.expiring_nonce_ring[fixture_ptr(entry.key)]
+                        .write(fixture_hash(entry.value))?;
+                }
+
+                let result = mgr.check_and_mark_expiring_nonce(
+                    fixture_hash(test_case.hash),
+                    test_case.valid_before,
+                );
+
+                if test_case.expected.result == "ok" {
+                    assert!(
+                        result.is_ok(),
+                        "{}: expected ok, got {:?}",
+                        test_case.name,
+                        result.err()
+                    );
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        expected_error(&test_case.expected.result),
+                        "{}: unexpected error result",
+                        test_case.name
+                    );
+                }
+
+                let ptr = mgr.expiring_nonce_ring_ptr.read()?;
+                assert_eq!(
+                    u64::from(ptr),
+                    test_case.expected.ptr,
+                    "{}: ring pointer mismatch",
+                    test_case.name
+                );
+
+                for entry in &test_case.expected.seen {
+                    let expiry = mgr.expiring_nonce_seen[fixture_hash(entry.key)].read()?;
+                    assert_eq!(
+                        expiry, entry.value,
+                        "{}: seen[{}] mismatch",
+                        test_case.name, entry.key
+                    );
+                }
+
+                for entry in &test_case.expected.ring {
+                    let hash = mgr.expiring_nonce_ring[fixture_ptr(entry.key)].read()?;
+                    assert_eq!(
+                        fixture_hash_id(hash),
+                        entry.value,
+                        "{}: ring[{}] mismatch",
+                        test_case.name,
+                        entry.key
+                    );
+                }
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn test_expiring_nonce_basic_flow() -> eyre::Result<()> {
