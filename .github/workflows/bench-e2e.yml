@@ -85,7 +85,7 @@ on:
         description: Profiling.
         type: choice
         required: true
-        default: "Off"
+        default: Tracy Full
         options:
           - "Off"
           - Samply
@@ -230,7 +230,7 @@ on:
       tracy:
         type: string
         required: false
-        default: "off"
+        default: full
       tracy-sampling-hz:
         type: string
         required: false
