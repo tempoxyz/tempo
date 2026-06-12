@@ -347,6 +347,27 @@ impl<'evm> StorageCtx {
         Self::enter(&mut provider, f)
     }
 
+    /// Enters storage for protocol-internal fee collection.
+    ///
+    /// Fee collection is exempt from TIP-1060 storage-credit accounting: it must not mint,
+    /// consume, or settle storage credits while updating fee/TIP20/keychain bookkeeping.
+    pub fn enter_fee_collection<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
+            .with_tip1060_storage_credits(false);
+
+        Self::enter(&mut provider, f)
+    }
+
     /// Like [`enter_evm`](Self::enter_evm), but takes a `&mut impl ContextTr`
     /// directly instead of requiring the caller to destructure the context.
     pub fn enter_ctx<C, R>(ctx: &mut C, f: impl FnOnce() -> R) -> R

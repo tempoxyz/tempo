@@ -1,14 +1,16 @@
+use crate::{
+    error::TempoPrecompileError, storage::PrecompileStorageProvider,
+    tip1060_storage_credits::sstore_storage_credits,
+};
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
-    interpreter::gas::GasTracker,
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -20,6 +22,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
+    tip1060_storage_credits_enabled: bool,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -43,9 +46,19 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
+            tip1060_storage_credits_enabled: spec.is_t7(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
+    }
+
+    /// Enables or disables TIP-1060 storage-credit accounting for storage writes through this provider.
+    ///
+    /// This is intentionally provider-scoped so protocol-internal phases such as fee collection can
+    /// opt out without affecting user execution or other precompile calls.
+    pub fn with_tip1060_storage_credits(mut self, enabled: bool) -> Self {
+        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
+        self
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
@@ -85,6 +98,61 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())
+    }
+}
+
+impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
+    }
+
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    #[inline]
+    fn sload(
+        &mut self,
+        address: Address,
+        key: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        let mut account = self.internals.load_account_mut(address)?;
+        let val = account.sload(key, skip_cold_load)?;
+        Ok(StateLoad::new(val.present_value, val.is_cold))
+    }
+
+    #[inline]
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+        self.internals
+            .load_account_mut(address)?
+            .sstore(key, value, skip_cold_load)
+            .map_err(Into::into)
+    }
+
+    #[inline]
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.internals.tload(address, key)
+    }
+
+    #[inline]
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.internals.tstore(address, key, value);
+    }
+
+    #[inline]
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
+        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 
@@ -193,17 +261,30 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
 
-        // dynamic gas
-        self.deduct_gas(
-            self.gas_params
-                .sstore_dynamic_gas(true, &result.data, result.is_cold),
-        )?;
+        // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
+        // writes honor the same accounting as the opcode-level SSTORE hook.
+        let outcome = if self.tip1060_storage_credits_enabled {
+            sstore_storage_credits(self, address, &result)?
+        } else {
+            Default::default()
+        };
 
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        if !outcome.skip_gas {
+            // dynamic gas
+            self.deduct_gas(self.gas_params.sstore_dynamic_gas(
+                true,
+                &result.data,
+                result.is_cold,
+            ))?;
+
+            // Track state gas (cold SSTORE zero->non-zero only)
+            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        }
 
         // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        if !outcome.skip_refund {
+            self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        }
 
         Ok(())
     }

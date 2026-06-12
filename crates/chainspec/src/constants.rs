@@ -8,8 +8,8 @@ pub mod gas {
 
     use alloy_eips::eip1559::BaseFeeParams;
 
+    pub const SSTORE_SET: u64 = 20_000;
     const COLD_SLOAD: u64 = 2100;
-    const SSTORE_SET: u64 = 20000;
     const WARM_SLOAD: u64 = 100;
     const WARM_SSTORE_RESET: u64 = 2900;
 
@@ -32,6 +32,9 @@ pub mod gas {
 
     /// TIP-1067 base fee cap: below the T1 fixed base fee.
     pub const TEMPO_T7_BASE_FEE_CAP: u64 = 12_000_000_000;
+
+    /// TIP-1060 value credited for clearing one occupied storage slot.
+    pub const STORAGE_CREDIT_VALUE: u64 = 230_000;
 
     /// TIP-1067 base fee floor: one twentieth of the TIP-1067 cap.
     pub const TEMPO_T7_BASE_FEE_FLOOR: u64 = TEMPO_T7_BASE_FEE_CAP / 20;

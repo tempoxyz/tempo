@@ -1712,8 +1712,8 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
-                hook_calls_clone.lock().unwrap().push(state.clone());
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
             })));
 
         let addr = Address::with_last_byte(0xff);
@@ -1761,8 +1761,8 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
-                hook_calls_clone.lock().unwrap().push(state.clone());
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
             })));
 
         executor.deploy_precompile_at_boundary(addr).unwrap();

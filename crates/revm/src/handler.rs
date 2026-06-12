@@ -18,7 +18,7 @@ use revm::{
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, post_execution,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
         precompile_output_to_interpreter_result, validation,
     },
@@ -67,6 +67,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
+    tip1060,
 };
 
 /// Additional gas for P256 signature verification
@@ -828,6 +829,31 @@ where
         }
     }
 
+    /// Applies Tempo-specific post-execution accounting before the standard gas refund flow.
+    #[inline]
+    fn post_execution(
+        &self,
+        evm: &mut Self::Evm,
+        exec_result: &mut FrameResult,
+        init_and_floor_gas: InitialAndFloorGas,
+        eip7702_gas_refund: i64,
+    ) -> Result<ResultGas, Self::Error> {
+        tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        self.refund(evm, exec_result, eip7702_gas_refund);
+
+        let result_gas = post_execution::build_result_gas(
+            exec_result.instruction_result().is_halt(),
+            exec_result.gas(),
+            init_and_floor_gas,
+        );
+
+        self.eip7623_check_gas_floor(evm, exec_result, init_and_floor_gas);
+        self.reimburse_caller(evm, exec_result)?;
+        self.reward_beneficiary(evm, exec_result)?;
+
+        Ok(result_gas)
+    }
+
     /// Take logs from the Journal if outcome is Halt Or Revert.
     #[inline]
     fn execution_result(
@@ -1296,7 +1322,7 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
+            let result = StorageCtx::enter_fee_collection(journal, &block, cfg, tx, || {
                 TipFeeManager::new().collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
@@ -1505,28 +1531,23 @@ where
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
             if same_tx_key_authorization_use {
-                StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    |mut keychain: AccountKeychain| {
-                        keychain
-                            .set_transaction_key(key_auth.key_id)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+                StorageCtx::enter_fee_collection(journal, block, cfg, tx, || {
+                    let mut keychain = AccountKeychain::new();
+                    keychain
+                        .set_transaction_key(key_auth.key_id)
+                        .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        if evm.collected_fee.is_zero() {
-                            return Ok(());
-                        }
+                    if evm.collected_fee.is_zero() {
+                        return Ok(());
+                    }
 
-                        keychain
-                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
-                            .map_err(|err| match err {
-                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                err => FeePaymentError::Other(err.to_string()).into(),
-                            })
-                    },
-                )?;
+                    keychain
+                        .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => FeePaymentError::Other(err.to_string()).into(),
+                        })
+                })?;
             }
         }
 
@@ -1536,7 +1557,7 @@ where
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
@@ -1571,28 +1592,29 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
+        let credited =
+            StorageCtx::enter_fee_collection(&mut *journal, block, &context.cfg, tx, || {
+                let mut fee_manager = TipFeeManager::new();
 
-            if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
-                // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_manager
-                    .collect_fee_post_tx(
-                        fee_payer,
-                        actual_spending,
-                        refund_amount,
-                        fee_token,
-                        beneficiary,
-                    )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
-            } else {
-                Ok(U256::ZERO)
-            }
-        })?;
+                if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                    let fee_token = evm
+                        .fee_token
+                        .expect("set in `validate_against_state_and_deduct_caller`");
+                    // Call collectFeePostTx (handles both refund and fee queuing)
+                    fee_manager
+                        .collect_fee_post_tx(
+                            fee_payer,
+                            actual_spending,
+                            refund_amount,
+                            fee_token,
+                            beneficiary,
+                        )
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                } else {
+                    Ok(U256::ZERO)
+                }
+            })?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
