@@ -2519,6 +2519,142 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1060 PoC: a Direct-mode storage credit can be used for discounted gas inside a
+    /// reverted child call without being consumed.
+    ///
+    /// The child creates slot 0 and then reverts. Direct mode decrements the storage-credit
+    /// balance and skips the full storage-creation charge during SSTORE gas accounting, but the
+    /// child frame revert restores both the freshly-created slot and the credit-balance decrement.
+    /// The parent catches/ignores the failed call, so the discounted gas remains charged while the
+    /// same credit is available for the next iteration.
+    #[test]
+    fn test_tip1060_direct_credit_reused_across_reverted_child_calls() -> eyre::Result<()> {
+        const CALLS: usize = 3;
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let child = Address::repeat_byte(0x68);
+        let parent = Address::repeat_byte(0x69);
+
+        // Child: SSTORE(0, 1); REVERT(0, 0)
+        let reverting_child = Bytecode::new_raw(bytes!("600160005560006000fd"));
+        // Success control: SSTORE(0, 1); STOP
+        let successful_child = Bytecode::new_raw(bytes!("600160005500"));
+
+        let parent_calling_child = |child: Address| {
+            let mut bytecode = Vec::new();
+            for _ in 0..CALLS {
+                // CALL(gas=1_000_000, to=child, value=0, in=mem[0..0], out=mem[0..0]); POP
+                bytecode.extend_from_slice(&bytes!("60006000600060006000"));
+                bytecode.push(opcode::PUSH20);
+                bytecode.extend_from_slice(child.as_slice());
+                bytecode.extend_from_slice(&bytes!("620f4240f150"));
+            }
+            bytecode.push(opcode::STOP);
+            Bytecode::new_raw(bytecode.into())
+        };
+
+        let run_reverting_parent = |mode: CreditMode| -> eyre::Result<(u64, u64, U256)> {
+            let mut evm = create_funded_evm_t7(caller);
+            evm.ctx.db_mut().insert_account_info(
+                child,
+                AccountInfo {
+                    code: Some(reverting_child.clone()),
+                    ..Default::default()
+                },
+            );
+            evm.ctx.db_mut().insert_account_info(
+                parent,
+                AccountInfo {
+                    code: Some(parent_calling_child(child)),
+                    ..Default::default()
+                },
+            );
+            seed_storage_credits_state(&mut evm, child, 1, mode);
+
+            let tx = TxBuilder::new()
+                .call(parent, &[])
+                .gas_limit(2_000_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+            assert!(
+                result.is_success(),
+                "parent should catch/ignore every reverted child call in {mode:?} mode"
+            );
+
+            let child_slot = evm.ctx.db().storage_ref(child, U256::ZERO)?;
+            Ok((
+                result.tx_gas_used(),
+                storage_credit_balance(&evm, child),
+                child_slot,
+            ))
+        };
+
+        let (direct_gas, direct_balance, direct_slot) = run_reverting_parent(CreditMode::Direct)?;
+        let (preserve_gas, preserve_balance, preserve_slot) =
+            run_reverting_parent(CreditMode::Preserve)?;
+
+        assert_eq!(
+            direct_slot,
+            U256::ZERO,
+            "child SSTORE must be reverted in Direct mode"
+        );
+        assert_eq!(
+            direct_balance, 1,
+            "Direct-mode revert restores the credit decrement, so the same credit remains"
+        );
+        assert_eq!(preserve_slot, U256::ZERO);
+        assert_eq!(
+            preserve_balance, 1,
+            "Preserve mode should not consume the seeded credit"
+        );
+        assert!(
+            preserve_gas.saturating_sub(direct_gas) >= CALLS as u64 * 200_000,
+            "Direct reverted calls reused one credit for repeated gas discounts: \
+             direct_gas={direct_gas}, preserve_gas={preserve_gas}, calls={CALLS}"
+        );
+
+        // Control: if the child does not revert, Direct consumes the credit and persists the slot.
+        let mut evm = create_funded_evm_t7(caller);
+        evm.ctx.db_mut().insert_account_info(
+            child,
+            AccountInfo {
+                code: Some(successful_child),
+                ..Default::default()
+            },
+        );
+        seed_storage_credits_state(&mut evm, child, 1, CreditMode::Direct);
+
+        let tx = TxBuilder::new()
+            .call(child, &[])
+            .gas_limit(1_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        assert!(
+            result.is_success(),
+            "successful Direct child call should commit"
+        );
+        assert_eq!(
+            storage_credit_balance(&evm, child),
+            0,
+            "successful Direct create consumes the credit"
+        );
+        assert_eq!(
+            evm.ctx.db().storage_ref(child, U256::ZERO)?,
+            U256::ONE,
+            "successful Direct create persists the new slot"
+        );
+
+        eprintln!(
+            "TIP-1060 Direct/revert PoC: calls={CALLS} direct_gas={direct_gas} \
+             preserve_gas={preserve_gas} saved={} direct_balance_after_reverts={direct_balance}",
+            preserve_gas.saturating_sub(direct_gas)
+        );
+
+        Ok(())
+    }
+
     /// TIP-1060: Refund settlement consumes exactly `min(pending_creations, balance)`.
     /// Each case uses actual 0->x SSTORE creates to accrue the deferred refund-eligible
     /// creations, then checks the post-settlement storage credit balance.
