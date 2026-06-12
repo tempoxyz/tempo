@@ -1,0 +1,54 @@
+name: Conformance Fixtures
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/conformance-fixtures.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+
+jobs:
+  build-shared-object:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout tempo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Build fuzz harness shared object
+        run: cargo build -p tempo-fuzz-harness --release --lib
+
+  check-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CONFORMANCE_FIXTURES_BUCKET: conformance-fixtures
+      CONFORMANCE_FIXTURES_ARCHIVE: f1dcf20753e610770ff1068df520af1a3019a9ed39f490b36fab1d625b689f90.tar.zst
+      CONFORMANCE_FIXTURES_ARCHIVE_PATH: /tmp/conformance-fixtures.tar.zst
+
+    steps:
+      - name: Checkout tempo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Download fixture archive
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_CONFORMANCE_FIXTURES_READ_TOKEN }}
+        with:
+          apiToken: ${{ secrets.R2_CONFORMANCE_FIXTURES_READ_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: r2 object get ${{ env.CONFORMANCE_FIXTURES_BUCKET }}/${{ env.CONFORMANCE_FIXTURES_ARCHIVE }} --file ${{ env.CONFORMANCE_FIXTURES_ARCHIVE_PATH }}
+
+      - name: Verify and unpack conformance fixtures
+        run: cargo run -p tempo-fuzz-harness --release --bin conformance-fixture-archive -- verify-unpack "$CONFORMANCE_FIXTURES_ARCHIVE" "$CONFORMANCE_FIXTURES_ARCHIVE_PATH"
+
+      - name: Check block conformance fixtures
+        run: cargo run -p tempo-fuzz-harness --release --bin conformance-fixtures -- fixtures/block
