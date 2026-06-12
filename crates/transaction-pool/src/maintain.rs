@@ -955,8 +955,12 @@ where
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
 
-                // Deallocating removed transactions is expensive, so do it after all updates are done.
-                drop(removed_txs);
+                // Deallocating removed transactions is expensive (input data, signatures,
+                // allocator and kernel work), so move it off the maintenance task entirely,
+                // freeing the loop to immediately continue processing pool events.
+                if removed_txs.iter().any(|txs| !txs.is_empty()) {
+                    tokio::task::spawn_blocking(move || drop(removed_txs));
+                }
             }
         }
     }
