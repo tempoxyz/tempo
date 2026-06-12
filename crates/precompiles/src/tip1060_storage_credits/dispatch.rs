@@ -25,11 +25,8 @@ impl Precompile for TIP1060StorageCredits {
                 ITIP1060StorageCreditsCalls::modeOf(call) => {
                     view(call, |c| self.mode_of(c.account).map(Into::into))
                 }
-                ITIP1060StorageCreditsCalls::creditBudget(call) => {
-                    view(call, |_| self.credit_budget_of(msg_sender))
-                }
-                ITIP1060StorageCreditsCalls::creditBudgetOf(call) => {
-                    view(call, |c| self.credit_budget_of(c.account))
+                ITIP1060StorageCreditsCalls::budgetOf(call) => {
+                    view(call, |c| self.budget_of(c.account))
                 }
                 ITIP1060StorageCreditsCalls::setMode(call) => {
                     mutate_void(call, msg_sender, |sender, c| {

@@ -119,7 +119,7 @@ impl TIP1060StorageCredits {
         self.credit_state_of(account).map(|state| state.mode)
     }
 
-    pub fn credit_budget_of(&self, account: Address) -> Result<u64> {
+    pub fn budget_of(&self, account: Address) -> Result<u64> {
         self.credit_state_of(account).map(|state| state.budget)
     }
 

@@ -19,11 +19,8 @@ crate::sol! {
         event ModeUpdated(address indexed account, Mode newMode);
 
         function balanceOf(address account) external view returns (uint64);
-
         function modeOf(address account) external view returns (Mode);
-
-        function creditBudget() external view returns (uint64);
-        function creditBudgetOf(address account) external view returns (uint64);
+        function budgetOf(address account) external view returns (uint64);
 
         function setMode(Mode newMode) external;
         function setBudget(uint64 creditBudget) external;
