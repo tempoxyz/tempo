@@ -40,8 +40,6 @@ const EVICTION_BUFFER_SECS: u64 = 3;
 /// allowing efficient batch processing of pool updates.
 #[derive(Debug, Default)]
 pub struct TempoPoolUpdates {
-    /// Transaction hashes that have expired (valid_before <= tip_timestamp).
-    pub expired_txs: Vec<TxHash>,
     /// Revoked keychain keys.
     /// Indexed by account for efficient lookup.
     pub revoked_keys: RevokedKeys,
@@ -108,8 +106,7 @@ impl TempoPoolUpdates {
 
     /// Returns true if there are no updates to process.
     pub fn is_empty(&self) -> bool {
-        self.expired_txs.is_empty()
-            && self.revoked_keys.is_empty()
+        self.revoked_keys.is_empty()
             && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
@@ -652,28 +649,23 @@ where
                 // broadcasting near-expiry txs that peers would reject.
                 let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
-                // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(max_expiry);
-                if !expired.is_empty() {
-                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
-                    updates.expired_txs = expired
-                        .into_iter()
-                        .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
-                        .collect();
-                }
+                // Collect expired transactions from local tracking state. Mined transactions
+                // were untracked above so they cannot be drained here, and hashes that have
+                // since left the pool are no-ops for `remove_transactions`.
+                let expired_txs = state.drain_expired(max_expiry);
 
                 // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
-                let expired_count = updates.expired_txs.len();
-                if expired_count > 0 {
+                if !expired_txs.is_empty() {
+                    let evicted = pool.remove_transactions(expired_txs);
                     debug!(
                         target: "txpool",
-                        count = expired_count,
+                        count = evicted.len(),
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    removed_txs.push(pool.remove_transactions(updates.expired_txs.clone()));
-                    metrics.expired_transactions_evicted.increment(expired_count as u64);
+                    metrics.expired_transactions_evicted.increment(evicted.len() as u64);
+                    removed_txs.push(evicted);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
