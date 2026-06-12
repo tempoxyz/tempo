@@ -226,6 +226,7 @@ function buildMarkdown(summary) {
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
     `- Bloat: ${summary.config.bloat} MiB`,
+    `- Token count: ${summary.config.token_count ?? 4}`,
     `- Preset: ${summary.config.preset}`,
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,

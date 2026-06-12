@@ -839,6 +839,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
             alice,
         )
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128 * 100)
+        .max_priority_fee_per_gas(TEMPO_T1_BASE_FEE as u128 * 99)
         .gas(1000000)
         .send()
         .await?

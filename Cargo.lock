@@ -12900,7 +12900,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12943,7 +12943,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -13044,7 +13044,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -13209,6 +13209,7 @@ version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-eips",
+ "alloy-evm",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
@@ -13262,6 +13263,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-revm",
  "tempo-transaction-pool",
  "test-case",
  "thiserror 2.0.18",
@@ -13372,7 +13374,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
