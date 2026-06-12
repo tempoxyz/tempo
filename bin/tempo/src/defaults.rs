@@ -7,7 +7,7 @@ use reth_ethereum::node::core::args::{
     DefaultTraceValues, DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::spec::TEMPO_T7_BASE_FEE_FLOOR;
 use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
@@ -191,7 +191,7 @@ fn init_txpool_defaults() {
         .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)
         .with_additional_validation_tasks(8)
-        .with_minimal_protocol_basefee(TempoHardfork::default().base_fee())
+        .with_minimal_protocol_basefee(TEMPO_T7_BASE_FEE_FLOOR)
         .with_minimum_priority_fee(Some(0))
         .with_max_batch_size(50000)
         .try_init()
@@ -212,6 +212,7 @@ fn init_engine_defaults() {
         // Defer persistence I/O during active payload builds.
         .with_suppress_persistence_during_build(true)
         .with_share_sparse_trie_with_payload_builder(true)
+        .with_share_execution_cache_with_payload_builder(true)
         .try_init()
         .expect("failed to initialize engine defaults");
 }
