@@ -481,7 +481,7 @@ where
 
         let broadcast = self.broadcast.start(broadcast_channel);
         let resolver = marshal::resolver::p2p::init(
-            self.context.child("resolver"),
+            self.context.child("p2p"),
             self.resolver_config,
             marshal_channel,
         );
