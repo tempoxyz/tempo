@@ -1245,7 +1245,7 @@ def "main e2e" [
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
-    --tracy: string = "off"                             # Tracy profiling: off, on, full
+    --tracy: string = "full"                            # Tracy profiling: off, on, full
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-sampling-hz: int = 1                        # Tracy CPU sampling frequency for full mode
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
