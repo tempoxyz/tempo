@@ -553,11 +553,38 @@ jobs:
 
           mkdir -p "${TMP_DIR}/${CHART_DIR}"
           cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
+          if [ "${BENCH_TRACING_CHROME:-false}" = "true" ]; then
+            TRACE_DIR="${CHART_DIR}/tracing-chrome"
+            mkdir -p "${TMP_DIR}/${TRACE_DIR}"
+            mapfile -t RUN_DIRS < <(find "$BENCH_WORK_DIR" -mindepth 1 -maxdepth 1 -type d \( -name 'baseline-*' -o -name 'feature-*' \) -printf '%f\n' | sort -V)
+            for run_dir in "${RUN_DIRS[@]}"; do
+              TRACE="$BENCH_WORK_DIR/$run_dir/tracing-chrome-profile.json"
+              if [ ! -f "$TRACE" ]; then continue; fi
+
+              TRACE_SIZE=$(du -h "$TRACE" | cut -f1)
+              echo "Adding $run_dir Chrome trace (${TRACE_SIZE}) to benchmark artifacts..."
+              gzip -c "$TRACE" > "${TMP_DIR}/${TRACE_DIR}/${run_dir}.json.gz"
+            done
+          fi
           git -C "${TMP_DIR}" add "${CHART_DIR}"
           git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
             commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
           git -C "${TMP_DIR}" push origin HEAD:main
-          echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          PUSH_SHA="$(git -C "${TMP_DIR}" rev-parse HEAD)"
+          if [ "${BENCH_TRACING_CHROME:-false}" = "true" ]; then
+            RAW_BASE="https://raw.githubusercontent.com/decofe/tempo-bench-charts/${PUSH_SHA}/${CHART_DIR}/tracing-chrome"
+            mapfile -t RUN_DIRS < <(find "$BENCH_WORK_DIR" -mindepth 1 -maxdepth 1 -type d \( -name 'baseline-*' -o -name 'feature-*' \) -printf '%f\n' | sort -V)
+            for run_dir in "${RUN_DIRS[@]}"; do
+              if [ ! -f "${TMP_DIR}/${CHART_DIR}/tracing-chrome/${run_dir}.json.gz" ]; then continue; fi
+
+              RAW_URL="${RAW_BASE}/${run_dir}.json.gz"
+              PERFETTO_URL="$(uv run python -c 'import sys; from urllib.parse import quote; raw_url, file_name = sys.argv[1:3]; print("https://ui.perfetto.dev/#!/?url=" + quote(raw_url, safe="") + "&fileName=" + quote(file_name, safe=""))' "$RAW_URL" "${run_dir}.json.gz")"
+              echo "$PERFETTO_URL" > "$BENCH_WORK_DIR/$run_dir/tracing-chrome-profile-url.txt"
+              echo "Perfetto URL for $run_dir: $PERFETTO_URL"
+            done
+          fi
+
+          echo "sha=${PUSH_SHA}" >> "$GITHUB_OUTPUT"
           echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"
 
@@ -593,6 +620,24 @@ jobs:
                 chartMarkdown += `</details>\n\n`;
               }
               comment += chartMarkdown;
+            }
+
+            const traceLinks = [];
+            try {
+              const entries = fs.readdirSync(process.env.BENCH_WORK_DIR, { withFileTypes: true });
+              for (const entry of entries) {
+                if (!entry.isDirectory() || !/^(baseline|feature)-\d+$/.test(entry.name)) continue;
+                const urlPath = `${process.env.BENCH_WORK_DIR}/${entry.name}/tracing-chrome-profile-url.txt`;
+                if (!fs.existsSync(urlPath)) continue;
+                const url = fs.readFileSync(urlPath, 'utf8').trim();
+                if (url) traceLinks.push(`- [${entry.name}](${url})`);
+              }
+              traceLinks.sort();
+            } catch (e) {
+              core.warning(`Failed to read Chrome trace links: ${e.message}`);
+            }
+            if (traceLinks.length) {
+              comment += `\n\n### Chrome Traces\n\n${traceLinks.join('\n')}\n`;
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -648,6 +693,20 @@ jobs:
               echo
               echo "</details>"
             } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${BENCH_TRACING_CHROME:-false}" = "true" ]; then
+            mapfile -t TRACE_URLS < <(find "$BENCH_WORK_DIR" -mindepth 2 -maxdepth 2 -name tracing-chrome-profile-url.txt | sort -V)
+            if [ "${#TRACE_URLS[@]}" -gt 0 ]; then
+              {
+                echo
+                echo "### Chrome Traces"
+                echo
+                for url_file in "${TRACE_URLS[@]}"; do
+                  run_dir="$(basename "$(dirname "$url_file")")"
+                  echo "- [${run_dir}]($(cat "$url_file"))"
+                done
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Send Slack notification (success)
