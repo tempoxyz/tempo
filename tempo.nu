@@ -1305,6 +1305,16 @@ def generate-summary [
             err: $total_err
             total_gas: $total_gas
             block_time_mean: $block_time_mean
+            block_time_ms: $block_intervals
+            builder_latency_ms: $builder_latency_values
+            builder_finish_ms: $builder_finish_samples
+            builder_pool_fetch_ms: $builder_pool_fetch_samples
+            builder_invalid_tx_execution_attempts: $builder_invalid_tx_execution_attempts_samples
+            builder_fill_idle_ms: $builder_fill_idle_samples
+            validation_latency_ms: $validation_latency_values
+            serialized_block_size_bytes: $serialized_block_size_values
+            serialized_block_tx_count: $serialized_block_tx_count_values
+            serialized_block_size_per_tx_bytes: $serialized_block_size_per_tx_values
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
