@@ -518,6 +518,44 @@ mod tests {
     }
 
     #[test]
+    fn test_mutating_ops_reject_static_context() {
+        let mut storage = HashMapStorageProvider::new(1).with_static(true);
+        let address = Address::random();
+        let key = U256::ONE;
+        let code = Bytecode::new_raw(vec![0xef].into());
+        let event = LogData::new_unchecked(vec![], Bytes::new());
+
+        StorageCtx::enter(&mut storage, || {
+            let mut ctx = StorageCtx;
+            assert!(matches!(
+                ctx.set_code(address, code),
+                Err(TempoPrecompileError::Fatal(message))
+                    if message == "set_code attempted during static execution"
+            ));
+            assert!(matches!(
+                ctx.sstore(address, key, U256::ONE),
+                Err(TempoPrecompileError::Fatal(message))
+                    if message == "sstore attempted during static execution"
+            ));
+            assert!(matches!(
+                ctx.tstore(address, key, U256::ONE),
+                Err(TempoPrecompileError::Fatal(message))
+                    if message == "tstore attempted during static execution"
+            ));
+            assert!(matches!(
+                ctx.emit_event(address, event),
+                Err(TempoPrecompileError::Fatal(message))
+                    if message == "emit_event attempted during static execution"
+            ));
+
+            assert_eq!(ctx.get_account_info(address), None);
+            assert_eq!(ctx.sload(address, key).unwrap(), U256::ZERO);
+            assert_eq!(ctx.tload(address, key).unwrap(), U256::ZERO);
+            assert!(ctx.get_events(address).is_empty());
+        });
+    }
+
+    #[test]
     fn test_checkpoint_commit_and_revert() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
