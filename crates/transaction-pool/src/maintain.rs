@@ -705,7 +705,7 @@ where
                     let mut by_token = {
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs.iter()
-                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                             .fold(
                                 AddressMap::<Vec<TxHash>>::default(),
                                 |mut by_token, tx| {
@@ -855,7 +855,7 @@ where
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs
                             .iter()
-                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                             .filter(|tx| {
                                 tx.transaction
                                     .resolved_fee_token()
@@ -920,7 +920,7 @@ where
                             &updates,
                             all_txs
                                 .iter()
-                                .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash())),
+                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
                         )
                     };
                     for tx in &evicted {
