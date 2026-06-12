@@ -33,6 +33,7 @@ jobs:
         RUNNER_TEMP: ${{ runner.temp }}
         GH_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.issue.number }}
+        PR_SHA: ${{ steps.pr.outputs.sha }}
         REQUESTED_BY: ${{ github.event.comment.user.login }}
         PR_BRANCH: ${{ steps.pr.outputs.branch }}
       run: |
@@ -49,8 +50,10 @@ jobs:
             \"repository\": \"${GH_REPO}\",
             \"event\": \"build_devnet\",
             \"data\": {
+              \"pr_number\": \"${PR_NUMBER}\",
               \"name\": \"devnet-pr-${PR_NUMBER}\",
               \"branch\": \"${PR_BRANCH}\",
+              \"sha\": \"${PR_SHA}\",
               \"requested_by\": \"${REQUESTED_BY}\"
             }
           }"
