@@ -374,7 +374,7 @@ jobs:
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || (inputs.profiling == 'Tracy Full' && 'full' || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || 'off'))) }}
+      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Tracy Full' || inputs.profiling == 'Both') && 'full' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || 'off')) }}
       BENCH_TRACY_SAMPLING_HZ: ${{ inputs.tracy-sampling-hz || '1' }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '30' }}
@@ -616,8 +616,8 @@ jobs:
           sudo install "$tracy_capture" /usr/local/bin/tracy-capture
           command -v tracy-capture
 
-      - name: Configure Tracy full sampling
-        if: env.BENCH_TRACY == 'full'
+      - name: Configure Tracy CPU sampling
+        if: env.BENCH_TRACY != 'off'
         run: |
           sudo sysctl kernel.perf_event_paranoid=1
           sudo sysctl kernel.kptr_restrict=0

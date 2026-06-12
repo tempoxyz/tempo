@@ -961,9 +961,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
-    let tracy_env_prefix = if $ctx.tracy == "on" {
-        "TRACY_NO_SYS_TRACE=1 "
-    } else if $ctx.tracy == "full" {
+    let tracy_env_prefix = if $ctx.tracy in ["on" "full"] {
         $"TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) "
     } else { "" }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
