@@ -23,15 +23,14 @@ use tempo_precompiles::{
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
-/// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
-fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
+/// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
+/// when the call still moves tokens.
+fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
             s,
-            ITIP20::transferCall::SELECTOR
-                | ITIP20::transferWithMemoCall::SELECTOR
-                | ITIP20::distributeRewardCall::SELECTOR
-        )
+            ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR
+        ) || (!spec.is_t7() && s == ITIP20::distributeRewardCall::SELECTOR)
     })
 }
 
@@ -158,10 +157,10 @@ pub trait TempoStateAccess<M = ()> {
                 if tx.is_aa() && fee_payer != tx.caller() {
                     false
                 }
-                // Otherwise, restricted to transfer/transferWithMemo/distributeReward,
+                // Otherwise, restricted to TIP-20 calls that move the called token.
                 else {
                     tx.calls().all(|(kind, input)| {
-                        kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
+                        kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
                     })
                 }
             ;
@@ -694,19 +693,28 @@ mod tests {
 
     #[test]
     fn test_is_tip20_fee_inference_call() {
-        // Allowed selectors
-        assert!(is_tip20_fee_inference_call(&transferCall::SELECTOR));
-        assert!(is_tip20_fee_inference_call(&transferWithMemoCall::SELECTOR));
-        assert!(is_tip20_fee_inference_call(&distributeRewardCall::SELECTOR));
+        for spec in [(TempoHardfork::T6), (TempoHardfork::T7)] {
+            // Allowed selectors
+            assert!(is_tip20_fee_inference_call(spec, &transferCall::SELECTOR));
+            assert!(is_tip20_fee_inference_call(
+                spec,
+                &transferWithMemoCall::SELECTOR
+            ));
+            // Only allowed pre-T7
+            assert_eq!(
+                is_tip20_fee_inference_call(spec, &distributeRewardCall::SELECTOR),
+                !spec.is_t7()
+            );
 
-        // Disallowed selectors
-        assert!(!is_tip20_fee_inference_call(&grantRoleCall::SELECTOR));
-        assert!(!is_tip20_fee_inference_call(&mintCall::SELECTOR));
-        assert!(!is_tip20_fee_inference_call(&approveCall::SELECTOR));
+            // Disallowed selectors
+            assert!(!is_tip20_fee_inference_call(spec, &grantRoleCall::SELECTOR));
+            assert!(!is_tip20_fee_inference_call(spec, &mintCall::SELECTOR));
+            assert!(!is_tip20_fee_inference_call(spec, &approveCall::SELECTOR));
 
-        // Edge cases
-        assert!(!is_tip20_fee_inference_call(&[]));
-        assert!(!is_tip20_fee_inference_call(&[0x00, 0x01, 0x02]));
+            // Edge cases
+            assert!(!is_tip20_fee_inference_call(spec, &[]));
+            assert!(!is_tip20_fee_inference_call(spec, &[0x00, 0x01, 0x02]));
+        }
     }
 
     #[test]

@@ -672,7 +672,8 @@ fn is_invalidated_buffered_transaction(
             .zip(invalid.transaction.aa_transaction_id())
             .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
     } else {
-        candidate.transaction.sender() == invalid.transaction.sender()
+        !candidate.transaction.is_aa_2d()
+            && candidate.transaction.sender() == invalid.transaction.sender()
     }
 }
 
