@@ -569,6 +569,8 @@ async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
 
 #[test_case(TempoHardfork::T5 ; "t5")]
 #[test_case(TempoHardfork::T6 ; "t6")]
+#[test_case(TempoHardfork::T7 ; "t7")]
+#[test_case(TempoHardfork::T8 ; "t8")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -639,7 +641,7 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
     Ok(())
 }
 
-/// T6 TIP20 balance storage changes must not leak into pre-activation hardfork gas accounting.
+/// Current TIP20 balance storage must not leak into pre-activation hardfork gas accounting.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

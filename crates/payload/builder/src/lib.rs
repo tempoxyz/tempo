@@ -137,7 +137,7 @@ impl Default for TempoPayloadBuilderConfig {
         Self {
             is_dev: false,
             state_provider_metrics: false,
-            enable_prewarming: false,
+            enable_prewarming: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
