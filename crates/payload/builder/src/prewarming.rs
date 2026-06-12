@@ -4,9 +4,9 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
 use alloy_sol_types::SolInterface;
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_engine_tree::tree::{CachedStateProvider, SavedCache, multiproof::StateRootMessage};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
@@ -14,6 +14,7 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie_common::{MultiProofTargetsV2, ProofV2Target};
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -47,6 +48,7 @@ impl BestTransactionsPrewarming {
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
+        trie_handle: Option<crossbeam_channel::Sender<StateRootMessage>>,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -61,6 +63,7 @@ impl BestTransactionsPrewarming {
             cache,
             evm_env,
             stop: stop.clone(),
+            trie_handle,
         };
 
         let this = Self {
@@ -191,18 +194,23 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
+            let (touched, targets) = if is_tip20_transfer_transaction(&tx) {
                 let touches = storage_touches_for_transaction(
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
                 );
 
+                let mut state_root_targets = prewarm
+                    .trie_handle
+                    .is_some()
+                    .then(MultiProofTargetsV2::default);
+
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm.db_mut()) {
+                    if let Err(err) = touch.warm(evm.db_mut(), state_root_targets.as_mut()) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -213,7 +221,7 @@ impl BestTransactionsPrewarming {
                     }
                 }
 
-                Some(touches.len())
+                (Some(touches.len()), state_root_targets)
             } else {
                 if prewarm.is_stopped() {
                     return;
@@ -224,18 +232,32 @@ impl BestTransactionsPrewarming {
                     tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
                 }
 
-                if let Err(err) = evm.transact_raw(tx_env) {
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        ?tx_hash,
-                        "Failed to prewarm transaction by execution"
-                    );
-                    return;
-                }
+                let result = match evm.transact_raw(tx_env) {
+                    Ok(state) => state,
+                    Err(err) => {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            ?tx_hash,
+                            "Failed to prewarm transaction by execution"
+                        );
+                        return;
+                    }
+                };
 
-                None
+                let targets = prewarm
+                    .trie_handle
+                    .is_some()
+                    .then(|| MultiProofTargetsV2::from_state(result.state).0);
+
+                (None, targets)
             };
+
+            if let Some(targets) = targets
+                && let Some(trie_handle) = prewarm.trie_handle
+            {
+                let _ = trie_handle.send(StateRootMessage::PrefetchProofs(targets));
+            }
 
             trace!(
                 target: "payload_builder",
@@ -316,6 +338,7 @@ struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    trie_handle: Option<crossbeam_channel::Sender<StateRootMessage>>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -368,13 +391,29 @@ enum StorageTouch {
 }
 
 impl StorageTouch {
-    fn warm<DB: Database>(&self, db: &mut DB) -> Result<(), DB::Error> {
+    fn warm<DB: Database>(
+        &self,
+        db: &mut DB,
+        targets: Option<&mut MultiProofTargetsV2>,
+    ) -> Result<(), DB::Error> {
         match *self {
             Self::Account(address) => {
                 let _ = db.basic(address)?;
+                if let Some(targets) = targets {
+                    targets
+                        .account_targets
+                        .push(ProofV2Target::new(keccak256(address)));
+                }
             }
             Self::Storage { address, slot } => {
                 let _ = db.storage(address, slot)?;
+                if let Some(targets) = targets {
+                    targets
+                        .storage_targets
+                        .entry(keccak256(address))
+                        .or_default()
+                        .push(ProofV2Target::new(keccak256(slot.to_be_bytes::<32>())));
+                }
             }
             Self::ExpiringNonce {
                 seen_slot,
@@ -391,17 +430,40 @@ impl StorageTouch {
                     .to::<u32>();
                 let offset = (ring_offset % EXPIRING_NONCE_SET_CAPACITY as usize) as u32;
                 let idx = (ptr + offset) % EXPIRING_NONCE_SET_CAPACITY;
-                let old_hash = db.storage(
-                    NONCE_PRECOMPILE_ADDRESS,
-                    idx.mapping_slot(nonce_slots::EXPIRING_NONCE_RING),
-                )?;
+                let ring_slot = idx.mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+                let old_hash = B256::from(
+                    db.storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)?
+                        .to_be_bytes::<32>(),
+                );
 
-                if !old_hash.is_zero() {
-                    let old_hash = B256::from(old_hash.to_be_bytes::<32>());
-                    let _ = db.storage(
-                        NONCE_PRECOMPILE_ADDRESS,
-                        old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN),
-                    )?;
+                let old_seen_slot = (!old_hash.is_zero())
+                    .then(|| old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN));
+
+                if let Some(targets) = targets {
+                    targets
+                        .account_targets
+                        .push(ProofV2Target::new(keccak256(NONCE_PRECOMPILE_ADDRESS)));
+                    let storage_targets = targets
+                        .storage_targets
+                        .entry(keccak256(NONCE_PRECOMPILE_ADDRESS))
+                        .or_default();
+                    storage_targets
+                        .push(ProofV2Target::new(keccak256(seen_slot.to_be_bytes::<32>())));
+                    storage_targets.push(ProofV2Target::new(keccak256(
+                        nonce_slots::EXPIRING_NONCE_RING_PTR.to_be_bytes::<32>(),
+                    )));
+                    storage_targets
+                        .push(ProofV2Target::new(keccak256(ring_slot.to_be_bytes::<32>())));
+
+                    if let Some(old_seen_slot) = old_seen_slot {
+                        storage_targets.push(ProofV2Target::new(keccak256(
+                            old_seen_slot.to_be_bytes::<32>(),
+                        )));
+                    }
+                }
+
+                if let Some(old_seen_slot) = old_seen_slot {
+                    let _ = db.storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
                 }
             }
         }
@@ -868,6 +930,7 @@ mod tests {
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),
+            None,
         );
         TestPrewarming {
             prewarming: Some(prewarming),
