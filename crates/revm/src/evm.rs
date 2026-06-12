@@ -2025,59 +2025,72 @@ mod tests {
 
     #[test]
     fn test_tip1060_storage_credits_delegatecall_rejected() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
-        let contract = Address::repeat_byte(0x61);
         let calldata = ITIP1060StorageCredits::setModeCall {
             newMode: Mode::Direct,
         }
         .abi_encode();
-        let mut bytecode = Vec::new();
-        for (i, &byte) in calldata.iter().enumerate() {
-            assert!(i <= u8::MAX as usize);
-            bytecode.extend_from_slice(&[
-                opcode::PUSH1,
-                byte,
-                opcode::PUSH1,
-                i as u8,
-                opcode::MSTORE8,
-            ]);
-        }
-        // DELEGATECALL into the storage credits precompile, then bubble the returned custom error.
-        // PUSH1 0x00 PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00 PUSH20 <address>
-        bytecode.extend_from_slice(&bytes!("60006000"));
-        bytecode.extend_from_slice(&[opcode::PUSH1, calldata.len() as u8]);
-        bytecode.extend_from_slice(&bytes!("6000"));
-        bytecode.push(opcode::PUSH20);
-        bytecode.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
-        // PUSH3 0x0f4240 DELEGATECALL POP
-        bytecode.extend_from_slice(&bytes!("620f4240f450"));
-        // RETURNDATASIZE PUSH1 0x00 PUSH1 0x00 RETURNDATACOPY RETURNDATASIZE PUSH1 0x00 REVERT
-        bytecode.extend_from_slice(&bytes!("3d600060003e3d6000fd"));
 
-        let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
-            contract,
-            AccountInfo {
-                code: Some(Bytecode::new_raw(bytecode.into())),
-                ..Default::default()
-            },
-        );
+        for (call_opcode, contract) in [
+            (opcode::DELEGATECALL, Address::repeat_byte(0x61)),
+            (opcode::CALLCODE, Address::repeat_byte(0x62)),
+        ] {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let mut bytecode = Vec::new();
+            for (i, &byte) in calldata.iter().enumerate() {
+                assert!(i <= u8::MAX as usize);
+                bytecode.extend_from_slice(&[
+                    opcode::PUSH1,
+                    byte,
+                    opcode::PUSH1,
+                    i as u8,
+                    opcode::MSTORE8,
+                ]);
+            }
 
-        let tx = TxBuilder::new()
-            .call(contract, &[])
-            .gas_limit(1_000_000)
-            .build();
-        let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+            // DELEGATECALL/CALLCODE into the storage credits precompile, then bubble the returned
+            // custom error.
+            // PUSH1 0x00 PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00
+            bytecode.extend_from_slice(&bytes!("60006000"));
+            bytecode.extend_from_slice(&[opcode::PUSH1, calldata.len() as u8]);
+            bytecode.extend_from_slice(&bytes!("6000"));
+            if call_opcode == opcode::CALLCODE {
+                // CALLCODE also takes a value argument.
+                bytecode.extend_from_slice(&bytes!("6000"));
+            }
+            bytecode.push(opcode::PUSH20);
+            bytecode.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
+            // PUSH3 0x0f4240 <DELEGATECALL|CALLCODE> POP
+            bytecode.extend_from_slice(&bytes!("620f4240"));
+            bytecode.push(call_opcode);
+            bytecode.push(opcode::POP);
+            // RETURNDATASIZE PUSH1 0x00 PUSH1 0x00 RETURNDATACOPY RETURNDATASIZE PUSH1 0x00 REVERT
+            bytecode.extend_from_slice(&bytes!("3d600060003e3d6000fd"));
 
-        if let ExecutionResult::Revert { output, .. } = evm.transact_commit(tx_env)? {
-            assert_eq!(
-                output.as_ref(),
-                DelegateCallNotAllowed {}.abi_encode().as_slice()
+            let mut evm = create_funded_evm_t7(caller);
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytecode.into())),
+                    ..Default::default()
+                },
             );
-        } else {
-            panic!("expected DelegateCallNotAllowed revert");
+
+            let tx = TxBuilder::new()
+                .call(contract, &[])
+                .gas_limit(1_000_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+            if let ExecutionResult::Revert { output, .. } = evm.transact_commit(tx_env)? {
+                assert_eq!(
+                    output.as_ref(),
+                    DelegateCallNotAllowed {}.abi_encode().as_slice()
+                );
+            } else {
+                panic!("expected DelegateCallNotAllowed revert");
+            }
         }
 
         Ok(())
