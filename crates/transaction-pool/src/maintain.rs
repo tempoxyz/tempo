@@ -40,8 +40,6 @@ const EVICTION_BUFFER_SECS: u64 = 3;
 /// allowing efficient batch processing of pool updates.
 #[derive(Debug, Default)]
 pub struct TempoPoolUpdates {
-    /// Transaction hashes that have expired (valid_before <= tip_timestamp).
-    pub expired_txs: Vec<TxHash>,
     /// Revoked keychain keys.
     /// Indexed by account for efficient lookup.
     pub revoked_keys: RevokedKeys,
@@ -108,8 +106,7 @@ impl TempoPoolUpdates {
 
     /// Returns true if there are no updates to process.
     pub fn is_empty(&self) -> bool {
-        self.expired_txs.is_empty()
-            && self.revoked_keys.is_empty()
+        self.revoked_keys.is_empty()
             && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
@@ -139,8 +136,33 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
+            // Fee token pause events and balance changes.
+            //
+            // Checked first because TIP-20 `Transfer` logs dominate block receipts; this avoids
+            // three address comparisons per transfer before reaching the matching branch.
+            if log.address.is_tip20() {
+                match Tip20PoolEvent::decode(log) {
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        updates.pause_events.push((log.address, event.isPaused));
+                    }
+                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
+                        updates.transfer_policy_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
+                        updates.quote_token_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::Transfer { from }) => {
+                        updates
+                            .fee_balance_changes
+                            .entry(log.address)
+                            .or_default()
+                            .insert(from);
+                    }
+                    None => {}
+                }
+            }
             // Key revocations and spending limit changes
-            if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
+            else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 match AccountKeychainPoolEvent::decode(log) {
                     Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
                         updates.revoked_keys.insert(event.account, event.publicKey);
@@ -210,28 +232,6 @@ impl TempoPoolUpdates {
                             .push((event.policyId, event.account));
                     }
                     Some(_) | None => {}
-                }
-            }
-            // Fee token pause events and balance changes
-            else if log.address.is_tip20() {
-                match Tip20PoolEvent::decode(log) {
-                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
-                        updates.pause_events.push((log.address, event.isPaused));
-                    }
-                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
-                        updates.transfer_policy_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
-                        updates.quote_token_updates.insert(log.address);
-                    }
-                    Some(Tip20PoolEvent::Transfer(event)) => {
-                        updates
-                            .fee_balance_changes
-                            .entry(log.address)
-                            .or_default()
-                            .insert(event.from);
-                    }
-                    None => {}
                 }
             }
         }
@@ -352,14 +352,20 @@ enum Tip20PoolEvent {
     TransferPolicyUpdate,
     /// [`ITIP20::QuoteTokenUpdate`] log.
     QuoteTokenUpdate,
-    /// [`ITIP20::Transfer`] log.
-    Transfer(ITIP20::Transfer),
+    /// [`ITIP20::Transfer`] log; only the debited `from` account is retained.
+    Transfer { from: Address },
 }
 
 impl Tip20PoolEvent {
     /// Decodes only TIP-20 events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
+            // `Transfer` is by far the most common TIP-20 log, so avoid a full event decode
+            // and read the indexed `from` directly from `topics[1]`. We only need the debited
+            // account for `fee_balance_changes`; `to` and `amount` are unused.
+            ITIP20::Transfer::SIGNATURE_HASH => log.topics().get(1).map(|topic| Self::Transfer {
+                from: Address::from_word(*topic),
+            }),
             ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
                 decode_event(log).map(Self::PauseStateUpdate)
             }
@@ -370,7 +376,6 @@ impl Tip20PoolEvent {
             ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
                 decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
             }
-            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
             _ => None,
         }
     }
@@ -648,7 +653,7 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 3. Collect all block-level invalidation events
-                let mut updates = TempoPoolUpdates::from_chain(tip);
+                let updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
                 state.untrack_many(tip.transaction_hashes());
@@ -657,28 +662,23 @@ where
                 // broadcasting near-expiry txs that peers would reject.
                 let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
-                // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(max_expiry);
-                if !expired.is_empty() {
-                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
-                    updates.expired_txs = expired
-                        .into_iter()
-                        .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
-                        .collect();
-                }
+                // Collect expired transactions from local tracking state. Mined transactions
+                // were untracked above so they cannot be drained here, and hashes that have
+                // since left the pool are no-ops for `remove_transactions`.
+                let expired_txs = state.drain_expired(max_expiry);
 
                 // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
-                let expired_count = updates.expired_txs.len();
-                if expired_count > 0 {
+                if !expired_txs.is_empty() {
+                    let evicted = pool.remove_transactions(expired_txs);
                     debug!(
                         target: "txpool",
-                        count = expired_count,
+                        count = evicted.len(),
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    removed_txs.push(pool.remove_transactions(updates.expired_txs.clone()));
-                    metrics.expired_transactions_evicted.increment(expired_count as u64);
+                    metrics.expired_transactions_evicted.increment(evicted.len() as u64);
+                    removed_txs.push(evicted);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
@@ -1416,7 +1416,13 @@ mod tests {
                     amount: U256::from(42),
                 },
             );
-            assert_decodes_like_generated!(Tip20PoolEvent, Transfer, ITIP20::Transfer, log);
+            // `Transfer` decoding is specialized to read only the indexed `from` topic, so
+            // compare that against the field a full event decode would produce.
+            let expected = generated_decode::<ITIP20::Transfer>(&log);
+            match Tip20PoolEvent::decode(&log) {
+                Some(Tip20PoolEvent::Transfer { from }) => assert_eq!(from, expected.from),
+                _ => panic!("unexpected decoded event"),
+            }
         }
     }
 
