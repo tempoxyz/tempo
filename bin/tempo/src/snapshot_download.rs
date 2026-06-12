@@ -210,6 +210,7 @@ mod tests {
             height: 42,
             digest: B256::with_last_byte(0x2a),
             finalization: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
+            persisted_cache: None,
         };
 
         write_bootstrap_finalization(dir.path(), &tempo_consensus).unwrap();

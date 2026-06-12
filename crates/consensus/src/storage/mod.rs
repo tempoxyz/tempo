@@ -28,6 +28,7 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
+pub(crate) mod snapshot;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 
@@ -155,7 +156,7 @@ where
 /// This archive only holds at most `retention_blocks` items at any time;
 /// older blocks are removed by the prune step in
 /// [`Hybrid`].
-async fn init_prunable_finalized_blocks_archive<TContext>(
+pub(in crate::storage) async fn init_prunable_finalized_blocks_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,

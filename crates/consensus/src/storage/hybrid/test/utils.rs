@@ -57,7 +57,7 @@ const TEST_PARTITION_PREFIX: &str = "test";
 /// height (and the implicit parent linkage). The block is then sealed via
 /// [`SealedBlock::seal_slow`] so its hash matches what the production code
 /// would compute.
-pub(in crate::storage::hybrid) fn make_block(height: u64, parent_hash: B256) -> Block {
+pub(in crate::storage) fn make_block(height: u64, parent_hash: B256) -> Block {
     let header = TempoHeader {
         inner: Header {
             parent_hash,
@@ -74,7 +74,7 @@ pub(in crate::storage::hybrid) fn make_block(height: u64, parent_hash: B256) -> 
 
 /// Build a contiguous chain `[start..start+count]` of [`Block`]s, each
 /// pointing at its predecessor.
-pub(in crate::storage::hybrid) fn make_chain(start: u64, count: usize) -> Vec<Block> {
+pub(in crate::storage) fn make_chain(start: u64, count: usize) -> Vec<Block> {
     let mut chain = Vec::with_capacity(count);
     let mut parent = B256::ZERO;
     for offset in 0..count {
@@ -96,7 +96,7 @@ pub(in crate::storage::hybrid) fn make_chain(start: u64, count: usize) -> Vec<Bl
 /// propagates the error as [`super::Error::Provider`] up to the
 /// marshal.
 #[derive(Clone, Default)]
-pub(in crate::storage::hybrid) struct StubProvider {
+pub(in crate::storage) struct StubProvider {
     by_number: Arc<Mutex<HashMap<u64, Block>>>,
     by_hash: Arc<Mutex<HashMap<B256, Block>>>,
     fail: Arc<AtomicBool>,
@@ -108,14 +108,14 @@ pub(in crate::storage::hybrid) struct StubProvider {
 }
 
 impl StubProvider {
-    pub(in crate::storage::hybrid) fn new() -> Self {
+    pub(in crate::storage) fn new() -> Self {
         Self::default()
     }
 
     /// Seed the stub so subsequent
     /// [`FinalizedBlocksProvider::block_by_height`] /
     /// [`FinalizedBlocksProvider::block_by_hash`] calls return `block`.
-    pub(in crate::storage::hybrid) fn add_block(&self, block: &Block) {
+    pub(in crate::storage) fn add_block(&self, block: &Block) {
         let height = block.height().get();
         let hash = block.block_hash();
         self.by_number.lock().insert(height, block.clone());
@@ -125,14 +125,14 @@ impl StubProvider {
     /// Configure the stub to start failing every read with
     /// [`ProviderError::BestBlockNotFound`]. Used to exercise the
     /// "reth fallback errored" branch in [`super::Hybrid::get`].
-    pub(in crate::storage::hybrid) fn set_fail(&self, fail: bool) {
+    pub(in crate::storage) fn set_fail(&self, fail: bool) {
         self.fail.store(fail, Ordering::SeqCst);
     }
 
     /// Set the finalized block height that the stub reports via
     /// [`FinalizedBlocksProvider::finalized_height`]. Drives
     /// [`Hybrid`]'s cache eviction floor in tests.
-    pub(in crate::storage::hybrid) fn set_reth_finalized(&self, height: u64) {
+    pub(in crate::storage) fn set_reth_finalized(&self, height: u64) {
         *self.reth_finalized.lock() = Some(height);
     }
 
@@ -175,7 +175,7 @@ impl FinalizedBlocksProvider for StubProvider {
 }
 
 /// Build a fresh page cache rooted in `context`.
-pub(in crate::storage::hybrid) fn fresh_page_cache<TContext>(context: &TContext) -> CacheRef
+pub(in crate::storage) fn fresh_page_cache<TContext>(context: &TContext) -> CacheRef
 where
     TContext: BufferPooler,
 {
@@ -190,7 +190,7 @@ where
 /// individual heights — the prunable archive's `prune(min)` is rounded down
 /// to the nearest section boundary, so a 4 096-item section would never
 /// drop a handful of low-numbered test heights.
-pub(in crate::storage::hybrid) async fn fresh_prunable_with_section_size<TContext>(
+pub(in crate::storage) async fn fresh_prunable_with_section_size<TContext>(
     context: &TContext,
     items_per_section: std::num::NonZeroU64,
 ) -> Prunable<TContext>

@@ -57,6 +57,7 @@ alloy-signer-ledger.workspace = true
 alloy-signer-local.workspace = true
 alloy-signer-trezor.workspace = true
 alloy-sol-types.workspace = true
+blake3.workspace = true
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
@@ -93,6 +94,7 @@ reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
+tar.workspace = true
 reth-trie.workspace = true
 reth-trie-db.workspace = true
 clap.workspace = true
@@ -102,6 +104,7 @@ jiff.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+zstd.workspace = true
 opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
