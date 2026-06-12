@@ -25,7 +25,6 @@ pub(crate) mod marshal {
     use commonware_utils::acknowledgement::Exact;
     use eyre::{OptionExt, WrapErr as _, ensure};
     use rand_08::{CryptoRng, Rng};
-    use rand_core::CryptoRngCore;
     use reth_ethereum::{
         chainspec::EthChainSpec, network::types::HashOrNumber, provider::db::DatabaseEnv,
     };
@@ -262,7 +261,7 @@ pub(crate) mod marshal {
         // avoid the panic and return a proper error
         ensure!(
             finalization.verify(context, &scheme, &Sequential),
-            "Unable to verify starting finalization for {height} with the last boundary"
+            "Unable to verify starting finalization for {height} with the previous boundary"
         );
 
         Ok((last_finalized_height, Start::Floor(finalization)))
@@ -316,6 +315,12 @@ pub(crate) mod marshal {
         TContext:
             Clock + Metrics + Spawner + Storage + BufferPooler + Rng + CryptoRng + Send + 'static,
     {
+        let finalized_block_height = execution_node
+            .provider
+            .finalized_block_number()
+            .wrap_err("failed to get finalized block height")?
+            .unwrap_or_default();
+
         let finalized_blocks_id = match id {
             HashOrNumber::Hash(hash) => Identifier::Key(&Digest(hash)),
             HashOrNumber::Number(number) => Identifier::Index(number),
@@ -329,10 +334,18 @@ pub(crate) mod marshal {
             return Ok(Some(block.header().clone()));
         };
 
-        execution_node
+        let header = execution_node
             .provider
             .header_by_hash_or_number(id)
-            .wrap_err("failed to get header from execution node")
+            .wrap_err("failed to get header from execution node")?;
+
+        let height = header.as_ref().map(|h| h.number()).unwrap_or_default();
+        ensure!(
+            height <= finalized_block_height,
+            "execution header for {height} is not finalized"
+        );
+
+        Ok(header)
     }
 
     fn genesis_start(execution_node: &TempoFullNode) -> eyre::Result<Block> {
