@@ -1375,12 +1375,12 @@ impl AA2dPool {
                 }
                 // Detect included expiring nonce transactions via their
                 // `expiring_nonce_seen` slot being set to a non-zero value.
-                Some(NonceSlotTarget::ExpiringNonce(expiring_nonce_hash)) => {
-                    if !value.present_value.is_zero() {
-                        included_expiring_nonce_hashes.push(*expiring_nonce_hash);
-                    }
+                Some(NonceSlotTarget::ExpiringNonce(expiring_nonce_hash))
+                    if !value.present_value.is_zero() =>
+                {
+                    included_expiring_nonce_hashes.push(*expiring_nonce_hash);
                 }
-                None => {}
+                _ => {}
             }
         }
 
