@@ -12,7 +12,11 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 #[command(next_help_heading = "Faucet")]
 pub struct FaucetArgs {
     /// Whether the faucet is enabled
-    #[arg(id = "faucet.enabled", long = "faucet.enabled", default_value_t = false)]
+    #[arg(
+        id = "faucet.enabled",
+        long = "faucet.enabled",
+        default_value_t = false
+    )]
     pub enabled: bool,
 
     /// Faucet funding private key
