@@ -257,6 +257,23 @@ impl TempoPoolUpdates {
             || !self.spending_limit_changes.is_empty()
             || !self.spending_limit_spends.is_empty()
     }
+
+    /// Returns the fee balance changes if they are few enough to scan linearly.
+    ///
+    /// The set of fee tokens that saw balance changes is usually tiny (a handful of tokens),
+    /// so iterating the entries with direct address comparisons is cheaper than hashing the
+    /// fee token for every pooled transaction. Returns `None` when there are no changes or
+    /// when a block touches many tokens, in which case callers should use
+    /// [`fee_balance_changes`](Self::fee_balance_changes) lookups so the per-transaction
+    /// cost stays bounded.
+    pub fn scannable_fee_balance_changes(&self) -> Option<&AddressMap<AddressSet>> {
+        /// Above this many changed tokens the linear scan no longer beats a hashmap lookup.
+        const FEE_BALANCE_LINEAR_SCAN_LIMIT: usize = 16;
+
+        (!self.fee_balance_changes.is_empty()
+            && self.fee_balance_changes.len() <= FEE_BALANCE_LINEAR_SCAN_LIMIT)
+            .then_some(&self.fee_balance_changes)
+    }
 }
 
 /// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
