@@ -80,22 +80,17 @@ pub struct AA2dPool {
     /// the expiring nonce transaction that should be evicted next:
     /// lowest priority first, then newest submission first when priorities tie.
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
-    /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
+    /// A mapping of nonce-precompile storage slots to the pool entity they affect.
     ///
-    /// Used to track inclusion of expiring nonce transactions.
-    slot_to_expiring_nonce_hash: U256Map<B256>,
+    /// Combines the reverse index for 2D nonce slots (`NonceManager::nonces`) and
+    /// `expiring_nonce_seen` slots into a single map so processing a block's storage
+    /// updates needs only one lookup per touched slot. The two slot families come from
+    /// distinct keccak preimage domains and cannot collide.
+    nonce_slots: U256Map<NonceSlotTarget>,
     /// Scratch buffer reused while processing nonce state updates.
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
     /// Scratch buffer reused while processing included expiring nonce transactions.
     state_update_included_expiring_nonce_hashes: Vec<B256>,
-    /// Reverse index for the storage slot of an account's nonce
-    ///
-    /// ```solidity
-    ///  mapping(address => mapping(uint256 => uint64)) public nonces
-    /// ```
-    ///
-    /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    slot_to_seq_id: U256Map<AASequenceId>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -139,10 +134,9 @@ impl AA2dPool {
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
-            slot_to_expiring_nonce_hash: Default::default(),
+            nonce_slots: Default::default(),
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
-            slot_to_seq_id: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
@@ -479,8 +473,8 @@ impl AA2dPool {
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash
-                .insert(slot, expiring_nonce_hash);
+            self.nonce_slots
+                .insert(slot, NonceSlotTarget::ExpiringNonce(expiring_nonce_hash));
         }
         self.by_hash.insert(tx_hash, transaction.clone());
 
@@ -792,7 +786,7 @@ impl AA2dPool {
         if self.by_id.range(id.seq_id.range()).next().is_none()
             && let Some(slot) = tx.inner.transaction.transaction.nonce_key_slot()
         {
-            self.slot_to_seq_id.remove(&slot);
+            self.nonce_slots.remove(&slot);
         }
 
         self.remove_independent(id);
@@ -1291,7 +1285,7 @@ impl AA2dPool {
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash.remove(&slot);
+            self.nonce_slots.remove(&slot);
         }
         self.decrement_sender_count(pending_tx.transaction.sender());
         self.pending_count -= 1;
@@ -1348,7 +1342,11 @@ impl AA2dPool {
         trace!(target: "txpool::2d", ?address, ?nonce_key, "recording 2d nonce slot");
         let seq_id = AASequenceId::new(address, nonce_key);
 
-        if self.slot_to_seq_id.insert(slot, seq_id).is_none() {
+        if self
+            .nonce_slots
+            .insert(slot, NonceSlotTarget::SeqId(seq_id))
+            .is_none()
+        {
             self.metrics.inc_nonce_key_count(1);
         }
     }
@@ -1369,17 +1367,20 @@ impl AA2dPool {
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
-        // Process known 2D nonce slot changes.
+        // Process known nonce-precompile slot changes with a single lookup per slot.
         for (slot, value) in nonce_state.storage.iter() {
-            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
-                changes.insert(*seq_id, value.present_value.saturating_to());
-            }
-            // Detect included expiring nonce transactions via their
-            // `expiring_nonce_seen` slot being set to a non-zero value.
-            if !value.present_value.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
-            {
-                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            match self.nonce_slots.get(slot) {
+                Some(NonceSlotTarget::SeqId(seq_id)) => {
+                    changes.insert(*seq_id, value.present_value.saturating_to());
+                }
+                // Detect included expiring nonce transactions via their
+                // `expiring_nonce_seen` slot being set to a non-zero value.
+                Some(NonceSlotTarget::ExpiringNonce(expiring_nonce_hash)) => {
+                    if !value.present_value.is_zero() {
+                        included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+                    }
+                }
+                None => {}
             }
         }
 
@@ -1404,6 +1405,24 @@ impl AA2dPool {
         self.update_metrics();
 
         (promoted, mined)
+    }
+
+    /// Number of tracked 2D nonce sequence slots.
+    #[cfg(test)]
+    fn seq_id_slot_count(&self) -> usize {
+        self.nonce_slots
+            .values()
+            .filter(|target| matches!(target, NonceSlotTarget::SeqId(_)))
+            .count()
+    }
+
+    /// Number of tracked `expiring_nonce_seen` slots.
+    #[cfg(test)]
+    fn expiring_nonce_slot_count(&self) -> usize {
+        self.nonce_slots
+            .values()
+            .filter(|target| matches!(target, NonceSlotTarget::ExpiringNonce(_)))
+            .count()
     }
 
     /// Asserts that all assumptions are valid.
@@ -1701,6 +1720,18 @@ impl Default for AA2dPoolConfig {
             max_txs_per_sender: DEFAULT_MAX_TXS_PER_SENDER,
         }
     }
+}
+
+/// Pool entity affected by a nonce-precompile storage slot, stored in
+/// [`AA2dPool::nonce_slots`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NonceSlotTarget {
+    /// The slot holds the on-chain nonce for this 2D nonce sequence
+    /// (`NonceManager::nonces[account][nonce_key]`).
+    SeqId(AASequenceId),
+    /// The slot is the `expiring_nonce_seen` marker for the expiring nonce
+    /// transaction with this expiring nonce hash.
+    ExpiringNonce(B256),
 }
 
 #[derive(Debug, Clone)]
@@ -6472,7 +6503,7 @@ mod tests {
         assert_eq!(mined[0].hash(), &tx_hash);
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());
-        assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        assert_eq!(pool.expiring_nonce_slot_count(), 0);
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
@@ -7038,7 +7069,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(pool.slot_to_seq_id.len(), 1);
+        assert_eq!(pool.seq_id_slot_count(), 1);
 
         for i in 2..12u64 {
             let tx = TxBuilder::aa(sender)
@@ -7057,9 +7088,9 @@ mod tests {
         }
 
         assert_eq!(
-            pool.slot_to_seq_id.len(),
+            pool.seq_id_slot_count(),
             1,
-            "rejected txs with new nonce keys should not grow slot_to_seq_id"
+            "rejected txs with new nonce keys should not grow nonce_slots"
         );
         pool.assert_invariants();
     }

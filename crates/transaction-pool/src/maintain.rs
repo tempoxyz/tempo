@@ -685,28 +685,29 @@ where
                 // broadcasting near-expiry txs that peers would reject.
                 let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
-                // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(max_expiry);
-                if !expired.is_empty() {
-                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
-                    updates.expired_txs = expired
-                        .into_iter()
-                        .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
-                        .collect();
-                }
+                // Add expired transactions (from local tracking state).
+                //
+                // Mined transactions were already untracked above, so the drained set cannot
+                // contain hashes mined in this block. Hashes that have since left the pool by
+                // other means are handled by `remove_transactions` as no-ops, so no pre-filter
+                // (and no mined-hash set) is needed here.
+                updates.expired_txs = state.drain_expired(max_expiry);
 
                 // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
-                let expired_count = updates.expired_txs.len();
-                if expired_count > 0 {
-                    debug!(
-                        target: "txpool",
-                        count = expired_count,
-                        tip_timestamp,
-                        "Evicting expired AA transactions (valid_before)"
-                    );
-                    removed_txs.push(pool.remove_transactions(std::mem::take(&mut updates.expired_txs)));
-                    metrics.expired_transactions_evicted.increment(expired_count as u64);
+                if !updates.expired_txs.is_empty() {
+                    let evicted =
+                        pool.remove_transactions(std::mem::take(&mut updates.expired_txs));
+                    if !evicted.is_empty() {
+                        debug!(
+                            target: "txpool",
+                            count = evicted.len(),
+                            tip_timestamp,
+                            "Evicting expired AA transactions (valid_before)"
+                        );
+                        metrics.expired_transactions_evicted.increment(evicted.len() as u64);
+                        removed_txs.push(evicted);
+                    }
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
@@ -988,8 +989,12 @@ where
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
 
-                // Deallocating removed transactions is expensive, so do it after all updates are done.
-                drop(removed_txs);
+                // Deallocating removed transactions is expensive (input data, signatures,
+                // allocator and kernel work), so move it off the maintenance task entirely,
+                // freeing the loop to immediately continue processing pool events.
+                if removed_txs.iter().any(|txs| !txs.is_empty()) {
+                    tokio::task::spawn_blocking(move || drop(removed_txs));
+                }
             }
         }
     }
