@@ -614,7 +614,7 @@ def stop-e2e-processes-gracefully [] {
         print $"Stopping tempo processes: ($pids | str join ', ')"
     }
     for pid in $pids {
-        kill -s 2 $pid
+        sudo kill -s 2 $pid
     }
     for pid in $pids {
         mut wait = 0
@@ -625,7 +625,7 @@ def stop-e2e-processes-gracefully [] {
         }
         if $wait >= 30 {
             print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
-            kill -s 9 $pid
+            sudo kill -s 9 $pid
             sleep 1sec
         }
     }
@@ -688,6 +688,15 @@ def cleanup-local-e2e-processes [] {
     stop-local-e2e-systemd-scopes
     stop-e2e-processes-gracefully
     stop-tracy-capture
+}
+
+def chown-to-current-user [path: string] {
+    if (^uname | str trim) != "Linux" or not ($path | path exists) {
+        return
+    }
+    let uid = (id -u | str trim)
+    let gid = (id -g | str trim)
+    sudo chown -R $"($uid):($gid)" $path | ignore
 }
 
 def rpc-block-number [url: string] {
@@ -1105,6 +1114,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     stop-e2e-processes-gracefully
     if $ctx.samply { wait-for-samply-profile }
+    chown-to-current-user $ctx.results_dir
+    chown-to-current-user $a_log_dir
+    chown-to-current-user $b_log_dir
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
     if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
     restore-system-tuning $tuning_state
