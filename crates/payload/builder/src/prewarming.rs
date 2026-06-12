@@ -134,10 +134,12 @@ impl BestTransactionsPrewarming {
                 advance(&mut ctx);
             }
 
-            while let Ok(command) = ctx.commands_rx.recv() {
+            let handle_command = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                                  command: BestTransactionsCommand|
+             -> bool {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        advance(ctx);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -164,6 +166,20 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
                         drop(drain_rx);
+                        return false;
+                    }
+                }
+
+                true
+            };
+
+            while let Ok(command) = ctx.commands_rx.recv() {
+                if !handle_command(&mut ctx, command) {
+                    return;
+                }
+
+                while let Ok(command) = ctx.commands_rx.try_recv() {
+                    if !handle_command(&mut ctx, command) {
                         return;
                     }
                 }
