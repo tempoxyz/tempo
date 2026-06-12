@@ -34,6 +34,11 @@ use tracing::{debug, error};
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
 
+/// Maximum number of buffered new-transaction events to drain in a single maintenance
+/// wakeup before yielding back to the event loop. Bounds the per-wakeup work so a sustained
+/// burst of new transactions cannot starve block-commit processing.
+const NEW_TX_DRAIN_LIMIT: usize = 4096;
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -612,6 +617,19 @@ where
                 };
 
                 state.track(&tx_event.transaction.transaction);
+
+                // At high TPS the listener fires constantly and each wakeup re-polls the
+                // whole select loop. Drain already-buffered events in this wakeup so the
+                // select/poll overhead is amortized across many transactions instead of paid
+                // per transaction. The drain is bounded so a sustained burst cannot starve
+                // the block-processing branch below.
+                let mut drained = 0;
+                while drained < NEW_TX_DRAIN_LIMIT
+                    && let Ok(tx_event) = new_txs.try_recv()
+                {
+                    state.track(&tx_event.transaction.transaction);
+                    drained += 1;
+                }
             }
 
             // Process all maintenance operations on new block commit or reorg
