@@ -35,7 +35,7 @@ impl Precompile for TIP1060StorageCredits {
                 }
                 ITIP1060StorageCreditsCalls::setBudget(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
-                        self.set_budget(sender, c.creditBudget)
+                        self.set_budget(sender, c.credits)
                     })
                 }
             },

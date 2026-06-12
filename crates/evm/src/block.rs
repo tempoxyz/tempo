@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -189,7 +189,7 @@ where
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
-    ) -> Result<(), BlockExecutionError> {
+    ) -> Result<bool, BlockExecutionError> {
         let info = self
             .inner
             .evm
@@ -205,8 +205,9 @@ where
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
             self.inner.evm.db_mut().commit(state);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Validates a system transaction.
@@ -482,17 +483,20 @@ where
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            _ = self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            _ = self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
+            _ = self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            _ = self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            _ = self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+        }
+        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
+            _ = self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
         }
 
         Ok(())
