@@ -113,12 +113,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
-        let was_empty = {
-            let mut account = self.internals.load_account_mut(address)?;
-            let was_empty = account.data.account().info.is_empty();
-            account.set_code_and_hash_slow(code);
-            was_empty
-        };
+        let was_empty = self
+            .internals
+            .with_account_mut(address, |account| {
+                let was_empty = account.account().info.is_empty();
+                account.set_code_and_hash_slow(code);
+                was_empty
+            })?
+            .data;
 
         // TIP-1016: charge TIP20 deployments as CREATE.
         if self.amsterdam_eip8037_enabled && was_empty {
@@ -183,11 +185,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             false
         };
 
-        let result = self.internals.load_account_mut(address)?.sstore(
-            key,
-            value,
-            insufficient_gas_for_cold_load,
-        )?;
+        let result = self
+            .internals
+            .try_with_account_mut(address, |account| {
+                Ok::<_, TempoPrecompileError>(account.sstore(
+                    key,
+                    value,
+                    insufficient_gas_for_cold_load,
+                )?)
+            })?
+            .data;
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -249,15 +256,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             false
         };
 
-        let value;
-        let is_cold;
-        {
-            let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, insufficient_gas_for_cold_load)?;
-
-            value = val.present_value;
-            is_cold = val.is_cold;
-        };
+        let (value, is_cold) = self
+            .internals
+            .try_with_account_mut(address, |account| {
+                let val = account.sload(key, insufficient_gas_for_cold_load)?;
+                Ok::<_, TempoPrecompileError>((val.present_value, val.is_cold))
+            })?
+            .data;
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
