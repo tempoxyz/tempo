@@ -444,6 +444,11 @@ impl TempoPoolState {
     /// This avoids repeating the `expiry_map` lookup for every mined hash while
     /// preserving O(1)-ish removal from each `B256Set` bucket.
     fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        // Skip iterating the mined hashes if nothing is tracked for expiry.
+        if self.tx_to_expiry.is_empty() {
+            return;
+        }
+
         let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
 
         for hash in hashes {
@@ -700,7 +705,7 @@ where
                     let mut by_token = {
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs.iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
                             .fold(
                                 AddressMap::<Vec<TxHash>>::default(),
                                 |mut by_token, tx| {
@@ -850,7 +855,7 @@ where
                         let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                         all_txs
                             .iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                            .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash()))
                             .filter(|tx| {
                                 tx.transaction
                                     .resolved_fee_token()
@@ -915,7 +920,7 @@ where
                             &updates,
                             all_txs
                                 .iter()
-                                .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                                .filter(|tx| removed_this_iteration.is_empty() || !removed_this_iteration.contains(tx.hash())),
                         )
                     };
                     for tx in &evicted {
