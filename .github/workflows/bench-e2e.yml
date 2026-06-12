@@ -107,11 +107,6 @@ on:
         type: boolean
         required: true
         default: true
-      valscope:
-        description: Generate and publish ValScope static reports.
-        type: boolean
-        required: true
-        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -127,11 +122,6 @@ on:
         type: string
         required: true
         default: "1000000000"
-      force-bloat:
-        description: Force regeneration of local benchmark state.
-        type: boolean
-        required: true
-        default: false
       no-cache:
         description: Skip binary cache.
         type: boolean
@@ -397,7 +387,7 @@ jobs:
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
-      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
+      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
