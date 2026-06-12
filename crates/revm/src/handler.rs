@@ -1041,7 +1041,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_expiring_nonce_bookkeeping(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {

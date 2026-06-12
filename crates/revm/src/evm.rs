@@ -406,6 +406,31 @@ mod tests {
         evm
     }
 
+    /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
+    fn create_funded_evm_t7_with_timestamp(
+        address: Address,
+        timestamp: u64,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T7;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.enable_amsterdam_eip8037 = false;
+
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
     /// Create an EVM with a specific timestamp and a funded account.
     fn create_funded_evm_with_timestamp(
         address: Address,
@@ -3200,6 +3225,64 @@ mod tests {
             gas_nonce_zero - gas_nonce_one,
             250_000,
             "new_account_cost not charged"
+        );
+
+        Ok(())
+    }
+
+    /// Expiring nonce replay-protection writes are charged manually by intrinsic gas.
+    ///
+    /// The indexed block-validation path temporarily moves the nonce ring pointer and restores it
+    /// after marking the hash. That restore is a `0 -> nonzero -> 0` precompile-owned storage write
+    /// and must not mint or settle TIP-1060 storage credits.
+    #[test]
+    fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::Result<()> {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let timestamp = 1000u64;
+        let valid_before = timestamp + 30;
+
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(valid_before))
+            .gas_limit(500_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let unindexed_tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let mut indexed_tx_env = unindexed_tx_env.clone();
+        indexed_tx_env
+            .tempo_tx_env
+            .as_mut()
+            .expect("expiring nonce tx must be AA")
+            .expiring_nonce_idx = Some(1);
+
+        let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
+        assert!(
+            unindexed_result.is_success(),
+            "unindexed expiring nonce tx should succeed"
+        );
+
+        let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
+        assert!(
+            indexed_result.is_success(),
+            "indexed expiring nonce tx should succeed"
+        );
+
+        assert_eq!(
+            indexed_result.tx_gas_used(),
+            unindexed_result.tx_gas_used(),
+            "pointer restore must not create a TIP-1060 settlement discount"
+        );
+        assert_eq!(
+            storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+            0,
+            "expiring nonce bookkeeping must not accrue storage credits"
         );
 
         Ok(())
