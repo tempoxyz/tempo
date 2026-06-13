@@ -32,11 +32,13 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::EmptyBodyStorage;
+use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
-    Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+    Pool, TransactionOrigin, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+    error::InvalidPoolTransactionError,
 };
+use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
@@ -48,6 +50,7 @@ use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -116,6 +119,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            ..Default::default()
         }
     }
 
@@ -316,7 +320,7 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder, self.payload_builder_builder)
+        Self::components(self.pool_builder.clone(), self.payload_builder_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -439,17 +443,47 @@ where
     }
 }
 
+/// Additional stateless validation function applied to [`TempoPooledTransaction`]s at the end of
+/// the inner ETH validator's stateless validation.
+///
+/// Receives the transaction origin and a reference to the transaction. Returns `Ok(())` to accept
+/// the transaction or `Err` to reject it.
+pub type TempoStatelessValidationFn = Arc<
+    dyn Fn(TransactionOrigin, &TempoPooledTransaction) -> Result<(), InvalidPoolTransactionError>
+        + Send
+        + Sync,
+>;
+
+/// Additional stateful validation function applied to [`TempoPooledTransaction`]s at the end of
+/// the inner ETH validator's stateful validation.
+///
+/// Receives the transaction origin, a reference to the transaction, and an account state reader.
+/// Returns `Ok(())` to accept the transaction or `Err` to reject it.
+pub type TempoStatefulValidationFn = Arc<
+    dyn Fn(
+            TransactionOrigin,
+            &TempoPooledTransaction,
+            &dyn AccountInfoReader,
+        ) -> Result<(), InvalidPoolTransactionError>
+        + Send
+        + Sync,
+>;
+
 /// A basic Tempo transaction pool.
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct TempoPoolBuilder {
     /// Maximum allowed `valid_after` offset for AA txs.
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Optional additional stateless validation check forwarded to the inner ETH validator.
+    pub additional_stateless_validation: Option<TempoStatelessValidationFn>,
+    /// Optional additional stateful validation check forwarded to the inner ETH validator.
+    pub additional_stateful_validation: Option<TempoStatefulValidationFn>,
 }
 
 impl TempoPoolBuilder {
@@ -464,6 +498,60 @@ impl TempoPoolBuilder {
         self.max_tempo_authorizations = max;
         self
     }
+
+    /// Sets an additional stateless validation check applied at the end of the inner ETH
+    /// validator's stateless validation.
+    ///
+    /// See [`EthTransactionValidator::set_additional_stateless_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateless_validation).
+    pub fn with_additional_stateless_validation<F>(mut self, f: F) -> Self
+    where
+        F: Fn(
+                TransactionOrigin,
+                &TempoPooledTransaction,
+            ) -> Result<(), InvalidPoolTransactionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.additional_stateless_validation = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets an additional stateful validation check applied at the end of the inner ETH
+    /// validator's stateful validation.
+    ///
+    /// See [`EthTransactionValidator::set_additional_stateful_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateful_validation).
+    pub fn with_additional_stateful_validation<F>(mut self, f: F) -> Self
+    where
+        F: Fn(
+                TransactionOrigin,
+                &TempoPooledTransaction,
+                &dyn AccountInfoReader,
+            ) -> Result<(), InvalidPoolTransactionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.additional_stateful_validation = Some(Arc::new(f));
+        self
+    }
+}
+
+impl core::fmt::Debug for TempoPoolBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TempoPoolBuilder")
+            .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
+            .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field(
+                "additional_stateless_validation",
+                &self.additional_stateless_validation.as_ref().map(|_| "..."),
+            )
+            .field(
+                "additional_stateful_validation",
+                &self.additional_stateful_validation.as_ref().map(|_| "..."),
+            )
+            .finish()
+    }
 }
 
 impl Default for TempoPoolBuilder {
@@ -471,6 +559,8 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            additional_stateless_validation: None,
+            additional_stateful_validation: None,
         }
     }
 }
@@ -514,11 +604,25 @@ where
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
-        let validator = validator.map(|v| {
+        let Self {
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            additional_stateless_validation,
+            additional_stateful_validation,
+        } = self;
+        let validator = validator.map(move |mut v| {
+            if let Some(check) = additional_stateless_validation.clone() {
+                v.set_additional_stateless_validation(move |origin, tx| check(origin, tx));
+            }
+            if let Some(check) = additional_stateful_validation.clone() {
+                v.set_additional_stateful_validation(move |origin, tx, state| {
+                    check(origin, tx, state)
+                });
+            }
             TempoTransactionValidator::new(
                 v,
-                self.aa_valid_after_max_secs,
-                self.max_tempo_authorizations,
+                aa_valid_after_max_secs,
+                max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
         });
