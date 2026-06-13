@@ -65,7 +65,10 @@ pub(crate) struct PayloadBudgetDecision {
 ///
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
-/// replayed by validators and therefore counts once.
+/// replayed by validators and therefore counts once. `non_replayable_elapsed`
+/// is proposer-only setup work (state provider setup and pool fetch) that
+/// validators never repeat; it also counts once and is excluded from the
+/// projected replayable work.
 /// `validation_latency` is an estimate of validator-side replay work from
 /// previously validated proposals. If no latency estimate is usable for the
 /// current workload, the validator reserve falls back to
@@ -74,19 +77,23 @@ pub(crate) struct PayloadBudgetDecision {
 /// `current_workload` describes the block currently being assembled.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected builder work once, learned validator
-/// work once capped at the conservative builder-work projection, and marshal
-/// persistence once for each side.
+/// charge proposer idle and setup once, projected builder work once, learned
+/// validator work once capped at the conservative builder-work projection, and
+/// marshal persistence once for each side.
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
+    non_replayable_elapsed: Duration,
     multiplier: u64,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
     validation_latency: Option<ValidationLatencyEstimate>,
     current_workload: ValidationLatencyWorkload,
 ) -> PayloadBudgetDecision {
-    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
+    let work_elapsed = elapsed
+        .saturating_sub(idle_elapsed)
+        .saturating_sub(non_replayable_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
     let validation_latency_estimate =
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
@@ -95,6 +102,7 @@ pub(crate) fn payload_budget_decision(
         .unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
+        .saturating_add(non_replayable_elapsed)
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
         .saturating_add(marshal_persist)
@@ -172,6 +180,7 @@ mod tests {
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
+            Duration::ZERO,
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
@@ -188,6 +197,7 @@ mod tests {
         let decision = payload_budget_decision(
             Duration::from_millis(350),
             Duration::from_millis(250),
+            Duration::ZERO,
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
@@ -203,11 +213,32 @@ mod tests {
     }
 
     #[test]
+    fn payload_budget_accounts_for_non_replayable_setup_once() {
+        let decision = payload_budget_decision(
+            Duration::from_millis(120),
+            Duration::ZERO,
+            Duration::from_millis(20),
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            None,
+            ValidationLatencyWorkload::default(),
+        );
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(135)
+        );
+        assert_eq!(decision.total_reserved, Duration::from_millis(290));
+    }
+
+    #[test]
     fn payload_budget_uses_validator_feedback_when_available() {
         let workload = ValidationLatencyWorkload::new(100, 0);
         let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
         let decision = payload_budget_decision(
             Duration::from_millis(100),
+            Duration::ZERO,
             Duration::ZERO,
             1_350_000,
             MarshalPersistEstimator::default(),
@@ -230,6 +261,7 @@ mod tests {
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
+            Duration::ZERO,
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
@@ -251,6 +283,7 @@ mod tests {
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
+            Duration::ZERO,
             1_350_000,
             marshal_persist,
             15_000,
@@ -262,6 +295,7 @@ mod tests {
 
         let decision = payload_budget_decision(
             Duration::from_millis(100),
+            Duration::ZERO,
             Duration::ZERO,
             1_350_000,
             marshal_persist,

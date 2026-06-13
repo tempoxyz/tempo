@@ -873,20 +873,30 @@ impl Inner<Init> {
             );
         }
 
-        let validation_duration = verify_block(
-            context,
-            round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &block,
-            parent_digest,
-            &self.scheme_provider,
+        // Persist the block in the marshal actor concurrently with execution-layer
+        // validation. The cache is digest-addressed and writing to an occupied
+        // index is a no-op, so an invalid block only leaves a prunable cache
+        // entry behind while a valid one no longer pays the persist on the
+        // critical path between validation and the vote.
+        let speculative_persist = self.marshal.verified(round, block.clone());
+        let (validation_duration, persisted) = futures::future::join(
+            verify_block(
+                context,
+                round.epoch(),
+                &self.epoch_strategy,
+                self.execution_node
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .clone(),
+                &block,
+                parent_digest,
+                &self.scheme_provider,
+            ),
+            speculative_persist,
         )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
+        .await;
+        let validation_duration =
+            validation_duration.wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
@@ -905,8 +915,7 @@ impl Inner<Init> {
         let block_digest = block.digest();
 
         if is_good {
-            // Persist the block in the marshal actor and execution layer.
-            if !self.marshal.verified(round, block).await {
+            if !persisted {
                 bail!("marshal actor refused to persist verified block");
             }
 
@@ -1026,10 +1035,9 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
-        block: Arc::new(block),
-        block_access_list,
+        block: block.shared_execution_block(),
+        block_access_list: block.block_access_list().cloned(),
         validator_set,
     };
     let validation_start = Instant::now();

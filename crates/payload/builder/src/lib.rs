@@ -363,9 +363,10 @@ where
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
+        let state_setup_elapsed = state_setup_start.elapsed();
         self.metrics
             .state_setup_duration_seconds
-            .record(state_setup_start.elapsed());
+            .record(state_setup_elapsed);
 
         check_cancel!();
 
@@ -509,6 +510,7 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_tx = RootsFeed::new(roots_tx);
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -545,9 +547,13 @@ where
         } else {
             Box::new(best_txs)
         });
+        let pool_fetch_elapsed = pool_fetch_start.elapsed();
         self.metrics
             .pool_fetch_duration_seconds
-            .record(pool_fetch_start.elapsed());
+            .record(pool_fetch_elapsed);
+        // Proposer-only setup that validators never replay; charged once in the
+        // budget instead of being projected as replayable builder and validator work.
+        let non_replayable_elapsed = state_setup_elapsed + pool_fetch_elapsed;
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -573,6 +579,7 @@ where
                 let budget_decision = payload_budget_decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
+                    non_replayable_elapsed,
                     build_time_multiplier,
                     marshal_persist,
                     block_size_used,
@@ -742,7 +749,7 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
-            let _ = roots_tx.send((
+            roots_tx.push((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
             ));
@@ -752,8 +759,9 @@ where
         drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
-        let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_at_tx_cutoff = elapsed_at_tx_cutoff
+            .saturating_sub(normal_transaction_fill_idle_elapsed)
+            .saturating_sub(non_replayable_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -820,7 +828,7 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
+                roots_tx.push((
                     BuilderTx::Owned(Box::new(tx)),
                     executor.receipts().last().unwrap().clone(),
                 ));
@@ -860,7 +868,7 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
-            let _ = roots_tx.send((
+            roots_tx.push((
                 BuilderTx::Owned(Box::new(system_tx)),
                 executor.receipts().last().unwrap().clone(),
             ));
@@ -1071,7 +1079,9 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = elapsed
+            .saturating_sub(normal_transaction_fill_idle_elapsed)
+            .saturating_sub(non_replayable_elapsed);
         if payload_build_budget.is_some() {
             self.update_build_time_multiplier(
                 validation_work_duration,
@@ -1164,11 +1174,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BuilderTx, TempoReceipt)>,
+        Sender<Vec<(BuilderTx, TempoReceipt)>>,
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BuilderTx, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
@@ -1182,7 +1192,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for (tx, receipt) in transactions_rx.into_iter().flatten() {
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1244,6 +1254,51 @@ where
             msg_tx: task_tx,
             bal_rx,
         }
+    }
+}
+
+/// Number of executed transactions sent to the roots task per channel message.
+///
+/// Per-transaction sends wake the roots thread for every transaction, which is
+/// measurable at payload sizes of tens of thousands of transactions; batching
+/// amortizes the wakeups while keeping root computation overlapped with execution.
+const ROOTS_BATCH_SIZE: usize = 128;
+
+/// Batches executed transactions before handing them to the roots task.
+///
+/// The final partial batch is flushed on drop, which also disconnects the
+/// channel and lets the roots task finalize.
+struct RootsFeed {
+    tx: Sender<Vec<(BuilderTx, TempoReceipt)>>,
+    buf: Vec<(BuilderTx, TempoReceipt)>,
+}
+
+impl RootsFeed {
+    fn new(tx: Sender<Vec<(BuilderTx, TempoReceipt)>>) -> Self {
+        Self {
+            tx,
+            buf: Vec::with_capacity(ROOTS_BATCH_SIZE),
+        }
+    }
+
+    fn push(&mut self, item: (BuilderTx, TempoReceipt)) {
+        self.buf.push(item);
+        if self.buf.len() >= ROOTS_BATCH_SIZE {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.buf.is_empty() {
+            let batch = core::mem::replace(&mut self.buf, Vec::with_capacity(ROOTS_BATCH_SIZE));
+            let _ = self.tx.send(batch);
+        }
+    }
+}
+
+impl Drop for RootsFeed {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 

@@ -129,8 +129,10 @@ impl BestTransactionsPrewarming {
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            // We schedule 4x the number of threads so that workers are never idle and
+            // the builder-facing buffer absorbs prewarm latency variance (cold state
+            // reads) without starving the execution loop.
+            for _ in 0..pool.current_num_threads() * 4 {
                 advance(&mut ctx);
             }
 
@@ -982,7 +984,7 @@ mod tests {
     fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
+        let txs = (0..executor.prewarming_pool().current_num_threads() * 4 + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
@@ -1000,7 +1002,7 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances = executor.prewarming_pool().current_num_threads() * 4;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 

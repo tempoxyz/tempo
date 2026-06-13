@@ -822,13 +822,13 @@ async fn forward_finalized<TContext: Pacer>(
         .await?;
     }
 
-    let (block, block_access_list) = block.into_parts();
+    let (block, block_access_list) = block.into_shared_parts();
     let consensus_context = block.header().consensus_context;
     let payload_status = execution_node
         .add_ons_handle
         .beacon_engine_handle
         .new_payload(TempoExecutionData {
-            block: Arc::new(block),
+            block,
             block_access_list,
             // can be omitted for finalized blocks
             validator_set: None,
