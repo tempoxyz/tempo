@@ -2,7 +2,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, LogData, U256},
     sol_types::SolInterface,
 };
-use alloy_evm::{Database, EvmInternals};
+use alloy_evm::Database;
 use revm::{
     context::{
         Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
@@ -334,14 +334,14 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
+        _tx_env: &'evm impl Transaction,
         f: impl FnOnce() -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
     {
-        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        let mut provider =
+            EvmPrecompileStorageProvider::from_journal_max_gas(journal, block_env, cfg);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
@@ -368,10 +368,10 @@ impl<'evm> StorageCtx {
     where
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
     {
-        let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
-        let internals = EvmInternals::new(journal, block, cfg, tx);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir);
+        let (_tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
+        let mut provider = EvmPrecompileStorageProvider::from_journal_with_gas_limit(
+            journal, block, cfg, gas_limit, reservoir,
+        );
         let result = Self::enter(&mut provider, f);
         let gas_used = provider.gas_used();
         (result, gas_used)
