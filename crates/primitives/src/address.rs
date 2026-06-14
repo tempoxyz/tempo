@@ -9,7 +9,7 @@ pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 /// NOTE: This only checks the prefix, not whether the token was actually created.
 /// Use `TIP20Factory::is_tip20()` for full validation.
 pub fn is_tip20_prefix(addr: Address) -> bool {
-    addr.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
+    &addr.as_slice()[..TIP20_TOKEN_PREFIX.len()] == TIP20_TOKEN_PREFIX.as_slice()
 }
 
 /// 4-byte master identifier derived from the registration hash.
