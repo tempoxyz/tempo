@@ -320,12 +320,18 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
         let length = (bytes[31] / 2) as usize;
         if length > 31 {
             // Unreachable unless the state has been tampered
-            return Err(TempoPrecompileError::Fatal(format!(
-                "short string length {length} exceeds maximum of 31 bytes"
-            )));
+            return Err(invalid_short_string_length(length));
         }
         Ok(length)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_short_string_length(length: usize) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(format!(
+        "short string length {length} exceeds maximum of 31 bytes"
+    ))
 }
 
 /// Compute the number of 32-byte chunks needed to store a byte string.
