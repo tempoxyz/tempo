@@ -994,10 +994,12 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    #[inline(always)]
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
 
+    #[inline(always)]
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
         self.balances[account].write(amount)
     }
