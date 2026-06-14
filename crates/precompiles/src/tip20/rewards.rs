@@ -251,21 +251,25 @@ impl TIP20Token {
     }
 
     /// Gets the accumulated global reward per token.
+    #[inline(always)]
     pub fn get_global_reward_per_token(&self) -> Result<U256> {
         self.global_reward_per_token.read()
     }
 
     /// Sets the accumulated global reward per token in storage.
+    #[inline(always)]
     fn set_global_reward_per_token(&mut self, value: U256) -> Result<()> {
         self.global_reward_per_token.write(value)
     }
 
     /// Gets the total supply of tokens opted into rewards from storage.
+    #[inline(always)]
     pub fn get_opted_in_supply(&self) -> Result<u128> {
         self.opted_in_supply.read()
     }
 
     /// Sets the total supply of tokens opted into rewards.
+    #[inline(always)]
     pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
         self.opted_in_supply.write(value)
     }
