@@ -116,11 +116,15 @@ impl StablecoinDEX {
     }
 
     /// Set user's balance for a specific token
+    #[cold]
+    #[inline(never)]
     fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         self.balances[user][token].write(amount)
     }
 
     /// Add to user's balance
+    #[cold]
+    #[inline(never)]
     fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(
@@ -133,6 +137,8 @@ impl StablecoinDEX {
     }
 
     /// Subtract from user's balance.
+    #[cold]
+    #[inline(never)]
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
         self.set_balance(
@@ -165,6 +171,8 @@ impl StablecoinDEX {
     }
 
     /// Transfer tokens, accounting for pathUSD
+    #[cold]
+    #[inline(never)]
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
         TIP20Token::from_address(token)?.transfer(
             self.address,
@@ -177,6 +185,8 @@ impl StablecoinDEX {
     }
 
     /// Transfer tokens from user, accounting for pathUSD
+    #[cold]
+    #[inline(never)]
     fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
         if self.storage.spec().is_t5() {
             TIP20Token::from_address(token)?.system_transfer_from(
@@ -203,6 +213,8 @@ impl StablecoinDEX {
     /// verifies the token is not paused (T4+). Callers that already check pause state
     /// (e.g. swaps via `validate_and_build_route`) should pass `false` to avoid a
     /// redundant SLOAD.
+    #[cold]
+    #[inline(never)]
     fn decrement_balance_or_transfer_from(
         &mut self,
         sender: Address,
