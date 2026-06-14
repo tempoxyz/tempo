@@ -909,7 +909,11 @@ where
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
-        let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+        let fee_payer = if tx.has_fee_payer_signature() {
+            tx.fee_payer().expect("pre-validated in `validate_env`")
+        } else {
+            tx.caller()
+        };
         let fee_token = journal
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
