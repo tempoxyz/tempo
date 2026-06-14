@@ -935,6 +935,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
+        | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
@@ -942,6 +943,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
+        | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)

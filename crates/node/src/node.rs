@@ -199,9 +199,10 @@ impl NodeTypes for TempoNode {
 
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
-        TempoEthApiBuilder,
+        TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
         BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
@@ -234,7 +235,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<N>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
     async fn launch_add_ons(
         self,
@@ -281,7 +282,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<N>;
+    type EthApi = TempoEthApi<NodeAdapter<N>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()

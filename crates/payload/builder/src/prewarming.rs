@@ -584,7 +584,6 @@ fn add_fee_manager_touches(
     fee_recipient: Address,
     fee_token: Address,
 ) {
-    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
     add_storage_touch(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
