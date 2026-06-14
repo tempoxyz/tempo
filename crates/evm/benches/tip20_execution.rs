@@ -143,6 +143,7 @@ struct InMemoryStateProvider {
 #[derive(Clone)]
 struct ExecutionFixture {
     provider: InMemoryStateProvider,
+    storage_by_account: Arc<AddressMap<Vec<(U256, U256)>>>,
     cache: ExecutionCache,
     metrics: CachedStateMetrics,
 }
@@ -156,18 +157,40 @@ impl ExecutionFixture {
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        self.preload_state_caches(&mut db);
+        db
     }
 
     fn prewarm_state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        self.preload_state_caches(&mut db);
+        db
+    }
+
+    fn preload_state_caches(&self, db: &mut FixedCacheDb) {
+        db.cache.contracts.extend(
+            self.provider
+                .contracts
+                .iter()
+                .map(|(hash, bytecode)| (*hash, bytecode.0.clone())),
+        );
+
+        for (address, account) in self.provider.accounts.iter() {
+            let info = (*account).into();
+            if let Some(slots) = self.storage_by_account.get(address) {
+                db.insert_account_with_storage(*address, info, slots.iter().copied().collect());
+            } else {
+                db.insert_account(*address, info);
+            }
+        }
     }
 }
 
@@ -414,6 +437,7 @@ fn setup_fixed_cache_state(
 
     let mut accounts = AddressMap::default();
     let mut storage = HashMap::default();
+    let mut storage_by_account = AddressMap::<Vec<(U256, U256)>>::default();
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
 
@@ -429,6 +453,10 @@ fn setup_fixed_cache_state(
             let storage_key = B256::new(slot.to_be_bytes());
             execution_cache.insert_storage(address, storage_key, Some(value));
             storage.insert((address, storage_key), value);
+            storage_by_account
+                .entry(address)
+                .or_default()
+                .push((slot, value));
         }
     }
 
@@ -455,6 +483,7 @@ fn setup_fixed_cache_state(
             contracts: Arc::new(contracts),
             block_hashes: Arc::new(block_hashes),
         },
+        storage_by_account: Arc::new(storage_by_account),
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
     }
