@@ -632,15 +632,12 @@ where
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
+                mark_exceeds_non_shared_gas_limit(
+                    &mut best_txs,
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
+                    non_shared_gas_limit - cumulative_gas_used,
+                    &self.metrics,
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -653,14 +650,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                mark_exceeds_general_gas_limit(&mut best_txs, &pool_tx, &self.metrics);
                 continue;
             }
 
@@ -673,14 +663,12 @@ where
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
+                mark_oversized_payload_transaction(
+                    &mut best_txs,
                     &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
+                    estimated_block_size_with_tx,
+                    &self.metrics,
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
                 continue;
             }
@@ -1347,6 +1335,61 @@ fn maybe_override_fee_recipient<DB: Database>(
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn mark_exceeds_non_shared_gas_limit<Txs>(
+    best_txs: &mut StateAwareBestTransactions<Txs>,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    remaining_gas: u64,
+    metrics: &TempoPayloadBuilderMetrics,
+) where
+    Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), remaining_gas),
+    );
+    metrics.inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+}
+
+#[cold]
+#[inline(never)]
+fn mark_exceeds_general_gas_limit<Txs>(
+    best_txs: &mut StateAwareBestTransactions<Txs>,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    metrics: &TempoPayloadBuilderMetrics,
+) where
+    Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::Other(Box::new(
+            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+        )),
+    );
+    metrics.inc_pool_tx_skipped("exceeds_general_gas_limit");
+}
+
+#[cold]
+#[inline(never)]
+fn mark_oversized_payload_transaction<Txs>(
+    best_txs: &mut StateAwareBestTransactions<Txs>,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    estimated_block_size_with_tx: usize,
+    metrics: &TempoPayloadBuilderMetrics,
+) where
+    Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::OversizedData {
+            size: estimated_block_size_with_tx,
+            limit: MAX_RLP_BLOCK_SIZE,
+        },
+    );
+    metrics.inc_pool_tx_skipped("oversized_block");
 }
 
 #[derive(Debug)]
