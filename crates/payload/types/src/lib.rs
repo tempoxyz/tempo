@@ -12,7 +12,10 @@ pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
@@ -20,7 +23,7 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{BlockBody, ExecutionPayload, PayloadTypes};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
+use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock, SealedOrRecoveredBlock};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{Block, TempoPrimitives};
 
@@ -48,6 +51,10 @@ pub struct TempoBuiltPayload {
     validation_work_duration: Duration,
     /// Time validators are expected to spend validating this payload.
     validation_latency_duration: Duration,
+    /// Approximate execution block RLP size estimate used for pacing and builder-side limits.
+    execution_block_size_estimate: usize,
+    /// Shared cache for the encoded execution block bytes.
+    execution_block_encoded: Arc<OnceLock<Bytes>>,
 }
 
 impl TempoBuiltPayload {
@@ -58,6 +65,8 @@ impl TempoBuiltPayload {
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
+        execution_block_size_estimate: usize,
+        execution_block_encoded: Arc<OnceLock<Bytes>>,
     ) -> Self {
         Self {
             inner,
@@ -65,6 +74,8 @@ impl TempoBuiltPayload {
             executed_block,
             validation_work_duration,
             validation_latency_duration,
+            execution_block_size_estimate,
+            execution_block_encoded,
         }
     }
 
@@ -74,6 +85,28 @@ impl TempoBuiltPayload {
             Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
             self.block_access_list,
         )
+    }
+
+    /// Converts the built payload into consensus block parts without cloning the execution block.
+    pub fn into_consensus_execution_payload(
+        self,
+    ) -> (
+        SealedOrRecoveredBlock<Block>,
+        Option<Bytes>,
+        Arc<OnceLock<Bytes>>,
+    ) {
+        let execution_block = SealedOrRecoveredBlock::recovered_arc(self.inner.block_arc().clone());
+
+        (
+            execution_block,
+            self.block_access_list,
+            self.execution_block_encoded,
+        )
+    }
+
+    /// Returns the approximate execution block RLP size estimate.
+    pub fn execution_block_size_estimate(&self) -> usize {
+        self.execution_block_size_estimate
     }
 
     /// Returns replayable builder work for this payload.

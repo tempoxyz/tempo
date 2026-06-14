@@ -21,7 +21,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::eip2718::{Encodable2718, Typed2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
@@ -58,7 +58,7 @@ use reth_transaction_pool::{
 };
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -81,6 +81,13 @@ use tempo_transaction_pool::{
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+/// Conservative estimate for non-transaction execution block RLP bytes.
+///
+/// Exact block RLP length is computed asynchronously after payload construction, so the builder uses
+/// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
+/// checks and pacing estimates.
+const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -391,13 +398,12 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
-        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes
             .withdrawals
             .as_ref()
             .map(|w| w.length())
             .unwrap_or(0)
-            + 1024
+            + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
@@ -520,6 +526,13 @@ where
         self.metrics
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
+
+        if is_osaka && block_size_used > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: block_size_used,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
 
         let base_fee = executor.evm().block().basefee;
         let pool_fetch_start = Instant::now();
@@ -964,7 +977,14 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
+        let RootsTaskResult {
+            transactions_root,
+            receipts_root,
+            receipts_bloom,
+            transactions,
+            senders,
+            encoded_block_transactions,
+        } = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
@@ -1034,15 +1054,6 @@ where
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
-        let rlp_length = block.rlp_length();
-
-        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
-        }
-
         let pool_transactions_inclusion_ratio = if pool_transactions_yielded == 0 {
             0.0
         } else {
@@ -1078,8 +1089,15 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let estimated_rlp_block_size = block_size_used;
+        if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_rlp_block_size,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
         let recorded_block_size_bytes =
-            rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+            estimated_rlp_block_size + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -1127,6 +1145,13 @@ where
         );
 
         let block = Arc::new(block);
+        let execution_block_encoder =
+            ExecutionBlockEncoder::new(block.clone(), Some(encoded_block_transactions));
+        let execution_block_encoded = execution_block_encoder.encoded_block();
+        self.executor
+            .spawn_blocking_named("builder-block-rlp-encode", move || {
+                drop(execution_block_encoder);
+            });
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
@@ -1147,6 +1172,8 @@ where
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
+            estimated_rlp_block_size,
+            execution_block_encoded,
         );
 
         drop(db);
@@ -1160,12 +1187,11 @@ where
         }
     }
 
-    #[expect(clippy::type_complexity)]
     fn spawn_roots_task(
         &self,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
+        oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
@@ -1179,6 +1205,7 @@ where
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
+                let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
 
                 let mut buf = Vec::new();
 
@@ -1187,6 +1214,7 @@ where
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
+                    encoded_block_transactions.push(&tx, &buf);
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1199,13 +1227,14 @@ where
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
-                let _ = result_tx.send((
+                let _ = result_tx.send(RootsTaskResult {
                     transactions_root,
                     receipts_root,
                     receipts_bloom,
                     transactions,
                     senders,
-                ));
+                    encoded_block_transactions: encoded_block_transactions.finish(),
+                });
             });
 
         (transactions_tx, result_rx)
@@ -1364,13 +1393,171 @@ impl BuilderTx {
     }
 }
 
+#[derive(Debug)]
+struct RootsTaskResult {
+    transactions_root: B256,
+    receipts_root: B256,
+    receipts_bloom: Bloom,
+    transactions: Vec<TempoTxEnvelope>,
+    senders: Vec<Address>,
+    encoded_block_transactions: EncodedBlockTransactionList,
+}
+
+/// RLP transaction-list bytes for the execution block.
+///
+/// The roots task already encodes every transaction in EIP-2718 form for the transaction trie. This
+/// stores those bytes in the form required by the block body transaction list, so the later full
+/// block encoder can copy the transaction-list RLP instead of encoding every transaction again.
+#[derive(Clone, Debug)]
+struct EncodedBlockTransactionList {
+    transaction_count: usize,
+    rlp: Bytes,
+}
+
+/// Incrementally builds the RLP transaction-list bytes used inside the execution block body.
+#[derive(Debug, Default)]
+struct EncodedBlockTransactionsBuilder {
+    transaction_count: usize,
+    payload: Vec<u8>,
+}
+
+impl EncodedBlockTransactionsBuilder {
+    fn push(&mut self, transaction: &TempoTxEnvelope, encoded_2718: &[u8]) {
+        self.transaction_count += 1;
+        if !transaction.is_legacy() {
+            alloy_rlp::Header {
+                list: false,
+                payload_length: encoded_2718.len(),
+            }
+            .encode(&mut self.payload);
+        }
+        self.payload.extend_from_slice(encoded_2718);
+    }
+
+    fn finish(self) -> EncodedBlockTransactionList {
+        let header = alloy_rlp::Header {
+            list: true,
+            payload_length: self.payload.len(),
+        };
+        let mut rlp = Vec::with_capacity(header.length_with_payload());
+        header.encode(&mut rlp);
+        rlp.extend_from_slice(&self.payload);
+        EncodedBlockTransactionList {
+            transaction_count: self.transaction_count,
+            rlp: rlp.into(),
+        }
+    }
+}
+
+/// Fills the shared encoded execution block cache from a builder background task.
+///
+/// The payload builder creates this after assembling a recovered block, passes a clone of
+/// `encoded_block` into `TempoBuiltPayload`, then moves the encoder into a blocking task. Dropping
+/// the encoder performs the actual block RLP encoding unless another consumer has already filled
+/// the cache. When available, the encoder reuses transaction-list bytes produced by the roots task
+/// instead of encoding every transaction again.
+#[derive(Debug)]
+struct ExecutionBlockEncoder {
+    block: Arc<RecoveredBlock<tempo_primitives::Block>>,
+    encoded_transactions: Option<EncodedBlockTransactionList>,
+    encoded_block: Arc<OnceLock<Bytes>>,
+}
+
+impl ExecutionBlockEncoder {
+    fn new(
+        block: Arc<RecoveredBlock<tempo_primitives::Block>>,
+        encoded_transactions: Option<EncodedBlockTransactionList>,
+    ) -> Self {
+        Self {
+            block,
+            encoded_transactions,
+            encoded_block: Arc::new(OnceLock::new()),
+        }
+    }
+
+    fn encoded_block(&self) -> Arc<OnceLock<Bytes>> {
+        self.encoded_block.clone()
+    }
+
+    fn encode_block(&self) -> &Bytes {
+        self.encoded_block.get_or_init(|| {
+            let block = self.block.sealed_block();
+            let mut encoded = Vec::new();
+            let encode_start = Instant::now();
+            let reused_encoded_transactions =
+                self.encoded_transactions
+                    .as_ref()
+                    .is_some_and(|transactions| {
+                        encode_block_with_transactions(block, transactions, &mut encoded)
+                    });
+            if !reused_encoded_transactions {
+                block.encode(&mut encoded);
+            }
+            let encode_elapsed = encode_start.elapsed();
+            info!(
+                block_number = block.number(),
+                block_hash = ?block.hash(),
+                encoded_size_bytes = encoded.len(),
+                reused_encoded_transactions,
+                ?encode_elapsed,
+                "encoded execution block rlp"
+            );
+            encoded.into()
+        })
+    }
+}
+
+fn encode_block_with_transactions(
+    block: &reth_primitives_traits::SealedBlock<tempo_primitives::Block>,
+    transactions: &EncodedBlockTransactionList,
+    out: &mut Vec<u8>,
+) -> bool {
+    let body = block.body();
+    if body.transactions.len() != transactions.transaction_count {
+        warn!(
+            block_number = block.number(),
+            block_hash = ?block.hash(),
+            block_transactions = body.transactions.len(),
+            encoded_transactions = transactions.transaction_count,
+            "cached execution block transaction list did not match block body"
+        );
+        return false;
+    }
+
+    let payload_length = block.header().length()
+        + transactions.rlp.len()
+        + body.ommers.length()
+        + body.withdrawals.as_ref().map_or(0, Encodable::length);
+
+    alloy_rlp::Header {
+        list: true,
+        payload_length,
+    }
+    .encode(out);
+    block.header().encode(out);
+    out.extend_from_slice(&transactions.rlp);
+    body.ommers.encode(out);
+    if let Some(withdrawals) = &body.withdrawals {
+        withdrawals.encode(out);
+    }
+
+    true
+}
+
+impl Drop for ExecutionBlockEncoder {
+    fn drop(&mut self) {
+        let _ = self.encode_block();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::BlockBody;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_consensus::{BlockBody, TxEip1559};
+    use alloy_eips::eip4895::{Withdrawal, Withdrawals};
+    use alloy_primitives::{Address, B256, Bytes, Signature};
     use core::num::NonZeroU64;
-    use reth_primitives_traits::Block as _;
+    use reth_primitives_traits::{Block as _, SealedBlock};
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1453,7 +1640,106 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(
+            eth,
+            None,
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            NON_TRANSACTION_SIZE_ESTIMATE,
+            Arc::new(OnceLock::new()),
+        )
+    }
+
+    fn legacy_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: Address::random().into(),
+                value: U256::ZERO,
+                input,
+            },
+            Signature::test_signature(),
+        ))
+    }
+
+    fn eip1559_tx(input: Bytes) -> TempoTxEnvelope {
+        TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+            TxEip1559 {
+                chain_id: 1,
+                nonce: 1,
+                gas_limit: 21_000,
+                max_fee_per_gas: 2,
+                max_priority_fee_per_gas: 1,
+                to: Address::random().into(),
+                value: U256::ZERO,
+                access_list: Default::default(),
+                input,
+            },
+            Signature::test_signature(),
+        ))
+    }
+
+    fn encoded_block_transactions(transactions: &[TempoTxEnvelope]) -> EncodedBlockTransactionList {
+        let mut builder = EncodedBlockTransactionsBuilder::default();
+        let mut buf = Vec::new();
+        for transaction in transactions {
+            buf.clear();
+            transaction.encode_2718(&mut buf);
+            builder.push(transaction, &buf);
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn encoded_block_transaction_list_matches_alloy_encoding() {
+        let transactions = vec![
+            legacy_tx(Bytes::from_static(b"legacy")),
+            eip1559_tx(Bytes::from_static(b"typed")),
+        ];
+
+        let encoded_transactions = encoded_block_transactions(&transactions);
+        let expected = alloy_rlp::encode(&transactions);
+
+        assert_eq!(encoded_transactions.transaction_count, transactions.len());
+        assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+    }
+
+    #[test]
+    fn cached_transaction_list_block_encoding_matches_full_block_encoding() {
+        let transactions = vec![
+            legacy_tx(Bytes::from_static(b"legacy")),
+            eip1559_tx(Bytes::from_static(b"typed")),
+        ];
+        let encoded_transactions = encoded_block_transactions(&transactions);
+        let block = SealedBlock::seal_slow(Block {
+            header: TempoHeader::default(),
+            body: BlockBody {
+                transactions,
+                ommers: vec![TempoHeader::default()],
+                withdrawals: Some(Withdrawals::new(vec![Withdrawal {
+                    index: 1,
+                    validator_index: 2,
+                    address: Address::random(),
+                    amount: 3,
+                }])),
+            },
+        });
+
+        let mut encoded_from_cache = Vec::new();
+        assert!(encode_block_with_transactions(
+            &block,
+            &encoded_transactions,
+            &mut encoded_from_cache
+        ));
+
+        let mut expected = Vec::new();
+        block.encode(&mut expected);
+
+        assert_eq!(encoded_from_cache, expected);
     }
 
     #[test]
