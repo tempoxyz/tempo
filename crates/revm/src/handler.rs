@@ -838,7 +838,9 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
 
-        MainnetHandler::default()
+        MainnetHandler {
+            _phantom: core::marker::PhantomData,
+        }
             .execution_result(evm, result, result_gas)
             .map(|result| result.map_haltreason(Into::into))
     }
