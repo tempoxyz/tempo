@@ -2386,13 +2386,26 @@ pub fn validate_time_window(
     block_timestamp: u64,
 ) -> Result<(), TempoInvalidTransaction> {
     // Validate validAfter constraint
-    if let Some(after) = valid_after
-        && block_timestamp < after
-    {
-        return Err(TempoInvalidTransaction::ValidAfter {
-            current: block_timestamp,
-            valid_after: after,
-        });
+    if let Some(after) = valid_after {
+        if block_timestamp < after {
+            return Err(TempoInvalidTransaction::ValidAfter {
+                current: block_timestamp,
+                valid_after: after,
+            });
+        }
+    } else {
+        // Validate validBefore constraint
+        // IMPORTANT: must be aligned with `RecoveredSubBlock::has_expired_transactions`.
+        if let Some(before) = valid_before
+            && block_timestamp >= before
+        {
+            return Err(TempoInvalidTransaction::ValidBefore {
+                current: block_timestamp,
+                valid_before: before,
+            });
+        }
+
+        return Ok(());
     }
 
     // Validate validBefore constraint
