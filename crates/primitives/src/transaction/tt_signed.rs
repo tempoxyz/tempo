@@ -94,6 +94,10 @@ impl AASigned {
     /// Returns a reference to the transaction hash, computing it if needed.
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     pub fn hash(&self) -> &B256 {
+        if let Some(hash) = self.hash.get() {
+            return hash;
+        }
+
         #[allow(clippy::useless_conversion)]
         self.hash.get_or_init(|| self.compute_hash().into())
     }
@@ -107,6 +111,10 @@ impl AASigned {
 
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
+        if let Some(hash) = self.signature_hash.get() {
+            return *hash;
+        }
+
         #[allow(clippy::useless_conversion)]
         *self
             .signature_hash
@@ -121,6 +129,14 @@ impl AASigned {
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
+        if let Some(cached) = self.expiring_nonce_hash.get() {
+            if cached.0 == sender {
+                return cached.1;
+            }
+
+            return unique_tx_identifier_from_signable(&self.tx, sender);
+        }
+
         let cached = self.expiring_nonce_hash.get_or_init(|| {
             let hash = unique_tx_identifier_from_signable(&self.tx, sender);
             #[allow(clippy::useless_conversion)]
