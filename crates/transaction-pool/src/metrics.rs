@@ -96,6 +96,9 @@ pub struct TempoPoolMaintenanceMetrics {
     /// Time spent updating the 2D nonce pool in seconds.
     pub nonce_pool_update_duration_seconds: Histogram,
 
+    /// Time spent reseeding the validator state cache from the block post-state in seconds.
+    pub state_cache_seed_duration_seconds: Histogram,
+
     /// Number of expired transactions evicted.
     pub expired_transactions_evicted: Counter,
 
@@ -116,4 +119,16 @@ pub struct TempoPoolMaintenanceMetrics {
 
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
+}
+
+/// Metrics for the Tempo transaction validator.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.validation")]
+pub struct TempoValidatorMetrics {
+    /// Number of validation calls that reused the tip-scoped state cache (tip matched).
+    pub state_cache_hits: Counter,
+
+    /// Number of validation calls that fell back to an ephemeral empty cache because the
+    /// cached tip did not match the latest canonical tip.
+    pub state_cache_misses: Counter,
 }

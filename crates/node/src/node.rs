@@ -542,6 +542,12 @@ where
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
 
+        // Reseed the validator state cache off the critical pool maintenance path.
+        ctx.task_executor().spawn_critical_task(
+            "txpool maintenance - state cache",
+            tempo_transaction_pool::maintain::maintain_state_cache(transaction_pool.clone()),
+        );
+
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
