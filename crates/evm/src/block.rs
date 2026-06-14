@@ -653,6 +653,21 @@ where
     }
 }
 
+impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    /// Clears receipts accumulated by committed transactions.
+    ///
+    /// This is for execution harnesses that only need cumulative gas/state effects and do not
+    /// inspect receipts after each transaction.
+    #[inline]
+    pub fn clear_receipts(&mut self) {
+        self.inner.receipts.clear();
+    }
+}
+
 // Test-only methods to set internal state without exposing fields as pub(crate)
 #[cfg(test)]
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
