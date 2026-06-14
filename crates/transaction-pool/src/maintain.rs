@@ -628,13 +628,13 @@ where
                 // Removed transactions are collected here and dropped at the end of the
                 // iteration: deallocating them (input data, signatures, allocator work) is
                 // expensive and there is a block time of slack after the updates are done.
-                let mut removed_txs: Vec<Vec<_>> = Vec::with_capacity(1);
+                let mut removed_txs = Vec::new();
 
                 // 1. Update 2D nonce pool before scan-based maintenance.
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+                removed_txs.extend(pool.notify_aa_pool_on_state_updates(bundle_state));
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.
@@ -673,7 +673,7 @@ where
                         "Evicting expired AA transactions (valid_before)"
                     );
                     metrics.expired_transactions_evicted.increment(evicted.len() as u64);
-                    removed_txs.push(evicted);
+                    removed_txs.extend(evicted);
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
@@ -922,7 +922,7 @@ where
                         state.untrack(tx.hash());
                     }
                     metrics.transactions_invalidated.increment(evicted.len() as u64);
-                    removed_txs.push(evicted);
+                    removed_txs.extend(evicted);
                     metrics
                         .invalidation_eviction_duration_seconds
                         .record(invalidation_start.elapsed());
@@ -948,7 +948,7 @@ where
                         for hash in &stale_to_evict {
                             state.untrack(hash);
                         }
-                        removed_txs.push(pool.remove_transactions(stale_to_evict));
+                        removed_txs.extend(pool.remove_transactions(stale_to_evict));
                     }
                 }
 
