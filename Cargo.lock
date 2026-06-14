@@ -12818,7 +12818,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12900,7 +12900,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12943,7 +12943,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -12966,7 +12966,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "age",
  "alloy-consensus",
@@ -13027,7 +13027,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "age",
  "commonware-codec",
@@ -13044,7 +13044,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -13056,7 +13056,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -13070,7 +13070,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -13121,7 +13121,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13165,7 +13165,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "clap",
  "dirs-next",
@@ -13184,7 +13184,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "eyre",
  "indenter",
@@ -13192,7 +13192,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "async-trait",
@@ -13205,10 +13205,11 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-eips",
+ "alloy-evm",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
@@ -13262,6 +13263,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-revm",
  "tempo-transaction-pool",
  "test-case",
  "thiserror 2.0.18",
@@ -13273,7 +13275,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928 0.4.1",
@@ -13311,7 +13313,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -13330,7 +13332,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -13362,7 +13364,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -13372,7 +13374,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13410,7 +13412,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13444,7 +13446,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "clap",
@@ -13469,7 +13471,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "eyre",
  "jiff",
@@ -13478,7 +13480,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13487,6 +13489,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
+ "dashmap",
  "futures",
  "itertools 0.14.0",
  "metrics",
@@ -13517,7 +13520,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -13529,7 +13532,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "alloy",
  "alloy-consensus",

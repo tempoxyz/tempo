@@ -12,30 +12,34 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 #[command(next_help_heading = "Faucet")]
 pub struct FaucetArgs {
     /// Whether the faucet is enabled
-    #[arg(long = "faucet.enabled", default_value_t = false)]
+    #[arg(
+        id = "faucet.enabled",
+        long = "faucet.enabled",
+        default_value_t = false
+    )]
     pub enabled: bool,
 
     /// Faucet funding private key
     #[arg(
         long = "faucet.private-key",
-        requires = "enabled",
-        required_if_eq("enabled", "true")
+        requires = "faucet.enabled",
+        required_if_eq("faucet.enabled", "true")
     )]
     pub private_key: Option<B256>,
 
     /// Amount for each faucet funding transaction
     #[arg(
         long = "faucet.amount",
-        requires = "enabled",
-        required_if_eq("enabled", "true")
+        requires = "faucet.enabled",
+        required_if_eq("faucet.enabled", "true")
     )]
     pub amount: Option<U256>,
 
     /// Target token address for the faucet to be funding with
     #[arg(
         long = "faucet.address",
-        requires = "enabled",
-        required_if_eq("enabled", "true"),
+        requires = "faucet.enabled",
+        required_if_eq("faucet.enabled", "true"),
         num_args(0..)
     )]
     pub token_addresses: Option<Vec<Address>>,
@@ -43,7 +47,7 @@ pub struct FaucetArgs {
     #[arg(
         long = "faucet.node-address",
         default_value = "http://localhost:8545",
-        requires = "enabled"
+        requires = "faucet.enabled"
     )]
     pub node_address: String,
 }
@@ -77,5 +81,23 @@ impl FaucetArgs {
                     .expect("Failed to parse node address"),
             )
             .erased()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// A helper type to parse Args more easily
+    #[derive(Parser)]
+    struct CommandParser {
+        #[command(flatten)]
+        args: FaucetArgs,
+    }
+
+    #[test]
+    fn faucet_args_default_sanity_test() {
+        assert!(CommandParser::try_parse_from(["tempo"]).is_ok());
     }
 }

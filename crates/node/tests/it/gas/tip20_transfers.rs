@@ -569,6 +569,8 @@ async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
 
 #[test_case(TempoHardfork::T5 ; "t5")]
 #[test_case(TempoHardfork::T6 ; "t6")]
+#[test_case(TempoHardfork::T7 ; "t7")]
+#[test_case(TempoHardfork::T8 ; "t8")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

@@ -35,7 +35,8 @@ templates:
     nonce_key:
       uniform: [1, 18446744073709551615]
     call:
-      to: "0x20c0000000000000000000000000000000000000"
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
       abi: ERC20
       function: transfer
       args:
