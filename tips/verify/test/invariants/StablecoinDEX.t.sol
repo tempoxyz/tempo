@@ -896,7 +896,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     )
         internal
     {
-        // TEMPO-DEX7: Quote should match execution TODO: enable when fixed
+        // TEMPO-DEX7: Quote should match execution
         uint128 quotedOut;
         try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
@@ -939,9 +939,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amount, amountOut);
             }
 
-            // TEMPO-DEX7: Quote matches execution TODO: enable when fixed
+            // TEMPO-DEX7: Quote matches execution
             if (quotedOut > 0) {
-                //assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
+                assertEq(amountOut, quotedOut, "TEMPO-DEX7: quote mismatch for swapExactAmountIn");
             }
         } catch (bytes memory reason) {
             _assertKnownSwapError(reason);
@@ -1001,9 +1001,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
                 _assertSwapBalanceChanges(swapper, before, amountIn, amount);
             }
 
-            // TEMPO-DEX7: Quote matches execution. TODO: enable when fixed
+            // TEMPO-DEX7: Quote matches execution.
             if (quotedIn > 0) {
-                //assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
+                assertEq(amountIn, quotedIn, "TEMPO-DEX7: quote mismatch for swapExactAmountOut");
             }
         } catch (bytes memory reason) {
             _assertKnownSwapError(reason);

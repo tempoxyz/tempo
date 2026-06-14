@@ -1166,7 +1166,7 @@ impl StablecoinDEX {
     }
 
     /// Helper function to get best tick from orderbook
-    fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
+    fn get_best_price_level(&self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
         let orderbook = self.books[book_key].read()?;
 
         let current_tick = if is_bid {
@@ -1354,96 +1354,88 @@ impl StablecoinDEX {
     }
 
     /// Quote exact output amount without executing trades
+    /// Quotes the input required to receive exactly `amount_out` without executing trades.
+    ///
+    /// Walks resting orders one-by-one, mirroring [`Self::fill_orders_exact_out`] (including its
+    /// per-order rounding) so the quote matches actual execution (TEMPO-DEX7). Performs only reads.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_out = amount_out;
-        let mut amount_in = 0u128;
-        let orderbook = self.books[book_key].read()?;
+        let mut total_amount_in: u128 = 0;
 
-        let mut current_tick = if is_bid {
-            orderbook.best_bid_tick
-        } else {
-            orderbook.best_ask_tick
-        };
-        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
-        if current_tick == i16::MIN || current_tick == i16::MAX {
-            return Err(StablecoinDEXError::insufficient_liquidity().into());
-        }
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
+        let mut order = self.orders[level.head].read()?;
 
         while remaining_out > 0 {
-            let level = self.books[book_key]
-                .tick_level_handler(current_tick, is_bid)
-                .read()?;
+            let tick = order.tick();
 
-            // If no liquidity at this level, move to next tick
-            if level.total_liquidity == 0 {
-                let (next_tick, initialized) =
-                    self.books[book_key].next_initialized_tick(current_tick, is_bid)?;
-
-                if !initialized {
-                    return Err(StablecoinDEXError::insufficient_liquidity().into());
-                }
-                current_tick = next_tick;
-                continue;
-            }
-
-            let (fill_amount, amount_in_tick) = if is_bid {
-                // For bids: remaining_out is in quote, amount_in is in base
-                // Round UP to ensure we collect enough base to cover exact output.
-                // Note: this quote iterates per-tick, but execution iterates per-order.
-                // If multiple orders exist at a tick, execution may charge slightly more
-                // due to ceiling accumulation across order boundaries.
-                let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
+            let (fill_amount, amount_in) = if is_bid {
+                // For bids: remaining_out is quote, amount_in is base.
+                // Round UP base needed to ensure enough base covers the exact output.
+                let base_needed = quote_to_base(remaining_out, tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
-                let fill_amount = if base_needed > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    base_needed
-                };
+                let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
-                // For asks: remaining_out is in base, amount_in is in quote
-                // Taker pays quote, maker receives quote - round UP to favor maker
-                let fill_amount = if remaining_out > level.total_liquidity {
-                    level.total_liquidity
-                } else {
-                    remaining_out
-                };
-                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
+                // For asks: remaining_out is base, amount_in is quote.
+                // Taker pays quote, maker receives quote - round UP to favor maker.
+                let fill_amount = remaining_out.min(order.remaining());
+                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill_amount, quote_needed)
+                (fill_amount, amount_in)
             };
 
-            let amount_out_tick = if is_bid {
-                // Round down amount_out_tick (user receives less quote).
-                // Cap at remaining_out to avoid underflow from round-trip rounding:
-                // when tick > 0, base_to_quote(quote_to_base(x, Up), Down) can exceed x by 1.
-                base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
+            total_amount_in = total_amount_in
+                .checked_add(amount_in)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            // Partial fill: requirement satisfied within this order, nothing left to take.
+            if fill_amount < order.remaining() {
+                break;
+            }
+
+            // Full fill: the output credited for this order, matching `fill_order`.
+            // Bid -> taker receives quote (round DOWN); ask -> taker receives base.
+            let amount_out_received = if is_bid {
+                base_to_quote(fill_amount, tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
-                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out.saturating_sub(amount_out_tick);
-            amount_in = amount_in
-                .checked_add(amount_in_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            // If we exhausted this level or filled our requirement, move to next tick
-            if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) =
-                    self.books[book_key].next_initialized_tick(current_tick, is_bid)?;
-
-                if !initialized && remaining_out > 0 {
-                    return Err(StablecoinDEXError::insufficient_liquidity().into());
+            // Reduce remaining output exactly as execution does.
+            if is_bid {
+                let base_needed = quote_to_base(remaining_out, tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                if base_needed > order.remaining() {
+                    remaining_out = remaining_out
+                        .checked_sub(amount_out_received)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    remaining_out = 0;
                 }
-                current_tick = next_tick;
+            } else if remaining_out > order.remaining() {
+                remaining_out = remaining_out
+                    .checked_sub(amount_out_received)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
             } else {
-                break;
+                remaining_out = 0;
+            }
+
+            match self.next_resting_order(book_key, &order, level, is_bid)? {
+                Some((next_level, next_order)) => {
+                    level = next_level;
+                    order = next_order;
+                }
+                None => {
+                    if remaining_out > 0 {
+                        return Err(StablecoinDEXError::insufficient_liquidity().into());
+                    }
+                    break;
+                }
             }
         }
 
-        Ok(amount_in)
+        Ok(total_amount_in)
     }
 
     /// Find the trade path between two tokens
@@ -1574,82 +1566,119 @@ impl StablecoinDEX {
         Ok(path)
     }
 
-    /// Quote exact input amount without executing trades
+    /// Quotes the output received for exactly `amount_in` without executing trades.
+    ///
+    /// Walks resting orders one-by-one, mirroring [`Self::fill_orders_exact_in`] (including its
+    /// per-order rounding) so the quote matches actual execution (TEMPO-DEX7). Performs only reads.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_in = amount_in;
-        let mut amount_out = 0u128;
-        let orderbook = self.books[book_key].read()?;
+        let mut total_amount_out: u128 = 0;
 
-        let mut current_tick = if is_bid {
-            orderbook.best_bid_tick
-        } else {
-            orderbook.best_ask_tick
-        };
-
-        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
-        if current_tick == i16::MIN || current_tick == i16::MAX {
-            return Err(StablecoinDEXError::insufficient_liquidity().into());
-        }
+        let mut level = self.get_best_price_level(book_key, is_bid)?;
+        let mut order = self.orders[level.head].read()?;
 
         while remaining_in > 0 {
-            let level = self.books[book_key]
-                .tick_level_handler(current_tick, is_bid)
-                .read()?;
+            let tick = order.tick();
 
-            // If no liquidity at this level, move to next tick
-            if level.total_liquidity == 0 {
-                let (next_tick, initialized) =
-                    self.books[book_key].next_initialized_tick(current_tick, is_bid)?;
-
-                if !initialized {
-                    return Err(StablecoinDEXError::insufficient_liquidity().into());
-                }
-                current_tick = next_tick;
-                continue;
-            }
-
-            // Compute (fill_amount, amount_out_tick, amount_consumed) based on hardfork
-            let (fill_amount, amount_out_tick, amount_consumed) = if is_bid {
-                // For bids: remaining_in is base, amount_out is quote
-                let fill = remaining_in.min(level.total_liquidity);
-                // Round down quote_out (user receives less quote)
-                let quote_out = base_to_quote(fill, current_tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill, quote_out, fill)
+            let fill_amount = if is_bid {
+                // For bids: remaining_in is base, fill in base.
+                remaining_in.min(order.remaining())
             } else {
-                // For asks: remaining_in is quote, amount_out is base
-                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
-                let base_to_get =
-                    quote_to_base(remaining_in, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                let fill = base_to_get.min(level.total_liquidity);
-                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Up)
+                // For asks: remaining_in is quote, convert to base.
+                // Round down base out (user receives less base, favors protocol).
+                let base_out = quote_to_base(remaining_in, tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill, fill, quote_consumed)
+                base_out.min(order.remaining())
             };
 
-            remaining_in = remaining_in
-                .checked_sub(amount_consumed)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            amount_out = amount_out
-                .checked_add(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            // If we exhausted this level, move to next tick
-            if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) =
-                    self.books[book_key].next_initialized_tick(current_tick, is_bid)?;
-
-                if !initialized && remaining_in > 0 {
-                    return Err(StablecoinDEXError::insufficient_liquidity().into());
-                }
-                current_tick = next_tick;
+            // Per-order output, matching `fill_order` / `partial_fill_order`:
+            // bid -> taker receives quote (round DOWN); ask -> taker receives base.
+            let amount_out = if is_bid {
+                base_to_quote(fill_amount, tick, RoundingDirection::Down)
+                    .ok_or(TempoPrecompileError::under_overflow())?
             } else {
+                fill_amount
+            };
+            total_amount_out = total_amount_out
+                .checked_add(amount_out)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            // Partial fill: input exhausted within this order.
+            if fill_amount < order.remaining() {
                 break;
+            }
+
+            // Full fill: reduce remaining input exactly as execution does.
+            if is_bid {
+                if remaining_in > order.remaining() {
+                    remaining_in = remaining_in
+                        .checked_sub(order.remaining())
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    remaining_in = 0;
+                }
+            } else {
+                let base_out = quote_to_base(remaining_in, tick, RoundingDirection::Down)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                if base_out > order.remaining() {
+                    // Quote consumed = what maker receives - round UP (zero-sum with maker).
+                    let quote_needed =
+                        base_to_quote(order.remaining(), tick, RoundingDirection::Up)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                    remaining_in = remaining_in
+                        .checked_sub(quote_needed)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    remaining_in = 0;
+                }
+            }
+
+            match self.next_resting_order(book_key, &order, level, is_bid)? {
+                Some((next_level, next_order)) => {
+                    level = next_level;
+                    order = next_order;
+                }
+                None => {
+                    if remaining_in > 0 {
+                        return Err(StablecoinDEXError::insufficient_liquidity().into());
+                    }
+                    break;
+                }
             }
         }
 
-        Ok(amount_out)
+        Ok(total_amount_out)
+    }
+
+    /// Read-only advance to the next resting order, mirroring the traversal in
+    /// [`Self::fill_order`] without mutating storage.
+    ///
+    /// Returns the next `(level, order)` to consume, or `None` when no further liquidity exists.
+    fn next_resting_order(
+        &self,
+        book_key: B256,
+        order: &Order,
+        mut level: TickLevel,
+        is_bid: bool,
+    ) -> Result<Option<(TickLevel, Order)>> {
+        if order.next() == 0 {
+            // Last order at this tick: move to the next initialized tick (exclusive of current).
+            let (next_tick, has_liquidity) =
+                self.books[book_key].next_initialized_tick(order.tick(), is_bid)?;
+            if !has_liquidity {
+                return Ok(None);
+            }
+            let next_level = self.books[book_key]
+                .tick_level_handler(next_tick, is_bid)
+                .read()?;
+            let next_order = self.orders[next_level.head].read()?;
+            Ok(Some((next_level, next_order)))
+        } else {
+            // Advance to the next order at the same tick.
+            level.head = order.next();
+            let next_order = self.orders[order.next()].read()?;
+            Ok(Some((level, next_order)))
+        }
     }
 }
 
@@ -2861,6 +2890,104 @@ mod tests {
 
             let alice_base_exchange_balance = exchange.balance_of(alice, base_token)?;
             assert_eq!(alice_base_exchange_balance, amount_in);
+
+            Ok(())
+        })
+    }
+
+    /// TEMPO-DEX7: `quoteSwapExactAmountIn` must return exactly what `swapExactAmountIn` executes,
+    /// even when several resting orders share the same (positive) tick. Per-order ceiling rounding
+    /// used to make the per-tick quote diverge from per-order execution.
+    #[test]
+    fn test_quote_in_matches_execution_multiple_orders_same_tick() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 2_000_000_000u128)?;
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            // Three ask orders resting at the same positive tick.
+            let tick = 10i16;
+            for _ in 0..3 {
+                exchange
+                    .place(alice, base_token, MIN_ORDER_AMOUNT, false, tick)
+                    .expect("Place ask order should succeed");
+            }
+
+            // Bob pays quote to receive base; target spans two full orders plus a partial third
+            // so rounding accumulates across order boundaries.
+            let base_target = 2 * MIN_ORDER_AMOUNT + 37_777;
+            let amount_in = base_to_quote(base_target, tick, RoundingDirection::Up).unwrap();
+            exchange.set_balance(bob, quote_token, 2_000_000_000u128)?;
+
+            let quoted_out =
+                exchange.quote_swap_exact_amount_in(quote_token, base_token, amount_in)?;
+            let executed_out =
+                exchange.swap_exact_amount_in(bob, quote_token, base_token, amount_in, 0)?;
+
+            assert_eq!(
+                quoted_out, executed_out,
+                "TEMPO-DEX7: quote_swap_exact_amount_in must match execution"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// TEMPO-DEX7: `quoteSwapExactAmountOut` must return exactly what `swapExactAmountOut` executes
+    /// across several resting orders sharing one (positive) tick.
+    #[test]
+    fn test_quote_out_matches_execution_multiple_orders_same_tick() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 2_000_000_000u128)?;
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            // Three ask orders resting at the same positive tick.
+            let tick = 10i16;
+            for _ in 0..3 {
+                exchange
+                    .place(alice, base_token, MIN_ORDER_AMOUNT, false, tick)
+                    .expect("Place ask order should succeed");
+            }
+
+            // Bob wants an exact base output spanning two full orders plus a partial third.
+            let amount_out = 2 * MIN_ORDER_AMOUNT + 37_777;
+            exchange.set_balance(bob, quote_token, 2_000_000_000u128)?;
+
+            let quoted_in =
+                exchange.quote_swap_exact_amount_out(quote_token, base_token, amount_out)?;
+            let executed_in = exchange.swap_exact_amount_out(
+                bob,
+                quote_token,
+                base_token,
+                amount_out,
+                u128::MAX,
+            )?;
+
+            assert_eq!(
+                quoted_in, executed_in,
+                "TEMPO-DEX7: quote_swap_exact_amount_out must match execution"
+            );
 
             Ok(())
         })
