@@ -7,7 +7,7 @@
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
 use alloy_evm::{
-    Evm, EvmEnv, EvmFactory,
+    Evm, EvmEnv, EvmFactory, FromRecoveredTx,
     block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
 };
@@ -71,7 +71,7 @@ use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
 };
-use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+use tempo_revm::{TempoTxEnv, gas_params::tempo_gas_params_with_amsterdam};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -92,9 +92,33 @@ const EXECUTION_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 struct Workload {
-    transactions: Vec<Recovered<TempoTxEnvelope>>,
+    transactions: Vec<PreparedTransaction>,
     participants: Vec<Address>,
     block_timestamp: u64,
+}
+
+#[derive(Clone)]
+struct PreparedTransaction {
+    env: TempoTxEnv,
+    recovered: Recovered<TempoTxEnvelope>,
+}
+
+impl PreparedTransaction {
+    fn new(recovered: Recovered<TempoTxEnvelope>) -> Self {
+        let env = TempoTxEnv::from_recovered_tx(recovered.inner(), recovered.signer());
+        Self { env, recovered }
+    }
+
+    fn is_aa(&self) -> bool {
+        self.recovered.inner().is_aa()
+    }
+}
+
+fn prepare_transactions(transactions: Vec<Recovered<TempoTxEnvelope>>) -> Vec<PreparedTransaction> {
+    transactions
+        .into_iter()
+        .map(PreparedTransaction::new)
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -120,7 +144,7 @@ enum RewardBenchKind {
 
 struct RewardBenchWorkload {
     name: &'static str,
-    transactions: Vec<Recovered<TempoTxEnvelope>>,
+    transactions: Vec<PreparedTransaction>,
     participants: Vec<Address>,
     delegates: Vec<Address>,
     kind: RewardBenchKind,
@@ -634,7 +658,7 @@ fn generated_workload() -> Workload {
         .collect();
 
     Workload {
-        transactions,
+        transactions: prepare_transactions(transactions),
         participants,
         block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
     }
@@ -696,37 +720,41 @@ fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
         ),
         RewardBenchWorkload {
             name: "tip20_claim_rewards",
-            transactions: signers
-                .iter()
-                .take(REWARD_BENCH_TX_COUNT)
-                .map(|signer| {
-                    sign_tip20_call(
-                        signer,
-                        Bytes::from(ITIP20::claimRewardsCall {}.abi_encode()),
-                    )
-                })
-                .collect(),
+            transactions: prepare_transactions(
+                signers
+                    .iter()
+                    .take(REWARD_BENCH_TX_COUNT)
+                    .map(|signer| {
+                        sign_tip20_call(
+                            signer,
+                            Bytes::from(ITIP20::claimRewardsCall {}.abi_encode()),
+                        )
+                    })
+                    .collect(),
+            ),
             participants: participants.clone(),
             delegates: delegates.clone(),
             kind: RewardBenchKind::ClaimRewards,
         },
         RewardBenchWorkload {
             name: "tip20_distribute_reward",
-            transactions: signers
-                .iter()
-                .take(REWARD_BENCH_TX_COUNT)
-                .map(|signer| {
-                    sign_tip20_call(
-                        signer,
-                        Bytes::from(
-                            ITIP20::distributeRewardCall {
-                                amount: U256::from(REWARD_DISTRIBUTION_AMOUNT / 1_000),
-                            }
-                            .abi_encode(),
-                        ),
-                    )
-                })
-                .collect(),
+            transactions: prepare_transactions(
+                signers
+                    .iter()
+                    .take(REWARD_BENCH_TX_COUNT)
+                    .map(|signer| {
+                        sign_tip20_call(
+                            signer,
+                            Bytes::from(
+                                ITIP20::distributeRewardCall {
+                                    amount: U256::from(REWARD_DISTRIBUTION_AMOUNT / 1_000),
+                                }
+                                .abi_encode(),
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
             participants,
             delegates,
             kind: RewardBenchKind::DistributeReward {
@@ -755,7 +783,7 @@ fn transfer_reward_workload(
 
     RewardBenchWorkload {
         name,
-        transactions,
+        transactions: prepare_transactions(transactions),
         participants,
         delegates: delegates.to_vec(),
         kind: RewardBenchKind::Transfer {
@@ -828,7 +856,7 @@ fn load_txgen_workload(path: &Path) -> Workload {
         .max(max_valid_after.unwrap_or(0));
 
     Workload {
-        transactions,
+        transactions: prepare_transactions(transactions),
         participants: participants.into_iter().collect(),
         block_timestamp,
     }
@@ -845,7 +873,7 @@ fn workload() -> Workload {
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
-    txs: &[Recovered<TempoTxEnvelope>],
+    txs: &[PreparedTransaction],
     block_timestamp: u64,
     hardfork: TempoHardfork,
 ) -> ExecutionStats
@@ -879,11 +907,11 @@ where
     let mut stats = ExecutionStats::default();
     for tx in txs {
         assert!(
-            tx.inner().is_aa(),
+            tx.is_aa(),
             "tip20 execution bench expects Tempo AA transactions"
         );
         let output = executor
-            .execute_transaction_without_commit(tx)
+            .execute_transaction_without_commit((tx.env.clone(), &tx.recovered))
             .expect("TIP20 transaction execution failed");
         assert!(
             output.result().result.is_success(),
