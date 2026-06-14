@@ -2094,10 +2094,11 @@ impl BestAA2dTransactions {
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
                     if process {
                         // Only mark as independent if no ancestor is already tracked
-                        if !self.by_id.contains_key(&AA2dTransactionId::new(
-                            id.seq_id,
-                            id.nonce.saturating_sub(1),
-                        )) || id.nonce == 0
+                        if id.nonce == 0
+                            || !self.by_id.contains_key(&AA2dTransactionId::new(
+                                id.seq_id,
+                                id.nonce.saturating_sub(1),
+                            ))
                         {
                             self.independent.insert(tx.clone());
                         }
