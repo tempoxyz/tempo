@@ -88,11 +88,14 @@ pub(crate) fn payload_budget_decision(
 ) -> PayloadBudgetDecision {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let validation_latency_estimate =
-        validation_latency.and_then(|estimate| estimate.estimate(current_workload));
-    let predicted_validator_work = validation_latency_estimate
-        .map(|estimate| estimate.min(predicted_builder_work))
-        .unwrap_or(predicted_builder_work);
+    let validation_latency_estimate = match validation_latency {
+        Some(estimate) => estimate.estimate(current_workload),
+        None => None,
+    };
+    let predicted_validator_work = match validation_latency_estimate {
+        Some(estimate) => estimate.min(predicted_builder_work),
+        None => predicted_builder_work,
+    };
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
