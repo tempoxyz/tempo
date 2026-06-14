@@ -274,6 +274,10 @@ where
         &self,
         metadata: &[SubBlockMetadata],
     ) -> Result<(), BlockValidationError> {
+        if metadata.is_empty() && self.seen_subblocks.is_empty() && self.incentive_gas_used == 0 {
+            return Ok(());
+        }
+
         // Skip incentive gas validation if validator set context is not available.
         let Some(validator_set) = &self.validator_set else {
             return Ok(());
