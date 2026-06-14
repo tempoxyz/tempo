@@ -502,14 +502,19 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
         // TIP20ChannelReserve call + payment calldata constraints
-        Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
-            ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
-                input,
-                |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
-            )
-        }
+        Some(to) => is_channel_reserve_payment_call(to, input),
         _ => false,
     }
+}
+
+#[cold]
+#[inline(never)]
+fn is_channel_reserve_payment_call(to: &Address, input: &[u8]) -> bool {
+    *to == TIP20_CHANNEL_RESERVE_ADDRESS
+        && ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
+            input,
+            |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
+        )
 }
 
 #[cfg(feature = "rpc")]
