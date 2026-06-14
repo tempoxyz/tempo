@@ -19,7 +19,7 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
-        pre_execution::{self, apply_auth_list, calculate_caller_fee},
+        pre_execution::{self, apply_auth_list},
         precompile_output_to_interpreter_result, validation,
     },
     inspector::{Inspector, InspectorHandler},
@@ -922,9 +922,11 @@ where
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
 
+        let max_balance_spending = tx.max_balance_spending()?;
+
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        if !max_balance_spending.is_zero() || tx.is_subblock_transaction() {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 
@@ -1127,11 +1129,33 @@ where
             }
         }
 
-        // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
-        // doing max to avoid underflow as new_balance can be more than account
-        // balance if `cfg.is_balance_check_disabled()` is true.
-        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        let gas_balance_spending = if cfg.is_fee_charge_disabled() {
+            U256::ZERO
+        } else {
+            if !cfg.is_balance_check_disabled() && max_balance_spending > account_balance {
+                return Err(InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(max_balance_spending),
+                    balance: Box::new(account_balance),
+                }
+                .into());
+            }
+
+            let effective_balance_spending = tx
+                .effective_balance_spending(
+                    u128::from(block.basefee()),
+                    block.blob_gasprice().unwrap_or_default(),
+                )
+                .expect("effective balance is always smaller than max balance");
+            let fee_spending = effective_balance_spending - tx.value();
+
+            let mut new_balance = account_balance.saturating_sub(fee_spending);
+            if cfg.is_balance_check_disabled() {
+                new_balance = new_balance.max(tx.value());
+            }
+
+            // `new_balance` can exceed `account_balance` when balance checks are disabled.
+            core::cmp::max(account_balance, new_balance) - new_balance
+        };
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
