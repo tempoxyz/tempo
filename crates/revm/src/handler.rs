@@ -1619,7 +1619,9 @@ where
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx fee state.
-        evm.collected_fee = U256::ZERO;
+        if !evm.collected_fee.is_zero() {
+            evm.collected_fee = U256::ZERO;
+        }
         evm.validator_fee = U256::ZERO;
 
         // Validate the fee payer signature
