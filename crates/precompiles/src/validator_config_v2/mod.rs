@@ -182,6 +182,8 @@ impl ValidatorConfigV2 {
     ///
     /// For V1 migration, the contract is NOT initialized — instead `migrate_validator` manually
     /// copies validators and `initialize_if_migrated` flips `is_init` once all have been migrated.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config v2 precompile");
         self.__initialize()?;
