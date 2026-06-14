@@ -531,9 +531,10 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let should_prewarm = self.enable_prewarming && best_txs.size_hint().1 != Some(0);
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+        let mut best_txs = StateAwareBestTransactions::new(if should_prewarm {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
