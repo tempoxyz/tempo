@@ -385,6 +385,11 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Returns the cached `(fee_token, balance_slot)` pair without computing it.
+    pub fn cached_fee_balance_slot(&self) -> Option<(Address, U256)> {
+        self.fee_balance_slot.get().copied().flatten()
+    }
+
     /// Returns true when the transaction fee is paid by the transaction sender.
     ///
     /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a

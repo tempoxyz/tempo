@@ -186,19 +186,27 @@ where
         loop {
             let tx = self.inner.next()?;
 
-            let Some(key) = tx.transaction.fee_balance_slot() else {
+            let Some(key) = tx
+                .transaction
+                .cached_fee_balance_slot()
+                .or_else(|| {
+                    debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                    tx.transaction.fee_balance_slot()
+                })
+            else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
             };
 
+            let fee_token_cost = tx.transaction.fee_token_cost();
             if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+                && balance < fee_token_cost
             {
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
+                            (balance, fee_token_cost).into(),
                         ),
                     ),
                 );
