@@ -4,14 +4,12 @@
 //! assume that the node has never been run but been given a synced execution
 //! layer database./// Runs a validator restart test with the given configuration
 
-use std::time::Duration;
-
 use alloy::transports::http::reqwest::Url;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _,
-    deterministic::{self, Context, Runner},
+    Runner as _,
+    deterministic::{self, Runner},
 };
 use commonware_utils::NZU64;
 use futures::future::join_all;
@@ -19,8 +17,10 @@ use reth_ethereum::provider::BlockNumReader as _;
 use tracing::info;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    setup_validators, tests::dkg::common::wait_for_outcome,
+    Setup, connect_execution_peers, connect_execution_to_peers,
+    metrics::{Metrics, wait_for_height, wait_for_metrics},
+    setup_validators,
+    tests::dkg::common::wait_for_outcome,
 };
 
 /// This is a lengthy test. First, a validator needs to be run for a sufficiently
@@ -158,8 +158,13 @@ fn joins_from_snapshot() {
         info!("new validator was added to the committee, but not started");
 
         donor.stop().await;
-        let last_epoch_before_stop = latest_epoch_of_validator(&context, &donor.uid);
-        let last_height_before_stop = latest_height_of_validator(&context, &donor.uid);
+        let stopped_donor_metrics = Metrics::from_context(&context).for_scope(&donor);
+        let last_epoch_before_stop = stopped_donor_metrics
+            .latest_consensus_epoch()
+            .expect("validator had no entry for latest epoch");
+        let last_height_before_stop = stopped_donor_metrics
+            .latest_consensus_height()
+            .expect("validator had no entry for latest height");
         info!(
             last_epoch_before_stop,
             last_height_before_stop, "stopped the original validator",
@@ -191,47 +196,24 @@ fn joins_from_snapshot() {
             "started the validator with a changed identity",
         );
 
-        loop {
-            context.sleep(Duration::from_secs(1)).await;
+        wait_for_metrics(&context, |metrics| {
+            assert!(
+                metrics.consensus_before_epoch(last_epoch_before_stop + 4),
+                "network advanced 4 epochs before without the new \
+                validator catching up; there is likely a bug",
+            );
 
-            let metrics = context.encode();
-            let mut validators_at_epoch = 0;
-
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    let epoch = value.parse::<u64>().unwrap();
-
-                    assert!(
-                        epoch < last_epoch_before_stop + 4,
-                        "network advanced 4 epochs before without the new \
-                        validator catching up; there is likely a bug",
-                    );
-
-                    if epoch > last_epoch_before_stop {
-                        validators_at_epoch += 1;
-                    }
-
-                    if metric.contains(&replacement.uid) {
-                        assert!(
-                            epoch > 0,
-                            "when starting from snapshot a sufficiently advanced \
-                            snapshot, the node should never boot into the genesis epoch"
-                        );
-                    }
-                }
+            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
+                assert!(
+                    epoch > 0,
+                    "when starting from snapshot a sufficiently advanced \
+                    snapshot, the node should never boot into the genesis epoch"
+                );
             }
-            if validators_at_epoch == 4 {
-                break;
-            }
-        }
+
+            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+        })
+        .await;
     });
 }
 
@@ -371,7 +353,10 @@ fn can_restart_after_joining_from_snapshot() {
         info!("new validator was added to the committee, but not started");
 
         donor.stop().await;
-        let last_epoch_before_stop = latest_epoch_of_validator(&context, &donor.uid);
+        let last_epoch_before_stop = Metrics::from_context(&context)
+            .for_scope(&donor)
+            .latest_consensus_epoch()
+            .expect("validator had no entry for latest epoch");
         info!(%last_epoch_before_stop, "stopped the original validator");
 
         // Now the old validator donates its database to the new validator.
@@ -400,47 +385,24 @@ fn can_restart_after_joining_from_snapshot() {
             "started the validator with a changed identity",
         );
 
-        loop {
-            context.sleep(Duration::from_secs(1)).await;
+        wait_for_metrics(&context, |metrics| {
+            assert!(
+                metrics.consensus_before_epoch(last_epoch_before_stop + 4),
+                "network advanced 4 epochs before without the new \
+                validator catching up; there is likely a bug",
+            );
 
-            let metrics = context.encode();
-            let mut validators_at_epoch = 0;
-
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    let epoch = value.parse::<u64>().unwrap();
-
-                    assert!(
-                        epoch < last_epoch_before_stop + 4,
-                        "network advanced 4 epochs before without the new \
-                        validator catching up; there is likely a bug",
-                    );
-
-                    if metric.contains(&replacement.uid) {
-                        assert!(
-                            epoch > 0,
-                            "when starting from snapshot a sufficiently advanced \
-                            snapshot, the node should never boot into the genesis epoch"
-                        );
-                    }
-
-                    if epoch > last_epoch_before_stop {
-                        validators_at_epoch += 1;
-                    }
-                }
+            if let Some(epoch) = metrics.for_scope(&replacement).latest_consensus_epoch() {
+                assert!(
+                    epoch > 0,
+                    "when starting from snapshot a sufficiently advanced \
+                    snapshot, the node should never boot into the genesis epoch"
+                );
             }
-            if validators_at_epoch == 4 {
-                break;
-            }
-        }
+
+            metrics.consensus_at_epoch(last_epoch_before_stop + 1) == 4
+        })
+        .await;
 
         info!("restarting node");
 
@@ -461,68 +423,6 @@ fn can_restart_after_joining_from_snapshot() {
             "restarting the node and waiting for it to catch up"
         );
 
-        'progress: loop {
-            context.sleep(Duration::from_secs(1)).await;
-
-            let metrics = context.encode();
-
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.contains(&replacement.uid)
-                    && metric.ends_with("_marshal_processed_height")
-                    && value.parse::<u64>().unwrap() > network_head
-                {
-                    break 'progress;
-                }
-            }
-        }
+        wait_for_height(&context, &replacement, network_head + 1).await;
     });
-}
-
-fn latest_epoch_of_validator(context: &Context, id: &str) -> u64 {
-    let metrics = context.encode();
-
-    for line in metrics.lines() {
-        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-            continue;
-        }
-
-        let mut parts = line.split_whitespace();
-        let metric = parts.next().unwrap();
-
-        let value = parts.next().unwrap();
-
-        if metric.ends_with("_epoch_manager_latest_epoch") && metric.contains(id) {
-            return value.parse::<u64>().unwrap();
-        }
-    }
-
-    panic!("validator had no entry for latest epoch");
-}
-
-fn latest_height_of_validator(context: &Context, id: &str) -> u64 {
-    let metrics = context.encode();
-
-    for line in metrics.lines() {
-        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-            continue;
-        }
-
-        let mut parts = line.split_whitespace();
-        let metric = parts.next().unwrap();
-        let value = parts.next().unwrap();
-
-        if metric.ends_with("_marshal_processed_height") && metric.contains(id) {
-            return value.parse::<u64>().unwrap();
-        }
-    }
-
-    panic!("validator had no entry for latest height");
 }

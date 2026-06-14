@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 use super::dkg::common::{
     assert_no_dkg_failures, wait_for_outcome, wait_for_validators_to_reach_epoch,
 };
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{Setup, metrics::wait_for_height, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
@@ -19,8 +19,8 @@ use commonware_cryptography::{
 };
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
-    deterministic::{self, Context, Runner},
+    Runner as _,
+    deterministic::{self, Runner},
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
@@ -46,7 +46,7 @@ async fn consensus_subscribe_and_query_finalization() {
         executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
             validators[0].start(&context).await;
-            wait_for_height(&context, initial_height).await;
+            wait_for_height(&context, &validators[0], initial_height).await;
 
             let execution = validators[0].execution();
 
@@ -115,28 +115,6 @@ async fn consensus_subscribe_and_query_finalization() {
 
     drop(done_tx);
     executor_handle.join().unwrap();
-}
-
-/// Wait for a validator to reach a target height by checking metrics.
-async fn wait_for_height(context: &Context, target_height: u64) {
-    loop {
-        let metrics = context.encode();
-        for line in metrics.lines() {
-            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-            if metric.ends_with("_marshal_processed_height") {
-                let height = value.parse::<u64>().unwrap();
-                if height >= target_height {
-                    return;
-                }
-            }
-        }
-        context.sleep(Duration::from_millis(100)).await;
-    }
 }
 
 /// Test that `get_identity_transition_proof` returns valid proofs after two full DKG ceremonies.
