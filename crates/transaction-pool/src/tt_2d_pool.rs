@@ -665,14 +665,22 @@ impl AA2dPool {
             })
             .collect();
 
-        BestAA2dTransactions {
-            independent,
-            by_id: self
-                .by_id
+        let by_id = if self.queued_count == 0 {
+            self.by_id
+                .iter()
+                .map(|(id, tx)| (*id, tx.inner.clone()))
+                .collect()
+        } else {
+            self.by_id
                 .iter()
                 .filter(|(_, tx)| tx.is_pending())
                 .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+                .collect()
+        };
+
+        BestAA2dTransactions {
+            independent,
+            by_id,
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
