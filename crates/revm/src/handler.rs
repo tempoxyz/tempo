@@ -2034,9 +2034,11 @@ where
                 gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
             })
         } else {
-            MainnetHandler::default()
-                .catch_error(evm, error)
-                .map(|result| result.map_haltreason(Into::into))
+            MainnetHandler {
+                _phantom: core::marker::PhantomData,
+            }
+            .catch_error(evm, error)
+            .map(|result| result.map_haltreason(Into::into))
         }
     }
 }
