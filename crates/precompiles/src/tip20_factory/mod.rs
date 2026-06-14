@@ -42,6 +42,8 @@ pub struct TIP20Factory {}
 /// Computes the deterministic TIP20 address from sender and salt.
 /// Returns the address and the lower bytes used for derivation.
 #[cfg_attr(test, allow(dead_code))]
+#[cold]
+#[inline(never)]
 pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
     let hash = keccak256((sender, salt).abi_encode());
 
@@ -70,6 +72,8 @@ impl TIP20Factory {
     ///
     /// # Errors
     /// - `AddressReserved` — the derived address is in the reserved range
+    #[cold]
+    #[inline(never)]
     pub fn get_token_address(&self, call: ITIP20Factory::getTokenAddressCall) -> Result<Address> {
         let (address, lower_bytes) = compute_tip20_address(call.sender, call.salt);
 
@@ -84,6 +88,8 @@ impl TIP20Factory {
     }
 
     /// Returns `true` if `token` has the correct TIP-20 prefix and has code deployed.
+    #[cold]
+    #[inline(never)]
     pub fn is_tip20(&self, token: Address) -> Result<bool> {
         if !token.is_tip20() {
             return Ok(false);
