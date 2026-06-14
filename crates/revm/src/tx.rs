@@ -97,10 +97,10 @@ pub struct TempoTxEnv {
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
-        if let Some(fee_payer) = self.fee_payer {
-            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
-        } else {
-            Ok(self.caller())
+        match self.fee_payer {
+            None => Ok(self.caller()),
+            Some(Some(fee_payer)) => Ok(fee_payer),
+            Some(None) => Err(TempoInvalidTransaction::InvalidFeePayerSignature),
         }
     }
 
