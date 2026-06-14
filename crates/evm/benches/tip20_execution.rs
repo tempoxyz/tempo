@@ -132,9 +132,15 @@ struct ExecutionStats {
     gas_used: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AccountEntry {
+    address: Address,
+    account: RethAccount,
+}
+
 #[derive(Clone, Debug)]
 struct InMemoryStateProvider {
-    accounts: Arc<AddressMap<RethAccount>>,
+    accounts: Arc<Vec<AccountEntry>>,
     storage: Arc<HashMap<(Address, B256), U256>>,
     contracts: Arc<B256Map<RethBytecode>>,
     block_hashes: Arc<HashMap<u64, B256>>,
@@ -173,7 +179,11 @@ impl ExecutionFixture {
 
 impl AccountReader for InMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self
+            .accounts
+            .binary_search_by_key(address, |entry| entry.address)
+            .ok()
+            .map(|idx| self.accounts[idx].account))
     }
 }
 
@@ -448,9 +458,15 @@ fn setup_fixed_cache_state(
         }
     }
 
+    let mut account_entries: Vec<_> = accounts
+        .into_iter()
+        .map(|(address, account)| AccountEntry { address, account })
+        .collect();
+    account_entries.sort_unstable_by_key(|entry| entry.address);
+
     ExecutionFixture {
         provider: InMemoryStateProvider {
-            accounts: Arc::new(accounts),
+            accounts: Arc::new(account_entries),
             storage: Arc::new(storage),
             contracts: Arc::new(contracts),
             block_hashes: Arc::new(block_hashes),
