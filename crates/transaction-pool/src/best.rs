@@ -191,23 +191,35 @@ where
                 continue;
             };
 
+            let fee_token_cost = tx.transaction.fee_token_cost();
             if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+                && balance < fee_token_cost
             {
-                self.inner.mark_invalid(
-                    &tx,
-                    InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
-                        ),
-                    ),
-                );
+                mark_insufficient_fee_balance(&mut self.inner, &tx, balance, fee_token_cost);
                 continue;
             }
 
             return Some(tx);
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn mark_insufficient_fee_balance<I>(
+    inner: &mut I,
+    tx: &BestTransaction,
+    balance: U256,
+    fee_token_cost: U256,
+) where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    inner.mark_invalid(
+        tx,
+        InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(
+            (balance, fee_token_cost).into(),
+        )),
+    );
 }
 
 impl<I> BestTransactions for StateAwareBestTransactions<I>
