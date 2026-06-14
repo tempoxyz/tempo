@@ -316,8 +316,7 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
     } else {
         // Short string: LSB stores (length * 2)
         // Extract length: LSB / 2
-        let bytes = slot_value.to_be_bytes::<32>();
-        let length = (bytes[31] / 2) as usize;
+        let length = (slot_value.byte(0) / 2) as usize;
         if length > 31 {
             // Unreachable unless the state has been tampered
             return Err(TempoPrecompileError::Fatal(format!(
