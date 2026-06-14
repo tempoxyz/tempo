@@ -624,7 +624,11 @@ fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U2
 }
 
 fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
-    if !touches.contains(&touch) {
+    let older_touches_start = touches.len().saturating_sub(4);
+    if touches[older_touches_start..].contains(&touch) {
+        return;
+    }
+    if !touches[..older_touches_start].contains(&touch) {
         touches.push(touch);
     }
 }
