@@ -1,0 +1,195 @@
+//! Metrics parsing and assertion helpers for e2e tests.
+
+use std::{collections::HashSet, time::Duration};
+
+use commonware_runtime::{Clock as _, Metrics as CommonwareMetrics, deterministic::Context};
+
+use crate::TestingNode;
+
+const PEERS_BLOCKED: &str = "peers_blocked";
+const LATEST_EPOCH: &str = "epoch_manager_latest_epoch";
+const LATEST_PARTICIPANTS: &str = "epoch_manager_latest_participants";
+const PROCESSED_HEIGHT: &str = "marshal_processed_height";
+const DKG_FAILURES: &str = "dkg_manager_ceremony_failures_total";
+const ROUNDS_SKIPPED: &str = "rounds_skipped_total";
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Debug, PartialEq)]
+struct MetricSample {
+    name: String,
+    value: String,
+}
+
+impl MetricSample {
+    fn parse(line: &str) -> Option<Self> {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+
+        let mut parts = line.split_whitespace();
+        let key = parts.next()?;
+        let value = parts.next()?;
+        let name = key.split_once('{').map_or(key, |(name, _)| name);
+
+        Some(Self {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+
+    fn as_u64(&self) -> Option<u64> {
+        self.value.parse().ok()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Metrics {
+    samples: Vec<MetricSample>,
+}
+
+pub trait MetricScope {
+    fn metric_prefix(&self) -> String;
+}
+
+impl<TClock> MetricScope for TestingNode<TClock>
+where
+    TClock: commonware_runtime::Clock,
+{
+    fn metric_prefix(&self) -> String {
+        TestingNode::metric_prefix(self)
+    }
+}
+
+impl Metrics {
+    /// Samples metrics from a Commonware runtime context.
+    pub fn from_context(context: &impl CommonwareMetrics) -> Self {
+        let samples = context
+            .encode()
+            .lines()
+            .filter_map(MetricSample::parse)
+            .collect();
+
+        Self { samples }
+    }
+
+    pub fn value(&self, metric_suffix: &str) -> Option<u64> {
+        self.values(metric_suffix).next()
+    }
+
+    pub fn values<'a>(&'a self, metric_suffix: &'a str) -> impl Iterator<Item = u64> + 'a {
+        self.samples
+            .iter()
+            .filter(move |s| s.name.ends_with(metric_suffix))
+            .map(|s| s.as_u64().unwrap())
+    }
+
+    /// Returns metrics for a metric-emitting runtime scope.
+    pub fn for_scope(&self, scope: &impl MetricScope) -> Self {
+        let prefix = format!("{}_", scope.metric_prefix());
+        let samples = self
+            .samples
+            .iter()
+            .filter(|s| s.name.starts_with(&prefix))
+            .cloned()
+            .collect();
+        Self { samples }
+    }
+
+    /// Counts consensus instances whose processed height is at least `target_height`.
+    #[track_caller]
+    pub fn consensus_at_height(&self, target_height: u64) -> usize {
+        self.values(PROCESSED_HEIGHT)
+            .filter(|height| *height >= target_height)
+            .count()
+    }
+
+    /// Counts consensus instances whose latest epoch is at least `target_epoch`.
+    #[track_caller]
+    pub fn consensus_at_epoch(&self, target_epoch: u64) -> usize {
+        self.values(LATEST_EPOCH)
+            .filter(|epoch| *epoch >= target_epoch)
+            .count()
+    }
+
+    pub fn latest_consensus_epoch(&self) -> Option<u64> {
+        self.value(LATEST_EPOCH)
+    }
+
+    pub fn latest_consensus_height(&self) -> Option<u64> {
+        self.value(PROCESSED_HEIGHT)
+    }
+
+    pub fn consensus_before_epoch(&self, upper_bound: u64) -> bool {
+        self.values(LATEST_EPOCH).all(|epoch| epoch < upper_bound)
+    }
+
+    pub fn has_consensus_participants(&self, target: u64) -> bool {
+        self.values(LATEST_PARTICIPANTS)
+            .any(|participants| participants == target)
+    }
+
+    /// Asserts that all `peers_blocked` metrics are zero.
+    #[track_caller]
+    pub fn assert_no_blocked_peers(&self) {
+        assert!(
+            self.values(PEERS_BLOCKED)
+                .all(|blocked_peers| blocked_peers == 0)
+        );
+    }
+
+    /// Asserts that all DKG ceremony failure counters are zero.
+    #[track_caller]
+    pub fn assert_no_dkg_failures(&self) {
+        assert!(self.values(DKG_FAILURES).all(|failures| failures == 0));
+    }
+
+    /// Asserts that at least one consensus instance skipped rounds.
+    #[track_caller]
+    pub fn assert_any_rounds_skipped(&self) {
+        assert!(
+            self.values(ROUNDS_SKIPPED)
+                .any(|skipped_rounds| skipped_rounds > 0),
+            "expected at least one consensus instance to have skipped rounds"
+        );
+    }
+}
+
+pub fn assert_no_duplicate_definitions(context: &impl CommonwareMetrics) {
+    let mut definitions = HashSet::new();
+    let metrics = context.encode();
+
+    for definition in metrics.lines().filter(|line| line.starts_with('#')) {
+        assert!(
+            definitions.insert(definition),
+            "metric `{definition}` is duplicate"
+        );
+    }
+}
+
+/// Polls context metrics until `predicate` returns true.
+pub async fn wait_for_metrics(context: &Context, mut predicate: impl FnMut(&Metrics) -> bool) {
+    loop {
+        let metrics = Metrics::from_context(context);
+        if predicate(&metrics) {
+            return;
+        }
+
+        context.sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Polls until a metric scope reaches `target_height`.
+pub async fn wait_for_height(context: &Context, scope: &impl MetricScope, target_height: u64) {
+    wait_for_metrics(context, |metrics| {
+        metrics.for_scope(scope).consensus_at_height(target_height) > 0
+    })
+    .await;
+}
+
+pub async fn wait_for_participants(context: &Context, target: u64) {
+    wait_for_metrics(context, |metrics| {
+        metrics.has_consensus_participants(target)
+    })
+    .await;
+}
