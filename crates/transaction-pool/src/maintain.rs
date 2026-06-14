@@ -987,7 +987,11 @@ where
             }
         };
         let seed_start = Instant::now();
-        pool.seed_validation_state_cache(new.tip().hash(), new.execution_outcome().state());
+        pool.seed_validation_state_cache(
+            new.tip().parent_hash(),
+            new.tip().hash(),
+            new.execution_outcome().state(),
+        );
         metrics
             .state_cache_seed_duration_seconds
             .record(seed_start.elapsed());

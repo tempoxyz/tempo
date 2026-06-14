@@ -401,15 +401,21 @@ where
         }
     }
 
-    /// Replaces the tip-scoped state cache with a fresh one seeded from `tip_hash`'s
+    /// Replaces the tip-scoped state cache with a fresh one seeded from `hash`'s
     /// post-execution state.
     ///
     /// Called from pool maintenance on every commit (and after a reorg), where the new tip's
     /// execution outcome is available. Swapping in a brand new [`Arc`] keeps in-flight
     /// validations that hold the previous cache reading a consistent snapshot, while the next
-    /// validations anchored to `tip_hash` start warm with the entries the block touched.
-    pub fn seed_state_cache(&self, tip_hash: B256, bundle: &BundleState) {
-        *self.cached_state.write() = (tip_hash, Arc::new(StateCache::from_post_state(bundle)));
+    /// validations anchored to `hash` start warm with the entries the block touched.
+    pub fn seed_state_cache(&self, parent_hash: B256, hash: B256, bundle: &BundleState) {
+        let mut cached_state = self.cached_state.write();
+        let cache = if cached_state.0 == parent_hash {
+            StateCache::from_post_state_with_parent(bundle, Some(cached_state.1.as_ref()))
+        } else {
+            StateCache::from_post_state(bundle)
+        };
+        *cached_state = (hash, Arc::new(cache));
     }
 
     /// Validates one transaction with the given throwaway EVM.

@@ -4,6 +4,7 @@ use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, database::BundleState, state::AccountInfo};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -57,7 +58,23 @@ impl StateCache {
     /// map lengths. A large range (e.g. a deep reorg) may seed past the caps, but the counters
     /// then reflect that and the on-demand read path stops inserting until entries drain.
     pub(crate) fn from_post_state(bundle: &BundleState) -> Self {
-        let storage_len = bundle.state.values().map(|a| a.storage.len()).sum();
+        Self::from_post_state_with_parent(bundle, None)
+    }
+
+    /// Builds a cache seeded with post-state and selected hot entries from the parent cache.
+    ///
+    /// When the new tip's parent hash matches the currently cached tip, nonce-precompile entries
+    /// remain valid unless the new block touches them. The child block's post-state is applied
+    /// afterwards, so touched nonce-precompile slots overwrite the carried parent values.
+    pub(crate) fn from_post_state_with_parent(
+        bundle: &BundleState,
+        parent: Option<&StateCache>,
+    ) -> Self {
+        let storage_len = bundle
+            .state
+            .values()
+            .map(|a| a.storage.len())
+            .sum::<usize>();
         let cache = Self {
             accounts: DashMap::with_capacity_and_hasher(bundle.state.len(), Default::default()),
             storage: DashMap::with_capacity_and_hasher(storage_len, Default::default()),
@@ -67,6 +84,22 @@ impl StateCache {
             ),
             ..Default::default()
         };
+
+        if let Some(parent) = parent {
+            // keep NONCE_PRECOMPILE_ADDRESS cached across blocks
+            if let Some(account) = parent.accounts.get(&NONCE_PRECOMPILE_ADDRESS) {
+                cache
+                    .accounts
+                    .insert(NONCE_PRECOMPILE_ADDRESS, account.clone());
+            }
+
+            for entry in parent.storage.iter() {
+                let (address, slot) = *entry.key();
+                if address == NONCE_PRECOMPILE_ADDRESS {
+                    cache.storage.insert((address, slot), *entry.value());
+                }
+            }
+        }
 
         // Contracts are keyed by code hash, which is immutable, so deployed bytecode is always
         // safe to cache.
@@ -279,6 +312,140 @@ mod tests {
 
         // An account the block did not touch still falls through to the db.
         assert!(db.basic_ref(unseeded_addr).unwrap().is_some());
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn carries_nonce_precompile_parent_state() {
+        use alloy_primitives::map::{AddressMap, HashMap};
+        use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+        use tempo_precompiles::nonce::slots as nonce_slots;
+
+        let carried_slot = U256::from(7);
+        let carried_value = U256::from(123);
+        let carried_zero_slot = U256::from(8);
+        let overwritten_slot = U256::from(9);
+        let old_overwritten_value = U256::from(333);
+        let new_overwritten_value = U256::from(999);
+        let other_addr = Address::with_last_byte(2);
+        let other_slot = U256::from(10);
+
+        let mut parent_nonce_storage = HashMap::default();
+        parent_nonce_storage.insert(
+            nonce_slots::EXPIRING_NONCE_RING_PTR,
+            StorageSlot::new_changed(U256::from(1), U256::ZERO),
+        );
+        parent_nonce_storage.insert(
+            carried_slot,
+            StorageSlot::new_changed(U256::ZERO, carried_value),
+        );
+        parent_nonce_storage.insert(
+            carried_zero_slot,
+            StorageSlot::new_changed(U256::from(1), U256::ZERO),
+        );
+        parent_nonce_storage.insert(
+            overwritten_slot,
+            StorageSlot::new_changed(U256::ZERO, old_overwritten_value),
+        );
+
+        let mut parent_state = AddressMap::default();
+        parent_state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(
+                None,
+                Some(AccountInfo {
+                    balance: U256::from(777),
+                    ..Default::default()
+                }),
+                parent_nonce_storage,
+                AccountStatus::Changed,
+            ),
+        );
+
+        let mut other_storage = HashMap::default();
+        other_storage.insert(
+            other_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(555)),
+        );
+        parent_state.insert(
+            other_addr,
+            BundleAccount::new(
+                None,
+                Some(AccountInfo::default()),
+                other_storage,
+                AccountStatus::Changed,
+            ),
+        );
+
+        let parent_cache = StateCache::from_post_state(&BundleState {
+            state: parent_state,
+            ..Default::default()
+        });
+
+        let mut child_nonce_storage = HashMap::default();
+        child_nonce_storage.insert(
+            overwritten_slot,
+            StorageSlot::new_changed(old_overwritten_value, new_overwritten_value),
+        );
+        let mut child_state = AddressMap::default();
+        child_state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(
+                None,
+                Some(AccountInfo::default()),
+                child_nonce_storage,
+                AccountStatus::Changed,
+            ),
+        );
+
+        let cache = StateCache::from_post_state_with_parent(
+            &BundleState {
+                state: child_state,
+                ..Default::default()
+            },
+            Some(&parent_cache),
+        );
+        let inner = CountingDb::default();
+        let db = StateCacheDb::new(&cache, &inner);
+
+        assert_eq!(
+            db.basic_ref(NONCE_PRECOMPILE_ADDRESS)
+                .unwrap()
+                .unwrap()
+                .balance,
+            U256::ZERO
+        );
+        assert_eq!(
+            db.storage_ref(
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slots::EXPIRING_NONCE_RING_PTR
+            )
+            .unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            db.storage_ref(NONCE_PRECOMPILE_ADDRESS, carried_slot)
+                .unwrap(),
+            carried_value
+        );
+        assert_eq!(
+            db.storage_ref(NONCE_PRECOMPILE_ADDRESS, overwritten_slot)
+                .unwrap(),
+            new_overwritten_value
+        );
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 0);
+
+        assert_eq!(
+            db.storage_ref(NONCE_PRECOMPILE_ADDRESS, carried_zero_slot)
+                .unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 0);
+
+        assert_eq!(
+            db.storage_ref(other_addr, other_slot).unwrap(),
+            U256::from(42)
+        );
         assert_eq!(inner.reads.load(Ordering::Relaxed), 1);
     }
 

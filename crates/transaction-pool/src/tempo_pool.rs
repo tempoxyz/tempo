@@ -86,11 +86,16 @@ where
 
     /// Reseeds the validator's tip-scoped state cache from a committed block's post-execution
     /// state, keeping fee-token, nonce-manager and system-contract reads warm across blocks.
-    pub(crate) fn seed_validation_state_cache(&self, tip_hash: B256, bundle: &BundleState) {
+    pub(crate) fn seed_validation_state_cache(
+        &self,
+        parent_hash: B256,
+        hash: B256,
+        bundle: &BundleState,
+    ) {
         self.protocol_pool
             .validator()
             .validator()
-            .seed_state_cache(tip_hash, bundle);
+            .seed_state_cache(parent_hash, hash, bundle);
     }
 
     /// Returns the configured client
