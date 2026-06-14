@@ -1,9 +1,7 @@
 //! CLI type definitions for the Tempo node.
 
 use crate::{defaults, follow, tempo_cmd};
-use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_ethereum_cli::Cli;
-use reth_network_peers::pk2id;
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_faucet::args::FaucetArgs;
@@ -122,21 +120,4 @@ pub(crate) struct PyroscopeArgs {
     /// Sample rate for profiling (default: 100 Hz)
     #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
     pub(crate) sample_rate: u32,
-}
-
-pub(crate) trait NodeCommandExt {
-    /// Derive the peer id from the p2p secret key without starting the network.
-    fn peer_id(&self) -> reth_network_peers::PeerId;
-}
-
-impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParser, TempoArgs> {
-    fn peer_id(&self) -> reth_network_peers::PeerId {
-        let data_dir = self.datadir.clone().resolve_datadir(self.chain.chain());
-        let sk = self
-            .network
-            .secret_key(data_dir.p2p_secret())
-            .expect("unable to derive peer id from p2p secret");
-
-        pk2id(&sk.public_key(secp256k1::SECP256K1))
-    }
 }
