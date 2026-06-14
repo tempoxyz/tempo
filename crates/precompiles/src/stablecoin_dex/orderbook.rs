@@ -228,6 +228,8 @@ impl OrderbookHandler {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn calc_tick_word_idx(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinDEXError::invalid_tick().into());
@@ -240,6 +242,8 @@ impl OrderbookHandler {
     ///
     /// # Errors
     /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
+    #[cold]
+    #[inline(never)]
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -263,6 +267,8 @@ impl OrderbookHandler {
     ///
     /// # Errors
     /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
+    #[cold]
+    #[inline(never)]
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
@@ -286,6 +292,8 @@ impl OrderbookHandler {
     ///
     /// # Errors
     /// - `InvalidTick` — tick is outside `[MIN_TICK, MAX_TICK]`
+    #[cold]
+    #[inline(never)]
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
         let word_index = self.calc_tick_word_idx(tick)?;
         let bitmap = if is_bid {
