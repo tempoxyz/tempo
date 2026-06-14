@@ -185,11 +185,8 @@ impl TempoTxEnvelope {
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v1(&self) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
-            Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
             Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            _ => is_non_aa_payment_v1(self),
         }
     }
 
@@ -210,21 +207,6 @@ impl TempoTxEnvelope {
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),
-            Self::Eip2930(tx) => {
-                let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
-            }
-            Self::Eip1559(tx) => {
-                let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
-            }
-            Self::Eip7702(tx) => {
-                let tx = tx.tx();
-                tx.access_list.is_empty()
-                    && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input)
-            }
             Self::AA(tx) => {
                 let tx = tx.tx();
                 !tx.calls.is_empty()
@@ -239,6 +221,7 @@ impl TempoTxEnvelope {
                         .iter()
                         .all(|call| is_tip1045_call(call.to.to(), &call.input))
             }
+            _ => is_non_aa_payment_v2(self),
         }
     }
 
@@ -486,6 +469,54 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
 impl From<TempoTransaction> for TempoTypedTransaction {
     fn from(value: TempoTransaction) -> Self {
         Self::AA(value)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn is_non_aa_payment_v1(tx: &TempoTxEnvelope) -> bool {
+    match tx {
+        TempoTxEnvelope::Legacy(tx) => is_tip20_call(tx.tx().to.to()),
+        TempoTxEnvelope::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
+        TempoTxEnvelope::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
+        TempoTxEnvelope::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
+        TempoTxEnvelope::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn is_non_aa_payment_v2(tx: &TempoTxEnvelope) -> bool {
+    match tx {
+        TempoTxEnvelope::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input),
+        TempoTxEnvelope::Eip2930(tx) => {
+            let tx = tx.tx();
+            tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+        }
+        TempoTxEnvelope::Eip1559(tx) => {
+            let tx = tx.tx();
+            tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input)
+        }
+        TempoTxEnvelope::Eip7702(tx) => {
+            let tx = tx.tx();
+            tx.access_list.is_empty()
+                && tx.authorization_list.is_empty()
+                && is_tip1045_call(Some(&tx.to), &tx.input)
+        }
+        TempoTxEnvelope::AA(tx) => {
+            let tx = tx.tx();
+            !tx.calls.is_empty()
+                && tx.access_list.is_empty()
+                && tx.tempo_authorization_list.is_empty()
+                && tx
+                    .key_authorization
+                    .as_ref()
+                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                && tx
+                    .calls
+                    .iter()
+                    .all(|call| is_tip1045_call(call.to.to(), &call.input))
+        }
     }
 }
 
