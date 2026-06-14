@@ -9,10 +9,7 @@ use commonware_utils::NZU64;
 use reth_ethereum::provider::BlockReader as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-use crate::{
-    TestingNode,
-    metrics::{Metrics, wait_for_metrics},
-};
+use crate::{TestingNode, metrics::wait_for_metrics};
 
 /// Returns the target epoch to wait for depending on `event_height`.
 ///
@@ -88,16 +85,4 @@ pub(crate) async fn wait_for_validators_to_reach_epoch(
     .await;
 
     tracing::info!(target_epoch, "Validators reached epoch");
-}
-
-/// Asserts that no DKG ceremony failures have occurred.
-#[track_caller]
-pub(crate) fn assert_no_dkg_failures(context: &Context) {
-    Metrics::from_context(context).assert_no_dkg_failures();
-}
-
-/// Asserts that at least one validator has skipped rounds (indicating sync occurred).
-#[track_caller]
-pub(crate) fn assert_skipped_rounds(context: &Context) {
-    Metrics::from_context(context).assert_any_rounds_skipped();
 }
