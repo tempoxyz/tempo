@@ -124,7 +124,14 @@ impl TempoPooledTransaction {
     }
 
     /// Resolves the transaction fee payer.
+    ///
+    /// This reuses the cached transaction environment once validation has prepared it,
+    /// so repeated pool-maintenance checks do not recover the fee payer again.
     pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        if let Some(tx_env) = self.cached_tx_env() {
+            return tx_env.fee_payer().map_err(|_| RecoveryError::new());
+        }
+
         self.inner().fee_payer(self.inner().signer())
     }
 
@@ -421,7 +428,7 @@ impl TempoPooledTransaction {
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {

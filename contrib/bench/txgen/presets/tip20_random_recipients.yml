@@ -27,7 +27,8 @@ templates:
     expiring_nonce: true
     valid_for_secs: 5
     call:
-      to: "0x20c0000000000000000000000000000000000000"
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
       abi: ERC20
       function: transfer
       args:
