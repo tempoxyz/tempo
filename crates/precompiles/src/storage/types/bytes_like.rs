@@ -310,7 +310,7 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
         let length_times_two: U256 = length_times_two_plus_one - U256::ONE;
         let length_u256: U256 = length_times_two >> 1;
         if length_u256 > U256::from(u32::MAX) {
-            return Err(TempoPrecompileError::under_overflow());
+            return Err(bytes_like_length_overflow());
         }
         Ok(length_u256.to::<usize>())
     } else {
@@ -326,6 +326,12 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> Result<usize> {
         }
         Ok(length)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn bytes_like_length_overflow() -> TempoPrecompileError {
+    TempoPrecompileError::under_overflow()
 }
 
 /// Compute the number of 32-byte chunks needed to store a byte string.
