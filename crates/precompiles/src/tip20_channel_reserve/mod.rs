@@ -470,6 +470,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns a descriptor with its current on-chain state.
+    #[cold]
+    #[inline(never)]
     pub fn get_channel(
         &self,
         call: ITIP20ChannelReserve::getChannelCall,
@@ -482,6 +484,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns the current state for a channel id, or the zero state for an empty slot.
+    #[cold]
+    #[inline(never)]
     pub fn get_channel_state(
         &self,
         call: ITIP20ChannelReserve::getChannelStateCall,
@@ -490,6 +494,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns current states for multiple channel ids.
+    #[cold]
+    #[inline(never)]
     pub fn get_channel_states_batch(
         &self,
         call: ITIP20ChannelReserve::getChannelStatesBatchCall,
@@ -505,6 +511,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Computes the deterministic channel id for a full channel descriptor.
+    #[cold]
+    #[inline(never)]
     pub fn compute_channel_id(
         &self,
         call: ITIP20ChannelReserve::computeChannelIdCall,
@@ -521,6 +529,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns the EIP-712 digest that the payer or authorized signer must sign.
+    #[cold]
+    #[inline(never)]
     pub fn get_voucher_digest(
         &self,
         call: ITIP20ChannelReserve::getVoucherDigestCall,
@@ -529,6 +539,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns the EIP-712 domain separator for this chain and precompile address.
+    #[cold]
+    #[inline(never)]
     pub fn domain_separator(&self) -> Result<B256> {
         let hash = match self.storage.chain_id() {
             MAINNET_CHAIN_ID => *DOMAIN_SEPARATOR_MAINNET,
