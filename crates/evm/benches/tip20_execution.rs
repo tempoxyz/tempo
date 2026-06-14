@@ -156,18 +156,31 @@ impl ExecutionFixture {
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        self.preload_contract_cache(&mut db);
+        db
     }
 
     fn prewarm_state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        self.preload_contract_cache(&mut db);
+        db
+    }
+
+    fn preload_contract_cache(&self, db: &mut FixedCacheDb) {
+        db.cache.contracts.extend(
+            self.provider
+                .contracts
+                .iter()
+                .map(|(hash, bytecode)| (*hash, bytecode.0.clone())),
+        );
     }
 }
 
