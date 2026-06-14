@@ -35,15 +35,6 @@ fn validator_can_join_later_with_pipeline_sync() {
     let _ = tempo_eyre::install();
 }
 
-#[track_caller]
-fn assert_no_new_epoch(metrics: &Metrics, max_epoch: u64) {
-    metrics.assert_no_blocked_peers();
-    assert!(
-        metrics.consensus_before_epoch(max_epoch + 1),
-        "epoch progressed; sync likely failed"
-    );
-}
-
 struct AssertJoinsLate {
     blocks_before_join: u64,
     blocks_after_join: u64,
@@ -90,7 +81,12 @@ impl AssertJoinsLate {
             // Assert that last node is able to catch up and progress
             while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
                 context.sleep(Duration::from_millis(100)).await;
-                assert_no_new_epoch(&Metrics::from_context(&context), 0);
+                let metrics = Metrics::from_context(&context);
+                metrics.assert_no_blocked_peers();
+                assert!(
+                    metrics.consensus_before_epoch(1),
+                    "epoch progressed; sync likely failed"
+                );
             }
             // Verify backfill behavior
             let actual_runs = get_pipeline_runs(metrics_recorder);

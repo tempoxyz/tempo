@@ -126,10 +126,10 @@ fn run_payload_builder_test(
             })
             .await;
 
-            consensus_metric_sum(
-                &Metrics::from_context(&context),
-                NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX,
-            )
+            let metrics = Metrics::from_context(&context);
+            metrics
+                .values(NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
+                .sum()
         });
 
     let final_finalization_count =
@@ -203,10 +203,6 @@ fn assert_pool_inclusion_metrics(deltas: &MetricDelta) {
         (0.0..=1.0).contains(&ratio),
         "expected pool transactions inclusion ratio last to be within 0.0..=1.0, got {ratio}"
     );
-}
-
-fn consensus_metric_sum(metrics: &Metrics, metric_suffix: &str) -> u64 {
-    metrics.values(metric_suffix).sum()
 }
 
 fn prometheus_histogram_count(recorder: &PrometheusRecorder, metric: &str) -> u64 {
