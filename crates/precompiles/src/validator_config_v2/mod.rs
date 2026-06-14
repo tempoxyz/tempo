@@ -455,6 +455,8 @@ impl ValidatorConfigV2 {
     ///
     /// Constructs the message according to the validator config v2 specification and verifies
     /// the Ed25519 signature using the appropriate namespace.
+    #[cold]
+    #[inline(never)]
     fn verify_validator_signature(
         &self,
         kind: SignatureKind,
