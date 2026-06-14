@@ -68,8 +68,18 @@ impl<T: Storable> BytesLikeHandler<T> {
     #[inline]
     pub fn len(&self) -> Result<usize> {
         let base_value = Slot::<U256>::new(self.base_slot, self.address).read()?;
-        let is_long = is_long_string(base_value);
-        calc_string_length(base_value, is_long)
+        let low_byte = base_value.byte(0);
+        if (low_byte & 1) == 0 {
+            let length = (low_byte / 2) as usize;
+            if length > 31 {
+                return Err(TempoPrecompileError::Fatal(format!(
+                    "short string length {length} exceeds maximum of 31 bytes"
+                )));
+            }
+            return Ok(length);
+        }
+
+        calc_string_length(base_value, true)
     }
 
     /// Returns whether the stored value is empty.
