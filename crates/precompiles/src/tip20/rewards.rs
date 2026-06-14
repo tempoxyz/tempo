@@ -204,7 +204,11 @@ impl TIP20Token {
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
         // T8+: pay only settled rewards; pending lazy accruals are forfeited.
-        let reward_recipient = self.update_rewards(msg_sender)?;
+        let reward_recipient = if self.storage.spec().is_t8() {
+            Address::ZERO
+        } else {
+            self.update_rewards(msg_sender)?
+        };
 
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
