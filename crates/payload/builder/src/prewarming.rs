@@ -80,6 +80,7 @@ impl BestTransactionsPrewarming {
                     commands_tx,
                     prewarm,
                     next_expiring_nonce_offset: 0,
+                    source_exhausted: false,
                 },
             );
         });
@@ -106,9 +107,15 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                let Some(tx) = ctx.best_txs.next() else {
+                if ctx.source_exhausted {
                     let _ = ctx.transactions_tx.send(None);
-                    return;
+                    return false;
+                }
+
+                let Some(tx) = ctx.best_txs.next() else {
+                    ctx.source_exhausted = true;
+                    let _ = ctx.transactions_tx.send(None);
+                    return false;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
@@ -125,13 +132,17 @@ impl BestTransactionsPrewarming {
                     Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
+
+                true
             };
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
             for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+                if !advance(&mut ctx) {
+                    break;
+                }
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
@@ -306,6 +317,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    source_exhausted: bool,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -998,19 +1010,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_after_exhaustion() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        assert_eq!(log.lock().unwrap().empty_polls, 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        assert_eq!(log.lock().unwrap().empty_polls, 1);
     }
 
     #[test]
