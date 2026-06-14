@@ -1172,7 +1172,7 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1182,7 +1182,7 @@ where
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                let mut push_roots = |tx: BuilderTx, receipt: TempoReceipt| {
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1196,6 +1196,14 @@ where
                     receipt.encode_2718(&mut buf);
                     receipts_root.push_next(&buf);
                     receipts_bloom |= receipt.bloom();
+                };
+
+                while let Ok((tx, receipt)) = transactions_rx.recv() {
+                    push_roots(tx, receipt);
+
+                    for (tx, receipt) in transactions_rx.try_iter() {
+                        push_roots(tx, receipt);
+                    }
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
