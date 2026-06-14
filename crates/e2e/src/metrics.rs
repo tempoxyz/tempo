@@ -57,7 +57,7 @@ where
     TClock: commonware_runtime::Clock,
 {
     fn metric_prefix(&self) -> String {
-        TestingNode::metric_prefix(self)
+        Self::metric_prefix(self)
     }
 }
 
