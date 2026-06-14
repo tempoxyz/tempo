@@ -317,6 +317,13 @@ impl TipFeeManager {
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
     }
+
+    /// Reads the accumulated fee balance for an external query.
+    #[cold]
+    #[inline(never)]
+    pub fn collected_fees(&self, call: IFeeManager::collectedFeesCall) -> Result<U256> {
+        self.collected_fees[call.validator][call.token].read()
+    }
 }
 
 #[cfg(test)]

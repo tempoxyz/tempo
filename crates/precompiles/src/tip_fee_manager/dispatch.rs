@@ -51,7 +51,7 @@ impl Precompile for TipFeeManager {
                     view(call, |c| self.get_validator_token(c.validator))
                 }
                 TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
-                    view(call, |c| self.collected_fees[c.validator][c.token].read())
+                    view(call, |c| self.collected_fees(c))
                 }
 
                 // IFeeManager mutate functions
