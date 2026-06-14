@@ -192,6 +192,12 @@ impl ValidationLatencyEstimate {
             return None;
         }
 
+        if workload.gas_used <= self.p90_gas_used
+            && workload.transaction_count <= self.p90_transaction_count
+        {
+            return Some(self.elapsed);
+        }
+
         let scale = [
             scale_above_baseline(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
             scale_above_baseline(
