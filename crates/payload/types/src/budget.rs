@@ -162,6 +162,10 @@ fn scale_above_baseline(current: u128, baseline: u128) -> Option<u128> {
 }
 
 fn scale_duration(elapsed: Duration, scale: u128) -> Duration {
+    if scale == VALIDATION_LATENCY_WORKLOAD_SCALE {
+        return elapsed;
+    }
+
     let nanos = elapsed
         .as_nanos()
         .saturating_mul(scale)
