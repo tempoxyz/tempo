@@ -548,11 +548,11 @@ fn add_tip20_call_touches(
 
 fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_account_touch(touches, token);
-    add_storage_touch(touches, token, tip20_slots::CURRENCY);
-    add_storage_touch(touches, token, tip20_slots::PAUSED);
-    add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
+    add_storage_touch_for_account(touches, token, tip20_slots::CURRENCY);
+    add_storage_touch_for_account(touches, token, tip20_slots::PAUSED);
+    add_storage_touch_for_account(touches, token, tip20_slots::TRANSFER_POLICY_ID);
+    add_storage_touch_for_account(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
+    add_storage_touch_for_account(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
 fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
@@ -584,12 +584,13 @@ fn add_fee_manager_touches(
     fee_recipient: Address,
     fee_token: Address,
 ) {
-    add_storage_touch(
+    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
+    add_storage_touch_for_account(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
     );
-    add_storage_touch(
+    add_storage_touch_for_account(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
@@ -620,6 +621,10 @@ fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
 
 fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
     add_account_touch(touches, address);
+    add_storage_touch_for_account(touches, address, slot);
+}
+
+fn add_storage_touch_for_account(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
     add_unique_touch(touches, StorageTouch::Storage { address, slot });
 }
 
