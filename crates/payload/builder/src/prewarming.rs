@@ -191,7 +191,7 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
+            let touched = if is_tip20_payment_transaction(&tx) {
                 let touches = storage_touches_for_transaction(
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
@@ -410,22 +410,22 @@ impl StorageTouch {
     }
 }
 
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
+fn is_tip20_payment_transaction(tx: &BestTransaction) -> bool {
+    tx.transaction.is_payment() && is_tip20_payment_calls(tx.transaction.inner().calls())
 }
 
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
+fn is_tip20_payment_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
     let mut has_call = false;
     for (kind, input) in calls {
         has_call = true;
-        if !is_tip20_transfer_call(kind, input) {
+        if !is_tip20_payment_call(kind, input) {
             return false;
         }
     }
     has_call
 }
 
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
+fn is_tip20_payment_call(kind: TxKind, input: &[u8]) -> bool {
     let Some(token) = kind.to().copied() else {
         return false;
     };
@@ -433,13 +433,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
         return false;
     }
 
-    matches!(
-        ITIP20::ITIP20Calls::abi_decode(input),
-        Ok(ITIP20::ITIP20Calls::transfer(_)
-            | ITIP20::ITIP20Calls::transferWithMemo(_)
-            | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
-    )
+    ITIP20::ITIP20Calls::is_payment(input)
 }
 
 fn storage_touches_for_transaction(
@@ -924,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn tip20_fast_path_is_limited_to_transfers() {
+    fn tip20_fast_path_accepts_payment_calls() {
         let token = DEFAULT_FEE_TOKEN;
         let transfer = Bytes::from(
             ITIP20::transferCall {
@@ -949,17 +943,25 @@ mod tests {
             .abi_encode(),
         );
 
-        assert!(is_tip20_transfer_call(TxKind::Call(token), &transfer));
-        assert!(is_tip20_transfer_calls(
+        assert!(is_tip20_payment_call(TxKind::Call(token), &transfer));
+        assert!(is_tip20_payment_calls(
             [&transfer, &transfer_from]
                 .into_iter()
                 .map(|input| (TxKind::Call(token), input)),
         ));
-        assert!(!is_tip20_transfer_call(TxKind::Call(token), &approve));
-        assert!(!is_tip20_transfer_calls(
+        assert!(is_tip20_payment_call(TxKind::Call(token), &approve));
+        assert!(is_tip20_payment_calls(
             [&transfer, &approve]
                 .into_iter()
                 .map(|input| (TxKind::Call(token), input)),
+        ));
+        assert!(!is_tip20_payment_call(
+            TxKind::Call(token),
+            &transfer[..transfer.len() - 1]
+        ));
+        assert!(!is_tip20_payment_call(
+            TxKind::Call(Address::random()),
+            &transfer
         ));
     }
 
