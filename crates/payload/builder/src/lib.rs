@@ -707,33 +707,15 @@ where
                 },
             );
             if let Err(err) = execution_result {
-                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                }) = &err
-                {
-                    invalid_pool_transaction_execution_attempts += 1;
-
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
-                    }
-                    continue;
-                } else {
-                    return Err(PayloadBuilderError::evm(err));
-                }
+                handle_pool_transaction_execution_error(
+                    err,
+                    &pool_tx,
+                    &mut best_txs,
+                    &self.metrics,
+                    &tx_debug_repr,
+                )?;
+                invalid_pool_transaction_execution_attempts += 1;
+                continue;
             };
             trace!("Transaction executed");
             if let Some(bal_task_handle) = &bal_task_handle {
@@ -1347,6 +1329,38 @@ fn maybe_override_fee_recipient<DB: Database>(
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn handle_pool_transaction_execution_error<Txs>(
+    err: BlockExecutionError,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    best_txs: &mut StateAwareBestTransactions<Txs>,
+    metrics: &TempoPayloadBuilderMetrics,
+    tx_debug_repr: &str,
+) -> Result<(), PayloadBuilderError>
+where
+    Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = &err
+    else {
+        return Err(PayloadBuilderError::evm(err));
+    };
+
+    if error.is_nonce_too_low() {
+        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+        metrics.inc_pool_tx_skipped("nonce_too_low");
+    } else {
+        best_txs.mark_invalid(
+            pool_tx,
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+        metrics.inc_pool_tx_skipped("invalid_tx");
+    }
+
+    Ok(())
 }
 
 #[derive(Debug)]
