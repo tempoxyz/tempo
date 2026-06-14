@@ -1575,7 +1575,11 @@ where
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                let fee_payer = if tx.has_fee_payer_signature() {
+                    tx.fee_payer().expect("pre-validated in `validate_env`")
+                } else {
+                    tx.caller()
+                };
                 let fee_token = evm
                     .fee_token
                     .expect("set in `validate_against_state_and_deduct_caller`");
