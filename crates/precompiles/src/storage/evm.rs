@@ -7,6 +7,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoAddressExt;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
@@ -113,15 +114,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
-        let was_empty = {
+        let is_tip20_deploy = {
             let mut account = self.internals.load_account_mut(address)?;
-            let was_empty = account.data.account().info.is_empty();
+            if !account.data.account().info.is_empty_code_hash() {
+                return Err(TempoPrecompileError::CodeAlreadyExists(address));
+            }
+
             account.set_code_and_hash_slow(code);
-            was_empty
+            address.is_tip20()
         };
 
         // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.amsterdam_eip8037_enabled && was_empty {
+        if self.amsterdam_eip8037_enabled && is_tip20_deploy {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
             self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
@@ -479,6 +483,17 @@ mod tests {
         }
     }
 
+    fn tip20_address() -> Address {
+        let mut bytes = [0u8; 20];
+        bytes[..12].copy_from_slice(&tempo_primitives::TIP20_TOKEN_PREFIX);
+        bytes[19] = 1;
+        Address::from(bytes)
+    }
+
+    fn non_tip20_address() -> Address {
+        Address::from([0x11; 20])
+    }
+
     impl std::ops::Deref for TestEvm {
         type Target = TempoEvm<CacheDB<EmptyDB>>;
         fn deref(&self) -> &Self::Target {
@@ -516,6 +531,28 @@ mod tests {
         let code = Bytecode::new_raw(vec![0xff].into());
 
         provider.set_code(addr, code.clone())?;
+        std::mem::drop(provider);
+
+        let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
+            panic!("Failed to load account code")
+        };
+
+        assert_eq!(data, *code.original_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_code_rejects_existing_code() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+
+        let addr = Address::random();
+        let code = Bytecode::new_raw(vec![0xff].into());
+        let replacement = Bytecode::new_raw(vec![0xef].into());
+
+        provider.set_code(addr, code.clone())?;
+        let err = provider.set_code(addr, replacement).unwrap_err();
+        assert_eq!(err, TempoPrecompileError::CodeAlreadyExists(addr));
         std::mem::drop(provider);
 
         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
@@ -785,7 +822,11 @@ mod tests {
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
-        let (address, code_address, slot) = (Address::random(), Address::random(), U256::ONE);
+        let (address, code_address, slot) = (
+            Address::random(),
+            non_tip20_address(),
+            U256::ONE,
+        );
 
         // SLOADs should not add state gas
         provider.sload(address, slot)?;
@@ -819,16 +860,11 @@ mod tests {
 
         // Code deposit should add state gas (2,300 per byte)
         let state_gas_before_code = provider.state_gas_used();
-        provider.set_code(
-            code_address,
-            revm::state::Bytecode::new_raw(vec![0xef].into()),
-        )?;
+        provider.set_code(code_address, Bytecode::new_raw(vec![0xef].into()))?;
         assert_eq!(
             provider.state_gas_used(),
-            state_gas_before_code
-                + gas_params.create_state_gas()
-                + gas_params.code_deposit_state_gas(1),
-            "set_code(new account, 1 byte) should add CREATE state gas plus 2,300 code deposit state gas"
+            state_gas_before_code + gas_params.code_deposit_state_gas(1),
+            "set_code(non-TIP20 account, 1 byte) should add code deposit state gas only"
         );
 
         Ok(())
@@ -956,7 +992,7 @@ mod tests {
             + gas_params.keccak256_cost(code.len().div_ceil(32));
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
-        provider.set_code(Address::random(), code)?;
+        provider.set_code(tip20_address(), code)?;
         assert_eq!(
             provider.gas_used(),
             expected_regular_gas,
@@ -966,6 +1002,31 @@ mod tests {
             provider.state_gas_used(),
             expected_state_gas,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t4_set_code_non_tip20_skips_create_charge() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+
+        let code = Bytecode::new_raw(vec![0xef].into());
+        let expected_state_gas = gas_params.code_deposit_state_gas(code.len());
+        let expected_regular_gas = gas_params.code_deposit_cost(code.len());
+        let mut provider = evm.provider_with_reservoir(expected_state_gas);
+
+        provider.set_code(non_tip20_address(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "non-TIP20 code deposits should not pay TIP20 CREATE gas"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            expected_state_gas,
+            "non-TIP20 code deposits should only pay code deposit state gas"
         );
 
         Ok(())

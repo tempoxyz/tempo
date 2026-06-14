@@ -11,7 +11,7 @@ use std::{
 
 use crate::tip20::TIP20Error;
 use alloy::{
-    primitives::{FixedBytes, Selector, U256},
+    primitives::{Address, FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use alloy_evm::EvmInternalsError;
@@ -99,6 +99,11 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// A caller attempted to install bytecode at an address that already has code.
+    #[error("Code already exists at address: {0}")]
+    #[from(skip)]
+    CodeAlreadyExists(Address),
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -159,7 +164,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::CodeAlreadyExists(_) | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -168,7 +173,7 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
+            Self::OutOfGas | Self::CodeAlreadyExists(_) | Self::Fatal(_) | Self::Panic(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -234,6 +239,11 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+            }
+            Self::CodeAlreadyExists(address) => {
+                return Err(PrecompileError::Fatal(format!(
+                    "code already exists at address: {address}"
+                )));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
