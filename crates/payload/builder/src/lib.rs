@@ -1195,7 +1195,7 @@ where
                     buf.clear();
                     receipt.encode_2718(&mut buf);
                     receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
+                    receipts_bloom.accrue_bloom(receipt.bloom_ref());
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
