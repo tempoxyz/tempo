@@ -96,6 +96,11 @@ impl ValidationLatencyWorkload {
             transaction_count,
         }
     }
+
+    /// Returns whether this workload has no replayable transactions.
+    pub fn is_empty(&self) -> bool {
+        self.gas_used == 0 && self.transaction_count == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +195,9 @@ impl ValidationLatencyEstimate {
     pub fn estimate(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
         if self.elapsed == Duration::ZERO {
             return None;
+        }
+        if workload.is_empty() {
+            return Some(self.elapsed);
         }
 
         let scale = [
