@@ -79,7 +79,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         )
     }
 
-    #[inline]
+    #[inline(always)]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
@@ -168,7 +168,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn sstore(
         &mut self,
         address: Address,
@@ -208,7 +208,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn tstore(
         &mut self,
         address: Address,
@@ -220,7 +220,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
             gas::LOG
@@ -237,7 +237,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
@@ -271,14 +271,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(value)
     }
 
-    #[inline]
+    #[inline(always)]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
 
         Ok(self.internals.tload(address, key))
     }
 
-    #[inline]
+    #[inline(always)]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         deduct_gas(&mut self.gas_tracker, gas)
     }
