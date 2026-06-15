@@ -38,6 +38,8 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
 ///
 /// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
+#[cold]
+#[inline(never)]
 pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
     if !hardfork.is_t5() {
         return false;
@@ -73,6 +75,8 @@ struct RegistryData {
 
 impl RegistryData {
     /// Returns the master address, or `None` if the slot is empty (`address(0)`).
+    #[cold]
+    #[inline(never)]
     fn master_address(&self) -> Option<Address> {
         match self.master_address {
             Address::ZERO => None,
