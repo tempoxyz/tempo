@@ -252,7 +252,10 @@ mod tests {
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
-        storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage::{
+            FromWord, Handler, PrecompileStorageProvider, StorageCtx,
+            evm::EvmPrecompileStorageProvider,
+        },
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
         tip1060_storage_credits::{CreditMode, TIP1060StorageCredits},
@@ -2705,6 +2708,41 @@ mod tests {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// TIP-1060: suppressing precompile credit minting must not suppress creation gas.
+    #[test]
+    fn test_tip1060_precompile_credit_optout_charges_creation_transition() -> eyre::Result<()> {
+        let caller = P256KeyPair::random().address;
+        let mut evm = create_funded_evm_t7(caller);
+        let contract = Address::repeat_byte(0xf0);
+        let slot = U256::ZERO;
+        let value = U256::from(2);
+
+        let gas_used = {
+            let ctx = &mut evm.ctx;
+            let internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            provider.set_tip1060_storage_credits(false);
+            let gas_before = provider.gas_used();
+            provider.sstore(contract, slot, value)?;
+            provider.gas_used() - gas_before
+        };
+
+        assert!(
+            gas_used >= STORAGE_CREDIT_VALUE,
+            "T7 precompile 0->nonzero SSTORE with credit minting disabled must still charge \
+             the {STORAGE_CREDIT_VALUE} creditable gas, got {gas_used}"
+        );
+        assert_eq!(
+            evm.ctx.db().storage_ref(contract, slot)?,
+            value,
+            "precompile transition case should leave the created slot populated"
+        );
 
         Ok(())
     }
