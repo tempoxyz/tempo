@@ -169,37 +169,43 @@ where
     [T; N]: Storable,
 {
     /// Reads the entire array from storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn read(&self) -> Result<[T; N]> {
         self.as_slot().read()
     }
 
     /// Writes the entire array to storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn write(&mut self, value: [T; N]) -> Result<()> {
         self.as_slot().write(value)
     }
 
     /// Deletes the entire array from storage (clears all elements).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn delete(&mut self) -> Result<()> {
         self.as_slot().delete()
     }
 
     /// Reads the entire array from transient storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_read(&self) -> Result<[T; N]> {
         self.as_slot().t_read()
     }
 
     /// Writes the entire array to transient storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_write(&mut self, value: [T; N]) -> Result<()> {
         self.as_slot().t_write(value)
     }
 
     /// Deletes the entire array from transient storage (clears all elements).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_delete(&mut self) -> Result<()> {
         self.as_slot().t_delete()
     }
