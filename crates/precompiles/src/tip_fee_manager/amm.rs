@@ -60,6 +60,8 @@ pub struct PoolKey {
 
 impl Pool {
     /// Decodes a [`Pool`] from a raw EVM storage slot value (needed from changeset diffs).
+    #[cold]
+    #[inline(never)]
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
