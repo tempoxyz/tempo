@@ -1417,7 +1417,7 @@ impl Recipient {
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.target.is_zero() || self.target.is_tip20() {
+        if self.target == Address::ZERO || self.target.is_tip20() {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
