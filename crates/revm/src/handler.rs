@@ -33,6 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
+use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -322,6 +323,9 @@ fn translate_allowed_calls_for_precompile(
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
+/// T7+: key-auth gas is intrinsic-only. Add `STORAGE_CREDIT_VALUE` per persistent
+///   SSTORE because pre-execution provider gas is not folded into tx gas.
+///
 /// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
 /// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
 /// per TIP-1016.
@@ -367,7 +371,12 @@ fn calculate_key_authorization_gas(
             num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
-        let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+        let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+        if spec.is_t7() {
+            // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
+            // intrinsic-only, we must also add the creditable portion here.
+            sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
+        }
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
         if has_t5_witness {
@@ -1061,7 +1070,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm_without_tip1060_accounting(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
@@ -1116,8 +1125,7 @@ where
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
         } else if !nonce_key.is_zero() {
-            // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm_without_tip1060_accounting(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
@@ -1342,15 +1350,16 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_fee_collection(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
-                    fee_payer,
-                    fee_token,
-                    gas_balance_spending,
-                    block.beneficiary(),
-                    skip_liquidity_check,
-                )
-            });
+            let result =
+                StorageCtx::enter_evm_without_tip1060_accounting(journal, &block, cfg, tx, || {
+                    TipFeeManager::new().collect_fee_pre_tx(
+                        fee_payer,
+                        fee_token,
+                        gas_balance_spending,
+                        block.beneficiary(),
+                        skip_liquidity_check,
+                    )
+                });
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1551,7 +1560,7 @@ where
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
             if same_tx_key_authorization_use {
-                StorageCtx::enter_fee_collection(journal, block, cfg, tx, || {
+                StorageCtx::enter_evm_without_tip1060_accounting(journal, block, cfg, tx, || {
                     let mut keychain = AccountKeychain::new();
                     keychain
                         .set_transaction_key(key_auth.key_id)
@@ -1612,8 +1621,12 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited =
-            StorageCtx::enter_fee_collection(&mut *journal, block, &context.cfg, tx, || {
+        let credited = StorageCtx::enter_evm_without_tip1060_accounting(
+            &mut *journal,
+            block,
+            &context.cfg,
+            tx,
+            || {
                 let mut fee_manager = TipFeeManager::new();
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1634,7 +1647,8 @@ where
                 } else {
                     Ok(U256::ZERO)
                 }
-            })?;
+            },
+        )?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
@@ -3548,6 +3562,37 @@ mod tests {
 
         assert_eq!(helper_sstore_regular, 20_000);
         assert_eq!(state_gas, 230_000);
+    }
+
+    #[test]
+    fn test_t7_key_authorization_intrinsic_backs_tip1060_hook() {
+        use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
+
+        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
+        let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+        let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
+        let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
+        let (regular_gas, state_gas) =
+            calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T7);
+        let helper_sstore_regular = regular_gas - sig_gas - sload - 2_000 - scope_extra_gas;
+
+        assert_eq!(
+            gas_params.get(GasId::sstore_set_without_load_cost()),
+            SSTORE_CREATE_COST - STORAGE_CREDIT_VALUE,
+            "T7 gas table should expose only the SSTORE residual"
+        );
+        assert_eq!(
+            helper_sstore_regular, SSTORE_CREATE_COST,
+            "key authorization intrinsic gas must include the TIP-1060 creditable portion"
+        );
+        assert_eq!(state_gas, 0, "T7 without TIP-1016 has no state gas split");
     }
 
     #[test]

@@ -416,6 +416,31 @@ mod tests {
         evm
     }
 
+    /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
+    fn create_funded_evm_t7_with_timestamp(
+        address: Address,
+        timestamp: u64,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T7;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.enable_amsterdam_eip8037 = false;
+
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
     /// Create an EVM with a specific timestamp and a funded account.
     fn create_funded_evm_with_timestamp(
         address: Address,
@@ -3392,6 +3417,104 @@ mod tests {
         let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
         assert!(result.is_success());
         assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
+
+        Ok(())
+    }
+
+    /// Expiring nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
+    #[test]
+    fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::Result<()> {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let timestamp = 1000u64;
+        let valid_before = timestamp + 30;
+
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(valid_before))
+            .gas_limit(500_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let unindexed_tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let mut indexed_tx_env = unindexed_tx_env.clone();
+        indexed_tx_env
+            .tempo_tx_env
+            .as_mut()
+            .expect("expiring nonce tx must be AA")
+            .expiring_nonce_idx = Some(1);
+
+        let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
+        assert!(
+            unindexed_result.is_success(),
+            "unindexed expiring nonce tx should succeed"
+        );
+
+        let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
+        assert!(
+            indexed_result.is_success(),
+            "indexed expiring nonce tx should succeed"
+        );
+
+        assert_eq!(
+            indexed_result.tx_gas_used(),
+            unindexed_result.tx_gas_used(),
+            "pointer restore must not create a TIP-1060 settlement discount"
+        );
+        assert_eq!(
+            storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+            0,
+            "expiring nonce bookkeeping must not accrue storage credits"
+        );
+
+        Ok(())
+    }
+
+    /// 2D nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
+    #[test]
+    fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let nonce_key = U256::from(42_u64);
+
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(nonce_key)
+            .gas_limit(1_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let mut baseline_evm = create_funded_evm_t7(caller);
+        let baseline_result = baseline_evm.transact_commit(tx_env.clone())?;
+        assert!(
+            baseline_result.is_success(),
+            "baseline 2D nonce tx should succeed"
+        );
+
+        let mut credited_evm = create_funded_evm_t7(caller);
+        seed_storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS, 1);
+        let credited_result = credited_evm.transact_commit(tx_env)?;
+        assert!(
+            credited_result.is_success(),
+            "preseeded-credit 2D nonce tx should succeed"
+        );
+
+        assert_eq!(
+            credited_result.tx_gas_used(),
+            baseline_result.tx_gas_used(),
+            "2D nonce bookkeeping must not consume nonce storage credits for a gas discount"
+        );
+        assert_eq!(
+            storage_credit_balance(&credited_evm, NONCE_PRECOMPILE_ADDRESS),
+            1,
+            "2D nonce bookkeeping must not consume pre-existing nonce storage credits"
+        );
 
         Ok(())
     }
