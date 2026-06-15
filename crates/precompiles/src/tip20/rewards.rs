@@ -280,8 +280,8 @@ impl TIP20Token {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
-        if !from_delegate.is_zero() {
-            if to_delegate.is_zero() {
+        if from_delegate != Address::ZERO {
+            if to_delegate == Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -291,7 +291,7 @@ impl TIP20Token {
                         .map_err(|_| TempoPrecompileError::under_overflow())?,
                 )?;
             }
-        } else if !to_delegate.is_zero() {
+        } else if to_delegate != Address::ZERO {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -309,7 +309,7 @@ impl TIP20Token {
     pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
         let to_delegate = self.update_rewards(to)?;
 
-        if !to_delegate.is_zero() {
+        if to_delegate != Address::ZERO {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
