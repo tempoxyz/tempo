@@ -1358,7 +1358,10 @@ enum BuilderTx {
 impl BuilderTx {
     fn into_parts(self) -> (TempoTxEnvelope, Address) {
         match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
+            Self::Pooled(tx) => (
+                tx.transaction.inner().inner().clone(),
+                tx.transaction.sender(),
+            ),
             Self::Owned(tx) => tx.into_parts(),
         }
     }
