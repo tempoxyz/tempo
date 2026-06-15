@@ -1291,6 +1291,7 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
+    #[inline]
     pub fn verify_and_update_spending(
         &mut self,
         account: Address,
@@ -1371,6 +1372,7 @@ impl AccountKeychain {
     /// Should be called after a fee refund to avoid permanently reducing the spending limit.
     /// On T3, this should never restore more than the configured max in the current fee flow,
     /// but we still clamp as defense in depth in case a future caller violates that invariant.
+    #[inline]
     pub fn refund_spending_limit(
         &mut self,
         account: Address,
@@ -1434,6 +1436,7 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
     /// - `KeyNotFound` — no key is registered for the current transaction key
     /// - `SpendingLimitExceeded` — `amount` exceeds the key's remaining limit for `token`
+    #[inline]
     pub fn authorize_transfer(
         &mut self,
         account: Address,

@@ -1139,6 +1139,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline]
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
