@@ -2194,6 +2194,22 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     Ok(gas)
 }
 
+#[cold]
+#[inline(never)]
+fn legacy_aa_2d_nonce_gas(
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    nonce_key: U256,
+    nonce: u64,
+) -> u64 {
+    if nonce_key.is_zero() {
+        0
+    } else if nonce == 0 {
+        spec.gas_new_nonce_key()
+    } else {
+        spec.gas_existing_nonce_key()
+    }
+}
+
 /// Validates and calculates initial transaction gas for AA transactions.
 ///
 /// Calculates intrinsic gas based on:
@@ -2251,14 +2267,8 @@ where
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
             batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
         }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
-        nonce_2d_gas = if tx.nonce() == 0 {
-            spec.gas_new_nonce_key()
-        } else {
-            spec.gas_existing_nonce_key()
-        };
+    } else {
+        nonce_2d_gas = legacy_aa_2d_nonce_gas(spec, aa_env.nonce_key, tx.nonce());
     };
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
