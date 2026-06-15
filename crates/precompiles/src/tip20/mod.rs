@@ -32,8 +32,8 @@ use crate::{
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
+    primitives::{Address, B256, Bytes, LogData, U256, keccak256, uint},
+    sol_types::{SolEvent, SolValue},
 };
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -140,6 +140,23 @@ pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
 ];
 
 impl TIP20Token {
+    #[inline]
+    fn transfer_log_data(from: Address, to: Address, amount: U256) -> LogData {
+        LogData::new_unchecked(
+            vec![
+                ITIP20::Transfer::SIGNATURE_HASH,
+                from.into_word(),
+                to.into_word(),
+            ],
+            Bytes::copy_from_slice(&amount.to_be_bytes::<32>()),
+        )
+    }
+
+    #[inline]
+    fn emit_transfer_event(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+        self.emit_event(Self::transfer_log_data(from, to, amount))
+    }
+
     /// Returns the token name.
     pub fn name(&self) -> Result<String> {
         self.name.read()
@@ -1323,11 +1340,7 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
-        self.emit_event(TIP20Event::transfer(
-            to,
-            TIP_FEE_MANAGER_ADDRESS,
-            actual_spending,
-        ))?;
+        self.emit_transfer_event(to, TIP_FEE_MANAGER_ADDRESS, actual_spending)?;
 
         // Exit early if there is no refund
         if refund.is_zero() {
