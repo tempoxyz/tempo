@@ -2,7 +2,8 @@
 
 use crate::{
     Precompile, SelectorSchedule, charge_input_cost, dispatch_call_with_selector, metadata, mutate,
-    mutate_void, storage::ContractStorage,
+    mutate_void,
+    storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
