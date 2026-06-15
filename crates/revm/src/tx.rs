@@ -46,7 +46,7 @@ pub struct TempoBatchCallEnv {
     pub subblock_transaction: bool,
 
     /// Optional key authorization for provisioning access keys
-    pub key_authorization: Option<SignedKeyAuthorization>,
+    pub key_authorization: Option<Box<SignedKeyAuthorization>>,
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
@@ -360,7 +360,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .collect(),
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
-                key_authorization: key_authorization.clone(),
+                key_authorization: key_authorization.clone().map(Box::new),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution

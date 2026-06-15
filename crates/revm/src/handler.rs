@@ -1166,7 +1166,7 @@ where
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
-            let key_auth = tempo_tx_env.key_authorization.as_ref();
+            let key_auth = tempo_tx_env.key_authorization.as_deref();
             // Classify whether this keychain-signed tx is using the same access key that the
             // inline authorization registers.
             same_tx_key_authorization_use =
@@ -1256,7 +1256,7 @@ where
         // proves that a non-root sidecar signer is an active admin key for the caller account.
         if cfg.spec.is_t6()
             && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+            && let Some(key_auth) = tempo_tx_env.key_authorization.as_deref()
         {
             let auth_signer = key_auth
                 .recover_signer()
@@ -1348,7 +1348,7 @@ where
         // outside the later user-call batch checkpoint, so same-transaction authorize-and-use
         // keeps the newly registered key even if scoped-call prevalidation or execution fails.
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
-            && let Some(key_auth) = &tempo_tx_env.key_authorization
+            && let Some(key_auth) = tempo_tx_env.key_authorization.as_deref()
         {
             let keychain_checkpoint = if spec.is_t1() {
                 Some(journal.checkpoint())
@@ -1689,7 +1689,7 @@ where
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
-            if let Some(key_auth) = &aa_env.key_authorization {
+            if let Some(key_auth) = aa_env.key_authorization.as_deref() {
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
                 // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
@@ -2101,7 +2101,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let calls = &aa_env.aa_calls;
     let signature = &aa_env.signature;
     let authorization_list = &aa_env.tempo_authorization_list;
-    let key_authorization = aa_env.key_authorization.as_ref();
+    let key_authorization = aa_env.key_authorization.as_deref();
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
@@ -3589,7 +3589,7 @@ mod tests {
                 alloy_primitives::Signature::test_signature(),
             )),
             aa_calls: vec![call.clone()],
-            key_authorization: Some(key_auth),
+            key_authorization: Some(Box::new(key_auth)),
             signature_hash: B256::ZERO,
             ..Default::default()
         };
@@ -4887,7 +4887,7 @@ mod tests {
                         value: U256::ZERO,
                         input: Bytes::new(),
                     }],
-                    key_authorization: key_auth,
+                    key_authorization: key_auth.map(Box::new),
                     signature_hash: B256::ZERO,
                     override_key_id: Some(access_key),
                     ..Default::default()
