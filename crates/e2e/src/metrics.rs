@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, fmt::Display, str::FromStr, time::Duration};
 
-use commonware_runtime::{Clock as _, Metrics as CommonwareMetrics, deterministic::Context};
+use commonware_runtime::{Clock as _, deterministic::Context};
 
 use crate::TestingNode;
 
@@ -75,7 +75,7 @@ where
 
 impl Metrics {
     /// Samples metrics from a Commonware runtime context.
-    pub fn from_context(context: &impl CommonwareMetrics) -> Self {
+    pub fn from_context(context: &impl commonware_runtime::Metrics) -> Self {
         let samples = context.encode().lines().filter_map(Sample::parse).collect();
         Self { samples }
     }
@@ -177,7 +177,7 @@ impl Metrics {
     }
 }
 
-pub fn assert_no_duplicate_definitions(context: &impl CommonwareMetrics) {
+pub fn assert_no_duplicate_definitions(context: &impl commonware_runtime::Metrics) {
     let mut definitions = HashSet::new();
     let metrics = context.encode();
 
