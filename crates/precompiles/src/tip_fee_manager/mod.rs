@@ -8,7 +8,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
+    tip_fee_manager::amm::{PlannedFeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
@@ -172,7 +172,8 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
-            let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
+            let (route, ..) =
+                self.plan_fee_route_with_outputs(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
@@ -186,24 +187,28 @@ impl TipFeeManager {
         &mut self,
         user_token: Address,
         validator_token: Address,
-        max_amount: U256,
-        route: FeeRoute,
+        _max_amount: U256,
+        route: PlannedFeeRoute,
     ) -> Result<()> {
         match route {
-            FeeRoute::SameToken => {}
-            FeeRoute::Direct if self.storage.spec().is_t1c() => {
-                let amount_out: u128 = compute_amount_out(max_amount)?
+            PlannedFeeRoute::SameToken => {}
+            PlannedFeeRoute::Direct { amount_out } if self.storage.spec().is_t1c() => {
+                let amount_out: u128 = amount_out
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
                 self.reserve_pool_liquidity(self.pool_id(user_token, validator_token), amount_out)?;
             }
-            FeeRoute::Direct => {}
-            FeeRoute::TwoHop(intermediate) => {
+            PlannedFeeRoute::Direct { .. } => {}
+            PlannedFeeRoute::TwoHop {
+                intermediate,
+                first_amount_out,
+                second_amount_out,
+            } => {
                 // T5+ implies T1C+, so reservation is always required here.
-                let out1: u128 = compute_amount_out(max_amount)?
+                let out1: u128 = first_amount_out
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
-                let out2: u128 = compute_amount_out(U256::from(out1))?
+                let out2: u128 = second_amount_out
                     .try_into()
                     .map_err(|_| TempoPrecompileError::under_overflow())?;
                 self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;

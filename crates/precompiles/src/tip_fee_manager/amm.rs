@@ -98,6 +98,32 @@ pub enum FeeRoute {
     TwoHop(Address),
 }
 
+/// AMM route selected for fee collection, including output amounts computed while checking
+/// liquidity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlannedFeeRoute {
+    /// User and validator share the same fee token; no swap is performed.
+    SameToken,
+    /// Direct pool `(user_token, validator_token)` swap.
+    Direct { amount_out: U256 },
+    /// Two-hop swap through `intermediate`.
+    TwoHop {
+        intermediate: Address,
+        first_amount_out: U256,
+        second_amount_out: U256,
+    },
+}
+
+impl PlannedFeeRoute {
+    fn route(self) -> FeeRoute {
+        match self {
+            Self::SameToken => FeeRoute::SameToken,
+            Self::Direct { .. } => FeeRoute::Direct,
+            Self::TwoHop { intermediate, .. } => FeeRoute::TwoHop(intermediate),
+        }
+    }
+}
+
 /// Pools read during planning, paired with their observed validator-token reserve.
 pub type PoolData = ((Address, Address), u128);
 
@@ -506,10 +532,23 @@ impl TipFeeManager {
         validator_token: Address,
         max_amount: U256,
     ) -> Result<(Option<FeeRoute>, Option<Address>, Vec<PoolData>)> {
+        let (route, queried_intermediate, data) =
+            self.plan_fee_route_with_outputs(user_token, validator_token, max_amount)?;
+        Ok((route.map(PlannedFeeRoute::route), queried_intermediate, data))
+    }
+
+    /// Returns `(route, queried_intermediate, pools)`, carrying the quote outputs computed while
+    /// validating route liquidity so callers that reserve the route do not need to recompute them.
+    pub(crate) fn plan_fee_route_with_outputs(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<(Option<PlannedFeeRoute>, Option<Address>, Vec<PoolData>)> {
         let mut data = Vec::new();
 
         if user_token == validator_token {
-            return Ok((Some(FeeRoute::SameToken), None, data));
+            return Ok((Some(PlannedFeeRoute::SameToken), None, data));
         }
 
         // Direct (single-hop) path — always checked.
@@ -520,7 +559,7 @@ impl TipFeeManager {
         ));
         let amount_out = compute_amount_out(max_amount)?;
         if amount_out <= U256::from(direct.reserve_validator_token) {
-            return Ok((Some(FeeRoute::Direct), None, data));
+            return Ok((Some(PlannedFeeRoute::Direct { amount_out }), None, data));
         }
 
         // T5+: two-hop fallback through `userToken.quoteToken()`.
@@ -549,7 +588,15 @@ impl TipFeeManager {
             return Ok((None, Some(mid_token), data));
         }
 
-        Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+        Ok((
+            Some(PlannedFeeRoute::TwoHop {
+                intermediate: mid_token,
+                first_amount_out: amount_out,
+                second_amount_out: amount_out2,
+            }),
+            Some(mid_token),
+            data,
+        ))
     }
 
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
