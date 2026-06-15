@@ -16,7 +16,7 @@ use crate::{
     storage::{StorageCtx, StorageOps, types::*},
 };
 use alloy::primitives::{Address, Bytes, U256, keccak256};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, string::FromUtf8Error};
 
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
@@ -139,9 +139,7 @@ impl Storable for String {
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "String cannot be packed");
         load_bytes_like(storage, slot, |data| {
-            Self::from_utf8(data).map_err(|e| {
-                TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {e}"))
-            })
+            Self::from_utf8(data).map_err(invalid_utf8_error)
         })
     }
 
@@ -160,6 +158,12 @@ impl Storable for String {
 }
 
 // -- HELPER FUNCTIONS ---------------------------------------------------------
+
+#[cold]
+#[inline(never)]
+fn invalid_utf8_error(error: FromUtf8Error) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {error}"))
+}
 
 /// Generic load implementation for string-like types (String, Bytes) using Solidity's encoding.
 #[inline]
