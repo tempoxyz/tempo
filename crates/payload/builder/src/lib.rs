@@ -1225,7 +1225,7 @@ where
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
                         if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(&state);
+                            state_root_task_hook.on_state(state);
                         }
                     }
                 }
@@ -1255,8 +1255,8 @@ struct BalTaskHandle {
 impl BalTaskHandle {
     fn state_hook(&self) -> impl OnStateHook {
         let msg_tx = self.msg_tx.clone();
-        move |state: &EvmState| {
-            let _ = msg_tx.send(BalMessage::State(state.clone()));
+        move |state: EvmState| {
+            let _ = msg_tx.send(BalMessage::State(state));
         }
     }
 
