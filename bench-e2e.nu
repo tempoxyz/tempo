@@ -1030,7 +1030,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --platform "tempo"
                 --scenario $scenario
                 --bloat-mib $ctx.bloat
-                --bloat-token-count $ctx.token_count
+                --tip20-token-count $ctx.token_count
+                --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
