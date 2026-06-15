@@ -285,7 +285,8 @@ where
     /// Automatically increments the length and handles packing for small types.
     ///
     /// Returns `Err` if the vector has reached its maximum capacity.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn push(&self, value: T) -> Result<()>
     where
         T: Storable,
@@ -318,7 +319,8 @@ where
     ///
     /// Returns `None` if the vector is empty. Automatically decrements the length
     /// and zeros out the popped element's storage slot.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn pop(&self) -> Result<Option<T>>
     where
         T: Storable,
