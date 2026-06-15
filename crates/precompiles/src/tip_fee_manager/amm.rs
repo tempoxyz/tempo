@@ -25,6 +25,12 @@ pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 /// - `UnderOverflow` — multiplication of `amount_in * M` overflows
 #[inline]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
+    if let Ok(amount_in) = u128::try_from(amount_in)
+        && let Some(product) = amount_in.checked_mul(9_970)
+    {
+        return Ok(U256::from(product / 10_000));
+    }
+
     amount_in
         .checked_mul(M)
         .map(|product| product / SCALE)
