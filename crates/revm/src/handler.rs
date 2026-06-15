@@ -854,6 +854,26 @@ where
         Ok(result_gas)
     }
 
+    /// Applies gas refunds, dropping the EIP-3529 one-fifth refund cap on T7+.
+    ///
+    /// TIP-1060 removes the standard EVM refund cap: the `Refund`-mode
+    /// storage-credit settlement refund and the preserved baseline SSTORE
+    /// refunds are credited to the transaction's gas refund counter in full,
+    /// regardless of the transaction's gas used. Pre-T7 keeps the standard
+    /// capped behavior (`Gas::set_final_refund`).
+    #[inline]
+    fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
+        let spec = evm.ctx.cfg.spec;
+        let gas = exec_result.gas_mut();
+        if spec.is_t7() {
+            // No cap: leave the accumulated refund counter untouched after
+            // recording the EIP-7702 auth refund.
+            gas.record_refund(eip7702_refund);
+        } else {
+            post_execution::refund(spec.into(), gas, eip7702_refund);
+        }
+    }
+
     /// Take logs from the Journal if outcome is Halt Or Revert.
     #[inline]
     fn execution_result(
@@ -4134,6 +4154,58 @@ mod tests {
             }
             other => panic!("expected custom error, got: {other:?}"),
         }
+    }
+
+    /// TIP-1060: T7 removes the EIP-3529 one-fifth refund cap; pre-T7 keeps it.
+    #[test]
+    fn test_refund_cap_removed_on_t7() {
+        use revm::{
+            Context, Journal,
+            context::CfgEnv,
+            database::{CacheDB, EmptyDB},
+            handler::FrameResult,
+            interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
+        };
+
+        // Refund (50k) deliberately exceeds one fifth of the gas used (100k / 5 = 20k).
+        const SPENT: u64 = 100_000;
+        const REFUND: i64 = 50_000;
+        const CAPPED: i64 = (SPENT / 5) as i64;
+
+        let refunded_for_spec = |spec: TempoHardfork| -> i64 {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv::default())
+                .with_new_journal(Journal::new(CacheDB::new(EmptyDB::default())));
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+            let mut gas = Gas::new(SPENT);
+            gas.set_spent(SPENT);
+            gas.record_refund(REFUND);
+            let mut frame_result = FrameResult::Call(CallOutcome::new(
+                InterpreterResult::new(InstructionResult::Stop, Bytes::new(), gas),
+                0..0,
+            ));
+
+            handler.refund(&mut evm, &mut frame_result, 0);
+            frame_result.gas().refunded()
+        };
+
+        assert_eq!(
+            refunded_for_spec(TempoHardfork::T6),
+            CAPPED,
+            "pre-T7 must cap the refund at one fifth of gas used"
+        );
+        assert_eq!(
+            refunded_for_spec(TempoHardfork::T7),
+            REFUND,
+            "T7 must credit the full refund, with no EIP-3529 cap"
+        );
     }
 
     #[test]

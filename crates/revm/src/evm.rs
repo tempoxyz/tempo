@@ -2315,8 +2315,10 @@ mod tests {
 
     /// TIP-1060: Preserve churn of a pre-existing slot cannot subsidize fresh Direct creates.
     ///
-    /// Dirty restores must cancel the clear-minted credits. Otherwise churned credits could be
-    /// spent on genuinely fresh Direct creates below the intended storage-creation price.
+    /// Each clear mints a credit, but in Preserve mode the matching recreation pays the 230k
+    /// creditable portion as gas, so accumulating churned credits costs full price per credit and
+    /// cannot fund cheaper Direct creates. Here the 500-cycle Preserve churn exhausts gas (each
+    /// recreation costs 230k) before the Direct phase runs, so the transaction reverts.
     #[test]
     fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
@@ -2421,19 +2423,23 @@ mod tests {
             call.tx_gas_used()
         );
 
-        // Dirty restores cancel the clear-minted credits, so the Direct create phase OOGs.
+        // Each Preserve recreation costs the full 230k creditable portion, so the churn loop
+        // exhausts gas and reverts before any churned credit can subsidize a Direct create.
         assert!(!call.is_success());
         assert_eq!(slots, 1);
         assert_eq!(balance, 0);
         Ok(())
     }
 
-    /// TIP-1060: Preserve clear+restore churn of a pre-existing slot nets zero credits.
+    /// TIP-1060: Preserve clear+restore churn mints one credit per clear.
     ///
-    /// Slot 0 starts non-zero. Each clear mints a credit, and each dirty restore must burn it so
-    /// repeated churn cannot grow the account's credit balance.
+    /// Slot 0 starts non-zero. TIP-1060 keys minting on the present -> new transition, so every
+    /// `nonzero -> 0` clear mints a credit regardless of the slot's original value. In Preserve
+    /// mode the matching `0 -> nonzero` recreation pays the 230k creditable portion as gas and does
+    /// not consume a credit, so three churn cycles accumulate three credits — each paid for in full,
+    /// so the balance growth is not a subsidy.
     #[test]
-    fn test_tip1060_preserve_churn_mints_zero_net_credits() -> eyre::Result<()> {
+    fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x6c);
@@ -2473,8 +2479,9 @@ mod tests {
 
         assert_eq!(
             storage_credit_balance(&evm, contract),
-            0,
-            "clear+restore of a pre-existing slot must net to zero minted credits"
+            3,
+            "each clear mints a credit and Preserve recreations pay 230k without consuming, so \
+             three churn cycles accumulate three credits"
         );
         Ok(())
     }
