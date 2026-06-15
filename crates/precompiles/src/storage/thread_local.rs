@@ -213,6 +213,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically
@@ -362,8 +367,8 @@ impl<'evm> StorageCtx {
         J: JournalTr<Database: Database> + Debug,
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg)
-            .with_tip1060_storage_credits(false);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        provider.set_tip1060_storage_credits(false);
 
         Self::enter(&mut provider, f)
     }

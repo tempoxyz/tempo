@@ -200,6 +200,10 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `PolicyForbids` — TIP-403 policy rejects the contract→caller transfer authorization
     pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
+        // +T7: Fee collection bypasses TIP-1060, so disable storage-credit accounting to avoid
+        // minting user-refundable storage credits when clearing reward slots.
+        self.storage.set_tip1060_storage_credits(false);
+
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
