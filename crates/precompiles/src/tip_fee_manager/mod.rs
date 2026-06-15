@@ -317,6 +317,13 @@ impl TipFeeManager {
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
     }
+
+    /// Reads a validator's effective fee token preference for the external ABI query.
+    #[cold]
+    #[inline(never)]
+    pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
+        self.get_validator_token(call.validator)
+    }
 }
 
 #[cfg(test)]
