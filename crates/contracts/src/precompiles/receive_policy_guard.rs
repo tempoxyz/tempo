@@ -89,6 +89,8 @@ crate::sol! {
 
 impl IReceivePolicyGuard::ClaimReceiptV1 {
     #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
     pub fn new(
         token: Address,
         recovery_auth: Address,
@@ -114,6 +116,8 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn claimed_event(
         &self,
         receiver: Address,
@@ -136,6 +140,8 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn blocked_event(&self, receiver: Address, amount: U256) -> ReceivePolicyGuardEvent {
         ReceivePolicyGuardEvent::TransferBlocked(IReceivePolicyGuard::TransferBlocked {
             token: self.token,
@@ -147,6 +153,8 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn burned_event(
         &self,
         receiver: Address,
