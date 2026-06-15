@@ -137,7 +137,6 @@ struct InMemoryStateProvider {
     accounts: Arc<AddressMap<RethAccount>>,
     storage: Arc<HashMap<(Address, B256), U256>>,
     contracts: Arc<B256Map<RethBytecode>>,
-    block_hashes: Arc<HashMap<u64, B256>>,
 }
 
 #[derive(Clone)]
@@ -190,8 +189,8 @@ impl BytecodeReader for InMemoryStateProvider {
 }
 
 impl BlockHashReader for InMemoryStateProvider {
-    fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
-        Ok(self.block_hashes.get(&number).copied())
+    fn block_hash(&self, _number: u64) -> ProviderResult<Option<B256>> {
+        Ok(None)
     }
 
     fn canonical_hashes_range(&self, _start: u64, _end: u64) -> ProviderResult<Vec<B256>> {
@@ -415,7 +414,6 @@ fn setup_fixed_cache_state(
     let mut accounts = AddressMap::default();
     let mut storage = HashMap::default();
     let mut contracts = B256Map::default();
-    let mut block_hashes = HashMap::default();
 
     for (hash, bytecode) in state_cache.contracts {
         let bytecode = RethBytecode(bytecode);
@@ -430,10 +428,6 @@ fn setup_fixed_cache_state(
             execution_cache.insert_storage(address, storage_key, Some(value));
             storage.insert((address, storage_key), value);
         }
-    }
-
-    for (number, hash) in state_cache.block_hashes {
-        block_hashes.insert(number.to::<u64>(), hash);
     }
 
     for address in [
@@ -453,7 +447,6 @@ fn setup_fixed_cache_state(
             accounts: Arc::new(accounts),
             storage: Arc::new(storage),
             contracts: Arc::new(contracts),
-            block_hashes: Arc::new(block_hashes),
         },
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
