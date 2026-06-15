@@ -53,6 +53,8 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 /// # Errors
 /// - `InvalidToken` — address does not have the TIP-20 prefix
 /// - `InvalidCurrency` — token currency is not `"USD"`
+#[cold]
+#[inline(never)]
 pub fn validate_usd_currency(token: Address) -> Result<()> {
     if TIP20Token::from_address(token)?.currency()? != USD_CURRENCY {
         return Err(TIP20Error::invalid_currency().into());
