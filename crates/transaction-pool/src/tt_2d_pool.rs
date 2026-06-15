@@ -654,15 +654,7 @@ impl AA2dPool {
         let independent = self
             .independent_transactions
             .values()
-            .filter_map(|tx| {
-                let id = tx
-                    .transaction
-                    .transaction
-                    .aa_transaction_id()
-                    .expect("Independent transaction must have AA transaction ID");
-                let tx = self.by_id.get(&id)?;
-                Some(tx.inner.clone_into_pending(base_fee))
-            })
+            .map(|tx| tx.clone_into_pending(base_fee))
             .collect();
 
         BestAA2dTransactions {
