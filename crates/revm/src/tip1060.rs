@@ -75,7 +75,7 @@ pub fn apply_refund<DB: Database, I>(
         journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
     }
 
-    // Refund storage credit value (230k) per settled credit.
+    // Refund storage credit value per settled credit.
     gas.erase_cost(refunds.saturating_mul(STORAGE_CREDIT_VALUE));
 
     Ok(())

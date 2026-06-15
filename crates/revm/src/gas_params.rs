@@ -13,9 +13,9 @@ const NEW_ACCOUNT_COST: u64 = 250_000;
 const CODE_DEPOSIT_COST_T1: u64 = 1_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 
-// TIP-1060 (T7): the SSTORE gas function charges only the 20,000-gas residual
-// (`GAS_STORAGE_SET`) on a clean creation (`original == present == 0`). The
-// remaining 230,000-gas creditable portion of the TIP-1000 creation cost is
+// TIP-1060 (T7): the SSTORE gas function charges only the 5,000-gas residual
+// (`SSTORE_SET_COST`) on a clean creation (`original == present == 0`). The
+// remaining 245,000-gas creditable portion of the TIP-1000 creation cost is
 // governed by the storage-credit hook (see `sstore_storage_credits`), so it is
 // no longer charged through the SSTORE gas function.
 
@@ -55,8 +55,8 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
-    // TIP-1060 (T7+): the SSTORE creation cost drops to the 20k residual; the
-    // 230k creditable portion is handled by the storage-credit hook.
+    // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
+    // 245k creditable portion is handled by the storage-credit hook.
     if spec.is_t7() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
         return TABLE.get_or_init(t7_gas_params).clone();
@@ -71,12 +71,12 @@ pub fn tempo_gas_params_with_amsterdam(
 }
 
 /// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation
-/// cost is lowered to the 20k residual (`GAS_STORAGE_SET`) per TIP-1060.
+/// cost is lowered to the 5k residual (`SSTORE_SET_COST`) per TIP-1060.
 ///
 /// revm charges this residual through `sstore_dynamic_gas` under the same
-/// `original == present == 0` condition as the base `GAS_STORAGE_SET` cost, so a
+/// `original == present == 0` condition as the upstream storage-set cost, so a
 /// dirty recreation (`x→0→y`) is charged neither the residual nor the base
-/// set cost. The 230k creditable portion is charged (or covered by a credit) by
+/// set cost. The 245k creditable portion is charged (or covered by a credit) by
 /// the storage-credit hook in `sstore_storage_credits`.
 fn t7_gas_params() -> GasParams {
     // T7 starts from the full TIP-1000 (T1) table so that every creation cost is
@@ -85,7 +85,7 @@ fn t7_gas_params() -> GasParams {
     // code_deposit_cost, eip7702 costs, auth refund) is exactly as in `t1_gas_params`.
     let mut gas_params = t1_gas_params();
     gas_params.override_gas([
-        // SSTORE (zero -> non-zero): only the 20k residual; the 230k creditable
+        // SSTORE (zero -> non-zero): only the 5k residual; the 245k creditable
         // portion is governed by the TIP-1060 storage-credit hook.
         // (T1 charged the full SSTORE_CREATE_COST here.)
         (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
@@ -190,7 +190,7 @@ mod tests {
         );
     }
 
-    /// TIP-1060 (T7): SSTORE creation charges only the 20k residual through the
+    /// TIP-1060 (T7): SSTORE creation charges only the 5k residual through the
     /// gas function; other TIP-1000 creation costs are unchanged, and there is
     /// no TIP-1016 state-gas split (production T7 runs with EIP-8037 disabled).
     #[test]
