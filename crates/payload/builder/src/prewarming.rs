@@ -458,6 +458,9 @@ fn storage_touches_for_transaction(
     });
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    if tx.transaction.inner().fee_token().is_none() {
+        add_fee_manager_user_token_touch(&mut touches, fee_payer);
+    }
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
@@ -593,6 +596,14 @@ fn add_fee_manager_touches(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
+    );
+}
+
+fn add_fee_manager_user_token_touch(touches: &mut Vec<StorageTouch>, fee_payer: Address) {
+    add_storage_touch(
+        touches,
+        TIP_FEE_MANAGER_ADDRESS,
+        fee_payer.mapping_slot(fee_manager_slots::USER_TOKENS),
     );
 }
 
@@ -894,6 +905,7 @@ mod tests {
         let mut touches = Vec::new();
 
         add_tip20_fee_touches(&mut touches, token, sender);
+        add_fee_manager_user_token_touch(&mut touches, sender);
         add_tip20_call_touches(
             &mut touches,
             sender,
@@ -920,6 +932,10 @@ mod tests {
         assert!(touches.contains(&StorageTouch::Storage {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
+        }));
+        assert!(touches.contains(&StorageTouch::Storage {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: sender.mapping_slot(fee_manager_slots::USER_TOKENS)
         }));
     }
 
