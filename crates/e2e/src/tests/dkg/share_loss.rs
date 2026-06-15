@@ -7,7 +7,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, connect_execution_peers, metrics::Metrics, setup_validators};
+use crate::{Setup, connect_execution_peers, metrics::MetricsExt, setup_validators};
 
 #[test_traced]
 fn validator_lost_share_but_gets_share_in_next_epoch() {
@@ -42,7 +42,9 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
         'acquire_share: loop {
             context.sleep(Duration::from_secs(1)).await;
-            let metrics = Metrics::from_context(&context).for_scope(&validators[lost_share_index]);
+            let metrics = context
+                .to_metrics()
+                .for_scope(&validators[lost_share_index]);
 
             if let Some(v) = metrics.value::<u64>("peers_blocked") {
                 assert_eq!(v, 0);
@@ -92,7 +94,7 @@ fn validator_loses_consensus_state_becomes_observer() {
 
         'setup: loop {
             context.sleep(Duration::from_secs(1)).await;
-            let metrics = Metrics::from_context(&context).for_scope(&specimen);
+            let metrics = context.to_metrics().for_scope(&specimen);
 
             // Dealings in the first epoch.
             if let Some(epoch) = metrics.latest_consensus_epoch() {
@@ -119,7 +121,7 @@ fn validator_loses_consensus_state_becomes_observer() {
         specimen.start(&context).await;
 
         'recover: for iteration in 1.. {
-            let metrics = Metrics::from_context(&context).for_scope(&specimen);
+            let metrics = context.to_metrics().for_scope(&specimen);
 
             if let Some(epoch) = metrics.latest_consensus_epoch() {
                 assert!(epoch < 3, "node should have recovered its share by epoch 3");

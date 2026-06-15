@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::{
     Setup, TestingNode, connect_execution_peers,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
-    metrics::{MetricScope, Metrics, wait_for_height},
+    metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
 };
 use commonware_consensus::types::FixedEpocher;
@@ -325,7 +325,7 @@ fn follower_reads_boundaries_after_full_dkg() {
             .unwrap();
 
         wait_for_height(&context, &validators[0], start_height).await;
-        Metrics::from_context(&context).assert_no_dkg_failures();
+        context.to_metrics().assert_no_dkg_failures();
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())

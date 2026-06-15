@@ -20,7 +20,7 @@ use tracing::debug;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
-    metrics::{Metrics, wait_for_metrics},
+    metrics::{Metrics, MetricsExt, wait_for_metrics},
     setup_validators,
 };
 
@@ -349,11 +349,11 @@ async fn wait_for_height(
 
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
-    let baseline = max_consensus_height(&Metrics::from_context(context));
+    let baseline = max_consensus_height(&context.to_metrics());
     for _ in 0..=tries {
         context.sleep(Duration::from_secs(1)).await;
 
-        let height = max_consensus_height(&Metrics::from_context(context));
+        let height = max_consensus_height(&context.to_metrics());
         if height != baseline {
             panic!(
                 "height has changed, progress was made while the network was \
@@ -447,7 +447,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             // fast we might miss the window and the test will succeed no matter
             // what.
             let (stopped_val_idx, height) = 'wait_to_boundary: loop {
-                let metrics = Metrics::from_context(&context);
+                let metrics = context.to_metrics();
                 for (idx, validator) in validators.iter().enumerate() {
                     let scoped = metrics.for_scope(validator);
                     let Some(value) = scoped.latest_consensus_height() else {
@@ -476,7 +476,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             let mut iteration = 0;
             'look_for_progress: loop {
                 context.sleep(Duration::from_secs(1)).await;
-                let metrics = Metrics::from_context(&context);
+                let metrics = context.to_metrics();
                 let restarted = metrics.for_scope(&validators[stopped_val_idx]);
                 if restarted
                     .latest_consensus_height()

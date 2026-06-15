@@ -10,7 +10,7 @@ use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorde
 
 use crate::{
     Setup, connect_execution_peers,
-    metrics::{Metrics, wait_for_metrics},
+    metrics::{MetricsExt, wait_for_metrics},
     setup_validators,
 };
 
@@ -126,7 +126,7 @@ fn run_payload_builder_test(
             })
             .await;
 
-            let metrics = Metrics::from_context(&context);
+            let metrics = context.to_metrics();
             metrics
                 .values::<u64>(NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
                 .sum()

@@ -13,7 +13,8 @@ use tracing::info;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, metrics::Metrics, setup_validators,
+    Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
+    setup_validators,
 };
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
@@ -116,7 +117,7 @@ fn validator_can_fast_sync_after_full_dkg() {
             context.sleep(Duration::from_millis(100)).await;
         }
         // ensure fast-sync was used to jump epoch boundaries (including from old to new sharing)
-        Metrics::from_context(&context).assert_any_rounds_skipped();
+        context.to_metrics().assert_any_rounds_skipped();
 
         // verify continued progress
         let block_after_sync = late_validator
@@ -132,6 +133,6 @@ fn validator_can_fast_sync_after_full_dkg() {
             block_later > block_after_sync,
             "Late validator should keep progressing after sync"
         );
-        Metrics::from_context(&context).assert_no_dkg_failures();
+        context.to_metrics().assert_no_dkg_failures();
     })
 }

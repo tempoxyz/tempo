@@ -8,7 +8,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, metrics::Metrics, setup_validators, tests::dkg::common::target_epoch};
+use crate::{Setup, metrics::MetricsExt, setup_validators, tests::dkg::common::target_epoch};
 
 #[test_traced]
 fn validator_is_added_to_a_set_of_two() {
@@ -100,7 +100,7 @@ impl AssertValidatorIsAdded {
             'becomes_signer: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let metrics = Metrics::from_context(&context);
+                let metrics = context.to_metrics();
                 metrics.assert_no_dkg_failures();
 
                 let added_metrics = metrics.for_scope(&validators[added_index]);
@@ -197,7 +197,7 @@ impl AssertValidatorIsRemoved {
             'is_removed: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let metrics = Metrics::from_context(&context);
+                let metrics = context.to_metrics();
                 metrics.assert_no_dkg_failures();
 
                 let network_metrics = metrics.for_scope(&validators[0]);

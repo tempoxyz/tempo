@@ -9,7 +9,7 @@ use commonware_runtime::{
 use futures::future::join_all;
 
 use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
-use crate::{Setup, metrics::Metrics, setup_validators};
+use crate::{Setup, metrics::MetricsExt, setup_validators};
 
 #[test_traced]
 fn full_dkg_ceremony() {
@@ -83,7 +83,7 @@ impl FullDkgTest {
                 self.how_many_signers,
             )
             .await;
-            Metrics::from_context(&context).assert_no_dkg_failures();
+            context.to_metrics().assert_no_dkg_failures();
 
             // Step 3: Verify full DKG created a NEW polynomial (different public key)
             let outcome_after_full = wait_for_outcome(
@@ -110,7 +110,7 @@ impl FullDkgTest {
                 self.how_many_signers,
             )
             .await;
-            Metrics::from_context(&context).assert_no_dkg_failures();
+            context.to_metrics().assert_no_dkg_failures();
 
             let outcome_after_reshare = wait_for_outcome(
                 &context,

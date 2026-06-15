@@ -11,7 +11,7 @@ use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
-    metrics::Metrics, setup_validators,
+    metrics::MetricsExt, setup_validators,
 };
 
 #[test_traced]
@@ -81,7 +81,7 @@ impl AssertJoinsLate {
             // Assert that last node is able to catch up and progress
             while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
                 context.sleep(Duration::from_millis(100)).await;
-                let metrics = Metrics::from_context(&context);
+                let metrics = context.to_metrics();
                 metrics.assert_no_blocked_peers();
                 assert!(
                     metrics.consensus_before_epoch(1),

@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 use super::dkg::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
 use crate::{
     Setup,
-    metrics::{Metrics, wait_for_height},
+    metrics::{MetricsExt, wait_for_height},
     setup_validators,
 };
 use alloy::transports::http::reqwest::Url;
@@ -180,7 +180,7 @@ fn get_identity_transition_proof_after_full_dkg() {
         // Wait for full DKG to complete
         wait_for_validators_to_reach_epoch(&context, first_full_dkg_epoch + 1, how_many_signers)
             .await;
-        Metrics::from_context(&context).assert_no_dkg_failures();
+        context.to_metrics().assert_no_dkg_failures();
 
         let outcome_after_first =
             wait_for_outcome(&context, &validators, first_full_dkg_epoch, epoch_length).await;
@@ -211,7 +211,7 @@ fn get_identity_transition_proof_after_full_dkg() {
 
         wait_for_validators_to_reach_epoch(&context, second_full_dkg_epoch + 1, how_many_signers)
             .await;
-        Metrics::from_context(&context).assert_no_dkg_failures();
+        context.to_metrics().assert_no_dkg_failures();
 
         let outcome_after_second =
             wait_for_outcome(&context, &validators, second_full_dkg_epoch, epoch_length).await;

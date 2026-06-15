@@ -64,6 +64,19 @@ pub trait MetricScope {
     fn metric_prefix(&self) -> String;
 }
 
+pub trait MetricsExt {
+    fn to_metrics(&self) -> Metrics;
+}
+
+impl<T> MetricsExt for T
+where
+    T: commonware_runtime::Metrics,
+{
+    fn to_metrics(&self) -> Metrics {
+        Metrics::from_context(self)
+    }
+}
+
 impl<TClock> MetricScope for TestingNode<TClock>
 where
     TClock: commonware_runtime::Clock,
@@ -192,7 +205,7 @@ pub fn assert_no_duplicate_definitions(context: &impl commonware_runtime::Metric
 /// Polls context metrics until `predicate` returns true.
 pub async fn wait_for_metrics(context: &Context, mut predicate: impl FnMut(&Metrics) -> bool) {
     loop {
-        let metrics = Metrics::from_context(context);
+        let metrics = context.to_metrics();
         if predicate(&metrics) {
             return;
         }

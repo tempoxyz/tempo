@@ -18,7 +18,7 @@ use tracing::info;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers,
-    metrics::{Metrics, wait_for_height, wait_for_metrics},
+    metrics::{MetricsExt, wait_for_height, wait_for_metrics},
     setup_validators,
     tests::dkg::common::wait_for_outcome,
 };
@@ -158,7 +158,7 @@ fn joins_from_snapshot() {
         info!("new validator was added to the committee, but not started");
 
         donor.stop().await;
-        let stopped_donor_metrics = Metrics::from_context(&context).for_scope(&donor);
+        let stopped_donor_metrics = context.to_metrics().for_scope(&donor);
         let last_epoch_before_stop = stopped_donor_metrics
             .latest_consensus_epoch()
             .expect("validator had no entry for latest epoch");
@@ -353,7 +353,8 @@ fn can_restart_after_joining_from_snapshot() {
         info!("new validator was added to the committee, but not started");
 
         donor.stop().await;
-        let last_epoch_before_stop = Metrics::from_context(&context)
+        let last_epoch_before_stop = context
+            .to_metrics()
             .for_scope(&donor)
             .latest_consensus_epoch()
             .expect("validator had no entry for latest epoch");
