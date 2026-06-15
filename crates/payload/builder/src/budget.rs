@@ -27,7 +27,7 @@ pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
-const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
+const BUILD_TIME_MULTIPLIER_DECAY: u64 = 4;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
@@ -164,7 +164,7 @@ mod tests {
             observed_build_time_multiplier(Duration::from_millis(250), Duration::from_millis(100)),
             Some(MAX_BUILD_TIME_MULTIPLIER)
         );
-        assert_eq!(decay_build_time_multiplier(1_500_000, 1_300_000), 1_475_000);
+        assert_eq!(decay_build_time_multiplier(1_500_000, 1_300_000), 1_450_000);
     }
 
     #[test]
