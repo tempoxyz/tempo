@@ -214,7 +214,7 @@ impl TIP403Registry {
     /// Returns `true` if the given policy ID exists (built-in or user-created).
     pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
         // Built-in policies (0 and 1) always exist
-        if self.builtin_authorization(call.policyId).is_some() {
+        if Self::builtin_authorization(call.policyId).is_some() {
             return Ok(true);
         }
 
@@ -237,7 +237,7 @@ impl TIP403Registry {
             // Built-in policies are virtual (not stored), and match the `PolicyType`:
             //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
             //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
-            if self.builtin_authorization(call.policyId).is_some() {
+            if Self::builtin_authorization(call.policyId).is_some() {
                 return Ok(ITIP403Registry::policyDataReturn {
                     policyType: (call.policyId as u8)
                         .try_into()
@@ -720,7 +720,7 @@ impl TIP403Registry {
             return Ok(true);
         }
 
-        if let Some(auth) = self.builtin_authorization(policy_id) {
+        if let Some(auth) = Self::builtin_authorization(policy_id) {
             return Ok(auth);
         }
 
@@ -758,7 +758,7 @@ impl TIP403Registry {
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
     /// Returns None for user-created policies.
     #[inline]
-    fn builtin_authorization(&self, policy_id: u64) -> Option<bool> {
+    fn builtin_authorization(policy_id: u64) -> Option<bool> {
         match policy_id {
             ALLOW_ALL_POLICY_ID => Some(true),
             REJECT_ALL_POLICY_ID => Some(false),
@@ -775,7 +775,7 @@ impl TIP403Registry {
         user: Address,
         cache: Option<PolicyData>,
     ) -> Result<bool> {
-        if let Some(auth) = self.builtin_authorization(policy_id) {
+        if let Some(auth) = Self::builtin_authorization(policy_id) {
             return Ok(auth);
         }
         let data = match cache {
@@ -808,7 +808,7 @@ impl TIP403Registry {
     /// Validates that a policy ID references an existing simple policy (not compound)
     fn validate_simple_policy(&self, policy_id: u64) -> Result<()> {
         // Built-in policies (0 and 1) are always valid simple policies
-        if self.builtin_authorization(policy_id).is_some() {
+        if Self::builtin_authorization(policy_id).is_some() {
             return Ok(());
         }
 
@@ -829,7 +829,7 @@ impl TIP403Registry {
     /// Ensures `policy_id` is a built-in or an existing simple policy.
     /// Returns the policy type so that the caller can use it.
     fn validate_receive_policy_id(&self, policy_id: u64) -> Result<u8> {
-        if self.builtin_authorization(policy_id).is_some() {
+        if Self::builtin_authorization(policy_id).is_some() {
             return Ok(policy_id as u8); // safe downcast as it's either 0 or 1.
         }
         if policy_id >= self.policy_id_counter()? {
