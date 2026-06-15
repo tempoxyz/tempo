@@ -1158,9 +1158,7 @@ impl TIP20Token {
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_from_balance = from_balance - amount;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1295,14 +1293,7 @@ impl TIP20Token {
             )?;
         }
 
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
+        let new_from_balance = from_balance - amount;
 
         self.set_balance(from, new_from_balance)?;
 
