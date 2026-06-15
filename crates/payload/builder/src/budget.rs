@@ -25,7 +25,7 @@ use tempo_payload_types::{
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
-const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
+const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_350_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 
