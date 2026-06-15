@@ -83,6 +83,11 @@ fn t7_gas_params() -> GasParams {
         // SSTORE (zero -> non-zero): only the 20k residual; the 230k creditable
         // portion is governed by the TIP-1060 storage-credit hook.
         (GasId::sstore_set_without_load_cost(), GAS_STORAGE_SET),
+        // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now
+        // handled by storage-credit minting, so the legacy clearing refund is
+        // removed. Restore-to-original refunds (sstore_set_refund /
+        // sstore_reset_refund) are preserved at their defaults.
+        (GasId::sstore_clearing_slot_refund(), 0),
         // All other TIP-1000 creation costs are unchanged by TIP-1060.
         (GasId::tx_create_cost(), CREATE_COST),
         (GasId::create(), CREATE_COST),

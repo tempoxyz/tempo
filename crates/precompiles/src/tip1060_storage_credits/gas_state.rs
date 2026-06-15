@@ -111,39 +111,22 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     owner: Address,
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<GasStateOutcome, B::Error> {
-    let (values, is_cold) = (&caller_state_load.data, caller_state_load.is_cold);
-
-    // TIP-1060 removes the legacy storage-clearing gas refunds. The SSTORE gas
-    // function still runs (`skip_gas: false`) so revm charges the baseline
-    // dynamic gas and the 20k creation residual (the latter only on a clean
-    // creation, `original == present == 0`); this hook layers the 230k
-    // creditable portion on top.
-    let outcome = GasStateOutcome {
-        skip_gas: false,
-        skip_refund: true,
-    };
+    let values = &caller_state_load.data;
 
     // Only account for storage credits when the slot crosses the zero boundary
     // (zero -> non-zero or non-zero -> zero). If both values are zero or both are
     // non-zero, slot occupancy is unchanged, so skip storage credits accounting.
     if values.is_present_zero() == values.is_new_zero() {
-        return Ok(outcome);
+        return Ok(GasStateOutcome::default());
     }
 
-    // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
-    // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
+    // Writes to the storage-credit precompile's own state are protocol bookkeeping
+    // (the balance slot updated by this hook, reached via the precompile storage
+    // provider). They must not recurse into credit accounting; fall back to the
+    // default SSTORE gas function so the backing write is charged as an ordinary
+    // store and never minted/consumed as a credit.
     if owner == STORAGE_CREDITS_ADDRESS {
-        if is_cold {
-            backend.charge_gas(backend.gas_params().cold_storage_cost())?;
-        }
-        if values.is_original_eq_present() {
-            backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
-        }
-
-        return Ok(GasStateOutcome {
-            skip_gas: true,
-            skip_refund: true,
-        });
+        return Ok(GasStateOutcome::default());
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
@@ -159,7 +142,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         backend.charge_gas(additional_cold_cost)?;
     }
 
-    let mut balance =
+    let mut credit =
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
@@ -169,7 +152,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         // keys minting on the present -> new transition, so a within-transaction
         // `0 -> X -> 0` clear of a slot created earlier still mints (and the
         // matching creation consumes), so churn nets out.
-        balance = balance.saturating_add(1);
+        credit = credit.saturating_add(1);
         was_changed = true;
     } else {
         // present 0 -> non-zero: storage creation. revm's SSTORE gas function
@@ -182,19 +165,21 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             .map_err(|_| B::Error::fatal_external())?;
 
         match transient_state.mode {
-            CreditMode::Direct if balance > 0 && transient_state.budget > 0 => {
-                // Consume one credit to cover the 230k creditable portion.
-                balance -= 1;
+            CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
+                // Consume one credit to cover the 230k creditable portion; charge
+                // nothing else (the residual is charged by the SSTORE gas function).
+                credit -= 1;
                 was_changed = true;
 
+                // An unlimited budget (`setMode(Direct)`) is never decremented.
                 if transient_state.budget != u64::MAX {
                     transient_state.budget -= 1;
+                    if transient_state.budget == 0 {
+                        transient_state.mode = CreditMode::Preserve;
+                        emit_mode_updated(backend, owner, CreditMode::Preserve)?;
+                    }
+                    store_credit_state(backend, account_slot, transient_state)?;
                 }
-                if transient_state.budget == 0 {
-                    transient_state.mode = CreditMode::Preserve;
-                    emit_mode_updated(backend, owner, CreditMode::Preserve)?;
-                }
-                store_credit_state(backend, account_slot, transient_state)?;
             }
             CreditMode::Direct => {
                 // No credit or no budget available: charge the 230k creditable
@@ -226,7 +211,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             .sstore(
                 STORAGE_CREDITS_ADDRESS,
                 account_slot,
-                U256::from(balance),
+                U256::from(credit),
                 false,
             )?
             .data;
@@ -239,5 +224,5 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         };
     }
 
-    Ok(outcome)
+    Ok(GasStateOutcome::default())
 }

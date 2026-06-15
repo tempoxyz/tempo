@@ -2261,10 +2261,14 @@ mod tests {
         let create_clear_body = bytes!("6001600055600060005500");
 
         // (mode, gas used, final credit balance).
+        // The 0->1->0 clear restores slot 0 to its transaction-original value (0),
+        // so the 19,900 restore-to-original refund is preserved (TIP-1060 only
+        // zeroes SSTORE_CLEARS_SCHEDULE, not the restore refunds), lowering each
+        // mode's gas by 19,900 relative to the legacy no-refund accounting.
         let cases = [
-            (CreditMode::Refund, 305_968u64, 0u64),
-            (CreditMode::Preserve, 540_514u64, 1u64),
-            (CreditMode::Direct, 540_514u64, 1u64),
+            (CreditMode::Refund, 286_068u64, 0u64),
+            (CreditMode::Preserve, 520_614u64, 1u64),
+            (CreditMode::Direct, 520_614u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
