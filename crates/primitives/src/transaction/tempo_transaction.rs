@@ -532,6 +532,8 @@ impl TempoTransaction {
     ///
     /// Fee-payer services accept an unsigned sponsorship request with `0x00` fee-payer signature.
     /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
+    #[cold]
+    #[inline(never)]
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
