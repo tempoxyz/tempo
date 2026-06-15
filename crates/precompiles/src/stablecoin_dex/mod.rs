@@ -66,11 +66,15 @@ impl StablecoinDEX {
     }
 
     /// Read next order ID (always at least 1)
+    #[cold]
+    #[inline(never)]
     fn next_order_id(&self) -> Result<u128> {
         Ok(self.next_order_id.read()?.max(1))
     }
 
     /// Increment next order ID
+    #[cold]
+    #[inline(never)]
     fn increment_next_order_id(&mut self) -> Result<()> {
         let next_order_id = self.next_order_id()?;
         self.next_order_id.write(next_order_id + 1)
@@ -92,6 +96,8 @@ impl StablecoinDEX {
     }
 
     /// Validates that a trading pair exists or creates the pair
+    #[cold]
+    #[inline(never)]
     fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
         if !book.is_initialized() {
             self.create_pair(token)?;
