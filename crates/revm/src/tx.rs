@@ -48,8 +48,8 @@ pub struct TempoBatchCallEnv {
     /// Optional key authorization for provisioning access keys
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Transaction signature hash (for signature verification)
-    pub signature_hash: B256,
+    /// Transaction signature hash, only needed after recovery for keychain signatures.
+    pub signature_hash: Option<Box<B256>>,
 
     /// Transaction hash
     pub tx_hash: B256,
@@ -64,6 +64,14 @@ pub struct TempoBatchCallEnv {
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+impl TempoBatchCallEnv {
+    #[inline]
+    pub fn keychain_signature_hash(&self) -> Option<&B256> {
+        self.signature_hash.as_deref()
+    }
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -279,10 +287,14 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
 
+        let keychain_signature_hash = signature.is_keychain().then(|| aa_signed.signature_hash());
+
         // Populate the key_id cache for Keychain signatures before cloning
         // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when cloned
-        if let Some(keychain_sig) = signature.as_keychain() {
-            let _ = keychain_sig.key_id(&aa_signed.signature_hash());
+        if let (Some(keychain_sig), Some(signature_hash)) =
+            (signature.as_keychain(), keychain_signature_hash.as_ref())
+        {
+            let _ = keychain_sig.key_id(signature_hash);
         }
 
         let TempoTransaction {
@@ -361,7 +373,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
-                signature_hash: aa_signed.signature_hash(),
+                signature_hash: keychain_signature_hash.map(Box::new),
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,

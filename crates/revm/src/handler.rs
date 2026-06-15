@@ -480,7 +480,11 @@ where
                 override_key_id
             } else {
                 keychain_sig
-                    .key_id(&tempo_tx_env.signature_hash)
+                    .key_id(tempo_tx_env.keychain_signature_hash().ok_or_else(|| {
+                        EVMError::Custom(
+                            "keychain access key recovery failed after validation".into(),
+                        )
+                    })?)
                     .map_err(|_| {
                         EVMError::Custom(
                             "keychain access key recovery failed after validation".into(),
@@ -1162,7 +1166,11 @@ where
                 override_key_id
             } else {
                 keychain_sig
-                    .key_id(&tempo_tx_env.signature_hash)
+                    .key_id(
+                        tempo_tx_env
+                            .keychain_signature_hash()
+                            .ok_or(TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
+                    )
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
@@ -1700,7 +1708,11 @@ where
                     } else {
                         // Get the access key address (recovered during Tx->TxEnv conversion and cached)
                         keychain_sig
-                            .key_id(&aa_env.signature_hash)
+                            .key_id(
+                                aa_env
+                                    .keychain_signature_hash()
+                                    .ok_or(TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
+                            )
                             .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                     };
 
@@ -1845,7 +1857,11 @@ where
                             override_key_id
                         } else {
                             keychain_sig
-                                .key_id(&aa_env.signature_hash)
+                                .key_id(
+                                    aa_env
+                                        .keychain_signature_hash()
+                                        .ok_or(TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
+                                )
                                 .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                         };
 
@@ -2784,7 +2800,7 @@ mod tests {
             )), // dummy secp256k1 sig
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -2848,7 +2864,7 @@ mod tests {
             )),
             aa_calls: calls,
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -2903,7 +2919,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -2945,7 +2961,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -2987,7 +3003,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -3026,7 +3042,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -3118,7 +3134,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -3590,7 +3606,7 @@ mod tests {
             )),
             aa_calls: vec![call.clone()],
             key_authorization: Some(key_auth),
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -3600,7 +3616,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -3871,7 +3887,7 @@ mod tests {
                     value: U256::ZERO,
                     input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
                 }],
-                signature_hash: B256::ZERO,
+                signature_hash: Some(Box::new(B256::ZERO)),
                 override_key_id: Some(access_key),
                 ..Default::default()
             })),
@@ -3987,7 +4003,7 @@ mod tests {
                     value: U256::ZERO,
                     input: Bytes::from_static(&DENIED_SELECTOR),
                 }],
-                signature_hash: B256::ZERO,
+                signature_hash: Some(Box::new(B256::ZERO)),
                 override_key_id: Some(access_key),
                 ..Default::default()
             })),
@@ -4084,7 +4100,7 @@ mod tests {
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![],
-                signature_hash: B256::ZERO,
+                signature_hash: Some(Box::new(B256::ZERO)),
                 override_key_id: Some(access_key),
                 ..Default::default()
             })),
@@ -4232,7 +4248,7 @@ mod tests {
             signature: secp256k1_sig(),
             aa_calls: calls,
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         }
     }
@@ -4481,7 +4497,7 @@ mod tests {
                 tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
                     signature: secp256k1_sig(),
-                    signature_hash: B256::ZERO,
+                    signature_hash: Some(Box::new(B256::ZERO)),
                     ..Default::default()
                 })),
                 ..Default::default()
@@ -4503,7 +4519,7 @@ mod tests {
                 tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                     aa_calls: vec![],
                     signature: secp256k1_sig(),
-                    signature_hash: B256::ZERO,
+                    signature_hash: Some(Box::new(B256::ZERO)),
                     ..Default::default()
                 })),
                 ..Default::default()
@@ -4888,7 +4904,7 @@ mod tests {
                         input: Bytes::new(),
                     }],
                     key_authorization: key_auth,
-                    signature_hash: B256::ZERO,
+                    signature_hash: Some(Box::new(B256::ZERO)),
                     override_key_id: Some(access_key),
                     ..Default::default()
                 })),
@@ -5859,7 +5875,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -5897,7 +5913,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -6186,7 +6202,7 @@ mod tests {
             )),
             aa_calls: calls,
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -6232,7 +6248,7 @@ mod tests {
             )),
             aa_calls: calls,
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 
@@ -6489,7 +6505,7 @@ mod tests {
             )),
             aa_calls: vec![call],
             key_authorization: None,
-            signature_hash: B256::ZERO,
+            signature_hash: Some(Box::new(B256::ZERO)),
             ..Default::default()
         };
 

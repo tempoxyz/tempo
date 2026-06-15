@@ -1081,7 +1081,11 @@ mod tests {
 
         // Verify key_id recovery works correctly using the transaction signature hash
         let recovered_key_id = keychain_sig
-            .key_id(&tempo_env_keychain.signature_hash)
+            .key_id(
+                tempo_env_keychain
+                    .keychain_signature_hash()
+                    .expect("keychain transaction should retain signature hash"),
+            )
             .expect("Key ID recovery should succeed");
         assert_eq!(recovered_key_id, caller,);
 
