@@ -2,7 +2,7 @@ use crate::TempoInvalidTransaction;
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use core::num::NonZeroU64;
+use core::num::{NonZeroU64, NonZeroUsize};
 use revm::context::{
     Transaction, TxEnv,
     either::Either,
@@ -61,8 +61,8 @@ pub struct TempoBatchCallEnv {
 
     /// Perf optimization for expiring nonce transactions.
     ///
-    /// Stores how many other expiring nonce transactions are there in the block before this one.
-    pub expiring_nonce_idx: Option<usize>,
+    /// One-based count of expiring nonce transactions before and including this one.
+    pub expiring_nonce_idx: Option<NonZeroUsize>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]

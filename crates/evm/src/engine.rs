@@ -6,7 +6,7 @@ use reth_evm::{
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
@@ -41,11 +41,14 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
-        let mut expiring_nonce_idx = 0;
+        let mut expiring_nonce_idx = 0usize;
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                let one_based_expiring_nonce_idx =
+                    NonZeroUsize::new(expiring_nonce_idx + 1)
+                        .expect("one-based expiring nonce index is non-zero");
+                transactions.push((block.clone(), idx, Some(one_based_expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
             } else {
                 transactions.push((block.clone(), idx, None));
@@ -64,12 +67,16 @@ struct RecoveredInBlock {
     block: Arc<SealedBlock<Block>>,
     index: usize,
     sender: Address,
-    expiring_nonce_idx: Option<usize>,
+    expiring_nonce_idx: Option<NonZeroUsize>,
 }
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        (block, index, expiring_nonce_idx): (
+            Arc<SealedBlock<Block>>,
+            usize,
+            Option<NonZeroUsize>,
+        ),
     ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
