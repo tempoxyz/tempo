@@ -75,6 +75,26 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn packed_slot_boundary_error(bytes: usize, offset: usize) -> crate::error::TempoPrecompileError {
+    crate::error::TempoPrecompileError::Fatal(format!(
+        "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
+        bytes,
+        offset,
+        32 - bytes
+    ))
+}
+
+#[inline]
+fn ensure_packed_bounds(offset: usize, bytes: usize) -> Result<()> {
+    if offset + bytes > 32 {
+        return Err(packed_slot_boundary_error(bytes, offset));
+    }
+
+    Ok(())
+}
+
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
 pub fn extract_from_word<T: FromWord + StorableType>(
@@ -88,14 +108,7 @@ pub fn extract_from_word<T: FromWord + StorableType>(
     );
 
     // Validate that the value doesn't span slot boundaries
-    if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
-            "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
-            bytes,
-            offset,
-            32 - bytes
-        )));
-    }
+    ensure_packed_bounds(offset, bytes)?;
 
     // Calculate how many bits to shift right to align the value
     let shift_bits = offset * 8;
@@ -119,14 +132,7 @@ pub fn insert_into_word<T: FromWord + StorableType>(
     );
 
     // Validate that the value doesn't span slot boundaries
-    if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
-            "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
-            bytes,
-            offset,
-            32 - bytes
-        )));
-    }
+    ensure_packed_bounds(offset, bytes)?;
 
     // Encode field to its canonical right-aligned U256 representation
     let field_value = value.to_word();
@@ -151,14 +157,7 @@ pub fn insert_into_word<T: FromWord + StorableType>(
 #[inline]
 pub fn delete_from_word(current: U256, offset: usize, bytes: usize) -> Result<U256> {
     // Validate that the value doesn't span slot boundaries
-    if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
-            "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
-            bytes,
-            offset,
-            32 - bytes
-        )));
-    }
+    ensure_packed_bounds(offset, bytes)?;
 
     let mask = create_element_mask(bytes);
     let shifted_mask = mask << (offset * 8);
