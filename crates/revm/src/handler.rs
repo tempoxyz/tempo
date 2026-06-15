@@ -323,9 +323,6 @@ fn translate_allowed_calls_for_precompile(
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
-/// T7+: key-auth gas is intrinsic-only. Add `STORAGE_CREDIT_VALUE` per persistent
-///   SSTORE because pre-execution provider gas is not folded into tx gas.
-///
 /// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
 /// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
 /// per TIP-1016.
@@ -1454,6 +1451,7 @@ where
                 false,
                 gas_params,
             );
+            provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -3565,7 +3563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t7_key_authorization_intrinsic_backs_tip1060_hook() {
+    fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
         use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
         use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
 
