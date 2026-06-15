@@ -1655,6 +1655,8 @@ impl StablecoinDEX {
 
 /// Checks whether `address` is authorized under the transfer policy of `token` for the given
 /// `role`. Returns `false` instead of erroring when the policy lookup fails.
+#[cold]
+#[inline(never)]
 fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> Result<bool> {
     let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
     let registry = TIP403Registry::new();
