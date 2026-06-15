@@ -253,7 +253,7 @@ mod tests {
         STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{
-            FromWord, Handler, PrecompileStorageProvider, StorageCtx,
+            ContractStorage, FromWord, Handler, PrecompileStorageProvider, StorageCtx,
             evm::EvmPrecompileStorageProvider,
         },
         test_util::TIP20Setup,
@@ -2742,6 +2742,105 @@ mod tests {
             evm.ctx.db().storage_ref(contract, slot)?,
             value,
             "precompile transition case should leave the created slot populated"
+        );
+
+        Ok(())
+    }
+
+    /// TIP-1060: T7 `claim_rewards` can lazily accrue pre-T7 rewards, creating reward-info slots.
+    ///
+    /// This proves the full `set_tip1060_storage_credits(false)` opt-out in `claim_rewards` is
+    /// reachable: it creates nonzero reward-info storage while the whole claim costs less than the
+    /// 245k TIP-1060 creditable storage charge.
+    #[test]
+    fn test_tip1060_t7_claim_rewards_lazy_accrual_undercharges_creation_transition()
+    -> eyre::Result<()> {
+        let admin = Address::repeat_byte(0xa1);
+        let alice = Address::repeat_byte(0xa2);
+        let holder_balance = U256::from(1_000);
+        let reward_amount = U256::from(100);
+
+        fn setup_pre_t7_lazy_rewards(
+            evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+            admin: Address,
+            alice: Address,
+            holder_balance: U256,
+            reward_amount: U256,
+        ) -> eyre::Result<Address> {
+            let token_address = {
+                let ctx = &mut evm.ctx;
+                ctx.cfg.spec = TempoHardfork::T6;
+                ctx.cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
+                ctx.cfg.enable_amsterdam_eip8037 = false;
+
+                let internals =
+                    EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+                let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+                StorageCtx::enter(&mut provider, || -> eyre::Result<Address> {
+                    let token = TIP20Setup::create("Reward", "RWD", admin)
+                        .with_issuer(admin)
+                        .with_mint(alice, holder_balance)
+                        .with_mint(admin, reward_amount)
+                        .with_reward_opt_in(alice)
+                        .with_reward(reward_amount)
+                        .apply()?;
+
+                    let info = token.get_user_reward_info(alice)?;
+                    assert_eq!(info.reward_per_token, U256::ZERO);
+                    assert_eq!(info.reward_balance, U256::ZERO);
+                    assert_eq!(U256::from(token.get_pending_rewards(alice)?), reward_amount);
+
+                    Ok(token.address())
+                })?
+            };
+
+            evm.ctx.cfg.spec = TempoHardfork::T7;
+            evm.ctx.cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+            evm.ctx.cfg.enable_amsterdam_eip8037 = false;
+
+            Ok(token_address)
+        }
+
+        fn claim_rewards_undercharge_gas(
+            evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+            token_address: Address,
+            alice: Address,
+            reward_amount: U256,
+        ) -> eyre::Result<u64> {
+            let ctx = &mut evm.ctx;
+            let internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+            let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+            let gas_before = provider.gas_used();
+            StorageCtx::enter(&mut provider, || -> eyre::Result<()> {
+                let mut token = TIP20Token::from_address(token_address)?;
+
+                assert_eq!(token.claim_rewards(alice)?, reward_amount);
+
+                let info = token.get_user_reward_info(alice)?;
+                assert!(
+                    info.reward_per_token > U256::ZERO,
+                    "claim_rewards must lazily checkpoint reward_per_token at T7"
+                );
+                assert_eq!(info.reward_balance, U256::ZERO);
+
+                Ok(())
+            })?;
+
+            Ok(provider.gas_used() - gas_before)
+        }
+
+        let mut evm = create_funded_evm_t7(alice);
+        let token =
+            setup_pre_t7_lazy_rewards(&mut evm, admin, alice, holder_balance, reward_amount)?;
+        let gas_used = claim_rewards_undercharge_gas(&mut evm, token, alice, reward_amount)?;
+
+        assert!(
+            gas_used < STORAGE_CREDIT_VALUE,
+            "T7 claim_rewards lazy accrual created nonzero reward-info storage for less than \
+             the {STORAGE_CREDIT_VALUE}-gas TIP-1060 creditable charge; got {gas_used}"
         );
 
         Ok(())
