@@ -865,6 +865,11 @@ where
                 executor.receipts().last().unwrap().clone(),
             ));
         }
+
+        // Close the roots input as soon as the last transaction is handed off so
+        // the blocking roots task can finish while the builder records metrics.
+        drop(roots_tx);
+
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
         self.metrics
@@ -888,9 +893,6 @@ where
         check_cancel!();
 
         let builder_finish_start = Instant::now();
-
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
