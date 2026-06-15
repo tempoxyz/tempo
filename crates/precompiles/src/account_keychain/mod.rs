@@ -28,7 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, Mapping, Set, Slot},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -200,6 +200,33 @@ impl SpendingLimitState {
 }
 
 impl AccountKeychain {
+    #[inline]
+    fn transaction_key_slot() -> Slot<Address> {
+        Slot::new(slots::TRANSACTION_KEY, ACCOUNT_KEYCHAIN_ADDRESS)
+    }
+
+    /// Authorize a token transfer without constructing the full keychain handler when the
+    /// transaction is signed by the root key.
+    pub fn authorize_transfer_fast(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = Self::transaction_key_slot().t_read()?;
+
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let mut keychain = Self::new();
+        let tx_origin = keychain.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        keychain.verify_and_update_spending(account, transaction_key, token, amount)
+    }
+
     /// Create a hash key for account+key scoped storage rows.
     ///
     /// This is used to access account-key rows like `spending_limits[key][token]` and
