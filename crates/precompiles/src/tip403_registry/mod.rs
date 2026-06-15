@@ -146,11 +146,7 @@ impl PolicyData {
 
         match self.policy_type.try_into() {
             Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
-            _ => Err(if is_t2 {
-                TIP403RegistryError::invalid_policy_type().into()
-            } else {
-                TempoPrecompileError::under_overflow()
-            }),
+            _ => Err(invalid_policy_type_error(is_t2)),
         }
     }
 
@@ -168,6 +164,16 @@ impl PolicyData {
     /// Returns `true` if the policy data is the default (uninitialized) value.
     fn is_default(&self) -> bool {
         self.policy_type == 0 && self.admin == Address::ZERO
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_policy_type_error(is_t2: bool) -> TempoPrecompileError {
+    if is_t2 {
+        TIP403RegistryError::invalid_policy_type().into()
+    } else {
+        TempoPrecompileError::under_overflow()
     }
 }
 
