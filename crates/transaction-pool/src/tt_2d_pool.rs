@@ -79,7 +79,7 @@ pub struct AA2dPool {
     /// key carries the transaction and a priority snapshot. The first entry is
     /// the expiring nonce transaction that should be evicted next:
     /// lowest priority first, then newest submission first when priorities tie.
-    expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
+    expiring_nonce_eviction_order: Arc<BTreeSet<ExpiringNonceEvictionKey>>,
     /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
     ///
     /// Used to track inclusion of expiring nonce transactions.
@@ -187,9 +187,11 @@ impl AA2dPool {
             ));
         }
 
-        self.expiring_nonce_eviction_order.clear();
+        let expiring_nonce_eviction_order =
+            Arc::make_mut(&mut self.expiring_nonce_eviction_order);
+        expiring_nonce_eviction_order.clear();
         for tx in self.expiring_nonce_txs.values() {
-            self.expiring_nonce_eviction_order.insert(
+            expiring_nonce_eviction_order.insert(
                 ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, self.base_fee),
             );
         }
@@ -477,7 +479,7 @@ impl AA2dPool {
 
         // Insert into expiring nonce map and by_hash
         expiring_nonce_entry.insert(pending_tx);
-        self.expiring_nonce_eviction_order.insert(eviction_key);
+        Arc::make_mut(&mut self.expiring_nonce_eviction_order).insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash
                 .insert(slot, expiring_nonce_hash);
@@ -644,12 +646,14 @@ impl AA2dPool {
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.expiring_nonce_eviction_order.clone()
+            ExpiringNonceOrderSnapshot::Shared(Arc::clone(&self.expiring_nonce_eviction_order))
         } else {
-            self.expiring_nonce_txs
-                .values()
-                .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
-                .collect()
+            ExpiringNonceOrderSnapshot::Owned(
+                self.expiring_nonce_txs
+                    .values()
+                    .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
+                    .collect(),
+            )
         };
         let independent = self
             .independent_transactions
@@ -1253,7 +1257,8 @@ impl AA2dPool {
     fn evict_worst_expiring_nonce_tx(
         &mut self,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let eviction_key = self.expiring_nonce_eviction_order.pop_first()?;
+        let eviction_key =
+            Arc::make_mut(&mut self.expiring_nonce_eviction_order).pop_first()?;
         let pending_tx = self
             .expiring_nonce_txs
             .remove(&eviction_key.expiring_hash())?;
@@ -1271,7 +1276,7 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        self.expiring_nonce_eviction_order
+        Arc::make_mut(&mut self.expiring_nonce_eviction_order)
             .remove(&EvictionOrderKey::new(
                 TempoTipOrdering::default()
                     .priority(&pending_tx.transaction.transaction, self.base_fee),
@@ -1653,7 +1658,7 @@ impl AA2dPool {
             );
         }
 
-        for key in &self.expiring_nonce_eviction_order {
+        for key in self.expiring_nonce_eviction_order.iter() {
             let expiring_hash = key.expiring_hash();
             let Some(pending_tx) = self.expiring_nonce_txs.get(&expiring_hash) else {
                 panic!("Expiring nonce eviction key {expiring_hash:?} not in expiring_nonce_txs");
@@ -1974,6 +1979,43 @@ enum PoppedAA2dTransaction {
     Expiring(PendingTransaction<TxOrdering>),
 }
 
+#[derive(Debug, Clone)]
+enum ExpiringNonceOrderSnapshot {
+    Shared(Arc<BTreeSet<ExpiringNonceEvictionKey>>),
+    Owned(BTreeSet<ExpiringNonceEvictionKey>),
+}
+
+impl ExpiringNonceOrderSnapshot {
+    fn len(&self) -> usize {
+        match self {
+            Self::Shared(order) => order.len(),
+            Self::Owned(order) => order.len(),
+        }
+    }
+
+    fn last(&self) -> Option<&ExpiringNonceEvictionKey> {
+        match self {
+            Self::Shared(order) => order.last(),
+            Self::Owned(order) => order.last(),
+        }
+    }
+
+    fn make_mut(&mut self) -> &mut BTreeSet<ExpiringNonceEvictionKey> {
+        match self {
+            Self::Shared(order) => Arc::make_mut(order),
+            Self::Owned(order) => order,
+        }
+    }
+
+    fn pop_last(&mut self) -> Option<ExpiringNonceEvictionKey> {
+        self.make_mut().pop_last()
+    }
+
+    fn insert(&mut self, key: ExpiringNonceEvictionKey) -> bool {
+        self.make_mut().insert(key)
+    }
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
@@ -1990,7 +2032,7 @@ pub(crate) struct BestAA2dTransactions {
     /// Expiring nonce pending transactions in eviction order. The best
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
-    expiring_nonce_order: BTreeSet<ExpiringNonceEvictionKey>,
+    expiring_nonce_order: ExpiringNonceOrderSnapshot,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
