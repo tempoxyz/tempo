@@ -57,7 +57,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+        KeychainSignature, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature,
         calc_gas_balance_spending, validate_calls,
     },
 };
@@ -126,6 +127,12 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn keychain_signature_verification_gas(keychain_sig: &KeychainSignature) -> u64 {
+    primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For Keychain signatures, adds key validation overhead to the inner signature cost
@@ -134,10 +141,7 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
 fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
-        TempoSignature::Keychain(keychain_sig) => {
-            // Keychain = inner signature + key validation overhead (SLOAD + processing)
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
-        }
+        TempoSignature::Keychain(keychain_sig) => keychain_signature_verification_gas(keychain_sig),
     }
 }
 
