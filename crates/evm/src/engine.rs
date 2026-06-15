@@ -27,6 +27,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
             validator_set,
+            senders: _,
         } = payload;
         let mut context = self.context_for_block(block)?;
 
@@ -41,19 +42,42 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let senders = payload
+            .senders
+            .as_ref()
+            .filter(|senders| senders.len() == payload.block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+            let sender = senders.map(|senders| senders[idx]);
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: Some(expiring_nonce_idx),
+                    sender,
+                });
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: None,
+                    sender,
+                });
             }
         }
 
         Ok((transactions, RecoveredInBlock::new))
     }
+}
+
+#[derive(Clone)]
+struct TransactionInBlock {
+    block: Arc<SealedBlock<Block>>,
+    index: usize,
+    expiring_nonce_idx: Option<usize>,
+    sender: Option<Address>,
 }
 
 /// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
@@ -68,10 +92,17 @@ struct RecoveredInBlock {
 }
 
 impl RecoveredInBlock {
-    fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
-    ) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
+    fn new(tx: TransactionInBlock) -> Result<Self, RecoveryError> {
+        let TransactionInBlock {
+            block,
+            index,
+            expiring_nonce_idx,
+            sender,
+        } = tx;
+        let sender = match sender {
+            Some(sender) => sender,
+            None => block.body().transactions[index].try_recover()?,
+        };
         Ok(Self {
             block,
             index,
@@ -197,6 +228,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: None,
+            senders: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -217,6 +249,30 @@ mod tests {
     }
 
     #[test]
+    fn test_tx_iterator_uses_payload_senders() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let evm_config = TempoEvmConfig::new(chainspec);
+
+        let tx = create_legacy_tx();
+        let block = create_test_block(vec![tx]);
+        let expected_sender = Address::repeat_byte(0x42);
+
+        let payload = TempoExecutionData {
+            block,
+            block_access_list: None,
+            validator_set: None,
+            senders: Some(vec![expected_sender]),
+        };
+
+        let tuple = evm_config.tx_iterator_for_payload(&payload).unwrap();
+        let (iter, recover_fn) = tuple.into_parts();
+        let item = iter.into_iter().next().expect("one transaction");
+        let recovered = recover_fn.convert(item).unwrap();
+
+        assert_eq!(*recovered.signer(), expected_sender);
+    }
+
+    #[test]
     fn test_context_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -229,6 +285,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: validator_set.clone(),
+            senders: None,
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -255,6 +312,7 @@ mod tests {
             block: block.clone(),
             block_access_list: None,
             validator_set: None,
+            senders: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);

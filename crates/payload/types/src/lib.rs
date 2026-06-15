@@ -6,7 +6,7 @@
 mod attrs;
 mod budget;
 
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
@@ -88,11 +88,16 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
+        let senders = self
+            .executed_block
+            .as_ref()
+            .map(|executed| executed.recovered_block.senders().to_vec());
         let (block, block_access_list) = self.into_execution_payload();
         TempoExecutionData {
             block: Arc::new(block),
             block_access_list,
             validator_set: None,
+            senders,
         }
     }
 }
@@ -130,6 +135,9 @@ pub struct TempoExecutionData {
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
+    /// Sender addresses recovered while building a local payload.
+    #[serde(skip)]
+    pub senders: Option<Vec<Address>>,
 }
 
 impl ExecutionPayload for TempoExecutionData {
@@ -198,6 +206,7 @@ impl PayloadTypes for TempoPayloadTypes {
             block: Arc::new(block),
             block_access_list: bal,
             validator_set: None,
+            senders: None,
         }
     }
 }
