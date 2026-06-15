@@ -246,17 +246,19 @@ impl TipFeeManager {
             actual_spending
         } else if hop_token.is_zero() {
             // Single-hop (direct) swap
-            if !actual_spending.is_zero() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+            if actual_spending.is_zero() {
+                U256::ZERO
+            } else {
+                self.execute_fee_swap(fee_token, validator_token, actual_spending)?
             }
-            compute_amount_out(actual_spending)?
         } else {
             // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
-            if !actual_spending.is_zero() {
+            if actual_spending.is_zero() {
+                U256::ZERO
+            } else {
                 let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
-                self.execute_fee_swap(hop_token, validator_token, out1)?;
+                self.execute_fee_swap(hop_token, validator_token, out1)?
             }
-            compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
