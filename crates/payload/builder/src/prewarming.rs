@@ -263,8 +263,11 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        match self.transactions_rx.try_recv() {
+            Ok(Some(tx)) => return Some(tx),
+            Ok(None) => return None,
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => return None,
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
@@ -998,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn queued_empty_source_sentinels_do_not_repoll_source() {
         let executor = TaskExecutor::test();
         let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
@@ -1007,10 +1010,10 @@ mod tests {
         wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
     }
 
     #[test]
