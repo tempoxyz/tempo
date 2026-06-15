@@ -107,16 +107,19 @@ pub struct TempoTxResult {
 
 impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
+    #[inline]
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
     }
 
     /// Returns the state gas consumed by this transaction.
+    #[inline]
     pub fn state_gas_used(&self) -> u64 {
         self.inner.result.result.gas().state_gas_spent_final()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
+    #[inline]
     pub fn validator_fee(&self) -> U256 {
         self.validator_fee
     }
