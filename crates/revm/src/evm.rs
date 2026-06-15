@@ -312,10 +312,20 @@ mod tests {
 
     /// Fund an account with the default balance (1 ETH).
     fn fund_account(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address) {
+        fund_account_with_nonce(evm, address, 0);
+    }
+
+    /// Fund an account with the default balance and a specific nonce.
+    fn fund_account_with_nonce(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        address: Address,
+        nonce: u64,
+    ) {
         evm.ctx.db_mut().insert_account_info(
             address,
             AccountInfo {
                 balance: U256::from(DEFAULT_BALANCE),
+                nonce,
                 ..Default::default()
             },
         );
@@ -1992,6 +2002,54 @@ mod tests {
         Bytecode::new_raw(bytecode.into())
     }
 
+    fn mint_storage_credits_with_clears(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        key_pair: &P256KeyPair,
+        caller: Address,
+        contract: Address,
+        nonce: u64,
+        credits: u64,
+    ) -> eyre::Result<u64> {
+        if credits == 0 {
+            return Ok(nonce);
+        }
+
+        let mut body = Vec::new();
+        for credit in 0..credits {
+            let slot = 0xf0 + credit;
+            assert!(slot <= u64::from(u8::MAX));
+            evm.ctx
+                .db_mut()
+                .insert_account_storage(contract, U256::from(slot), U256::ONE)?;
+            body.extend_from_slice(&[opcode::PUSH1, 0, opcode::PUSH1, slot as u8, opcode::SSTORE]);
+        }
+        body.push(opcode::STOP);
+
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(Bytecode::new_raw(body.into())),
+                ..Default::default()
+            },
+        );
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .nonce(nonce)
+            .gas_limit(2_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        assert!(result.is_success(), "credit-minting prelude should succeed");
+        assert_eq!(
+            storage_credit_balance(evm, contract),
+            credits,
+            "prelude should mint the requested storage credits"
+        );
+
+        Ok(nonce + 1)
+    }
+
     fn branching_bytecode_with_tip1060_mode(mode: CreditMode) -> Bytecode {
         let mut bytecode = Vec::new();
         if mode != CreditMode::Refund {
@@ -2312,6 +2370,341 @@ mod tests {
                 expected_balance,
                 "TIP-1060 post-tx storage credit balance should be exact in {mode:?} mode"
             );
+        }
+
+        Ok(())
+    }
+
+    /// TIP-1060: the spec transition table classifies every zero-crossing exactly once.
+    #[test]
+    fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Result<()> {
+        fn append_sstore(body: &mut Vec<u8>, slot: u8, value: u8) {
+            body.extend_from_slice(&[opcode::PUSH1, value, opcode::PUSH1, slot, opcode::SSTORE]);
+        }
+
+        fn transition_body(setup_value: Option<u8>, new_value: u8) -> Bytes {
+            let mut body = Vec::new();
+            if let Some(value) = setup_value {
+                append_sstore(&mut body, 0, value);
+            }
+            append_sstore(&mut body, 0, new_value);
+            body.push(opcode::STOP);
+            body.into()
+        }
+
+        #[derive(Clone, Copy)]
+        struct ModeExpectation {
+            mode: CreditMode,
+            expected_gas: u64,
+            expected_credits: u64,
+        }
+
+        struct CreditCase {
+            name: &'static str,
+            initial_credits: u64,
+            expectations: [ModeExpectation; 3],
+        }
+
+        struct TransitionClass {
+            name: &'static str,
+            original: u8,
+            setup_value: Option<u8>,
+            new_value: u8,
+            expected_slot: u64,
+            credit_cases: Vec<CreditCase>,
+        }
+
+        fn expectations(
+            refund: (u64, u64),
+            preserve: (u64, u64),
+            direct: (u64, u64),
+        ) -> [ModeExpectation; 3] {
+            [
+                ModeExpectation {
+                    mode: CreditMode::Refund,
+                    expected_gas: refund.0,
+                    expected_credits: refund.1,
+                },
+                ModeExpectation {
+                    mode: CreditMode::Preserve,
+                    expected_gas: preserve.0,
+                    expected_credits: preserve.1,
+                },
+                ModeExpectation {
+                    mode: CreditMode::Direct,
+                    expected_gas: direct.0,
+                    expected_credits: direct.1,
+                },
+            ]
+        }
+
+        const SET_MODE_GAS: u64 = 4_546;
+        const STORAGE_CREDIT_VALUE_GAS: u64 = 230_000;
+
+        fn same_storage_accounting(refund_gas: u64, expected_credits: u64) -> [ModeExpectation; 3] {
+            expectations(
+                (refund_gas, expected_credits),
+                (refund_gas + SET_MODE_GAS, expected_credits),
+                (refund_gas + SET_MODE_GAS, expected_credits),
+            )
+        }
+
+        fn no_initial_credits(expectations: [ModeExpectation; 3]) -> Vec<CreditCase> {
+            vec![CreditCase {
+                name: "no initial credits",
+                initial_credits: 0,
+                expectations,
+            }]
+        }
+
+        let transition_classes = [
+            TransitionClass {
+                name: "O=0 P=0 N=0 no-op",
+                original: 0,
+                setup_value: None,
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(30_862, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=Y same-tx no-op",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: no_initial_credits(same_storage_accounting(283_068, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=Z dirty overwrite",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 3,
+                expected_slot: 3,
+                credit_cases: no_initial_credits(same_storage_accounting(283_068, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=X N=X no-op",
+                original: 1,
+                setup_value: None,
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: no_initial_credits(same_storage_accounting(30_862, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=X N=Y clean overwrite",
+                original: 1,
+                setup_value: None,
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: no_initial_credits(same_storage_accounting(33_662, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=X dirty restore to original",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: no_initial_credits(same_storage_accounting(30_968, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=Z dirty overwrite",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 3,
+                expected_slot: 3,
+                credit_cases: no_initial_credits(same_storage_accounting(33_768, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=0 clear of same-tx creation",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(expectations(
+                    (36_068, 0),
+                    (270_614, 1),
+                    (270_614, 1),
+                )),
+            },
+            TransitionClass {
+                name: "O=X P=X N=0 clean clear",
+                original: 1,
+                setup_value: None,
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(38_562, 1)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=0 dirty clear",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(38_668, 1)),
+            },
+            TransitionClass {
+                name: "O=0 P=0 N=Y clean creation",
+                original: 0,
+                setup_value: None,
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: same_storage_accounting(282_962, 0),
+                    },
+                    CreditCase {
+                        name: "one initial credit",
+                        initial_credits: 1,
+                        expectations: expectations(
+                            (52_962, 0),
+                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (60_308, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (52_962, 1),
+                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 2),
+                            (60_308, 1),
+                        ),
+                    },
+                ],
+            },
+            TransitionClass {
+                name: "O=X P=0 N=X recreation to original",
+                original: 1,
+                setup_value: Some(0),
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: expectations(
+                            (35_968, 0),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (35_968 + SET_MODE_GAS, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (35_968, 2),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 3),
+                            (35_968 + SET_MODE_GAS, 2),
+                        ),
+                    },
+                ],
+            },
+            TransitionClass {
+                name: "O=X P=0 N=Y recreation to other value",
+                original: 1,
+                setup_value: Some(0),
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: expectations(
+                            (38_768, 0),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (38_768 + SET_MODE_GAS, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (38_768, 2),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 3),
+                            (38_768 + SET_MODE_GAS, 2),
+                        ),
+                    },
+                ],
+            },
+        ];
+
+        let mut case_id = 0u8;
+        for scenario in transition_classes {
+            for credit_case in &scenario.credit_cases {
+                for expectation in credit_case.expectations {
+                    let mode = expectation.mode;
+                    let key_pair = P256KeyPair::random();
+                    let caller = key_pair.address;
+                    let contract = Address::repeat_byte(0x80 + case_id);
+                    case_id += 1;
+                    let body = transition_body(scenario.setup_value, scenario.new_value);
+
+                    let mut evm = create_funded_evm_t7(caller);
+                    fund_account_with_nonce(&mut evm, caller, 1);
+                    if scenario.original != 0 {
+                        evm.ctx.db_mut().insert_account_storage(
+                            contract,
+                            U256::ZERO,
+                            U256::from(scenario.original),
+                        )?;
+                    }
+                    let nonce = mint_storage_credits_with_clears(
+                        &mut evm,
+                        &key_pair,
+                        caller,
+                        contract,
+                        1,
+                        credit_case.initial_credits,
+                    )?;
+
+                    evm.ctx.db_mut().insert_account_info(
+                        contract,
+                        AccountInfo {
+                            code: Some(bytecode_with_tip1060_mode(mode, &body)),
+                            ..Default::default()
+                        },
+                    );
+
+                    let tx = TxBuilder::new()
+                        .call(contract, &[])
+                        .nonce(nonce)
+                        .gas_limit(2_000_000)
+                        .build();
+                    let signed_tx = key_pair.sign_tx(tx)?;
+                    let result =
+                        evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+                    assert!(
+                        result.is_success(),
+                        "{} / {} in {mode:?} should succeed",
+                        scenario.name,
+                        credit_case.name
+                    );
+
+                    assert_eq!(
+                        result.tx_gas_used(),
+                        expectation.expected_gas,
+                        "{} / {} gas should stay exact in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                    assert_eq!(
+                        storage_credit_balance(&evm, contract),
+                        expectation.expected_credits,
+                        "{} / {} final persistent credit balance should stay exact in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                    assert_eq!(
+                        evm.ctx.db().storage_ref(contract, U256::ZERO)?,
+                        U256::from(scenario.expected_slot),
+                        "{} / {} should leave the expected slot value in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                }
+            }
         }
 
         Ok(())
