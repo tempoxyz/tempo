@@ -13,7 +13,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{
     Address, B256, Bytes, TxKind, U256,
-    map::{AddressMap, B256Map, HashMap},
+    map::{AddressMap, HashMap},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
@@ -136,7 +136,6 @@ struct ExecutionStats {
 struct InMemoryStateProvider {
     accounts: Arc<AddressMap<RethAccount>>,
     storage: Arc<HashMap<(Address, B256), U256>>,
-    contracts: Arc<B256Map<RethBytecode>>,
     block_hashes: Arc<HashMap<u64, B256>>,
 }
 
@@ -184,8 +183,8 @@ impl StateProvider for InMemoryStateProvider {
 }
 
 impl BytecodeReader for InMemoryStateProvider {
-    fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<RethBytecode>> {
-        Ok(self.contracts.get(code_hash).cloned())
+    fn bytecode_by_hash(&self, _code_hash: &B256) -> ProviderResult<Option<RethBytecode>> {
+        Ok(None)
     }
 }
 
@@ -414,13 +413,10 @@ fn setup_fixed_cache_state(
 
     let mut accounts = AddressMap::default();
     let mut storage = HashMap::default();
-    let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
 
     for (hash, bytecode) in state_cache.contracts {
-        let bytecode = RethBytecode(bytecode);
-        execution_cache.insert_code(hash, Some(bytecode.clone()));
-        contracts.insert(hash, bytecode);
+        execution_cache.insert_code(hash, Some(RethBytecode(bytecode)));
     }
 
     for (address, account) in state_cache.accounts {
@@ -452,7 +448,6 @@ fn setup_fixed_cache_state(
         provider: InMemoryStateProvider {
             accounts: Arc::new(accounts),
             storage: Arc::new(storage),
-            contracts: Arc::new(contracts),
             block_hashes: Arc::new(block_hashes),
         },
         cache: execution_cache,
