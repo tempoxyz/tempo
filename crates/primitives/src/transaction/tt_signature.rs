@@ -221,6 +221,7 @@ impl PrimitiveSignature {
     /// For backward compatibility:
     /// - Secp256k1: 65 bytes (no type identifier)
     /// - P256/WebAuthn: includes 1-byte type identifier prefix
+    #[inline]
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
@@ -326,6 +327,7 @@ impl alloy_rlp::Encodable for PrimitiveSignature {
         alloy_rlp::Encodable::encode(&bytes, out);
     }
 
+    #[inline]
     fn length(&self) -> usize {
         alloy_rlp::Header {
             list: false,
@@ -622,6 +624,7 @@ impl TempoSignature {
     /// For backward compatibility:
     /// - Secp256k1: 65 bytes (no type identifier)
     /// - P256/WebAuthn: includes 1-byte type identifier prefix
+    #[inline]
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
@@ -731,6 +734,7 @@ impl alloy_rlp::Encodable for TempoSignature {
         alloy_rlp::Encodable::encode(&bytes, out);
     }
 
+    #[inline]
     fn length(&self) -> usize {
         alloy_rlp::Header {
             list: false,
