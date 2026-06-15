@@ -13,7 +13,7 @@ const PROCESSED_HEIGHT: &str = "marshal_processed_height";
 const DKG_FAILURES: &str = "dkg_manager_ceremony_failures_total";
 const ROUNDS_SKIPPED: &str = "rounds_skipped_total";
 
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Sample {
@@ -199,27 +199,54 @@ pub fn assert_no_duplicate_definitions(context: &impl commonware_runtime::Metric
 }
 
 /// Polls context metrics until `predicate` returns true.
-pub async fn wait_for_metrics(context: &Context, mut predicate: impl FnMut(&Metrics) -> bool) {
+pub async fn wait_for_metrics(context: &Context, predicate: impl FnMut(&Metrics) -> bool) {
+    wait_for_metrics_with_interval(context, DEFAULT_POLL_INTERVAL, predicate).await;
+}
+
+/// Polls context metrics at `poll_interval` until `predicate` returns true.
+pub async fn wait_for_metrics_with_interval(
+    context: &Context,
+    poll_interval: Duration,
+    mut predicate: impl FnMut(&Metrics) -> bool,
+) {
     loop {
         let metrics = context.to_metrics();
         if predicate(&metrics) {
             return;
         }
 
-        context.sleep(POLL_INTERVAL).await;
+        context.sleep(poll_interval).await;
     }
 }
 
 /// Polls until a metric scope reaches `target_height`.
 pub async fn wait_for_height(context: &Context, scope: &impl MetricScope, target_height: u64) {
-    wait_for_metrics(context, |metrics| {
+    wait_for_height_with_interval(context, scope, target_height, DEFAULT_POLL_INTERVAL).await;
+}
+
+/// Polls at `poll_interval` until a metric scope reaches `target_height`.
+pub async fn wait_for_height_with_interval(
+    context: &Context,
+    scope: &impl MetricScope,
+    target_height: u64,
+    poll_interval: Duration,
+) {
+    wait_for_metrics_with_interval(context, poll_interval, |metrics| {
         metrics.for_scope(scope).consensus_at_height(target_height) > 0
     })
     .await;
 }
 
 pub async fn wait_for_participants(context: &Context, target: u64) {
-    wait_for_metrics(context, |metrics| {
+    wait_for_participants_with_interval(context, target, DEFAULT_POLL_INTERVAL).await;
+}
+
+pub async fn wait_for_participants_with_interval(
+    context: &Context,
+    target: u64,
+    poll_interval: Duration,
+) {
+    wait_for_metrics_with_interval(context, poll_interval, |metrics| {
         metrics.has_consensus_participants(target)
     })
     .await;

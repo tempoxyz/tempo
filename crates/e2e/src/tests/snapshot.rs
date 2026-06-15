@@ -4,6 +4,8 @@
 //! assume that the node has never been run but been given a synced execution
 //! layer database./// Runs a validator restart test with the given configuration
 
+use std::time::Duration;
+
 use alloy::transports::http::reqwest::Url;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_macros::test_traced;
@@ -18,10 +20,15 @@ use tracing::info;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers,
-    metrics::{MetricsExt, wait_for_height, wait_for_metrics},
+    metrics::{
+        MetricsExt, wait_for_height, wait_for_height_with_interval, wait_for_metrics,
+        wait_for_metrics_with_interval,
+    },
     setup_validators,
     tests::dkg::common::wait_for_outcome,
 };
+
+const SNAPSHOT_RESTART_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// This is a lengthy test. First, a validator needs to be run for a sufficiently
 /// long time to populate its database. Then, a new validator is rotated in
@@ -386,7 +393,7 @@ fn can_restart_after_joining_from_snapshot() {
             "started the validator with a changed identity",
         );
 
-        wait_for_metrics(&context, |metrics| {
+        wait_for_metrics_with_interval(&context, SNAPSHOT_RESTART_POLL_INTERVAL, |metrics| {
             assert!(
                 metrics.consensus_before_epoch(last_epoch_before_stop + 4),
                 "network advanced 4 epochs before without the new \
@@ -424,6 +431,12 @@ fn can_restart_after_joining_from_snapshot() {
             "restarting the node and waiting for it to catch up"
         );
 
-        wait_for_height(&context, &replacement, network_head + 1).await;
+        wait_for_height_with_interval(
+            &context,
+            &replacement,
+            network_head + 1,
+            SNAPSHOT_RESTART_POLL_INTERVAL,
+        )
+        .await;
     });
 }
