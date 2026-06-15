@@ -145,8 +145,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         was_changed = true;
     } else {
         // 0→x: storage creation.
-        // This hook manages the 230k creditable gas, independent of the original value.
-        // revm's SSTORE function adds 20k residual for clean writes (`original == present == 0`).
+        // This hook manages the 245k creditable gas, independent of the original value.
+        // revm's SSTORE function adds 5k residual for clean writes (`original == present == 0`).
         let mut transient_state: TransientState = backend
             .tload(STORAGE_CREDITS_ADDRESS, account_slot)
             .try_into()
@@ -154,7 +154,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         match transient_state.mode {
             CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
-                // Consume one credit to cover the 230k creditable portion.
+                // Consume one credit to cover the 245k creditable portion.
                 credit -= 1;
                 was_changed = true;
 
@@ -170,7 +170,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 }
             }
             CreditMode::Direct => {
-                // If no credit available, charge the 230k creditable portion as gas.
+                // If no credit available, charge the 245k creditable portion as gas.
                 if transient_state.budget == 0 {
                     // When budget is exhausted, switch to `Preserve` mode.
                     transient_state.mode = CreditMode::Preserve;
@@ -180,11 +180,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Preserve => {
-                // Always charge the 230k creditable portion as gas without consuming credits.
+                // Always charge the 245k creditable portion as gas without consuming credits.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Refund => {
-                // Charge the 230k creditable portion upfront and record a pending refund-eligible
+                // Charge the 245k creditable portion upfront and record a pending refund-eligible
                 // creation, settled at end-of-transaction.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);

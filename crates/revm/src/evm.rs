@@ -2749,10 +2749,10 @@ mod tests {
 
     /// TIP-1060: Preserve churn of a pre-existing slot cannot subsidize fresh Direct creates.
     ///
-    /// Each clear mints a credit, but in Preserve mode the matching recreation pays the 230k
+    /// Each clear mints a credit, but in Preserve mode the matching recreation pays the 245k
     /// creditable portion as gas, so accumulating churned credits costs full price per credit and
     /// cannot fund cheaper Direct creates. Here the 500-cycle Preserve churn exhausts gas (each
-    /// recreation costs 230k) before the Direct phase runs, so the transaction reverts.
+    /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
     #[test]
     fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
@@ -2857,7 +2857,7 @@ mod tests {
             call.tx_gas_used()
         );
 
-        // Each Preserve recreation costs the full 230k creditable portion, so the churn loop
+        // Each Preserve recreation costs the full 245k creditable portion, so the churn loop
         // exhausts gas and reverts before any churned credit can subsidize a Direct create.
         assert!(!call.is_success());
         assert_eq!(slots, 1);
@@ -2869,7 +2869,7 @@ mod tests {
     ///
     /// Slot 0 starts non-zero. TIP-1060 keys minting on the present -> new transition, so every
     /// `nonzero -> 0` clear mints a credit regardless of the slot's original value. In Preserve
-    /// mode the matching `0 -> nonzero` recreation pays the 230k creditable portion as gas and does
+    /// mode the matching `0 -> nonzero` recreation pays the 245k creditable portion as gas and does
     /// not consume a credit, so three churn cycles accumulate three credits — each paid for in full,
     /// so the balance growth is not a subsidy.
     #[test]
@@ -2919,7 +2919,7 @@ mod tests {
         assert_eq!(
             storage_credit_balance(&evm, contract),
             3,
-            "each clear mints a credit and Preserve recreations pay 230k without consuming, so \
+            "each clear mints a credit and Preserve recreations pay 245k without consuming, so \
              three churn cycles accumulate three credits"
         );
         Ok(())
