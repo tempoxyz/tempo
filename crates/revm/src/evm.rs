@@ -2439,7 +2439,6 @@ mod tests {
         }
 
         const SET_MODE_GAS: u64 = 4_546;
-        const STORAGE_CREDIT_VALUE_GAS: u64 = 230_000;
 
         fn same_storage_accounting(refund_gas: u64, expected_credits: u64) -> [ModeExpectation; 3] {
             expectations(
@@ -2559,7 +2558,7 @@ mod tests {
                         initial_credits: 1,
                         expectations: expectations(
                             (52_962, 0),
-                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
                             (60_308, 0),
                         ),
                     },
@@ -2568,7 +2567,7 @@ mod tests {
                         initial_credits: 2,
                         expectations: expectations(
                             (52_962, 1),
-                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 2),
+                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
                             (60_308, 1),
                         ),
                     },
@@ -2586,7 +2585,7 @@ mod tests {
                         initial_credits: 0,
                         expectations: expectations(
                             (35_968, 0),
-                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
                             (35_968 + SET_MODE_GAS, 0),
                         ),
                     },
@@ -2595,7 +2594,7 @@ mod tests {
                         initial_credits: 2,
                         expectations: expectations(
                             (35_968, 2),
-                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 3),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 3),
                             (35_968 + SET_MODE_GAS, 2),
                         ),
                     },
@@ -2613,7 +2612,7 @@ mod tests {
                         initial_credits: 0,
                         expectations: expectations(
                             (38_768, 0),
-                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 1),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
                             (38_768 + SET_MODE_GAS, 0),
                         ),
                     },
@@ -2622,7 +2621,7 @@ mod tests {
                         initial_credits: 2,
                         expectations: expectations(
                             (38_768, 2),
-                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE_GAS, 3),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 3),
                             (38_768 + SET_MODE_GAS, 2),
                         ),
                     },
