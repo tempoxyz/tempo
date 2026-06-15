@@ -274,8 +274,57 @@ impl IntoTxEnv<Self> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<AASigned> for TempoTxEnv {
-    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+impl TempoTxEnv {
+    /// Builds a transaction environment from a recovered transaction, reusing a known
+    /// sender-scoped identifier when one was already computed by the payload builder.
+    pub fn from_recovered_tx_with_unique_identifier(
+        tx: &TempoTxEnvelope,
+        sender: Address,
+        unique_tx_identifier: Option<B256>,
+    ) -> Self {
+        match tx {
+            tx @ TempoTxEnvelope::Legacy(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                fee_token: None,
+                is_system_tx: tx.is_system_tx(),
+                unique_tx_identifier: Some(
+                    unique_tx_identifier.unwrap_or_else(|| tx.unique_tx_identifier(sender)),
+                ),
+                fee_payer: None,
+                tempo_tx_env: None, // Non-AA transaction
+            },
+            TempoTxEnvelope::Eip2930(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(
+                    unique_tx_identifier.unwrap_or_else(|| tx.unique_tx_identifier(sender)),
+                ),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip1559(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(
+                    unique_tx_identifier.unwrap_or_else(|| tx.unique_tx_identifier(sender)),
+                ),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip7702(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(
+                    unique_tx_identifier.unwrap_or_else(|| tx.unique_tx_identifier(sender)),
+                ),
+                ..Default::default()
+            },
+            TempoTxEnvelope::AA(tx) => {
+                Self::from_recovered_aa_tx_with_unique_identifier(tx, sender, unique_tx_identifier)
+            }
+        }
+    }
+
+    fn from_recovered_aa_tx_with_unique_identifier(
+        aa_signed: &AASigned,
+        caller: Address,
+        unique_tx_identifier: Option<B256>,
+    ) -> Self {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
 
@@ -343,7 +392,9 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
-            unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
+            unique_tx_identifier: Some(
+                unique_tx_identifier.unwrap_or_else(|| aa_signed.expiring_nonce_hash(caller)),
+            ),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -372,34 +423,15 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
     }
 }
 
+impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+        Self::from_recovered_aa_tx_with_unique_identifier(aa_signed, caller, None)
+    }
+}
+
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
-        match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                fee_token: None,
-                is_system_tx: tx.is_system_tx(),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                fee_payer: None,
-                tempo_tx_env: None, // Non-AA transaction
-            },
-            TempoTxEnvelope::Eip2930(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip1559(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip7702(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
-        }
+        Self::from_recovered_tx_with_unique_identifier(tx, sender, None)
     }
 }
 

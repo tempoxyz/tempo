@@ -1,9 +1,9 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
+    RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
@@ -27,6 +27,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
             validator_set,
+            transaction_identifiers: _,
         } = payload;
         let mut context = self.context_for_block(block)?;
 
@@ -41,19 +42,42 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let transaction_identifiers = payload
+            .transaction_identifiers
+            .as_ref()
+            .filter(|ids| ids.len() == payload.block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+            let unique_tx_identifier = transaction_identifiers.and_then(|ids| ids[idx]);
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: Some(expiring_nonce_idx),
+                    unique_tx_identifier,
+                });
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: None,
+                    unique_tx_identifier,
+                });
             }
         }
 
         Ok((transactions, RecoveredInBlock::new))
     }
+}
+
+#[derive(Clone)]
+struct TransactionInBlock {
+    block: Arc<SealedBlock<Block>>,
+    index: usize,
+    expiring_nonce_idx: Option<usize>,
+    unique_tx_identifier: Option<B256>,
 }
 
 /// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
@@ -65,18 +89,24 @@ struct RecoveredInBlock {
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
+    unique_tx_identifier: Option<B256>,
 }
 
 impl RecoveredInBlock {
-    fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
-    ) -> Result<Self, RecoveryError> {
+    fn new(tx: TransactionInBlock) -> Result<Self, RecoveryError> {
+        let TransactionInBlock {
+            block,
+            index,
+            expiring_nonce_idx,
+            unique_tx_identifier,
+        } = tx;
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
             block,
             index,
             sender,
             expiring_nonce_idx,
+            unique_tx_identifier,
         })
     }
 }
@@ -93,7 +123,11 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
+        let mut tx_env = TempoTxEnv::from_recovered_tx_with_unique_identifier(
+            self.tx(),
+            *self.signer(),
+            self.unique_tx_identifier,
+        );
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
         }
@@ -197,6 +231,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: None,
+            transaction_identifiers: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -217,6 +252,34 @@ mod tests {
     }
 
     #[test]
+    fn test_tx_iterator_uses_payload_identifier() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let evm_config = TempoEvmConfig::new(chainspec);
+
+        let tx = create_legacy_tx();
+        let block = create_test_block(vec![tx]);
+        let expected_identifier = B256::repeat_byte(0x77);
+
+        let payload = TempoExecutionData {
+            block,
+            block_access_list: None,
+            validator_set: None,
+            transaction_identifiers: Some(vec![Some(expected_identifier)]),
+        };
+
+        let tuple = evm_config.tx_iterator_for_payload(&payload).unwrap();
+        let (iter, recover_fn) = tuple.into_parts();
+        let item = iter.into_iter().next().expect("one transaction");
+        let recovered = recover_fn.convert(item).unwrap();
+        let (tx_env, _) = recovered.into_parts();
+
+        assert_eq!(
+            tx_env.unique_tx_identifier(),
+            Some(expected_identifier)
+        );
+    }
+
+    #[test]
     fn test_context_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -229,6 +292,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: validator_set.clone(),
+            transaction_identifiers: None,
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -255,6 +319,7 @@ mod tests {
             block: block.clone(),
             block_access_list: None,
             validator_set: None,
+            transaction_identifiers: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);

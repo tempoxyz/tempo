@@ -964,9 +964,14 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        let (
+            transactions_root,
+            receipts_root,
+            receipts_bloom,
+            transactions,
+            senders,
+            transaction_identifiers,
+        ) = roots_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1145,6 +1150,7 @@ where
             eth_payload,
             block_access_list,
             Some(executed_block),
+            Some(transaction_identifiers),
             validation_work_duration,
             validation_latency_duration,
         );
@@ -1165,7 +1171,14 @@ where
         &self,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
+        oneshot::Receiver<(
+            B256,
+            B256,
+            Bloom,
+            Vec<TempoTxEnvelope>,
+            Vec<Address>,
+            Vec<Option<B256>>,
+        )>,
     ) {
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
@@ -1175,6 +1188,7 @@ where
             .spawn_blocking_named("builder-roots-task", || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
+                let mut transaction_identifiers = Vec::new();
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
@@ -1183,12 +1197,13 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
+                    let (tx, sender, transaction_identifier) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     transactions.push(tx);
                     senders.push(sender);
+                    transaction_identifiers.push(transaction_identifier);
 
                     let receipt = receipt.with_bloom_ref();
 
@@ -1205,6 +1220,7 @@ where
                     receipts_bloom,
                     transactions,
                     senders,
+                    transaction_identifiers,
                 ));
             });
 
@@ -1356,10 +1372,17 @@ enum BuilderTx {
 }
 
 impl BuilderTx {
-    fn into_parts(self) -> (TempoTxEnvelope, Address) {
+    fn into_parts(self) -> (TempoTxEnvelope, Address, Option<B256>) {
         match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
-            Self::Owned(tx) => tx.into_parts(),
+            Self::Pooled(tx) => {
+                let transaction_identifier = tx.transaction.tx_env().unique_tx_identifier();
+                let (tx, sender) = tx.transaction.inner().clone().into_parts();
+                (tx, sender, transaction_identifier)
+            }
+            Self::Owned(tx) => {
+                let (tx, sender) = tx.into_parts();
+                (tx, sender, None)
+            }
         }
     }
 }
@@ -1453,7 +1476,7 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(eth, None, None, None, Duration::ZERO, Duration::ZERO)
     }
 
     #[test]

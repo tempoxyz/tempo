@@ -41,6 +41,8 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// Sender-scoped transaction identifiers from payload assembly.
+    transaction_identifiers: Option<Vec<Option<B256>>>,
     /// Replayable builder work for this payload.
     ///
     /// This excludes proposer-only idle waiting, but includes transaction
@@ -56,6 +58,7 @@ impl TempoBuiltPayload {
         inner: EthBuiltPayload<TempoPrimitives>,
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        transaction_identifiers: Option<Vec<Option<B256>>>,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
     ) -> Self {
@@ -63,6 +66,7 @@ impl TempoBuiltPayload {
             inner,
             block_access_list,
             executed_block,
+            transaction_identifiers,
             validation_work_duration,
             validation_latency_duration,
         }
@@ -88,11 +92,18 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
-        let (block, block_access_list) = self.into_execution_payload();
+        let Self {
+            inner,
+            block_access_list,
+            transaction_identifiers,
+            ..
+        } = self;
+        let block = Arc::unwrap_or_clone(inner.block_arc().clone()).into_sealed_block();
         TempoExecutionData {
             block: Arc::new(block),
             block_access_list,
             validator_set: None,
+            transaction_identifiers,
         }
     }
 }
@@ -130,6 +141,9 @@ pub struct TempoExecutionData {
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
+    /// Sender-scoped transaction identifiers recovered during local payload building.
+    #[serde(skip)]
+    pub transaction_identifiers: Option<Vec<Option<B256>>>,
 }
 
 impl ExecutionPayload for TempoExecutionData {
@@ -198,6 +212,7 @@ impl PayloadTypes for TempoPayloadTypes {
             block: Arc::new(block),
             block_access_list: bal,
             validator_set: None,
+            transaction_identifiers: None,
         }
     }
 }
