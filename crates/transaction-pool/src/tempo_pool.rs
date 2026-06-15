@@ -178,18 +178,22 @@ where
         // Pre-collect policy IDs where TIP_FEE_MANAGER_ADDRESS (the fee recipient) was
         // blacklisted or un-whitelisted. This is constant across all txs so we compute
         // it once instead of re-scanning the updates list per transaction.
-        let fee_manager_blacklisted: Vec<u64> = updates
-            .blacklist_additions
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
-        let fee_manager_unwhitelisted: Vec<u64> = updates
-            .whitelist_removals
-            .iter()
-            .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-            .map(|(policy_id, _)| *policy_id)
-            .collect();
+        let fee_manager_blacklisted = (!updates.blacklist_additions.is_empty()).then(|| {
+            updates
+                .blacklist_additions
+                .iter()
+                .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                .map(|(policy_id, _)| *policy_id)
+                .collect::<Vec<_>>()
+        });
+        let fee_manager_unwhitelisted = (!updates.whitelist_removals.is_empty()).then(|| {
+            updates
+                .whitelist_removals
+                .iter()
+                .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                .map(|(policy_id, _)| *policy_id)
+                .collect::<Vec<_>>()
+        });
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
@@ -397,9 +401,11 @@ where
                 // recipient policy — the tx would fail at execution since the fee
                 // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
                 let recipient_evicted = !sender_evicted
-                    && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec)
-                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
+                    && fee_manager_blacklisted.as_ref().is_some_and(|policy_ids| {
+                        !policy_ids.is_empty()
+                            && get_recipient_policy_ids(provider, fee_token, spec)
+                                .is_some_and(|ids| policy_ids.iter().any(|p| ids.contains(p)))
+                    });
 
                 if sender_evicted || recipient_evicted {
                     to_remove.push(*tx.hash());
@@ -440,9 +446,10 @@ where
                 // Check if the fee manager (recipient) was un-whitelisted on this
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
-                    && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
-                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
+                    && fee_manager_unwhitelisted.as_ref().is_some_and(|policy_ids| {
+                        !policy_ids.is_empty()
+                            && get_recipient_policy_ids(provider, fee_token, spec)
+                                .is_some_and(|ids| policy_ids.iter().any(|p| ids.contains(p)))
                     });
 
                 if sender_evicted || recipient_evicted {
