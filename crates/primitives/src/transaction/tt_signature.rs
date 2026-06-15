@@ -561,31 +561,7 @@ impl TempoSignature {
             && data.len() != SECP256K1_SIGNATURE_LENGTH
             && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
         {
-            let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
-                KeychainVersion::V1
-            } else {
-                KeychainVersion::V2
-            };
-            let sig_data = &data[1..];
-
-            // Keychain format: user_address (20 bytes) || inner_signature
-            if sig_data.len() < 20 {
-                return Err("Invalid Keychain signature: too short for user_address");
-            }
-
-            let user_address = Address::from_slice(&sig_data[0..20]);
-            let inner_sig_bytes = &sig_data[20..];
-
-            // Parse inner signature using PrimitiveSignature (which doesn't support Keychain)
-            // This automatically prevents recursive keychain signatures at compile time
-            let inner_signature = PrimitiveSignature::from_bytes(inner_sig_bytes)?;
-
-            return Ok(Self::Keychain(KeychainSignature {
-                user_address,
-                signature: inner_signature,
-                version,
-                cached_key_id: OnceLock::new(),
-            }));
+            return parse_keychain_signature(data);
         }
 
         // For all non-Keychain signatures, delegate to PrimitiveSignature
@@ -717,6 +693,36 @@ impl TempoSignature {
             _ => None,
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn parse_keychain_signature(data: &[u8]) -> Result<TempoSignature, &'static str> {
+    let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
+        KeychainVersion::V1
+    } else {
+        KeychainVersion::V2
+    };
+    let sig_data = &data[1..];
+
+    // Keychain format: user_address (20 bytes) || inner_signature
+    if sig_data.len() < 20 {
+        return Err("Invalid Keychain signature: too short for user_address");
+    }
+
+    let user_address = Address::from_slice(&sig_data[0..20]);
+    let inner_sig_bytes = &sig_data[20..];
+
+    // Parse inner signature using PrimitiveSignature (which doesn't support Keychain)
+    // This automatically prevents recursive keychain signatures at compile time
+    let inner_signature = PrimitiveSignature::from_bytes(inner_sig_bytes)?;
+
+    Ok(TempoSignature::Keychain(KeychainSignature {
+        user_address,
+        signature: inner_signature,
+        version,
+        cached_key_id: OnceLock::new(),
+    }))
 }
 
 impl Default for TempoSignature {
