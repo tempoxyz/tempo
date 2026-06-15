@@ -145,6 +145,8 @@ impl StablecoinDEX {
     }
 
     /// Emit the appropriate OrderFilled event
+    #[cold]
+    #[inline(never)]
     fn emit_order_filled(
         &mut self,
         order_id: u128,
@@ -804,6 +806,8 @@ impl StablecoinDEX {
     }
 
     /// Partially fill an order with the specified amount. Fill amount is denominated in base token.
+    #[cold]
+    #[inline(never)]
     fn partial_fill_order(
         &mut self,
         order: &mut Order,
@@ -868,6 +872,8 @@ impl StablecoinDEX {
     /// NOTE: Maker transfer policy is not enforced here to not block swaps on the pair.
     /// Note that TIP403 checks on order placement and withdraws are enforced.
     /// [`cancel_stale_order`](Self::cancel_stale_order) can be used to remove orders.
+    #[cold]
+    #[inline(never)]
     fn fill_order(
         &mut self,
         book_key: B256,
@@ -1166,6 +1172,8 @@ impl StablecoinDEX {
     }
 
     /// Helper function to get best tick from orderbook
+    #[cold]
+    #[inline(never)]
     fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
         let orderbook = self.books[book_key].read()?;
 
