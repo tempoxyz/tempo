@@ -239,6 +239,8 @@ impl AASigned {
     }
 
     /// Decode the RLP fields (without type byte).
+    #[cold]
+    #[inline(never)]
     pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
@@ -430,6 +432,8 @@ impl Encodable2718 for AASigned {
 }
 
 impl Decodable2718 for AASigned {
+    #[cold]
+    #[inline(never)]
     fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
         if ty != TEMPO_TX_TYPE_ID {
             return Err(Eip2718Error::UnexpectedType(ty));
@@ -437,6 +441,8 @@ impl Decodable2718 for AASigned {
         Self::rlp_decode(buf).map_err(Into::into)
     }
 
+    #[cold]
+    #[inline(never)]
     fn fallback_decode(_: &mut &[u8]) -> Eip2718Result<Self> {
         Err(Eip2718Error::UnexpectedType(0))
     }
