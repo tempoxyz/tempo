@@ -42,6 +42,8 @@ pub enum RoundingDirection {
 ///
 /// # Returns
 /// Quote token amount, or None if result exceeds u128
+#[cold]
+#[inline(never)]
 pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
     let price = U256::from(tick_to_price(tick));
     let base = U256::from(base_amount);
@@ -70,6 +72,8 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
 ///
 /// # Returns
 /// Base token amount, or None if result exceeds u128
+#[cold]
+#[inline(never)]
 pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
     let price = U256::from(tick_to_price(tick));
     let quote = U256::from(quote_amount);
