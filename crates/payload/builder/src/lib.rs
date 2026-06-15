@@ -692,10 +692,11 @@ where
             let execution_result = executor.execute_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
-                    cumulative_gas_used += result.block_gas_used();
+                    let block_gas_used = result.block_gas_used();
+                    cumulative_gas_used += block_gas_used;
                     cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
-                        non_payment_gas_used += result.block_gas_used();
+                        non_payment_gas_used += block_gas_used;
                     }
 
                     // Score payload value by the validator-credited fee amount that the
