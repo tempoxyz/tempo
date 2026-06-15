@@ -25,6 +25,7 @@ pub struct MergeBestTransactions {
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    ordering: TempoTipOrdering<TempoPooledTransaction>,
     base_fee: u64,
 }
 
@@ -40,6 +41,7 @@ impl MergeBestTransactions {
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            ordering: TempoTipOrdering::default(),
             base_fee,
         }
     }
@@ -49,10 +51,10 @@ impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
-            self.next_protocol_pool = self.protocol_pool.next().map(|tx| {
-                let priority = TempoTipOrdering::default().priority(&tx.transaction, self.base_fee);
-                (tx, priority)
-            });
+            if let Some(tx) = self.protocol_pool.next() {
+                let priority = self.ordering.priority(&tx.transaction, self.base_fee);
+                self.next_protocol_pool = Some((tx, priority));
+            }
         }
         if self.next_aa_2d_pool.is_none() {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
