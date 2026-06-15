@@ -94,11 +94,11 @@ pub(crate) fn payload_budget_decision(
         .map(|estimate| estimate.min(predicted_builder_work))
         .unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let marshal_persist_reserve = marshal_persist.saturating_mul(2);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
-        .saturating_add(marshal_persist)
-        .saturating_add(marshal_persist);
+        .saturating_add(marshal_persist_reserve);
     PayloadBudgetDecision {
         predicted_builder_work,
         predicted_validator_work,
