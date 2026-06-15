@@ -193,6 +193,7 @@ impl TIP20Token {
     }
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
+    #[inline]
     pub fn transfer_policy_id(&self) -> Result<u64> {
         self.transfer_policy_id.read()
     }
