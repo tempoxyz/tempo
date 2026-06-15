@@ -19,8 +19,8 @@ use tracing::info;
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers,
     metrics::{
-        MetricsExt, wait_for_height, wait_for_height_with_interval, wait_for_metrics,
-        wait_for_metrics_with_interval, wait_for_participants, wait_for_participants_with_interval,
+        MetricsExt, wait_for_height_with_interval, wait_for_metrics_with_interval,
+        wait_for_participants, wait_for_participants_with_interval,
     },
     setup_validators,
 };
