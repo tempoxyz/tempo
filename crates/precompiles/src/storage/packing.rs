@@ -148,7 +148,8 @@ pub fn insert_into_word<T: FromWord + StorableType>(
 ///
 /// This is the inverse operation to `insert_into_word`, clearing the bits
 /// for a specific field while preserving other packed values in the slot.
-#[inline]
+#[cold]
+#[inline(never)]
 pub fn delete_from_word(current: U256, offset: usize, bytes: usize) -> Result<U256> {
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
