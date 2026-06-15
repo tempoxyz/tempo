@@ -202,7 +202,8 @@ where
 
 /// Generic store implementation for byte-like types (String, Bytes) using Solidity's encoding.
 /// On T5+ performs tail cleanup when the prior value was long and the new one takes fewer slots.
-#[inline]
+#[cold]
+#[inline(never)]
 fn store_bytes_like<S: StorageOps>(
     bytes: &[u8],
     storage: &mut S,
@@ -258,7 +259,8 @@ fn store_bytes_like<S: StorageOps>(
 /// Generic delete implementation for byte-like types (String, Bytes) using Solidity's encoding.
 ///
 /// Clears both the main slot and any keccak256-addressed data slots for long strings.
-#[inline]
+#[cold]
+#[inline(never)]
 fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<()> {
     let base_value = storage.load(base_slot)?;
     let is_long = is_long_string(base_value);
