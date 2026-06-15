@@ -172,6 +172,8 @@ impl PolicyData {
 }
 
 impl ReceivePolicyConfig {
+    #[cold]
+    #[inline(never)]
     fn sender_policy_data(&self) -> PolicyData {
         PolicyData {
             policy_type: self.sender_policy_type,
@@ -179,6 +181,8 @@ impl ReceivePolicyConfig {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn token_filter_data(&self) -> PolicyData {
         PolicyData {
             policy_type: self.token_filter_type,
