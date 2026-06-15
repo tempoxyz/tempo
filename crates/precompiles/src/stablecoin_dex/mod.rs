@@ -2017,6 +2017,40 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_dex_storage_credits_cancel_then_reuse_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let (base_token, _quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, amount)?;
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let order = exchange.orders[order_id].read()?;
+            let credits = order.storage_credits();
+            assert_eq!(exchange.storage_credits(alice)?, 0);
+
+            exchange.cancel(alice, order_id)?;
+            assert_eq!(exchange.storage_credits(alice)?, credits);
+
+            let next_order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let next_order = exchange.orders[next_order_id].read()?;
+            assert_eq!(next_order.storage_credits(), credits);
+            assert_eq!(exchange.storage_credits(alice)?, 0);
+
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_place_order_pair_auto_created() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
