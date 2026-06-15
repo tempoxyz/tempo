@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{debug, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -99,13 +99,14 @@ impl BestTransactionsPrewarming {
     {
         let pool = executor.prewarming_pool();
 
-        pool.in_place_scope(|scope| {
+        let prewarmed_transactions = pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
+            let mut prewarmed_transactions = 0;
             scope.spawn(move |_| {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+            let mut advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
@@ -121,6 +122,7 @@ impl BestTransactionsPrewarming {
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
+                prewarmed_transactions += 1;
                 scope.spawn(move |_| {
                     Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
@@ -164,11 +166,15 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
                         drop(drain_rx);
-                        return;
+                        return prewarmed_transactions
                     }
                 }
             }
+
+            prewarmed_transactions
         });
+
+        debug!(target: "payload_builder", prewarmed_transactions, "Prewarming completed");
 
         pool.clear();
     }
