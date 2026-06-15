@@ -132,22 +132,31 @@ struct ExecutionStats {
     gas_used: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct InMemoryStateProvider {
-    accounts: Arc<AddressMap<RethAccount>>,
-    storage: Arc<HashMap<(Address, B256), U256>>,
-    contracts: Arc<B256Map<RethBytecode>>,
-    block_hashes: Arc<HashMap<u64, B256>>,
+    accounts: AddressMap<RethAccount>,
+    storage: HashMap<(Address, B256), U256>,
+    contracts: B256Map<RethBytecode>,
+    block_hashes: HashMap<u64, B256>,
+}
+
+#[derive(Clone, Debug)]
+struct SharedInMemoryStateProvider(Arc<InMemoryStateProvider>);
+
+impl SharedInMemoryStateProvider {
+    fn new(provider: InMemoryStateProvider) -> Self {
+        Self(Arc::new(provider))
+    }
 }
 
 #[derive(Clone)]
 struct ExecutionFixture {
-    provider: InMemoryStateProvider,
+    provider: SharedInMemoryStateProvider,
     cache: ExecutionCache,
     metrics: CachedStateMetrics,
 }
 
-type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
+type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<SharedInMemoryStateProvider>>>;
 
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
@@ -171,27 +180,27 @@ impl ExecutionFixture {
     }
 }
 
-impl AccountReader for InMemoryStateProvider {
+impl AccountReader for SharedInMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self.0.accounts.get(address).copied())
     }
 }
 
-impl StateProvider for InMemoryStateProvider {
+impl StateProvider for SharedInMemoryStateProvider {
     fn storage(&self, account: Address, storage_key: B256) -> ProviderResult<Option<U256>> {
-        Ok(self.storage.get(&(account, storage_key)).copied())
+        Ok(self.0.storage.get(&(account, storage_key)).copied())
     }
 }
 
-impl BytecodeReader for InMemoryStateProvider {
+impl BytecodeReader for SharedInMemoryStateProvider {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<RethBytecode>> {
-        Ok(self.contracts.get(code_hash).cloned())
+        Ok(self.0.contracts.get(code_hash).cloned())
     }
 }
 
-impl BlockHashReader for InMemoryStateProvider {
+impl BlockHashReader for SharedInMemoryStateProvider {
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
-        Ok(self.block_hashes.get(&number).copied())
+        Ok(self.0.block_hashes.get(&number).copied())
     }
 
     fn canonical_hashes_range(&self, _start: u64, _end: u64) -> ProviderResult<Vec<B256>> {
@@ -199,7 +208,7 @@ impl BlockHashReader for InMemoryStateProvider {
     }
 }
 
-impl StateRootProvider for InMemoryStateProvider {
+impl StateRootProvider for SharedInMemoryStateProvider {
     fn state_root(&self, _hashed_state: HashedPostState) -> ProviderResult<B256> {
         Err(ProviderError::UnsupportedProvider)
     }
@@ -223,7 +232,7 @@ impl StateRootProvider for InMemoryStateProvider {
     }
 }
 
-impl StorageRootProvider for InMemoryStateProvider {
+impl StorageRootProvider for SharedInMemoryStateProvider {
     fn storage_root(
         &self,
         _address: Address,
@@ -251,7 +260,7 @@ impl StorageRootProvider for InMemoryStateProvider {
     }
 }
 
-impl StateProofProvider for InMemoryStateProvider {
+impl StateProofProvider for SharedInMemoryStateProvider {
     fn proof(
         &self,
         _input: TrieInput,
@@ -279,7 +288,7 @@ impl StateProofProvider for InMemoryStateProvider {
     }
 }
 
-impl HashedPostStateProvider for InMemoryStateProvider {
+impl HashedPostStateProvider for SharedInMemoryStateProvider {
     fn hashed_post_state(&self, _bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         unreachable!("TIP20 execution benchmark does not compute hashed post-state")
     }
@@ -449,12 +458,12 @@ fn setup_fixed_cache_state(
     }
 
     ExecutionFixture {
-        provider: InMemoryStateProvider {
-            accounts: Arc::new(accounts),
-            storage: Arc::new(storage),
-            contracts: Arc::new(contracts),
-            block_hashes: Arc::new(block_hashes),
-        },
+        provider: SharedInMemoryStateProvider::new(InMemoryStateProvider {
+            accounts,
+            storage,
+            contracts,
+            block_hashes,
+        }),
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
     }
