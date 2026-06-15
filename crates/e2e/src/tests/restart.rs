@@ -334,7 +334,7 @@ async fn wait_for_height(
     let mut skips_observed = false;
     wait_for_metrics(context, |metrics| {
         skips_observed |= metrics
-            .values("_rounds_skipped_total")
+            .values::<u64>("_rounds_skipped_total")
             .any(|count| count > 0);
 
         if metrics.consensus_at_height(target_height) == expected_validators as usize {
@@ -365,7 +365,7 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 
 fn max_consensus_height(metrics: &Metrics) -> u64 {
     metrics
-        .values("_marshal_processed_height")
+        .values::<u64>("_marshal_processed_height")
         .max()
         .expect("processed height is a metric")
 }
@@ -486,7 +486,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                 }
                 assert!(
                     metrics
-                        .values("ceremony_bad_dealings")
+                        .values::<u64>("ceremony_bad_dealings")
                         .all(|bad_dealings| bad_dealings == 0)
                 );
 

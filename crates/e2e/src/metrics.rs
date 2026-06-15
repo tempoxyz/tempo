@@ -1,6 +1,6 @@
 //! Metrics parsing and assertion helpers for e2e tests.
 
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, fmt::Display, str::FromStr, time::Duration};
 
 use commonware_runtime::{Clock as _, Metrics as CommonwareMetrics, deterministic::Context};
 
@@ -15,12 +15,12 @@ const ROUNDS_SKIPPED: &str = "rounds_skipped_total";
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, PartialEq)]
-struct MetricSample {
+struct Sample {
     name: String,
     value: String,
 }
 
-impl MetricSample {
+impl Sample {
     fn parse(line: &str) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -28,8 +28,11 @@ impl MetricSample {
         }
 
         let mut parts = line.split_whitespace();
-        let key = parts.next()?;
-        let value = parts.next()?;
+        let key = parts.next().expect("metric sample has no name");
+        let value = parts
+            .next()
+            .unwrap_or_else(|| panic!("metric sample `{key}` has no value"));
+
         let name = key.split_once('{').map_or(key, |(name, _)| name);
 
         Some(Self {
@@ -38,14 +41,23 @@ impl MetricSample {
         })
     }
 
-    fn as_u64(&self) -> Option<u64> {
-        self.value.parse().ok()
+    fn value<T>(&self) -> T
+    where
+        T: FromStr,
+        T::Err: Display,
+    {
+        self.value.parse().unwrap_or_else(|err| {
+            panic!(
+                "metric sample `{}` has invalid value `{}`: {err}",
+                self.name, self.value
+            )
+        })
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metrics {
-    samples: Vec<MetricSample>,
+    samples: Vec<Sample>,
 }
 
 pub trait MetricScope {
@@ -64,24 +76,30 @@ where
 impl Metrics {
     /// Samples metrics from a Commonware runtime context.
     pub fn from_context(context: &impl CommonwareMetrics) -> Self {
-        let samples = context
-            .encode()
-            .lines()
-            .filter_map(MetricSample::parse)
-            .collect();
-
+        let samples = context.encode().lines().filter_map(Sample::parse).collect();
         Self { samples }
     }
 
-    pub fn value(&self, metric_suffix: &str) -> Option<u64> {
-        self.values(metric_suffix).next()
+    pub fn value<T>(&self, metric_suffix: &str) -> Option<T>
+    where
+        T: FromStr,
+        T::Err: Display,
+    {
+        self.samples
+            .iter()
+            .find(|s| s.name.ends_with(metric_suffix))
+            .map(Sample::value)
     }
 
-    pub fn values<'a>(&'a self, metric_suffix: &'a str) -> impl Iterator<Item = u64> + 'a {
+    pub fn values<'a, T>(&'a self, metric_suffix: &'a str) -> impl Iterator<Item = T> + 'a
+    where
+        T: FromStr + 'a,
+        T::Err: Display,
+    {
         self.samples
             .iter()
             .filter(move |s| s.name.ends_with(metric_suffix))
-            .map(|s| s.as_u64().unwrap())
+            .map(Sample::value)
     }
 
     /// Returns metrics for a metric-emitting runtime scope.
@@ -99,7 +117,7 @@ impl Metrics {
     /// Counts consensus instances whose processed height is at least `target_height`.
     #[track_caller]
     pub fn consensus_at_height(&self, target_height: u64) -> usize {
-        self.values(PROCESSED_HEIGHT)
+        self.values::<u64>(PROCESSED_HEIGHT)
             .filter(|height| *height >= target_height)
             .count()
     }
@@ -107,25 +125,26 @@ impl Metrics {
     /// Counts consensus instances whose latest epoch is at least `target_epoch`.
     #[track_caller]
     pub fn consensus_at_epoch(&self, target_epoch: u64) -> usize {
-        self.values(LATEST_EPOCH)
+        self.values::<u64>(LATEST_EPOCH)
             .filter(|epoch| *epoch >= target_epoch)
             .count()
     }
 
     pub fn latest_consensus_epoch(&self) -> Option<u64> {
-        self.value(LATEST_EPOCH)
+        self.value::<u64>(LATEST_EPOCH)
     }
 
     pub fn latest_consensus_height(&self) -> Option<u64> {
-        self.value(PROCESSED_HEIGHT)
+        self.value::<u64>(PROCESSED_HEIGHT)
     }
 
     pub fn consensus_before_epoch(&self, upper_bound: u64) -> bool {
-        self.values(LATEST_EPOCH).all(|epoch| epoch < upper_bound)
+        self.values::<u64>(LATEST_EPOCH)
+            .all(|epoch| epoch < upper_bound)
     }
 
     pub fn has_consensus_participants(&self, target: u64) -> bool {
-        self.values(LATEST_PARTICIPANTS)
+        self.values::<u64>(LATEST_PARTICIPANTS)
             .any(|participants| participants == target)
     }
 
@@ -133,7 +152,7 @@ impl Metrics {
     #[track_caller]
     pub fn assert_no_blocked_peers(&self) {
         assert!(
-            self.values(PEERS_BLOCKED)
+            self.values::<u64>(PEERS_BLOCKED)
                 .all(|blocked_peers| blocked_peers == 0)
         );
     }
@@ -141,14 +160,17 @@ impl Metrics {
     /// Asserts that all DKG ceremony failure counters are zero.
     #[track_caller]
     pub fn assert_no_dkg_failures(&self) {
-        assert!(self.values(DKG_FAILURES).all(|failures| failures == 0));
+        assert!(
+            self.values::<u64>(DKG_FAILURES)
+                .all(|failures| failures == 0)
+        );
     }
 
     /// Asserts that at least one consensus instance skipped rounds.
     #[track_caller]
     pub fn assert_any_rounds_skipped(&self) {
         assert!(
-            self.values(ROUNDS_SKIPPED)
+            self.values::<u64>(ROUNDS_SKIPPED)
                 .any(|skipped_rounds| skipped_rounds > 0),
             "expected at least one consensus instance to have skipped rounds"
         );

@@ -128,7 +128,7 @@ fn run_payload_builder_test(
 
             let metrics = Metrics::from_context(&context);
             metrics
-                .values(NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
+                .values::<u64>(NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
                 .sum()
         });
 

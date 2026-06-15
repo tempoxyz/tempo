@@ -108,14 +108,14 @@ impl AssertValidatorIsAdded {
 
                 let added_epoch = added_metrics.latest_consensus_epoch().unwrap();
                 let added_signer = added_metrics
-                    .value("_epoch_manager_how_often_signer_total")
+                    .value::<u64>("_epoch_manager_how_often_signer_total")
                     .unwrap();
                 let dealers = added_metrics
-                    .value("_dkg_manager_ceremony_dealers")
+                    .value::<u64>("_dkg_manager_ceremony_dealers")
                     .unwrap() as u32;
                 let network_epoch = network_metrics.latest_consensus_epoch().unwrap();
                 let players = added_metrics
-                    .value("_dkg_manager_ceremony_players")
+                    .value::<u64>("_dkg_manager_ceremony_players")
                     .unwrap() as u32;
 
                 if added_epoch >= player_epoch.get() && added_epoch < dealer_epoch.get() {
@@ -202,11 +202,11 @@ impl AssertValidatorIsRemoved {
 
                 let network_metrics = metrics.for_scope(&validators[0]);
                 let dealers = network_metrics
-                    .value("_dkg_manager_ceremony_dealers")
+                    .value::<u64>("_dkg_manager_ceremony_dealers")
                     .unwrap() as u32;
                 let network_epoch = network_metrics.latest_consensus_epoch().unwrap();
                 let players = network_metrics
-                    .value("_dkg_manager_ceremony_players")
+                    .value::<u64>("_dkg_manager_ceremony_players")
                     .unwrap() as u32;
                 if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
                     assert_eq!(how_many_initial - 1, players);

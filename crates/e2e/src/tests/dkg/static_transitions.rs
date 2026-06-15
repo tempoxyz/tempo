@@ -99,7 +99,7 @@ impl AssertStaticTransitions {
             metrics.assert_no_dkg_failures();
 
             let dkg_successful = metrics
-                .values("dkg_manager_ceremony_successes_total")
+                .values::<u64>("dkg_manager_ceremony_successes_total")
                 .any(|successes| successes >= transitions);
 
             metrics.consensus_at_epoch(transitions) > 0 && dkg_successful

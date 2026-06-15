@@ -44,7 +44,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
             context.sleep(Duration::from_secs(1)).await;
             let metrics = Metrics::from_context(&context).for_scope(&validators[lost_share_index]);
 
-            if let Some(v) = metrics.value("peers_blocked") {
+            if let Some(v) = metrics.value::<u64>("peers_blocked") {
                 assert_eq!(v, 0);
             }
 
@@ -54,14 +54,14 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
 
             // Ensures that node has no share.
             if !node_forgot_share
-                && let Some(v) = metrics.value("_epoch_manager_how_often_verifier_total")
+                && let Some(v) = metrics.value::<u64>("_epoch_manager_how_often_verifier_total")
             {
                 node_forgot_share = v > 0;
             }
 
             // Ensure that the node gets a share by becoming a signer.
             if node_forgot_share
-                && let Some(v) = metrics.value("_epoch_manager_how_often_signer_total")
+                && let Some(v) = metrics.value::<u64>("_epoch_manager_how_often_signer_total")
                 && v > 0
             {
                 break 'acquire_share;
@@ -98,7 +98,7 @@ fn validator_loses_consensus_state_becomes_observer() {
             if let Some(epoch) = metrics.latest_consensus_epoch() {
                 assert_eq!(epoch, 0);
 
-                if let Some(v) = metrics.value("_dkg_manager_ceremony_acks_sent")
+                if let Some(v) = metrics.value::<u64>("_dkg_manager_ceremony_acks_sent")
                     && v > 0
                 {
                     break 'setup;
@@ -125,7 +125,7 @@ fn validator_loses_consensus_state_becomes_observer() {
                 assert!(epoch < 3, "node should have recovered its share by epoch 3");
 
                 if epoch < 2
-                    && let Some(v) = metrics.value("_dkg_manager_how_often_dealer_total")
+                    && let Some(v) = metrics.value::<u64>("_dkg_manager_how_often_dealer_total")
                 {
                     assert_eq!(
                         v, 0,
@@ -134,7 +134,7 @@ fn validator_loses_consensus_state_becomes_observer() {
                 }
 
                 if epoch == 2
-                    && let Some(v) = metrics.value("_dkg_manager_how_often_dealer_total")
+                    && let Some(v) = metrics.value::<u64>("_dkg_manager_how_often_dealer_total")
                 {
                     assert_eq!(
                         v, 1,
