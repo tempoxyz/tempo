@@ -110,18 +110,14 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 ) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
 
-    // Only account for storage credits when the slot crosses the zero boundary
-    // (zero -> non-zero or non-zero -> zero). If both values are zero or both are
-    // non-zero, slot occupancy is unchanged, so skip storage credits accounting.
+    // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
+    // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
     if values.is_present_zero() == values.is_new_zero() {
         return Ok(());
     }
 
-    // Writes to the storage-credit precompile's own state are protocol bookkeeping
-    // (the balance slot updated by this hook, reached via the precompile storage
-    // provider). They must not recurse into credit accounting; fall back to the
-    // default SSTORE gas function so the backing write is charged as an ordinary
-    // store and never minted/consumed as a credit.
+    // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
+    // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
     if owner == STORAGE_CREDITS_ADDRESS {
         return Ok(());
     }
@@ -144,18 +140,13 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut was_changed = false;
     if values.is_new_zero() {
-        // present non-zero -> 0: storage deletion. Mint one credit on every such
-        // transition, irrespective of the transaction-original value — TIP-1060
-        // keys minting on the present -> new transition, so a within-transaction
-        // `0 -> X -> 0` clear of a slot created earlier still mints (and the
-        // matching creation consumes), so churn nets out.
+        // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
         was_changed = true;
     } else {
-        // present 0 -> non-zero: storage creation. revm's SSTORE gas function
-        // charges the 20k residual (only on a clean creation, `original ==
-        // present == 0`); this hook governs only the 230k creditable portion,
-        // independent of the original value. The selected mode is transient.
+        // 0→x: storage creation.
+        // This hook manages the 230k creditable gas, independent of the original value.
+        // revm's SSTORE function adds 20k residual for clean writes (`original == present == 0`).
         let mut transient_state: TransientState = backend
             .tload(STORAGE_CREDITS_ADDRESS, account_slot)
             .try_into()
@@ -163,15 +154,15 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         match transient_state.mode {
             CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
-                // Consume one credit to cover the 230k creditable portion; charge
-                // nothing else (the residual is charged by the SSTORE gas function).
+                // Consume one credit to cover the 230k creditable portion.
                 credit -= 1;
                 was_changed = true;
 
-                // An unlimited budget (`setMode(Direct)`) is never decremented.
+                // An unlimited budget is never decremented.
                 if transient_state.budget != u64::MAX {
                     transient_state.budget -= 1;
                     if transient_state.budget == 0 {
+                        // When budget is exhausted, switch to `Preserve` mode.
                         transient_state.mode = CreditMode::Preserve;
                         emit_mode_updated(backend, owner, CreditMode::Preserve)?;
                     }
@@ -179,9 +170,9 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 }
             }
             CreditMode::Direct => {
-                // No credit or no budget available: charge the 230k creditable
-                // portion as gas. A zero budget switches the account to Preserve.
+                // If no credit available, charge the 230k creditable portion as gas.
                 if transient_state.budget == 0 {
+                    // When budget is exhausted, switch to `Preserve` mode.
                     transient_state.mode = CreditMode::Preserve;
                     store_credit_state(backend, account_slot, transient_state)?;
                     emit_mode_updated(backend, owner, CreditMode::Preserve)?;
@@ -189,12 +180,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Preserve => {
-                // Always charge the 230k creditable portion as gas; credits untouched.
+                // Always charge the 230k creditable portion as gas without consuming credits.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Refund => {
-                // Charge the 230k creditable portion upfront and record a pending
-                // refund-eligible creation, settled at end-of-transaction.
+                // Charge the 230k creditable portion upfront and record a pending refund-eligible
+                // creation, settled at end-of-transaction.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
                 store_credit_state(backend, account_slot, transient_state)?;
@@ -203,7 +194,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     if was_changed {
-        // cold load is already checked above when we loaded the storage credits account.
+        // Cold load is already checked above when we loaded the storage credits account.
         let result = backend
             .sstore(
                 STORAGE_CREDITS_ADDRESS,
@@ -214,8 +205,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             .data;
 
         // Only when change happens charge additional gas.
-        // Creating or updating the protocol credit-balance slot is TIP-1060 bookkeeping and
-        // does not incur the extra TIP-1000 storage creation component.
         if result.new_values_changes_present() && result.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };
