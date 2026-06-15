@@ -82,10 +82,33 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
 /// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
 /// or a fixed system precompile.
 pub fn is_precompile_address(addr: Address, spec: TempoHardfork) -> bool {
-    addr.is_tip20()
-        || SYSTEM_PRECOMPILES
-            .iter()
-            .any(|&(a, activated)| a == addr && spec >= activated)
+    if addr.is_tip20() {
+        return true;
+    }
+
+    if addr == TIP403_REGISTRY_ADDRESS
+        || addr == TIP_FEE_MANAGER_ADDRESS
+        || addr == STABLECOIN_DEX_ADDRESS
+        || addr == NONCE_PRECOMPILE_ADDRESS
+        || addr == ACCOUNT_KEYCHAIN_ADDRESS
+        || addr == VALIDATOR_CONFIG_ADDRESS
+        || addr == VALIDATOR_CONFIG_V2_ADDRESS
+        || addr == TIP20_FACTORY_ADDRESS
+    {
+        return true;
+    }
+
+    if spec >= TempoHardfork::T3
+        && (addr == ADDRESS_REGISTRY_ADDRESS || addr == SIGNATURE_VERIFIER_ADDRESS)
+    {
+        return true;
+    }
+
+    if spec >= TempoHardfork::T5 && addr == TIP20_CHANNEL_RESERVE_ADDRESS {
+        return true;
+    }
+
+    spec >= TempoHardfork::T6 && addr == RECEIVE_POLICY_GUARD_ADDRESS
 }
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
