@@ -175,6 +175,7 @@ jobs:
                   type: 'mrkdwn',
                   text: [
                     '*Scheduled replay benchmark did not run* because the latest nightly Docker build is stale.',
+                    `*Repo:* <https://github.com/${repo}|Tempo>`,
                     '',
                     `The latest nightly image was built from a commit that is *${ageHours}h old* (threshold: 24h).`,
                     `Stale commit: \`${shortSha}\` (built at ${created})`,
