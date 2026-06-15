@@ -457,6 +457,18 @@ pub(crate) fn dispatch_call<T>(
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
+    dispatch_call_with_selector(calldata, hardforks, |_, calldata| decode(calldata), f)
+}
+
+/// Applies hardfork selector schedules and passes the already-decoded selector
+/// to callers that need to discriminate between multiple ABI interfaces.
+#[inline]
+pub(crate) fn dispatch_call_with_selector<T>(
+    calldata: &[u8],
+    hardforks: &[SelectorSchedule<'_>],
+    decode: impl FnOnce([u8; 4], &[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    f: impl FnOnce(T) -> PrecompileResult,
+) -> PrecompileResult {
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
@@ -479,7 +491,7 @@ pub(crate) fn dispatch_call<T>(
         ));
     }
 
-    let result = decode(calldata);
+    let result = decode(selector, calldata);
 
     match result {
         Ok(call) => f(call).map(|mut res| {
