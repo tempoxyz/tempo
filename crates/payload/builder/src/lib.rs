@@ -58,7 +58,7 @@ use reth_transaction_pool::{
 };
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -67,7 +67,8 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+    EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    marshal_persist_estimate,
 };
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -1145,8 +1146,11 @@ where
         );
 
         let block = Arc::new(block);
-        let execution_block_encoder =
-            ExecutionBlockEncoder::new(block.clone(), Some(encoded_block_transactions));
+        let execution_block_encoder = ExecutionBlockEncoder::new(
+            block.clone(),
+            estimated_rlp_block_size,
+            encoded_block_transactions,
+        );
         let execution_block_encoded = execution_block_encoder.encoded_block();
         self.executor
             .spawn_blocking_named("builder-block-rlp-encode", move || {
@@ -1395,11 +1399,20 @@ impl BuilderTx {
 
 #[derive(Debug)]
 struct RootsTaskResult {
+    /// The root hash of the transaction trie.
     transactions_root: B256,
+    /// The root hash of the receipts trie.
     receipts_root: B256,
+    /// The receipts bloom filter.
     receipts_bloom: Bloom,
+    /// The transactions included in the block.
     transactions: Vec<TempoTxEnvelope>,
+    /// The senders of the transactions.
     senders: Vec<Address>,
+    /// The RLP encoded transaction list for the block body.
+    ///
+    /// Since roots task already encodes every transaction for the transaction trie,
+    /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
@@ -1459,37 +1472,36 @@ impl EncodedBlockTransactionsBuilder {
 #[derive(Debug)]
 struct ExecutionBlockEncoder {
     block: Arc<RecoveredBlock<tempo_primitives::Block>>,
-    encoded_transactions: Option<EncodedBlockTransactionList>,
-    encoded_block: Arc<OnceLock<Bytes>>,
+    estimated_rlp_block_size: usize,
+    encoded_transactions: EncodedBlockTransactionList,
+    encoded_block: EncodedBlock,
 }
 
 impl ExecutionBlockEncoder {
     fn new(
         block: Arc<RecoveredBlock<tempo_primitives::Block>>,
-        encoded_transactions: Option<EncodedBlockTransactionList>,
+        estimated_rlp_block_size: usize,
+        encoded_transactions: EncodedBlockTransactionList,
     ) -> Self {
         Self {
             block,
+            estimated_rlp_block_size,
             encoded_transactions,
-            encoded_block: Arc::new(OnceLock::new()),
+            encoded_block: EncodedBlock::default(),
         }
     }
 
-    fn encoded_block(&self) -> Arc<OnceLock<Bytes>> {
+    fn encoded_block(&self) -> EncodedBlock {
         self.encoded_block.clone()
     }
 
     fn encode_block(&self) -> &Bytes {
-        self.encoded_block.get_or_init(|| {
+        self.encoded_block.0.get_or_init(|| {
             let block = self.block.sealed_block();
-            let mut encoded = Vec::new();
+            let mut encoded = Vec::with_capacity(self.estimated_rlp_block_size);
             let encode_start = Instant::now();
             let reused_encoded_transactions =
-                self.encoded_transactions
-                    .as_ref()
-                    .is_some_and(|transactions| {
-                        encode_block_with_transactions(block, transactions, &mut encoded)
-                    });
+                encode_block_with_transactions(block, &self.encoded_transactions, &mut encoded);
             if !reused_encoded_transactions {
                 block.encode(&mut encoded);
             }
@@ -1507,6 +1519,10 @@ impl ExecutionBlockEncoder {
     }
 }
 
+/// Encodes the block with the given already encoded transactions, if the transaction count matches.
+///
+/// - Returns `true` if the encoding was successful, and we could reuse the cached transactions.
+/// - Returns `false` if the transaction count does not match, and the encoding should be done from scratch.
 fn encode_block_with_transactions(
     block: &reth_primitives_traits::SealedBlock<tempo_primitives::Block>,
     transactions: &EncodedBlockTransactionList,
@@ -1558,6 +1574,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Signature};
     use core::num::NonZeroU64;
     use reth_primitives_traits::{Block as _, SealedBlock};
+    use tempo_payload_types::EncodedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1647,7 +1664,7 @@ mod tests {
             Duration::ZERO,
             Duration::ZERO,
             NON_TRANSACTION_SIZE_ESTIMATE,
-            Arc::new(OnceLock::new()),
+            EncodedBlock::default(),
         )
     }
 

@@ -54,7 +54,7 @@ pub struct TempoBuiltPayload {
     /// Approximate execution block RLP size estimate used for pacing and builder-side limits.
     execution_block_size_estimate: usize,
     /// Shared cache for the encoded execution block bytes.
-    execution_block_encoded: Arc<OnceLock<Bytes>>,
+    execution_block_encoded: EncodedBlock,
 }
 
 impl TempoBuiltPayload {
@@ -66,7 +66,7 @@ impl TempoBuiltPayload {
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
         execution_block_size_estimate: usize,
-        execution_block_encoded: Arc<OnceLock<Bytes>>,
+        execution_block_encoded: EncodedBlock,
     ) -> Self {
         Self {
             inner,
@@ -90,11 +90,7 @@ impl TempoBuiltPayload {
     /// Converts the built payload into consensus block parts without cloning the execution block.
     pub fn into_consensus_execution_payload(
         self,
-    ) -> (
-        SealedOrRecoveredBlock<Block>,
-        Option<Bytes>,
-        Arc<OnceLock<Bytes>>,
-    ) {
+    ) -> (SealedOrRecoveredBlock<Block>, Option<Bytes>, EncodedBlock) {
         let execution_block = SealedOrRecoveredBlock::recovered_arc(self.inner.block_arc().clone());
 
         (
@@ -232,5 +228,15 @@ impl PayloadTypes for TempoPayloadTypes {
             block_access_list: bal,
             validator_set: None,
         }
+    }
+}
+
+/// Cached execution layer block encoded as RLP bytes.
+#[derive(Clone, Debug, Default)]
+pub struct EncodedBlock(pub Arc<OnceLock<Bytes>>);
+
+impl EncodedBlock {
+    pub fn new(bytes: Bytes) -> Self {
+        Self(Arc::new(OnceLock::from(bytes)))
     }
 }

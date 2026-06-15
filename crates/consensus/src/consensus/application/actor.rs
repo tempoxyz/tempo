@@ -83,7 +83,7 @@ struct BuildProposalArgs<'a> {
 
 struct ProposalReturn {
     time: SystemTime,
-    block_size_bytes: usize,
+    block_size_estimate_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -403,7 +403,7 @@ impl Inner<Init> {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
-                        proposal_return.block_size_bytes,
+                        proposal_return.block_size_estimate_bytes,
                         persist_start.elapsed(),
                     );
 
@@ -775,10 +775,9 @@ impl Inner<Init> {
             execution_block_encoded,
         )
         .wrap_err("payload builder produced an invalid block access list")?;
-        let consensus_block_size_estimate_bytes =
+        let block_size_estimate_bytes =
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
-        let validator_marshal_persist =
-            marshal_persist.estimate(consensus_block_size_estimate_bytes);
+        let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -796,7 +795,7 @@ impl Inner<Init> {
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_estimate_bytes,
-            consensus_block_size_estimate_bytes,
+            block_size_estimate_bytes,
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
@@ -805,7 +804,7 @@ impl Inner<Init> {
             proposal,
             Some(ProposalReturn {
                 time: proposal_return_time,
-                block_size_bytes: consensus_block_size_estimate_bytes,
+                block_size_estimate_bytes,
             }),
         ))
     }

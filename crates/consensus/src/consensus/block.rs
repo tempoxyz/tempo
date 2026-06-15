@@ -20,10 +20,8 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
-use std::{
-    fmt::Display,
-    sync::{Arc, OnceLock},
-};
+use std::fmt::Display;
+use tempo_payload_types::EncodedBlock;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -71,7 +69,7 @@ pub(crate) struct Block {
     /// The execution-layer block, either sealed-only or fully recovered when built locally.
     execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
     /// Cached execution-layer RLP bytes when already encoded by the caller or a payload clone.
-    execution_block_encoded: Arc<OnceLock<Bytes>>,
+    execution_block_encoded: EncodedBlock,
     /// Optional block access list. Only provided if the network supports BALs.
     #[cfg(feature = "bal")]
     block_access_list: Option<Bytes>,
@@ -102,7 +100,7 @@ impl Block {
     pub(crate) fn from_execution_block_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
-        execution_block_encoded: Arc<OnceLock<Bytes>>,
+        execution_block_encoded: EncodedBlock,
     ) -> Result<Self, BlockAccessListError>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
@@ -127,14 +125,14 @@ impl Block {
         Self::from_execution_block_unchecked_with_encoded_cache(
             execution_block,
             block_access_list,
-            Arc::new(OnceLock::new()),
+            EncodedBlock::default(),
         )
     }
 
     fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         block_access_list: Option<Bytes>,
-        execution_block_encoded: Arc<OnceLock<Bytes>>,
+        execution_block_encoded: EncodedBlock,
     ) -> Self
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
@@ -208,7 +206,7 @@ impl Block {
     }
 
     fn encoded_execution_block(&self) -> &Bytes {
-        self.execution_block_encoded.get_or_init(|| {
+        self.execution_block_encoded.0.get_or_init(|| {
             let mut encoded = Vec::new();
             self.execution_block.sealed_block().encode(&mut encoded);
             encoded.into()
@@ -314,9 +312,7 @@ impl Read for Block {
         #[cfg(not(feature = "bal"))]
         let block_access_list = None;
 
-        let execution_block_encoded = Arc::new(OnceLock::new());
-        let _ = execution_block_encoded.set(bytes.into());
-
+        let execution_block_encoded = EncodedBlock::new(bytes.into());
         Self::from_execution_block_with_encoded_cache(
             inner,
             block_access_list,
