@@ -293,7 +293,8 @@ where
     ///
     /// Returns `true` if the value was inserted (not already present).
     /// Returns `false` if the value was already in the set.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn insert(&mut self, value: T) -> Result<bool>
     where
         T: StorageKey + Hash + Eq + Clone,
@@ -319,7 +320,8 @@ where
     /// Removes a value from the set.
     ///
     /// Returns `true` if the value was removed. Otherwise, returns `false`.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn remove(&mut self, value: &T) -> Result<bool>
     where
         T: StorageKey + Hash + Eq + Clone,
