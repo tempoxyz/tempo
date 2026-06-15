@@ -465,6 +465,8 @@ impl TipFeeManager {
     }
 
     /// Calculate burn amounts for liquidity withdrawal
+    #[cold]
+    #[inline(never)]
     fn calculate_burn_amounts(
         &self,
         pool: &Pool,
