@@ -476,7 +476,7 @@ where
                 return Ok(None);
             };
 
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id() {
                 override_key_id
             } else {
                 keychain_sig
@@ -1158,7 +1158,7 @@ where
             }
 
             // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id() {
                 override_key_id
             } else {
                 keychain_sig
@@ -1695,7 +1695,7 @@ where
                 let mut same_tx_auth_use = false;
                 if let Some(keychain_sig) = aa_env.signature.as_keychain() {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
-                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id() {
                         override_key_id
                     } else {
                         // Get the access key address (recovered during Tx->TxEnv conversion and cached)
@@ -1840,8 +1840,7 @@ where
                             .into());
                         };
 
-                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id
-                        {
+                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id() {
                             override_key_id
                         } else {
                             keychain_sig
@@ -3872,7 +3871,7 @@ mod tests {
                     input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
                 }],
                 signature_hash: B256::ZERO,
-                override_key_id: Some(access_key),
+                override_key_id: Some(Box::new(access_key)),
                 ..Default::default()
             })),
             ..Default::default()
@@ -3988,7 +3987,7 @@ mod tests {
                     input: Bytes::from_static(&DENIED_SELECTOR),
                 }],
                 signature_hash: B256::ZERO,
-                override_key_id: Some(access_key),
+                override_key_id: Some(Box::new(access_key)),
                 ..Default::default()
             })),
             ..Default::default()
@@ -4085,7 +4084,7 @@ mod tests {
                 signature,
                 aa_calls: vec![],
                 signature_hash: B256::ZERO,
-                override_key_id: Some(access_key),
+                override_key_id: Some(Box::new(access_key)),
                 ..Default::default()
             })),
             ..Default::default()
@@ -4889,7 +4888,7 @@ mod tests {
                     }],
                     key_authorization: key_auth,
                     signature_hash: B256::ZERO,
-                    override_key_id: Some(access_key),
+                    override_key_id: Some(Box::new(access_key)),
                     ..Default::default()
                 })),
                 ..Default::default()

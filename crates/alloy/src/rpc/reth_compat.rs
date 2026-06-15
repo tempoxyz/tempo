@@ -188,7 +188,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     valid_before: valid_before.map(NonZeroU64::get),
                     valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
-                    override_key_id: key_id,
+                    override_key_id: key_id.map(Box::new),
                     expiring_nonce_idx: None,
                 }))
             } else {

@@ -57,13 +57,21 @@ pub struct TempoBatchCallEnv {
     /// Optional access key ID override for gas estimation.
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
-    pub override_key_id: Option<Address>,
+    pub override_key_id: Option<Box<Address>>,
 
     /// Perf optimization for expiring nonce transactions.
     ///
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+impl TempoBatchCallEnv {
+    #[inline]
+    pub fn override_key_id(&self) -> Option<Address> {
+        self.override_key_id.as_deref().copied()
+    }
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
