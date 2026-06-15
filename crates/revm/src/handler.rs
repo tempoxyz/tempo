@@ -6332,7 +6332,8 @@ mod tests {
                         alloy_primitives::Signature::test_signature(),
                     )),
                 ),
-            )],
+            )]
+            .into_boxed_slice(),
             ..Default::default()
         };
 
@@ -6412,7 +6413,8 @@ mod tests {
                         alloy_primitives::Signature::test_signature(),
                     )),
                 ),
-            )],
+            )]
+            .into_boxed_slice(),
             ..Default::default()
         };
 
@@ -6535,7 +6537,8 @@ mod tests {
                         alloy_primitives::Signature::test_signature(),
                     )),
                 ),
-            )],
+            )]
+            .into_boxed_slice(),
             ..Default::default()
         };
 

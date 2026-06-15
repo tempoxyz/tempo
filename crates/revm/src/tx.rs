@@ -37,7 +37,7 @@ pub struct TempoBatchCallEnv {
     ///
     /// Each authorization lazily recovers the authority on first access and caches the result.
     /// The signature is preserved for gas calculation.
-    pub tempo_authorization_list: Vec<RecoveredTempoAuthorization>,
+    pub tempo_authorization_list: Box<[RecoveredTempoAuthorization]>,
 
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
@@ -357,7 +357,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 tempo_authorization_list: tempo_authorization_list
                     .iter()
                     .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
