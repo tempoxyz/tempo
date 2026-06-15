@@ -171,6 +171,8 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
 impl TryFrom<alloy_primitives::Bytes> for IReceivePolicyGuard::ClaimReceiptV1 {
     type Error = ReceivePolicyGuardError;
 
+    #[cold]
+    #[inline(never)]
     fn try_from(receipt: alloy_primitives::Bytes) -> Result<Self, Self::Error> {
         Self::abi_decode(&receipt).map_err(|_| ReceivePolicyGuardError::invalid_receipt())
     }
