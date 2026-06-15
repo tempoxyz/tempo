@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -98,10 +101,12 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let start = Instant::now();
+        let mut prewarmed_transactions = 0;
+        let mut total_prewarm_time = Duration::ZERO;
 
-        let prewarmed_transactions = pool.in_place_scope(|scope| {
+        pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
-            let mut prewarmed_transactions = 0;
             scope.spawn(move |_| {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
@@ -124,8 +129,10 @@ impl BestTransactionsPrewarming {
                 let commands_tx = ctx.commands_tx.clone();
                 prewarmed_transactions += 1;
                 scope.spawn(move |_| {
+                    let start = Instant::now();
                     Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                    let elapsed = start.elapsed();
+                    let _ = commands_tx.send(BestTransactionsCommand::Advance(Some(elapsed)));
                 });
             };
 
@@ -138,7 +145,9 @@ impl BestTransactionsPrewarming {
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
-                    BestTransactionsCommand::Advance => {
+                    BestTransactionsCommand::Advance(elapsed) => {
+                        total_prewarm_time =
+                            total_prewarm_time.saturating_add(elapsed.unwrap_or_default());
                         advance(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
@@ -166,15 +175,14 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Stop { drain_rx } => {
                         ctx.prewarm.stop();
                         drop(drain_rx);
-                        return prewarmed_transactions
+                        return;
                     }
                 }
             }
-
-            prewarmed_transactions
         });
 
-        info!(target: "payload_builder", prewarmed_transactions, "Prewarming completed");
+        let elapsed = start.elapsed();
+        info!(target: "payload_builder", prewarmed_transactions, ?elapsed, ?total_prewarm_time, "Prewarming completed");
 
         pool.clear();
     }
@@ -245,7 +253,7 @@ impl Iterator for BestTransactionsPrewarming {
             return Some(tx);
         }
         self.commands_tx
-            .send(BestTransactionsCommand::Advance)
+            .send(BestTransactionsCommand::Advance(None))
             .ok()?;
         self.transactions_rx.recv().ok().flatten()
     }
@@ -610,7 +618,7 @@ fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
 #[derive(Debug)]
 enum BestTransactionsCommand {
-    Advance,
+    Advance(Option<Duration>),
     Invalid {
         invalid: InvalidTransaction,
         old_rx: Receiver<Option<BestTransaction>>,
