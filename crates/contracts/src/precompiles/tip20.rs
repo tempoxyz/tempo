@@ -180,6 +180,8 @@ crate::sol! {
 
 impl ITIP20::ITIP20Calls {
     /// Returns the recipient address for the TIP-20 call, if one exists.
+    #[cold]
+    #[inline(never)]
     pub fn to(&self) -> Option<Address> {
         Some(match self {
             Self::transfer(c) => c.to,
@@ -228,6 +230,8 @@ impl ITIP20::ITIP20Calls {
     ///
     /// For transfers: `[to]` or `[from, to]`. For mints: `[to]`.
     /// For burns, approves, and view calls: empty.
+    #[cold]
+    #[inline(never)]
     pub fn balance_addresses(&self) -> [Option<Address>; 2] {
         match self {
             Self::transfer(c) => [Some(c.to), None],
@@ -241,6 +245,8 @@ impl ITIP20::ITIP20Calls {
     }
 
     /// Returns addresses whose rewards slots are accessed by this call.
+    #[cold]
+    #[inline(never)]
     pub fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
         match self {
             Self::transfer(c) => [Some(sender), Some(c.to)],
