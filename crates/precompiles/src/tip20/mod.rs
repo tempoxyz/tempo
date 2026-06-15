@@ -32,8 +32,8 @@ use crate::{
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
+    primitives::{Address, B256, Bytes, LogData, U256, keccak256, uint},
+    sol_types::{SolEvent, SolValue},
 };
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -140,6 +140,23 @@ pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
 ];
 
 impl TIP20Token {
+    #[inline]
+    fn transfer_log_data(from: Address, to: Address, amount: U256) -> LogData {
+        LogData::new_unchecked(
+            vec![
+                ITIP20::Transfer::SIGNATURE_HASH,
+                from.into_word(),
+                to.into_word(),
+            ],
+            Bytes::copy_from_slice(&amount.to_be_bytes::<32>()),
+        )
+    }
+
+    #[inline]
+    fn emit_transfer_event(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+        self.emit_event(Self::transfer_log_data(from, to, amount))
+    }
+
     /// Returns the token name.
     pub fn name(&self) -> Result<String> {
         self.name.read()
@@ -789,8 +806,8 @@ impl TIP20Token {
         };
 
         self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        if let Some(virtual_addr) = to.virtual_addr {
+            self.emit_transfer_event(virtual_addr, to.target, call.amount)?;
         }
 
         Ok(true)
@@ -822,8 +839,8 @@ impl TIP20Token {
         };
 
         self._transfer(call.from, &to, call.amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        if let Some(virtual_addr) = to.virtual_addr {
+            self.emit_transfer_event(virtual_addr, to.target, call.amount)?;
         }
 
         Ok(true)
@@ -890,8 +907,8 @@ impl TIP20Token {
         };
 
         self._transfer(from, &to, amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
+        if let Some(virtual_addr) = to.virtual_addr {
+            self.emit_transfer_event(virtual_addr, to.target, amount)?;
         }
 
         Ok(true)
@@ -1173,7 +1190,7 @@ impl TIP20Token {
             self.set_balance(to.target, new_to_balance)?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))
+        self.emit_transfer_event(from, to.virtual_addr.unwrap_or(to.target), amount)
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1252,8 +1269,8 @@ impl TIP20Token {
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
-        if let Some(hop) = destination.build_virtual_transfer_event(amount) {
-            self.emit_event(hop)?;
+        if let Some(virtual_addr) = destination.virtual_addr {
+            self.emit_transfer_event(virtual_addr, destination.target, amount)?;
         }
         Ok(())
     }
