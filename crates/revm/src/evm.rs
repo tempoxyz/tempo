@@ -2480,6 +2480,11 @@ mod tests {
             caller,
         ))?;
         assert!(result.is_success(), "preserve churn tx should succeed");
+        assert_eq!(
+            result.tx_gas_used(),
+            984_138,
+            "three Preserve churn cycles pay the full 230k creditable portion per recreation"
+        );
 
         assert_eq!(
             storage_credit_balance(&evm, contract),
