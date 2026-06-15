@@ -10,7 +10,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, Entry},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -220,7 +220,7 @@ where
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
-        let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
+        let mut fee_balance_cache: AddressMap<AddressMap<U256>> = AddressMap::default();
 
         for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
@@ -342,7 +342,8 @@ where
                     };
 
                     if accounts.contains(&fee_payer) {
-                        let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
+                        let token_cache = fee_balance_cache.entry(fee_token).or_default();
+                        let balance = match token_cache.entry(fee_payer) {
                             Entry::Occupied(entry) => *entry.get(),
                             Entry::Vacant(entry) => {
                                 let Ok(balance) =
