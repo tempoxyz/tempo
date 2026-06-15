@@ -31,6 +31,17 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
         .ok_or(TempoPrecompileError::under_overflow())
 }
 
+#[inline]
+fn compute_amount_out_bounded_u128(amount_in: U256) -> Result<Option<u128>> {
+    if let Ok(amount_in) = u128::try_from(amount_in)
+        && let Some(product) = amount_in.checked_mul(9_970)
+    {
+        return Ok(Some(product / 10_000));
+    }
+
+    Ok(compute_amount_out(amount_in)?.try_into().ok())
+}
+
 /// AMM pool reserves for a user-token / validator-token pair.
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
@@ -518,8 +529,10 @@ impl TipFeeManager {
             (user_token, validator_token),
             direct.reserve_validator_token,
         ));
-        let amount_out = compute_amount_out(max_amount)?;
-        if amount_out <= U256::from(direct.reserve_validator_token) {
+        let amount_out = compute_amount_out_bounded_u128(max_amount)?;
+        if let Some(amount_out) = amount_out
+            && amount_out <= direct.reserve_validator_token
+        {
             return Ok((Some(FeeRoute::Direct), None, data));
         }
 
@@ -537,15 +550,20 @@ impl TipFeeManager {
         // First leg: user_token -> intermediate.
         let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
         data.push(((user_token, mid_token), leg1.reserve_validator_token));
-        if amount_out > U256::from(leg1.reserve_validator_token) {
+        let Some(amount_out) = amount_out else {
+            return Ok((None, Some(mid_token), data));
+        };
+        if amount_out > leg1.reserve_validator_token {
             return Ok((None, Some(mid_token), data));
         }
 
         // Second leg: intermediate -> validator_token.
-        let amount_out2 = compute_amount_out(amount_out)?;
+        let Some(amount_out2) = compute_amount_out_bounded_u128(U256::from(amount_out))? else {
+            return Ok((None, Some(mid_token), data));
+        };
         let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
         data.push(((mid_token, validator_token), leg2.reserve_validator_token));
-        if amount_out2 > U256::from(leg2.reserve_validator_token) {
+        if amount_out2 > leg2.reserve_validator_token {
             return Ok((None, Some(mid_token), data));
         }
 
