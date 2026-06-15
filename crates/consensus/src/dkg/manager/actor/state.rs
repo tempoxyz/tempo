@@ -12,7 +12,7 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
+        dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Logs, Output, PlayerAck, SignedDealerLog},
         primitives::{
             group::Share,
             sharing::{Mode, ModeVersion},
@@ -252,6 +252,70 @@ where
         let cache = self.cache.entry(epoch).or_default();
         cache.logs.insert(dealer, log);
         Ok(())
+    }
+
+    /// Records a dealer log in the epoch's incremental verification set.
+    ///
+    /// On the first log for an epoch, replays all cached logs into a new [`Logs`]
+    /// instance. Subsequent calls only record the newly arrived log.
+    pub(super) fn ingest_dealer_log_for_verification(
+        &mut self,
+        epoch: Epoch,
+        info: &Info<MinSig, PublicKey>,
+        dealer: PublicKey,
+        log: dkg::DealerLog<MinSig, PublicKey>,
+    ) {
+        let events = self.cache.entry(epoch).or_default();
+        if let Some(verification_logs) = events.verification_logs.as_mut() {
+            verification_logs.record(dealer, log);
+            return;
+        }
+
+        let mut verification_logs = Logs::new(info.clone());
+        for (cached_dealer, cached_log) in &events.logs {
+            verification_logs.record(cached_dealer.clone(), cached_log.clone());
+        }
+        events.verification_logs = Some(verification_logs);
+    }
+
+    /// Merges the given dealer logs into the epoch's incremental verification set.
+    pub(super) fn merge_logs_for_verification(
+        &mut self,
+        epoch: Epoch,
+        info: &Info<MinSig, PublicKey>,
+        logs: &BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
+    ) {
+        let events = self.cache.entry(epoch).or_default();
+        if let Some(verification_logs) = events.verification_logs.as_mut() {
+            for (dealer, log) in logs {
+                verification_logs.record(dealer.clone(), log.clone());
+            }
+            return;
+        }
+
+        let mut verification_logs = Logs::new(info.clone());
+        for (dealer, log) in logs {
+            verification_logs.record(dealer.clone(), log.clone());
+        }
+        events.verification_logs = Some(verification_logs);
+    }
+
+    pub(super) fn verification_logs_mut(
+        &mut self,
+        epoch: Epoch,
+    ) -> Option<&mut Logs<MinSig, PublicKey, N3f1>> {
+        self.cache
+            .get_mut(&epoch)
+            .and_then(|events| events.verification_logs.as_mut())
+    }
+
+    pub(super) fn take_verification_logs(
+        &mut self,
+        epoch: Epoch,
+    ) -> Option<Logs<MinSig, PublicKey, N3f1>> {
+        self.cache
+            .get_mut(&epoch)
+            .and_then(|events| events.verification_logs.take())
     }
 
     /// Appends the height, digest, and parent of the finalized block to the journal.
@@ -737,15 +801,30 @@ pub(super) struct FinalizedBlockInfo {
 }
 
 /// A cache of all events that transpired during a given epoch.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Events {
     acks: BTreeMap<PublicKey, PlayerAck<PublicKey>>,
     dealings: BTreeMap<PublicKey, (DealerPubMsg<MinSig>, DealerPrivMsg)>,
     logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
+    /// Incrementally verified dealer logs for the epoch (see issue #3556).
+    verification_logs: Option<Logs<MinSig, PublicKey, N3f1>>,
     finalized: BTreeMap<Height, FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
+}
+
+impl std::fmt::Debug for Events {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Events")
+            .field("acks", &self.acks)
+            .field("dealings", &self.dealings)
+            .field("logs", &self.logs)
+            .field("finalized", &self.finalized)
+            .field("notarized_blocks", &self.notarized_blocks)
+            .field("dkg_outcomes", &self.dkg_outcomes)
+            .finish()
+    }
 }
 
 impl Events {

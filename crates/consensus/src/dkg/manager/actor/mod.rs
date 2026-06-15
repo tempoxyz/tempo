@@ -565,6 +565,38 @@ where
         should_skip_round
     }
 
+    fn preverify_dealer_logs<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        epoch: Epoch,
+    ) where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
+        if let Some(logs) = storage.verification_logs_mut(epoch) {
+            logs.pre_verify::<ed25519::Batch>(&mut self.context, &Sequential);
+        }
+    }
+
+    fn take_or_build_verification_logs<TStorageContext>(
+        &mut self,
+        storage: &mut state::Storage<TStorageContext>,
+        round: &state::Round,
+    ) -> Logs<MinSig, PublicKey, N3f1>
+    where
+        TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
+    {
+        self.preverify_dealer_logs(storage, round.epoch());
+        if let Some(logs) = storage.take_verification_logs(round.epoch()) {
+            return logs;
+        }
+
+        let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+        for (k, v) in storage.logs_for_epoch(round.epoch()) {
+            logs.record(k.clone(), v.clone());
+        }
+        logs
+    }
+
     /// Handles a finalized block.
     ///
     /// Returns a new [`State`] after finalizing the boundary block of the epoch.
@@ -683,9 +715,16 @@ where
                             Ok((dealer, log)) => (dealer, log),
                         };
                     storage
-                        .append_dealer_log(round.epoch(), dealer.clone(), log)
+                        .append_dealer_log(round.epoch(), dealer.clone(), log.clone())
                         .await
                         .wrap_err("failed to append log to journal")?;
+                    storage.ingest_dealer_log_for_verification(
+                        round.epoch(),
+                        round.info(),
+                        dealer.clone(),
+                        log,
+                    );
+                    self.preverify_dealer_logs(storage, round.epoch());
                     if self.config.me.public_key() == dealer
                         && let Some(dealer_state) = dealer_state
                     {
@@ -721,10 +760,7 @@ where
             debug!("using cached DKG outcome");
             (outcome.clone(), share.clone())
         } else {
-            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            for (k, v) in storage.logs_for_epoch(round.epoch()) {
-                logs.record(k.clone(), v.clone());
-            }
+            let logs = self.take_or_build_verification_logs(storage, round);
 
             let player_outcome = if let Some(player) = player_state.take() {
                 info!("we were a player in the ceremony; finalizing share");
@@ -1116,10 +1152,17 @@ where
                 }
             }
 
-            let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
-            for (k, v) in raw_logs {
-                logs.record(k, v);
-            }
+            storage.merge_logs_for_verification(round.epoch(), round.info(), &raw_logs);
+            self.preverify_dealer_logs(storage, round.epoch());
+            let logs = storage
+                .take_verification_logs(round.epoch())
+                .unwrap_or_else(|| {
+                    let mut logs = Logs::<MinSig, PublicKey, N3f1>::new(round.info().clone());
+                    for (k, v) in raw_logs {
+                        logs.record(k, v);
+                    }
+                    logs
+                });
 
             // Create a player-state ad hoc: the DKG player object is not
             // cloneable, and finalizing consumes it.
