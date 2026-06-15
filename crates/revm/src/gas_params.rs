@@ -2,11 +2,13 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
     primitives::OnceLock,
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{
+    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST},
+    hardfork::TempoHardfork,
+};
 
 // TIP-1000 total gas costs (used by T1)
-const SSTORE_SET_COST: u64 = 250_000;
-const CREATE_COST: u64 = 500_000;
+const CONTRACT_CREATE_COST: u64 = 500_000;
 const NEW_ACCOUNT_COST: u64 = 250_000;
 const CODE_DEPOSIT_COST_T1: u64 = 1_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
@@ -16,7 +18,6 @@ const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 // remaining 230,000-gas creditable portion of the TIP-1000 creation cost is
 // governed by the storage-credit hook (see `sstore_storage_credits`), so it is
 // no longer charged through the SSTORE gas function.
-const GAS_STORAGE_SET: u64 = 20_000;
 
 // TIP-1016 regular gas (computational overhead) — matches pre-TIP-1000 EVM costs.
 // These values are "at least the pre-TIP-1000 (standard EVM) cost" per spec invariant 15.
@@ -29,9 +30,9 @@ const T4_CREATE_REGULAR: u64 = 32_000;
 const T4_CODE_DEPOSIT_REGULAR: u64 = 200;
 
 // TIP-1016 state gas (permanent storage burden)
-const T4_SSTORE_SET_STATE: u64 = SSTORE_SET_COST - T4_SSTORE_SET_REGULAR; // 230,000
+const T4_SSTORE_SET_STATE: u64 = SSTORE_CREATE_COST - T4_SSTORE_SET_REGULAR; // 230,000
 const T4_NEW_ACCOUNT_STATE: u64 = NEW_ACCOUNT_COST - T4_NEW_ACCOUNT_REGULAR; // 225,000
-const T4_CREATE_STATE: u64 = CREATE_COST - T4_CREATE_REGULAR; // 468,000
+const T4_CREATE_STATE: u64 = CONTRACT_CREATE_COST - T4_CREATE_REGULAR; // 468,000
 const T4_CODE_DEPOSIT_STATE: u64 = 2_300;
 
 // TIP-1016 SSTORE set refund for 0→X→0 restoration (combined state + regular).
@@ -73,8 +74,8 @@ pub fn tempo_gas_params_with_amsterdam(
 /// cost is lowered to the 20k residual (`GAS_STORAGE_SET`) per TIP-1060.
 ///
 /// revm charges this residual through `sstore_dynamic_gas` under the same
-/// `original == present == 0` condition as the base `SSTORE_SET` cost, so a
-/// dirty recreation (`X -> 0 -> Y`) is charged neither the residual nor the base
+/// `original == present == 0` condition as the base `GAS_STORAGE_SET` cost, so a
+/// dirty recreation (`x→0→y`) is charged neither the residual nor the base
 /// set cost. The 230k creditable portion is charged (or covered by a credit) by
 /// the storage-credit hook in `sstore_storage_credits`.
 fn t7_gas_params() -> GasParams {
@@ -82,15 +83,15 @@ fn t7_gas_params() -> GasParams {
     gas_params.override_gas([
         // SSTORE (zero -> non-zero): only the 20k residual; the 230k creditable
         // portion is governed by the TIP-1060 storage-credit hook.
-        (GasId::sstore_set_without_load_cost(), GAS_STORAGE_SET),
+        (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
         // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now
         // handled by storage-credit minting, so the legacy clearing refund is
         // removed. Restore-to-original refunds (sstore_set_refund /
         // sstore_reset_refund) are preserved at their defaults.
         (GasId::sstore_clearing_slot_refund(), 0),
         // All other TIP-1000 creation costs are unchanged by TIP-1060.
-        (GasId::tx_create_cost(), CREATE_COST),
-        (GasId::create(), CREATE_COST),
+        (GasId::tx_create_cost(), CONTRACT_CREATE_COST),
+        (GasId::create(), CONTRACT_CREATE_COST),
         (GasId::new_account_cost(), NEW_ACCOUNT_COST),
         (GasId::new_account_cost_for_selfdestruct(), NEW_ACCOUNT_COST),
         (GasId::code_deposit_cost(), CODE_DEPOSIT_COST_T1),
@@ -150,9 +151,9 @@ fn t1_gas_params() -> GasParams {
     let mut gas_params = GasParams::new_spec(TempoHardfork::T1.into());
     // TIP-1000: All storage creation costs in regular gas (no state gas split).
     gas_params.override_gas([
-        (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
-        (GasId::tx_create_cost(), CREATE_COST),
-        (GasId::create(), CREATE_COST),
+        (GasId::sstore_set_without_load_cost(), SSTORE_CREATE_COST),
+        (GasId::tx_create_cost(), CONTRACT_CREATE_COST),
+        (GasId::create(), CONTRACT_CREATE_COST),
         (GasId::new_account_cost(), NEW_ACCOUNT_COST),
         (GasId::new_account_cost_for_selfdestruct(), NEW_ACCOUNT_COST),
         (GasId::code_deposit_cost(), CODE_DEPOSIT_COST_T1),
