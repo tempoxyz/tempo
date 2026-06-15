@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -174,7 +174,7 @@ impl BestTransactionsPrewarming {
             prewarmed_transactions
         });
 
-        debug!(target: "payload_builder", prewarmed_transactions, "Prewarming completed");
+        info!(target: "payload_builder", prewarmed_transactions, "Prewarming completed");
 
         pool.clear();
     }
