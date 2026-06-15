@@ -42,7 +42,7 @@ use revm::{
 };
 use serde::Deserialize;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase, SigningShare};
+use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{

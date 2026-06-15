@@ -1,12 +1,14 @@
 # Changelog
 
+## `tempo-contracts@1.8.1`
+
+
 ## `tempo-contracts@1.8.0`
 
 ### Minor Changes
 
 - Added T6 admin access key support for account keychain authorization and SDK transaction builders. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
 - Reject channel reserve payment-lane calls with malformed Tempo signature encodings. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
-- Added TIP-1059 discounted gas pricing for pure payment transfers that fit within the SSTORE_SET gas cap. Introduced `is_discounted_payment_call` helper, `TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE` constant, and applied the discounted effective gas price in both EVM execution and RPC receipt conversion when T6 is active. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
 - Added the T6 `SignatureVerifier.verifyKeychain` and `SignatureVerifier.verifyKeychainAdmin` selectors for checking account-bound active and admin keychain signatures. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
 
 ## `tempo-contracts@1.7.3`
@@ -39,4 +41,3 @@
 - Improved gas cap revert detection in BlockGasLimits invariant tests. (by @0xrusowsky, [#3495](https://github.com/tempoxyz/tempo/pull/3495))
 - Invariants: fix active order check (by @0xrusowsky, [#3495](https://github.com/tempoxyz/tempo/pull/3495))
 - Added TIP-1022 virtual address support: address registry precompile for registering master addresses with deterministic master IDs, TIP-20 recipient resolution that forwards transfers/mints to registered masters, and TIP-403 policy rejection of virtual addresses. (by @0xrusowsky, [#3495](https://github.com/tempoxyz/tempo/pull/3495))
-
