@@ -1,6 +1,6 @@
 //! Metrics parsing and assertion helpers for e2e tests.
 
-use std::{collections::HashSet, fmt::Display, str::FromStr, time::Duration};
+use std::{collections::HashSet, fmt::Debug, str::FromStr, time::Duration};
 
 use commonware_runtime::{Clock as _, deterministic::Context};
 
@@ -12,6 +12,7 @@ const LATEST_PARTICIPANTS: &str = "epoch_manager_latest_participants";
 const PROCESSED_HEIGHT: &str = "marshal_processed_height";
 const DKG_FAILURES: &str = "dkg_manager_ceremony_failures_total";
 const ROUNDS_SKIPPED: &str = "rounds_skipped_total";
+
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,14 +45,9 @@ impl Sample {
     fn value<T>(&self) -> T
     where
         T: FromStr,
-        T::Err: Display,
+        T::Err: Debug,
     {
-        self.value.parse().unwrap_or_else(|err| {
-            panic!(
-                "metric sample `{}` has invalid value `{}`: {err}",
-                self.name, self.value
-            )
-        })
+        self.value.parse().expect("metrics parses into type")
     }
 }
 
@@ -96,7 +92,7 @@ impl Metrics {
     pub fn value<T>(&self, metric_suffix: &str) -> Option<T>
     where
         T: FromStr,
-        T::Err: Display,
+        T::Err: Debug,
     {
         self.samples
             .iter()
@@ -107,7 +103,7 @@ impl Metrics {
     pub fn values<'a, T>(&'a self, metric_suffix: &'a str) -> impl Iterator<Item = T> + 'a
     where
         T: FromStr + 'a,
-        T::Err: Display,
+        T::Err: Debug,
     {
         self.samples
             .iter()
