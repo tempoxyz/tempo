@@ -280,6 +280,10 @@ impl TIP20Token {
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
+        if from_delegate == to_delegate {
+            return Ok(());
+        }
+
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
