@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -139,6 +139,12 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn legacy_expiring_nonce_replay_hash(tempo_tx_env: &TempoBatchCallEnv) -> B256 {
+    tempo_tx_env.tx_hash
 }
 
 #[derive(Debug, Clone)]
@@ -1008,7 +1014,7 @@ where
                 tx.unique_tx_identifier()
                     .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
             } else {
-                tempo_tx_env.tx_hash
+                legacy_expiring_nonce_replay_hash(tempo_tx_env)
             };
             let valid_before = tempo_tx_env
                 .valid_before
