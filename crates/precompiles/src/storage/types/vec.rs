@@ -410,6 +410,8 @@ pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
 ///
 /// Unpacked elements delegate to `T::delete` per element so nested dynamic storables are
 /// recursively cleared.
+#[cold]
+#[inline(never)]
 fn clear_elements<T: Storable, S: StorageOps>(
     storage: &mut S,
     data_start: U256,
