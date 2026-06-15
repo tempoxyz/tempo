@@ -1,6 +1,7 @@
 use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_primitives::Address;
+use alloy_evm::FromTxWithEncoded;
+use alloy_primitives::{Address, Bytes};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
@@ -27,6 +28,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             block,
             block_access_list: _,
             validator_set,
+            transaction_encodings: _,
         } = payload;
         let mut context = self.context_for_block(block)?;
 
@@ -41,19 +43,42 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let transaction_encodings = payload
+            .transaction_encodings
+            .as_ref()
+            .filter(|encodings| encodings.len() == payload.block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+            let encoded = transaction_encodings.map(|encodings| encodings[idx].clone());
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: Some(expiring_nonce_idx),
+                    encoded,
+                });
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push(TransactionInBlock {
+                    block: block.clone(),
+                    index: idx,
+                    expiring_nonce_idx: None,
+                    encoded,
+                });
             }
         }
 
         Ok((transactions, RecoveredInBlock::new))
     }
+}
+
+#[derive(Clone)]
+struct TransactionInBlock {
+    block: Arc<SealedBlock<Block>>,
+    index: usize,
+    expiring_nonce_idx: Option<usize>,
+    encoded: Option<Bytes>,
 }
 
 /// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
@@ -65,18 +90,24 @@ struct RecoveredInBlock {
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
+    encoded: Option<Bytes>,
 }
 
 impl RecoveredInBlock {
-    fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
-    ) -> Result<Self, RecoveryError> {
+    fn new(tx: TransactionInBlock) -> Result<Self, RecoveryError> {
+        let TransactionInBlock {
+            block,
+            index,
+            expiring_nonce_idx,
+            encoded,
+        } = tx;
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
             block,
             index,
             sender,
             expiring_nonce_idx,
+            encoded,
         })
     }
 }
@@ -93,7 +124,11 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
+        let mut tx_env = if let Some(encoded) = self.encoded.clone() {
+            TempoTxEnv::from_encoded_tx(self.tx(), *self.signer(), encoded)
+        } else {
+            TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
+        };
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
         }
@@ -114,6 +149,7 @@ impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
 mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -197,6 +233,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: None,
+            transaction_encodings: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -217,6 +254,31 @@ mod tests {
     }
 
     #[test]
+    fn test_tx_iterator_uses_payload_encoding() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let evm_config = TempoEvmConfig::new(chainspec);
+
+        let tx = create_legacy_tx();
+        let mut encoded = Vec::new();
+        tx.encode_2718(&mut encoded);
+        let block = create_test_block(vec![tx]);
+
+        let payload = TempoExecutionData {
+            block,
+            block_access_list: None,
+            validator_set: None,
+            transaction_encodings: Some(vec![encoded.into()]),
+        };
+
+        let tuple = evm_config.tx_iterator_for_payload(&payload).unwrap();
+        let (iter, recover_fn) = tuple.into_parts();
+        let item = iter.into_iter().next().expect("one transaction");
+        let recovered = recover_fn.convert(item);
+
+        assert!(recovered.is_ok());
+    }
+
+    #[test]
     fn test_context_for_payload() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -229,6 +291,7 @@ mod tests {
             block,
             block_access_list: None,
             validator_set: validator_set.clone(),
+            transaction_encodings: None,
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -255,6 +318,7 @@ mod tests {
             block: block.clone(),
             block_access_list: None,
             validator_set: None,
+            transaction_encodings: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);

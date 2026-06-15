@@ -964,9 +964,14 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        let (
+            transactions_root,
+            receipts_root,
+            receipts_bloom,
+            transactions,
+            senders,
+            transaction_encodings,
+        ) = roots_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1145,6 +1150,7 @@ where
             eth_payload,
             block_access_list,
             Some(executed_block),
+            Some(transaction_encodings),
             validation_work_duration,
             validation_latency_duration,
         );
@@ -1165,7 +1171,7 @@ where
         &self,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
+        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>, Vec<Bytes>)>,
     ) {
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
@@ -1175,6 +1181,7 @@ where
             .spawn_blocking_named("builder-roots-task", || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
+                let mut transaction_encodings = Vec::new();
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
@@ -1187,6 +1194,7 @@ where
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
+                    transaction_encodings.push(Bytes::copy_from_slice(&buf));
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1205,6 +1213,7 @@ where
                     receipts_bloom,
                     transactions,
                     senders,
+                    transaction_encodings,
                 ));
             });
 
@@ -1453,7 +1462,7 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(eth, None, None, None, Duration::ZERO, Duration::ZERO)
     }
 
     #[test]

@@ -28,6 +28,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
             block,
             block_access_list: _,
             validator_set: _,
+            transaction_encodings: _,
         } = payload;
         Ok(Arc::unwrap_or_clone(block))
     }

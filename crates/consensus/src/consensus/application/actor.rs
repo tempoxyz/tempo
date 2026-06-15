@@ -1031,6 +1031,7 @@ async fn verify_block<TContext: Pacer>(
         block: Arc::new(block),
         block_access_list,
         validator_set,
+        transaction_encodings: None,
     };
     let validation_start = Instant::now();
     let payload_status = engine

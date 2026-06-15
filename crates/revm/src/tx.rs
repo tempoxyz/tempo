@@ -1,7 +1,7 @@
 use crate::TempoInvalidTransaction;
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
 use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
@@ -274,8 +274,12 @@ impl IntoTxEnv<Self> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<AASigned> for TempoTxEnv {
-    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+impl TempoTxEnv {
+    fn from_recovered_aa_tx_with_hash(
+        aa_signed: &AASigned,
+        caller: Address,
+        tx_hash: Option<B256>,
+    ) -> Self {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
 
@@ -362,13 +366,19 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
-                tx_hash: *aa_signed.hash(),
+                tx_hash: tx_hash.unwrap_or_else(|| *aa_signed.hash()),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
                 // can only be derived when given an entire block
                 expiring_nonce_idx: None,
             })),
         }
+    }
+}
+
+impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
+        Self::from_recovered_aa_tx_with_hash(aa_signed, caller, None)
     }
 }
 
@@ -404,21 +414,25 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
-    fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &AASigned, sender: Address, encoded: Bytes) -> Self {
+        Self::from_recovered_aa_tx_with_hash(tx, sender, Some(keccak256(encoded.as_ref())))
     }
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
+    fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, encoded: Bytes) -> Self {
+        match tx {
+            TempoTxEnvelope::AA(tx) => Self::from_encoded_tx(tx, sender, encoded),
+            _ => Self::from_recovered_tx(tx, sender),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
-    use alloy_evm::FromRecoveredTx;
+    use alloy_eips::Encodable2718;
+    use alloy_evm::{FromRecoveredTx, FromTxWithEncoded};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
     use core::num::NonZeroU64;
     use proptest::prelude::*;
@@ -556,6 +570,35 @@ mod tests {
             Some(regular_signed.expiring_nonce_hash(caller)),
             "non-expiring AA channel opens must use encode_for_signing||sender"
         );
+    }
+
+    #[test]
+    fn test_from_encoded_aa_tx_uses_encoded_hash() {
+        let caller = Address::repeat_byte(0xAA);
+        let tx = tempo_primitives::transaction::TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            Signature::test_signature(),
+        ));
+        let signed = AASigned::new_unhashed(tx, sig);
+        let mut encoded = Vec::new();
+        signed.encode_2718(&mut encoded);
+        let expected_hash = keccak256(&encoded);
+
+        let tx_env = TempoTxEnv::from_encoded_tx(&signed, caller, encoded.into());
+        let tempo_tx_env = tx_env
+            .tempo_tx_env
+            .expect("AA transaction should populate tempo tx env");
+
+        assert_eq!(tempo_tx_env.tx_hash, expected_hash);
     }
 
     #[test]
