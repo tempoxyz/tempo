@@ -889,6 +889,13 @@ where
 
         let builder_finish_start = Instant::now();
 
+        // No more transaction execution remains, so close state-observation hooks
+        // before executor finish and bundle merging give finalization work a head start.
+        executor.evm_mut().db_mut().set_state_hook(None);
+
+        // Drop the BAL task sender to trigger finalization.
+        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
@@ -897,13 +904,6 @@ where
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
-        db.set_state_hook(None);
-
-        // Drop the BAL task sender to trigger finalization.
-        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
