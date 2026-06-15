@@ -689,7 +689,7 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let execution_result = executor.execute_transaction_with_result_closure(
+            let execution_result = executor.execute_pool_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
                     cumulative_gas_used += result.block_gas_used();

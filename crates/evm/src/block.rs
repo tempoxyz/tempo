@@ -1,5 +1,5 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::Transaction;
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
@@ -180,6 +180,68 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
+    }
+
+    /// Executes a regular pool transaction and commits it to the block.
+    ///
+    /// Payload building has already selected these transactions from the proposer pool, so they
+    /// cannot be system transactions and cannot carry subblock proposer metadata. Keeping this path
+    /// separate avoids the generic system/subblock prechecks in the hot pool fill loop while leaving
+    /// those checks on the generic executor path.
+    pub fn execute_pool_transaction_with_result_closure(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        f: impl FnOnce(&TempoTxResult),
+    ) -> Result<GasOutput, BlockExecutionError> {
+        let output = self.execute_pool_transaction_without_commit(tx)?;
+        f(&output);
+        Ok(<Self as BlockExecutor>::commit_transaction(self, output))
+    }
+
+    fn execute_pool_transaction_without_commit(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<TempoTxResult, BlockExecutionError> {
+        let (mut tx_env, recovered) = tx.into_parts();
+        let tx = recovered.tx();
+        debug_assert!(
+            !tx.is_system_tx(),
+            "pool transaction cannot be a system transaction"
+        );
+        debug_assert!(
+            tx.subblock_proposer().is_none(),
+            "pool transaction cannot be a subblock transaction"
+        );
+
+        // Remove any prewarming-specific context that was added to the tx env.
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = None;
+        }
+
+        let inner = self
+            .inner
+            .execute_transaction_without_commit((tx_env, &recovered))?;
+
+        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
+        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
+            inner.result.result.gas().block_regular_gas_used()
+        } else {
+            inner.result.result.tx_gas_used()
+        };
+
+        let is_payment = self.is_payment(tx);
+        let next_section = self.validate_regular_tx(block_gas_used, is_payment)?;
+        let validator_fee = self.evm().validator_fee();
+
+        Ok(TempoTxResult {
+            inner,
+            next_section,
+            is_payment,
+            tx: None,
+            block_gas_used,
+            validator_fee,
+        })
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
@@ -426,31 +488,39 @@ where
                 }
             }
         } else {
-            match self.section {
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
-                    {
-                        // Assume that this transaction wants to make use of gas incentive section
-                        //
-                        // This would only be possible if no non-empty subblocks were included.
-                        Ok(BlockSection::GasIncentive)
-                    } else {
-                        Ok(BlockSection::NonShared)
-                    }
-                }
-                BlockSection::SubBlock { .. } => {
-                    // If we were just processing a subblock, assume that this transaction wants to make
-                    // use of gas incentive section, thus concluding subblocks execution.
+            self.validate_regular_tx(gas_used, self.is_payment(tx))
+        }
+    }
+
+    fn validate_regular_tx(
+        &self,
+        gas_used: u64,
+        is_payment: bool,
+    ) -> Result<BlockSection, BlockValidationError> {
+        match self.section {
+            BlockSection::StartOfBlock | BlockSection::NonShared => {
+                if gas_used > self.non_shared_gas_left
+                    || (!is_payment && gas_used > self.non_payment_gas_left)
+                {
+                    // Assume that this transaction wants to make use of gas incentive section
+                    //
+                    // This would only be possible if no non-empty subblocks were included.
                     Ok(BlockSection::GasIncentive)
+                } else {
+                    Ok(BlockSection::NonShared)
                 }
-                BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
-                BlockSection::System { .. } => {
-                    trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
-                    Err(BlockValidationError::msg(
-                        "regular transaction can't follow system transaction",
-                    ))
-                }
+            }
+            BlockSection::SubBlock { .. } => {
+                // If we were just processing a subblock, assume that this transaction wants to make
+                // use of gas incentive section, thus concluding subblocks execution.
+                Ok(BlockSection::GasIncentive)
+            }
+            BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
+            BlockSection::System { .. } => {
+                trace!(target: "tempo::block", "Rejecting: regular transaction after system transaction");
+                Err(BlockValidationError::msg(
+                    "regular transaction can't follow system transaction",
+                ))
             }
         }
     }
