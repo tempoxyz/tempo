@@ -910,9 +910,10 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
+        let resolved_fee_token = journal
+            .resolve_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
+        let fee_token = resolved_fee_token.token;
 
         evm.fee_token = Some(fee_token);
 
@@ -924,7 +925,9 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        if (!tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction())
+            && !resolved_fee_token.usd_currency_checked
+        {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 

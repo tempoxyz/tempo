@@ -90,6 +90,13 @@ impl TempoTx for Recovered<TempoTxEnvelope> {
     }
 }
 
+/// Fee-token resolution result, including whether USD currency was already checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedFeeToken {
+    pub token: Address,
+    pub usd_currency_checked: bool,
+}
+
 /// Helper trait to perform Tempo-specific operations on top of different state providers.
 ///
 /// We provide blanket implementations for revm database, journal and reth state provider.
@@ -123,9 +130,26 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        self.resolve_fee_token(tx, fee_payer, spec)
+            .map(|resolved| resolved.token)
+    }
+
+    /// Resolves user-level or transaction-level fee token preference.
+    fn resolve_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        fee_payer: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<ResolvedFeeToken>
+    where
+        Self: Sized,
+    {
         // If there is a fee token explicitly set on the tx type, use that.
         if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
+            return Ok(ResolvedFeeToken {
+                token: fee_token,
+                usd_currency_checked: false,
+            });
         }
 
         // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
@@ -137,7 +161,10 @@ pub trait TempoStateAccess<M = ()> {
             && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
         {
-            return Ok(call.token);
+            return Ok(ResolvedFeeToken {
+                token: call.token,
+                usd_currency_checked: false,
+            });
         }
 
         // Check stored user token preference
@@ -147,7 +174,10 @@ pub trait TempoStateAccess<M = ()> {
         })?;
 
         if !user_token.is_zero() {
-            return Ok(user_token);
+            return Ok(ResolvedFeeToken {
+                token: user_token,
+                usd_currency_checked: false,
+            });
         }
 
         // Check if the fee can be inferred from the TIP20 token being called
@@ -166,7 +196,10 @@ pub trait TempoStateAccess<M = ()> {
             ;
 
             if can_infer_tip20 && self.is_valid_fee_token(spec, to)? {
-                return Ok(to);
+                return Ok(ResolvedFeeToken {
+                    token: to,
+                    usd_currency_checked: true,
+                });
             }
         }
 
@@ -181,16 +214,25 @@ pub trait TempoStateAccess<M = ()> {
             if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
-                return Ok(call.tokenIn);
+                return Ok(ResolvedFeeToken {
+                    token: call.tokenIn,
+                    usd_currency_checked: true,
+                });
             } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
-                return Ok(call.tokenIn);
+                return Ok(ResolvedFeeToken {
+                    token: call.tokenIn,
+                    usd_currency_checked: true,
+                });
             }
         }
 
         // If no fee token is found, default to the first deployed TIP20
-        Ok(DEFAULT_FEE_TOKEN)
+        Ok(ResolvedFeeToken {
+            token: DEFAULT_FEE_TOKEN,
+            usd_currency_checked: false,
+        })
     }
 
     /// Checks if the given TIP20 token has USD currency.
@@ -514,6 +556,15 @@ mod tests {
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
+    const USD_CURRENCY: U256 =
+        uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+
+    fn db_with_usd_currency(token: Address) -> eyre::Result<revm::database::CacheDB<EmptyDB>> {
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        db.insert_account_storage(token, tip20_slots::CURRENCY, USD_CURRENCY)?;
+        Ok(db)
+    }
+
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
         let caller = Address::random();
@@ -531,6 +582,10 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
+        let resolved = db.resolve_fee_token(&tx, caller, TempoHardfork::Genesis)?;
+        assert_eq!(resolved.token, fee_token);
+        assert!(!resolved.usd_currency_checked);
+
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, fee_token);
         Ok(())
@@ -599,6 +654,31 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_fee_token_tip20_tracks_usd_check() -> eyre::Result<()> {
+        let caller = Address::random();
+        let call = transferCall {
+            to: Address::random(),
+            amount: U256::from(1),
+        };
+        let tx_env = TxEnv {
+            data: call.abi_encode().into(),
+            kind: TxKind::Call(DEFAULT_FEE_TOKEN),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = db_with_usd_currency(DEFAULT_FEE_TOKEN)?;
+        let resolved = db.resolve_fee_token(tx, caller, TempoHardfork::Genesis)?;
+        assert_eq!(resolved.token, DEFAULT_FEE_TOKEN);
+        assert!(resolved.usd_currency_checked);
+        Ok(())
+    }
+
+    #[test]
     fn test_get_fee_token_fallback() -> eyre::Result<()> {
         let caller = Address::random();
         let tx_env = TxEnv {
@@ -643,7 +723,11 @@ mod tests {
             ..Default::default()
         };
 
-        let mut db = EmptyDB::default();
+        let mut db = db_with_usd_currency(token_in)?;
+        let resolved = db.resolve_fee_token(&tx, caller, TempoHardfork::Genesis)?;
+        assert_eq!(resolved.token, token_in);
+        assert!(resolved.usd_currency_checked);
+
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, token_in);
 
@@ -666,6 +750,10 @@ mod tests {
             inner: tx_env,
             ..Default::default()
         };
+
+        let resolved = db.resolve_fee_token(&tx, caller, TempoHardfork::Genesis)?;
+        assert_eq!(resolved.token, token_in);
+        assert!(resolved.usd_currency_checked);
 
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, token_in);
