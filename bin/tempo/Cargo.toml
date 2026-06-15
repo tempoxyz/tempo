@@ -19,7 +19,10 @@ workspace = true
 
 [dependencies]
 base64.workspace = true
+blake3.workspace = true
+tar.workspace = true
 url.workspace = true
+zstd.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }

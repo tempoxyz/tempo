@@ -8,13 +8,12 @@ use std::{
 use alloy_primitives::{B256, Bytes};
 use clap::{ArgMatches, FromArgMatches, Parser};
 use commonware_codec::Encode as _;
-use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::Runner as _;
 use eyre::{Context as _, OptionExt, ensure};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
-    manifest::SnapshotManifest, manifest_cmd::SnapshotManifestCommand,
+    manifest::{SingleArchive, SnapshotManifest},
+    manifest_cmd::SnapshotManifestCommand,
 };
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
@@ -24,21 +23,27 @@ use reth_provider::{
     providers::{BlockchainProvider, ReadOnlyConfig},
 };
 use serde::{Deserialize, Serialize};
+use tar::HeaderMode;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
-use tempo_consensus::{consensus::Digest, find_last_finalized_marker};
 use tempo_node::node::TempoNode;
 use tempo_telemetry_util::display_duration;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
+const CONSENSUS_PRUNABLE_ARCHIVE_FILE: &str = "consensus-prunable.tar.zst";
 
-type TempoFinalization = Finalization<Scheme<PublicKey, MinSig>, Digest>;
 type TempoExecutionProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct TempoConsensusManifest {
-    pub(crate) height: u64,
-    pub(crate) digest: B256,
-    pub(crate) finalization: Bytes,
+    pub(crate) execution_finalized_height: u64,
+    pub(crate) execution_finalized_digest: B256,
+    pub(crate) consensus_finalized_height: u64,
+    pub(crate) consensus_finalized_digest: B256,
+    pub(crate) finalization_certificate: Bytes,
+    pub(crate) consensus_start_block_height: Option<u64>,
+    pub(crate) consensus_end_block_height: Option<u64>,
+    pub(crate) consensus_block_partitions: [String; 2],
+    pub(crate) consensus_archive: SingleArchive,
 }
 
 #[derive(Debug, Parser)]
@@ -68,7 +73,7 @@ pub(crate) struct Args {
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     consensus_datadir: Option<PathBuf>,
 
-    /// Maximum blocks behind the finalized execution tip to inspect.
+    /// Deprecated: consensus snapshots now use the latest stored finalization certificate.
     #[arg(long = "consensus.finalization-search-depth", default_value_t = 100)]
     finalization_search_depth: u64,
 }
@@ -95,7 +100,7 @@ impl Args {
             inner,
             skip_consensus,
             consensus_datadir,
-            finalization_search_depth,
+            finalization_search_depth: _finalization_search_depth,
             chain,
         } = self;
 
@@ -128,29 +133,44 @@ impl Args {
 
         let consensus_dir = consensus_datadir.unwrap_or_else(|| source_datadir.join("consensus"));
         eprintln!(
-            "reading snapshot finalization. consensus dir: {}, search depth: {}",
+            "reading snapshot consensus state. consensus dir: {}",
             consensus_dir.display(),
-            finalization_search_depth,
         );
 
-        let (height, finalization) = find_snapshot_finalization(
-            &consensus_dir,
-            execution_provider,
-            finalization_search_depth,
-        )
-        .wrap_err("failed to read finalization state")?;
+        let execution_finalized_num_hash = execution_provider
+            .finalized_block_num_hash()
+            .wrap_err("failed to read finalized execution finalized block num hash")?
+            .ok_or_eyre("no finalized execution state")?;
 
-        let digest = finalization.proposal.payload;
+        let consensus_state =
+            prepare_snapshot_consensus_archive(&consensus_dir, execution_finalized_num_hash.number)
+                .wrap_err("failed to prepare consensus snapshot state")?;
+
+        let consensus_archive = package_consensus_archive(
+            &consensus_dir,
+            output_dir,
+            &consensus_state.consensus_blocks_partitions,
+        )
+        .wrap_err("failed to package consensus prunable storage")?;
+
+        let digest = consensus_state.latest_finalization.proposal.payload;
         let consensus_manifest = TempoConsensusManifest {
-            height,
-            digest: digest.0,
-            finalization: finalization.encode().into(),
+            execution_finalized_height: execution_finalized_num_hash.number,
+            execution_finalized_digest: execution_finalized_num_hash.hash,
+            consensus_finalized_height: consensus_state.consensus_finalization_height,
+            consensus_finalized_digest: digest.0,
+            finalization_certificate: consensus_state.latest_finalization.encode().into(),
+            consensus_start_block_height: consensus_state.consensus_start_block_height,
+            consensus_end_block_height: consensus_state.consensus_end_block_height,
+            consensus_block_partitions: consensus_state.consensus_blocks_partitions.clone(),
+            consensus_archive,
         };
 
         let manifest_height = manifest.block;
         ensure!(
-            manifest_height >= height,
-            "finalization marker must be at or below execution"
+            manifest_height >= execution_finalized_num_hash.number,
+            "snapshot block `{manifest_height}` must be at or above execution finalized `{}`",
+            execution_finalized_num_hash.number,
         );
 
         let mut manifest_json =
@@ -161,7 +181,7 @@ impl Args {
             .ok_or_eyre("serialized manifest was not a JSON object")?
             .insert(
                 TEMPO_CONSENSUS_MANIFEST_KEY.to_string(),
-                serde_json::to_value(consensus_manifest)
+                serde_json::to_value(&consensus_manifest)
                     .wrap_err("failed to serialize Tempo consensus manifest extension")?,
             );
 
@@ -170,7 +190,10 @@ impl Args {
         fs::write(&manifest_path, manifest_json)
             .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
 
-        eprintln!("embedded finalization for height `{height}`; execution=`{manifest_height}`",);
+        eprintln!(
+            "embedded finalization for height `{}`; execution finalized=`{}`; execution snapshot=`{manifest_height}`",
+            consensus_manifest.consensus_finalized_height, execution_finalized_num_hash.number,
+        );
         Ok(())
     }
 }
@@ -199,27 +222,111 @@ fn resolve_chainspec(
     }
 }
 
-fn find_snapshot_finalization(
+fn prepare_snapshot_consensus_archive(
     consensus_dir: &Path,
-    execution_provider: TempoExecutionProvider,
-    max_depth: u64,
-) -> eyre::Result<(u64, TempoFinalization)> {
-    let runtime_config =
+    execution_finalized_height: u64,
+) -> eyre::Result<tempo_consensus::State> {
+    let source_runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
-    let tip = execution_provider
-        .finalized_block_number()
-        .wrap_err("failed to read finalized block number")?
-        .ok_or_eyre("no finalized execution state")?;
+    let source_runner = commonware_runtime::tokio::Runner::new(source_runtime_config);
+    let state = source_runner.start(|context| async move {
+        tempo_consensus::prepare(&context, execution_finalized_height).await
+    })?;
 
-    let runner = commonware_runtime::tokio::Runner::new(runtime_config);
-    runner.start(|context| async move {
-        find_last_finalized_marker(&context, &execution_provider, max_depth)
-            .await?
-            .ok_or_eyre(format!(
-                "no finalization marker found; finalized tip `{tip}` with {max_depth} block lookback"
-            ))
+    Ok(state)
+}
+
+#[derive(Debug)]
+struct PlannedConsensusPartition {
+    source_path: PathBuf,
+    archive_path: PathBuf,
+}
+
+fn package_consensus_archive(
+    consensus_dir: &Path,
+    output_dir: &Path,
+    partitions: &[String],
+) -> eyre::Result<SingleArchive> {
+    let partitions = consensus_prunable_partitions(consensus_dir, partitions)?;
+    let archive_path = output_dir.join(CONSENSUS_PRUNABLE_ARCHIVE_FILE);
+    write_zstd_tar_archive(&archive_path, &partitions)?;
+    let size = fs::metadata(&archive_path)
+        .wrap_err_with(|| format!("failed to stat {}", archive_path.display()))?
+        .len();
+
+    Ok(SingleArchive {
+        file: CONSENSUS_PRUNABLE_ARCHIVE_FILE.to_string(),
+        size,
+        decompressed_size: 0,
+        blake3: Some(hash_file_blake3(&archive_path)?),
+        output_files: Vec::new(),
     })
+}
+
+fn consensus_prunable_partitions(
+    consensus_dir: &Path,
+    partitions: &[String],
+) -> eyre::Result<Vec<PlannedConsensusPartition>> {
+    let mut planned = Vec::new();
+    for partition in partitions {
+        let archive_path = PathBuf::from(partition);
+        let partition_dir = consensus_dir.join(partition);
+        if !partition_dir.exists() {
+            continue;
+        }
+        ensure!(
+            partition_dir.is_dir(),
+            "consensus partition is not a directory: {}",
+            partition_dir.display(),
+        );
+        planned.push(PlannedConsensusPartition {
+            source_path: partition_dir,
+            archive_path,
+        });
+    }
+    planned.sort_unstable_by(|a, b| a.archive_path.cmp(&b.archive_path));
+    Ok(planned)
+}
+
+fn write_zstd_tar_archive(
+    path: &Path,
+    partitions: &[PlannedConsensusPartition],
+) -> eyre::Result<()> {
+    let file =
+        fs::File::create(path).wrap_err_with(|| format!("failed to create {}", path.display()))?;
+    let mut encoder = zstd::Encoder::new(file, 0)?;
+    encoder.include_checksum(true)?;
+    let mut builder = tar::Builder::new(encoder);
+    builder.mode(HeaderMode::Deterministic);
+    builder.follow_symlinks(false);
+
+    for partition in partitions {
+        builder
+            .append_dir_all(&partition.archive_path, &partition.source_path)
+            .wrap_err_with(|| {
+                format!(
+                    "failed to append consensus partition {} from {}",
+                    partition.archive_path.display(),
+                    partition.source_path.display(),
+                )
+            })?;
+    }
+
+    builder.finish()?;
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
+    let file =
+        fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(file)
+        .wrap_err_with(|| format!("failed reading {}", path.display()))?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn execution_provider(
@@ -287,18 +394,77 @@ mod tests {
     #[test]
     fn consensus_manifest_serializes_binary_fields_as_hex() {
         let manifest = TempoConsensusManifest {
-            height: 42,
-            digest: B256::with_last_byte(0x2a),
-            finalization: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
+            execution_finalized_height: 40,
+            execution_finalized_digest: B256::with_last_byte(0x28),
+            consensus_finalized_height: 42,
+            consensus_finalized_digest: B256::with_last_byte(0x2a),
+            finalization_certificate: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
+            consensus_start_block_height: Some(41),
+            consensus_end_block_height: Some(42),
+            consensus_block_partitions: [
+                "engine-finalized-blocks-prunable-key".to_string(),
+                "engine-finalized-blocks-prunable-value".to_string(),
+            ],
+            consensus_archive: SingleArchive {
+                file: "consensus-prunable.tar.zst".to_string(),
+                size: 3,
+                decompressed_size: 0,
+                blake3: Some("abc".to_string()),
+                output_files: Vec::new(),
+            },
         };
 
         let value = serde_json::to_value(manifest).unwrap();
 
-        assert_eq!(value["height"], 42);
+        assert_eq!(value["execution_finalized_height"], 40);
+        assert_eq!(value["consensus_finalized_height"], 42);
         assert_eq!(
-            value["digest"],
+            value["consensus_finalized_digest"],
             "0x000000000000000000000000000000000000000000000000000000000000002a"
         );
-        assert_eq!(value["finalization"], "0x000102ff");
+        assert_eq!(value["finalization_certificate"], "0x000102ff");
+        assert_eq!(value["consensus_start_block_height"], 41);
+        assert_eq!(value["consensus_end_block_height"], 42);
+        assert_eq!(
+            value["consensus_block_partitions"][0],
+            "engine-finalized-blocks-prunable-key"
+        );
+        assert_eq!(
+            value["consensus_archive"]["file"],
+            "consensus-prunable.tar.zst"
+        );
+    }
+
+    #[test]
+    fn write_zstd_tar_archive_appends_partitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let key_partition = dir.path().join("partition-key");
+        let value_partition = dir.path().join("partition-value");
+        fs::create_dir_all(key_partition.join("nested")).unwrap();
+        fs::create_dir_all(&value_partition).unwrap();
+        fs::write(key_partition.join("nested").join("00"), b"key").unwrap();
+        fs::write(value_partition.join("00"), b"value").unwrap();
+
+        let partitions = consensus_prunable_partitions(
+            dir.path(),
+            &["partition-key".to_string(), "partition-value".to_string()],
+        )
+        .unwrap();
+        let archive_path = output.path().join("consensus-prunable.tar.zst");
+        write_zstd_tar_archive(&archive_path, &partitions).unwrap();
+
+        let file = fs::File::open(&archive_path).unwrap();
+        let decoder = zstd::stream::read::Decoder::new(file).unwrap();
+        let mut archive = tar::Archive::new(decoder);
+        let mut paths = archive
+            .entries()
+            .unwrap()
+            .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        paths.sort();
+
+        assert!(paths.contains(&"partition-key/nested/00".to_string()));
+        assert!(paths.contains(&"partition-value/00".to_string()));
     }
 }

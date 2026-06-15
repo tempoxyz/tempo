@@ -28,8 +28,10 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
+mod snapshot;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
+pub use snapshot::{State, prepare};
 
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
