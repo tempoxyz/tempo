@@ -454,6 +454,11 @@ impl TempoPoolState {
     /// This avoids repeating the `expiry_map` lookup for every mined hash while
     /// preserving O(1)-ish removal from each `B256Set` bucket.
     fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        // Skip iterating the mined hashes if nothing is tracked for expiry.
+        if self.tx_to_expiry.is_empty() {
+            return;
+        }
+
         let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
 
         for hash in hashes {
