@@ -277,6 +277,10 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Ok(());
+        }
+
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
