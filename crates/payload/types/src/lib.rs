@@ -8,7 +8,10 @@ mod budget;
 
 use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
-pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
+pub use budget::{
+    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
+    ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
+};
 use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
@@ -38,14 +41,13 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
-    /// Time validators are expected to spend reproducing this payload's build work.
+    /// Replayable builder work for this payload.
     ///
-    /// This excludes proposer-only idle waiting, but includes replayable work
-    /// such as transaction execution and non-interruptible `builder_finish`.
+    /// This excludes proposer-only idle waiting, but includes transaction
+    /// execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size used for proposal return marshal estimates and
-    /// learning the rate used by future builder budgets.
-    rlp_block_size_bytes: usize,
+    /// Time validators are expected to spend validating this payload.
+    validation_latency_duration: Duration,
 }
 
 impl TempoBuiltPayload {
@@ -55,14 +57,14 @@ impl TempoBuiltPayload {
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
-        rlp_block_size_bytes: usize,
+        validation_latency_duration: Duration,
     ) -> Self {
         Self {
             inner,
             block_access_list,
             executed_block,
             validation_work_duration,
-            rlp_block_size_bytes,
+            validation_latency_duration,
         }
     }
 
@@ -74,17 +76,14 @@ impl TempoBuiltPayload {
         )
     }
 
-    /// Returns the time validators are expected to spend reproducing this payload's build work.
+    /// Returns replayable builder work for this payload.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
     }
 
-    /// Returns the RLP-encoded block size in bytes.
-    ///
-    /// Consensus uses this with the learned marshal persistence rate to reserve
-    /// time for validators to persist similarly sized proposals.
-    pub fn rlp_block_size_bytes(&self) -> usize {
-        self.rlp_block_size_bytes
+    /// Returns the time validators are expected to spend validating this payload.
+    pub fn validation_latency_duration(&self) -> Duration {
+        self.validation_latency_duration
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

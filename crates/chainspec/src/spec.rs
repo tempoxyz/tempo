@@ -64,6 +64,12 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T6 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t6_time: Option<u64>,
+    /// Activation timestamp for T7 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t7_time: Option<u64>,
+    /// Activation timestamp for T8 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t8_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -94,6 +100,8 @@ impl TempoGenesisInfo {
             TempoHardfork::T4 => self.t4_time,
             TempoHardfork::T5 => self.t5_time,
             TempoHardfork::T6 => self.t6_time,
+            TempoHardfork::T7 => self.t7_time,
+            TempoHardfork::T8 => self.t8_time,
         }
     }
 }
@@ -352,8 +360,23 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, _parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        Some(self.tempo_hardfork_at(target_timestamp).base_fee())
+    fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
+        let target_fork = self.tempo_hardfork_at(target_timestamp);
+
+        if target_fork.is_t7() {
+            let parent_base_fee = parent
+                .inner
+                .base_fee_per_gas
+                .expect("tempo blocks are expected to have a base fee");
+            Some(tempo_t7_next_block_base_fee(
+                parent_base_fee,
+                parent.inner.gas_used,
+            ))
+        } else if target_fork.is_t1() {
+            Some(TEMPO_T1_BASE_FEE)
+        } else {
+            Some(TEMPO_T0_BASE_FEE)
+        }
     }
 }
 
@@ -377,25 +400,35 @@ impl TempoHardforks for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
-    use crate::hardfork::{TempoHardfork, TempoHardforks};
+    use crate::{
+        hardfork::{TempoHardfork, TempoHardforks},
+        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
+    };
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
+    use reth_chainspec::EthChainSpec;
+    #[cfg(feature = "cli")]
     use reth_chainspec::{ForkCondition, Hardforks};
+    #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
+    use tempo_primitives::Header;
 
     #[test]
+    #[cfg(feature = "cli")]
     fn can_load_testnet() {
         let _ = super::TempoChainSpecParser::parse("testnet")
             .expect("the testnet chainspec must always be well formed");
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn can_load_dev() {
         let _ = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_chainspec_has_tempo_hardforks() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
@@ -410,6 +443,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_chainspec_implements_tempo_hardforks_trait() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
@@ -442,6 +476,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn named_network_identities_use_compiled_identities() {
         let moderato = super::TempoChainSpecParser::parse("testnet")
             .expect("the moderato chainspec must always be well formed");
@@ -476,6 +511,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn test_tempo_hardforks_in_inner_hardforks() {
         let chainspec = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
@@ -529,6 +565,102 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
     }
 
+    fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {
+        super::TempoHeader {
+            inner: Header {
+                timestamp,
+                base_fee_per_gas: Some(base_fee),
+                gas_used,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn chainspec_with_t7_at(t7_time: u64) -> super::TempoChainSpec {
+        let genesis = serde_json::json!({
+            "config": {
+                "chainId": 99999,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "t0Time": 0,
+                "t1Time": 0,
+                "t7Time": t7_time
+            },
+            "nonce": "0x42",
+            "timestamp": "0x0",
+            "extraData": "0x",
+            "gasLimit": "0x1dcd6500",
+            "difficulty": "0x0",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {}
+        });
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(genesis).unwrap();
+        super::TempoChainSpec::from_genesis(genesis)
+    }
+
+    #[test]
+    fn next_block_base_fee_fixed_before_t7() {
+        let chainspec = chainspec_with_t7_at(10);
+        let parent = header(8, TEMPO_T1_BASE_FEE / 2, 0);
+
+        assert_eq!(
+            chainspec.next_block_base_fee(&parent, 9),
+            Some(TEMPO_T1_BASE_FEE)
+        );
+    }
+
+    #[test]
+    fn next_block_base_fee_seeds_cap_on_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
+        let parent = header(9, TEMPO_T1_BASE_FEE, 0);
+
+        assert_eq!(
+            chainspec.next_block_base_fee(&parent, 10),
+            Some(TEMPO_T7_BASE_FEE_CAP)
+        );
+    }
+
+    #[test]
+    fn next_block_base_fee_adjusts_after_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
+        let parent = header(10, TEMPO_T7_BASE_FEE_CAP, 0);
+
+        assert_eq!(
+            chainspec.next_block_base_fee(&parent, 11),
+            Some(TEMPO_T7_BASE_FEE_CAP * 7 / 8)
+        );
+    }
+
+    #[test]
+    fn next_block_base_fee_uses_parent_gas_used_after_t7_activation() {
+        let chainspec = chainspec_with_t7_at(10);
+        let parent = header(10, TEMPO_T7_BASE_FEE_FLOOR, 30_000_000);
+
+        assert_eq!(
+            chainspec.next_block_base_fee(&parent, 11),
+            Some(750_000_000)
+        );
+    }
+
+    #[cfg(feature = "cli")]
     mod tempo_hardfork_at {
         use super::*;
 
@@ -595,8 +727,16 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1781013600));
             assert_eq!(cs.tempo_hardfork_at(1781013600), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
+            assert!(!cs.is_t6_active_at_timestamp(1781013600));
+
+            // Before T6 activation (1782223200 = Jun 23rd 2026 16:00 CEST)
+            assert!(!cs.is_t6_active_at_timestamp(1782223199));
+            assert_eq!(cs.tempo_hardfork_at(1782223199), TempoHardfork::T5);
+
+            // At and after T6 activation
+            assert!(cs.is_t6_active_at_timestamp(1782223200));
+            assert_eq!(cs.tempo_hardfork_at(1782223200), TempoHardfork::T6);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
         }
 
         #[test]
@@ -659,8 +799,16 @@ mod tests {
             // At and after T5 activation
             assert!(cs.is_t5_active_at_timestamp(1780495200));
             assert_eq!(cs.tempo_hardfork_at(1780495200), TempoHardfork::T5);
-            assert!(!cs.is_t6_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T5);
+            assert!(!cs.is_t6_active_at_timestamp(1780495200));
+
+            // Before T6 activation (1781791200 = Jun 18th 2026 16:00 CEST)
+            assert!(!cs.is_t6_active_at_timestamp(1781791199));
+            assert_eq!(cs.tempo_hardfork_at(1781791199), TempoHardfork::T5);
+
+            // At and after T6 activation
+            assert!(cs.is_t6_active_at_timestamp(1781791200));
+            assert_eq!(cs.tempo_hardfork_at(1781791200), TempoHardfork::T6);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
         }
 
         #[test]
@@ -676,6 +824,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     #[allow(clippy::expect_fun_call)]
     fn chainspec_from_chain_id_roundtrips_supported_chains() {
         use reth_chainspec::EthChainSpec;

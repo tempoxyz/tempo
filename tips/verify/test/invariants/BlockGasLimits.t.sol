@@ -23,7 +23,7 @@ import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTran
 /// - Max deployment fits in tx cap (TEMPO-BLOCK6)
 ///
 /// Block-level lane enforcement (BLOCK7, BLOCK12) and shared gas limit
-/// (BLOCK10) are tested in Rust (crates/consensus/src/lib.rs).
+/// (BLOCK10) are tested in Rust (crates/evm/src/consensus/mod.rs).
 contract BlockGasLimitsInvariantTest is InvariantBase {
 
     using TxBuilder for *;

@@ -25,6 +25,7 @@
 
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+#[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 
@@ -136,6 +137,20 @@ macro_rules! tempo_hardfork {
             }
 
             #[test]
+            fn test_variant_index_roundtrip() {
+                for fork in TempoHardfork::VARIANTS {
+                    assert_eq!(
+                        TempoHardfork::from_variant_index(fork.variant_index()),
+                        Some(*fork)
+                    );
+                }
+                assert_eq!(
+                    TempoHardfork::from_variant_index(TempoHardfork::VARIANTS.len() as u8),
+                    None
+                );
+            }
+
+            #[test]
             #[cfg(feature = "serde")]
             fn test_tempo_hardfork_serde() {
                 for fork in TempoHardfork::VARIANTS {
@@ -199,22 +214,31 @@ tempo_hardfork! (
         T5,
         /// T6 hardfork
         T6,
+        /// T7 hardfork
+        T7,
+        /// T8 hardfork
+        T8,
     }
 );
 
 impl TempoHardfork {
-    /// Returns the base fee for this hardfork in attodollars.
+    /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
-    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
-    /// - Pre-T1: 10 billion attodollars per gas
-    /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
+    /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
+    pub const fn variant_index(&self) -> u8 {
+        *self as u8
+    }
+
+    /// Returns the hardfork at the given [`Self::VARIANTS`] position, see
+    /// [`Self::variant_index`].
     ///
-    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
-    pub const fn base_fee(&self) -> u64 {
-        if self.is_t1() {
-            return gas::TEMPO_T1_BASE_FEE;
+    /// Returns `None` if the index is out of bounds.
+    pub const fn from_variant_index(index: u8) -> Option<Self> {
+        if (index as usize) < Self::VARIANTS.len() {
+            Some(Self::VARIANTS[index as usize])
+        } else {
+            None
         }
-        gas::TEMPO_T0_BASE_FEE
     }
 
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
@@ -305,6 +329,8 @@ impl TempoHardfork {
             Self::T4 => None,
             Self::T5 => None,
             Self::T6 => None,
+            Self::T7 => None,
+            Self::T8 => None,
         }
     }
 
@@ -322,7 +348,9 @@ impl TempoHardfork {
             Self::T3 => Some(MAINNET_T3_TIMESTAMP),
             Self::T4 => Some(MAINNET_T4_TIMESTAMP),
             Self::T5 => Some(MAINNET_T5_TIMESTAMP),
-            Self::T6 => None,
+            Self::T6 => Some(MAINNET_T6_TIMESTAMP),
+            Self::T7 => None,
+            Self::T8 => None,
         }
     }
 
@@ -341,6 +369,8 @@ impl TempoHardfork {
             Self::T4 => None,
             Self::T5 => None,
             Self::T6 => None,
+            Self::T7 => None,
+            Self::T8 => None,
         }
     }
 
@@ -358,23 +388,28 @@ impl TempoHardfork {
             Self::T3 => Some(MODERATO_T3_TIMESTAMP),
             Self::T4 => Some(MODERATO_T4_TIMESTAMP),
             Self::T5 => Some(MODERATO_T5_TIMESTAMP),
-            Self::T6 => None,
+            Self::T6 => Some(MODERATO_T6_TIMESTAMP),
+            Self::T7 => None,
+            Self::T8 => None,
         }
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<TempoHardfork> for SpecId {
     fn from(_value: TempoHardfork) -> Self {
         Self::OSAKA
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<&TempoHardfork> for SpecId {
     fn from(value: &TempoHardfork) -> Self {
         Self::from(*value)
     }
 }
 
+#[cfg(feature = "evm")]
 impl From<SpecId> for TempoHardfork {
     fn from(_spec: SpecId) -> Self {
         // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.

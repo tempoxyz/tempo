@@ -38,8 +38,7 @@ use reth_transaction_pool::{
     Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
 };
 use tempo_chainspec::spec::TempoChainSpec;
-use tempo_consensus::TempoConsensus;
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
@@ -70,9 +69,20 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
 
-    /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    /// Disable prewarming for the payload builder.
+    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    pub builder_disable_prewarming: bool,
+
+    /// No-op legacy flag for payload builder prewarming.
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
+
+    /// Disable sharing the execution cache with the payload builder.
+    #[arg(
+        long = "engine.disable-execution-cache-sharing-with-builder",
+        default_value_t = false
+    )]
+    pub engine_disable_execution_cache_sharing_with_builder: bool,
 
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
@@ -92,7 +102,9 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
-            builder_enable_prewarming: false,
+            builder_disable_prewarming: false,
+            builder_enable_prewarming: true,
+            engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -111,7 +123,7 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming,
+            enable_prewarming: !self.builder_disable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -158,7 +170,11 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(
+                BasicPayloadServiceBuilder::new(payload_builder_builder)
+                    // we can disable basic parent state caching because tempo builder always uses execution cache
+                    .with_pre_cache_state(false),
+            )
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -183,9 +199,10 @@ impl NodeTypes for TempoNode {
 
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
-        TempoEthApiBuilder,
+        TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
         BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
@@ -218,7 +235,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<N>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
     async fn launch_add_ons(
         self,
@@ -265,7 +282,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<N>;
+    type EthApi = TempoEthApi<NodeAdapter<N>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
@@ -383,6 +400,7 @@ pub struct TempoConsensusBuilder {
     pub allow_bal_hashes: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for TempoConsensusBuilder {
     fn default() -> Self {
         Self {
@@ -547,7 +565,7 @@ impl Default for TempoPayloadBuilderBuilder {
     fn default() -> Self {
         Self {
             state_provider_metrics: false,
-            enable_prewarming: false,
+            enable_prewarming: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }

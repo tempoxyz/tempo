@@ -4,8 +4,13 @@ name = "tempo-transaction-pool"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -38,6 +43,7 @@ alloy-eips.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
 
+dashmap.workspace = true
 futures.workspace = true
 tracing.workspace = true
 itertools.workspace = true

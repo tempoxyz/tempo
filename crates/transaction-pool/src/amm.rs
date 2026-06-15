@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{
     ChainSpecProvider, ExecutionOutcome, HeaderProvider, ProviderError, ProviderResult,
-    StateProvider, StateProviderFactory,
+    StateProviderFactory,
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -59,12 +59,15 @@ impl AmmLiquidityCache {
     /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
-    pub fn has_enough_liquidity(
+    pub fn has_enough_liquidity<S, M>(
         &self,
         user_token: Address,
         fee: U256,
-        mut state_provider: impl StateProvider,
-    ) -> Result<bool, ProviderError> {
+        mut state_provider: S,
+    ) -> Result<bool, ProviderError>
+    where
+        S: TempoStateAccess<M>,
+    {
         let mut missing_in_cache = Vec::new();
         let hardfork;
 

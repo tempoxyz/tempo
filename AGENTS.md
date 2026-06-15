@@ -4,6 +4,8 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 ## Pull Requests
 
+- Format Rust code with `cargo +nightly fmt`.
+
 ## TIPs (Tempo Improvement Proposals)
 
 When creating a new TIP:
