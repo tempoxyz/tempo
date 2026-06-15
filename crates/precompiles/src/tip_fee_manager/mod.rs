@@ -11,6 +11,7 @@ use crate::{
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
+    tip1060_storage_credits::TIP1060StorageCredits,
 };
 use alloy::primitives::{Address, B256, U256, uint};
 pub use tempo_contracts::precompiles::{
@@ -291,6 +292,15 @@ impl TipFeeManager {
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
+        if self.storage.spec().is_t7() {
+            // Fee collection bypasses TIP-1060, so use `Preserve` mode to avoid minting
+            // user-refundable storage credits when clearing fee-manager slots.
+            TIP1060StorageCredits::new().set_mode(
+                self.address,
+                tempo_contracts::precompiles::ITIP1060StorageCredits::Mode::Preserve,
+            )?;
+        }
+
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());
