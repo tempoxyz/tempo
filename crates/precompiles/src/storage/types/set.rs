@@ -282,6 +282,8 @@ where
     }
 
     /// Returns true if the value is in the set.
+    #[cold]
+    #[inline(never)]
     pub fn contains(&self, value: &T) -> Result<bool>
     where
         T: StorageKey + Hash + Eq + Clone,
@@ -366,6 +368,8 @@ where
     /// - If the SLOAD to read the length fails, returns an error.
     /// - If the index is OOB, returns `Ok(None)`.
     /// - Otherwise, returns `Ok(Some(T))`.
+    #[cold]
+    #[inline(never)]
     pub fn at(&self, index: usize) -> Result<Option<T>>
     where
         T::Handler: Handler<T>,
@@ -379,6 +383,8 @@ where
     /// Reads a range of values from the set.
     ///
     /// This is a partial version of `read()` for when you only need a subset.
+    #[cold]
+    #[inline(never)]
     pub fn read_range(&self, start: usize, end: usize) -> Result<Vec<T>>
     where
         T::Handler: Handler<T>,
