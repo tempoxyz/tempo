@@ -142,11 +142,13 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
-
-        match self.policy_type.try_into() {
-            Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
-            _ => Err(if is_t2 {
+        match self.policy_type {
+            ty if ty == PolicyType::WHITELIST as u8 => Ok(PolicyType::WHITELIST),
+            ty if ty == PolicyType::BLACKLIST as u8 => Ok(PolicyType::BLACKLIST),
+            ty if ty == PolicyType::COMPOUND as u8 && StorageCtx.spec().is_t2() => {
+                Ok(PolicyType::COMPOUND)
+            }
+            _ => Err(if StorageCtx.spec().is_t2() {
                 TIP403RegistryError::invalid_policy_type().into()
             } else {
                 TempoPrecompileError::under_overflow()
