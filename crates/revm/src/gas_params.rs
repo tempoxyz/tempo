@@ -79,28 +79,21 @@ pub fn tempo_gas_params_with_amsterdam(
 /// set cost. The 230k creditable portion is charged (or covered by a credit) by
 /// the storage-credit hook in `sstore_storage_credits`.
 fn t7_gas_params() -> GasParams {
-    let mut gas_params = GasParams::new_spec(TempoHardfork::T7.into());
+    // T7 starts from the full TIP-1000 (T1) table so that every creation cost is
+    // inherited unchanged. TIP-1060 only touches the two SSTORE-creation entries
+    // overridden below; everything else (tx_create_cost, create, new_account_cost,
+    // code_deposit_cost, eip7702 costs, auth refund) is exactly as in `t1_gas_params`.
+    let mut gas_params = t1_gas_params();
     gas_params.override_gas([
         // SSTORE (zero -> non-zero): only the 20k residual; the 230k creditable
         // portion is governed by the TIP-1060 storage-credit hook.
+        // (T1 charged the full SSTORE_CREATE_COST here.)
         (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
         // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now
         // handled by storage-credit minting, so the legacy clearing refund is
         // removed. Restore-to-original refunds (sstore_set_refund /
         // sstore_reset_refund) are preserved at their defaults.
         (GasId::sstore_clearing_slot_refund(), 0),
-        // All other TIP-1000 creation costs are unchanged by TIP-1060.
-        (GasId::tx_create_cost(), CONTRACT_CREATE_COST),
-        (GasId::create(), CONTRACT_CREATE_COST),
-        (GasId::new_account_cost(), NEW_ACCOUNT_COST),
-        (GasId::new_account_cost_for_selfdestruct(), NEW_ACCOUNT_COST),
-        (GasId::code_deposit_cost(), CODE_DEPOSIT_COST_T1),
-        (
-            GasId::tx_eip7702_per_empty_account_cost(),
-            EIP7702_PER_EMPTY_ACCOUNT_COST_T1,
-        ),
-        // Auth refund is disabled post-T1.
-        (GasId::tx_eip7702_auth_refund(), 0),
     ]);
     gas_params
 }
@@ -204,12 +197,12 @@ mod tests {
     fn test_t7_gas_params_sstore_residual() {
         let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
 
-        // SSTORE creation cost drops to the 20k residual; the 230k creditable
+        // SSTORE creation cost drops to the 5k residual; the 245k creditable
         // portion is charged by the storage-credit hook, not the gas function.
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
-            20_000,
-            "T7 SSTORE creation charges only the 20k residual"
+            5_000,
+            "T7 SSTORE creation charges only the 5k residual"
         );
 
         // Other TIP-1000 creation costs are unchanged by TIP-1060.

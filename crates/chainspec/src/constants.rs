@@ -16,7 +16,7 @@ pub mod gas {
     pub const SSTORE_CREATE_COST: u64 = 250_000;
 
     /// TIP-1060 SSTORE residual: EVM `0→x` base cost paid even when a credit applies.
-    pub const SSTORE_SET_COST: u64 = 20_000;
+    pub const SSTORE_SET_COST: u64 = 5_000;
 
     /// TIP-1060 value credited for clearing one occupied storage slot.
     pub const STORAGE_CREDIT_VALUE: u64 = SSTORE_CREATE_COST - SSTORE_SET_COST;

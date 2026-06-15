@@ -2324,7 +2324,7 @@ mod tests {
         // zeroes SSTORE_CLEARS_SCHEDULE, not the restore refunds), lowering each
         // mode's gas by 19,900 relative to the legacy no-refund accounting.
         let cases = [
-            (CreditMode::Refund, 286_068u64, 0u64),
+            (CreditMode::Refund, 271_068u64, 0u64),
             (CreditMode::Preserve, 520_614u64, 1u64),
             (CreditMode::Direct, 520_614u64, 1u64),
         ];
@@ -2520,7 +2520,7 @@ mod tests {
                 new_value: 0,
                 expected_slot: 0,
                 credit_cases: no_initial_credits(expectations(
-                    (36_068, 0),
+                    (21_068, 0),
                     (270_614, 1),
                     (270_614, 1),
                 )),
@@ -2557,18 +2557,18 @@ mod tests {
                         name: "one initial credit",
                         initial_credits: 1,
                         expectations: expectations(
-                            (52_962, 0),
-                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
-                            (60_308, 0),
+                            (37_962, 0),
+                            (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
+                            (45_308, 0),
                         ),
                     },
                     CreditCase {
                         name: "surplus initial credits",
                         initial_credits: 2,
                         expectations: expectations(
-                            (52_962, 1),
-                            (52_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
-                            (60_308, 1),
+                            (37_962, 1),
+                            (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
+                            (45_308, 1),
                         ),
                     },
                 ],
@@ -2874,8 +2874,8 @@ mod tests {
         assert!(result.is_success(), "preserve churn tx should succeed");
         assert_eq!(
             result.tx_gas_used(),
-            984_138,
-            "three Preserve churn cycles pay the full 230k creditable portion per recreation"
+            1_029_138,
+            "three Preserve churn cycles pay the full 245k creditable portion per recreation"
         );
 
         assert_eq!(
@@ -2964,7 +2964,7 @@ mod tests {
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
-            (CreditMode::Direct, 60_340u64, 1u64, 0u64),
+            (CreditMode::Direct, 45_340u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -3280,8 +3280,8 @@ mod tests {
         assert_eq!(storage_credit_balance(&evm, contract), 0);
         assert_eq!(
             result.tx_gas_used(),
-            310_868,
-            "one 230k deferred storage credit is applied"
+            295_868,
+            "one 245k deferred storage credit is applied"
         );
 
         Ok(())
@@ -3346,13 +3346,13 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            310_308,
+            295_308,
             "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(
             refund.tx_gas_used(),
-            52_962,
-            "Refund applies the deferred 230k settlement refund for comparison"
+            37_962,
+            "Refund applies the deferred 245k settlement refund for comparison"
         );
 
         Ok(())
