@@ -104,6 +104,8 @@ pub struct TickLevel {
 
 impl TickLevel {
     /// Creates a new empty tick level
+    #[cold]
+    #[inline(never)]
     pub fn new() -> Self {
         Self {
             head: 0,
@@ -113,6 +115,8 @@ impl TickLevel {
     }
 
     /// Creates a tick level with specific values
+    #[cold]
+    #[inline(never)]
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
         Self {
             head,
@@ -122,11 +126,15 @@ impl TickLevel {
     }
 
     /// Returns true if this tick level has no orders
+    #[cold]
+    #[inline(never)]
     pub fn is_empty(&self) -> bool {
         self.head == 0 && self.tail == 0
     }
 
     /// Returns true if this tick level has orders
+    #[cold]
+    #[inline(never)]
     pub fn has_liquidity(&self) -> bool {
         !self.is_empty()
     }
