@@ -31,6 +31,19 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
         .ok_or(TempoPrecompileError::under_overflow())
 }
 
+#[inline]
+fn compute_amount_out_u128(amount_in: U256) -> Result<u128> {
+    if let Ok(amount_in) = u128::try_from(amount_in)
+        && let Some(product) = amount_in.checked_mul(9_970)
+    {
+        return Ok(product / 10_000);
+    }
+
+    compute_amount_out(amount_in)?
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())
+}
+
 /// AMM pool reserves for a user-token / validator-token pair.
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
@@ -567,21 +580,17 @@ impl TipFeeManager {
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
 
-        // Calculate output at fixed price m = 0.9970
-        let amount_out = compute_amount_out(amount_in)?;
-
-        // Check if there's enough validatorToken available
-        if amount_out > U256::from(pool.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
-        // Update reserves
         let amount_in_u128: u128 = amount_in
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let amount_out_u128: u128 = amount_out
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        // Calculate output at fixed price m = 0.9970.
+        let amount_out_u128 = compute_amount_out_u128(amount_in)?;
+
+        // Check if there's enough validatorToken available.
+        if amount_out_u128 > pool.reserve_validator_token {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
 
         pool.reserve_user_token = pool
             .reserve_user_token
@@ -594,7 +603,7 @@ impl TipFeeManager {
 
         self.pools[pool_id].write(pool)?;
 
-        Ok(amount_out)
+        Ok(U256::from(amount_out_u128))
     }
 
     /// Returns the total supply of LP tokens for the given pool.
