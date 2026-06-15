@@ -842,6 +842,12 @@ fn workload() -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn panic_tip20_transaction_reverted(result: &dyn std::fmt::Debug) -> ! {
+    panic!("TIP20 transaction reverted: {result:?}");
+}
+
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -885,11 +891,9 @@ where
         let output = executor
             .execute_transaction_without_commit(tx)
             .expect("TIP20 transaction execution failed");
-        assert!(
-            output.result().result.is_success(),
-            "TIP20 transaction reverted: {:?}",
-            output.result().result
-        );
+        if !output.result().result.is_success() {
+            panic_tip20_transaction_reverted(&output.result().result);
+        }
         stats.gas_used = stats
             .gas_used
             .saturating_add(executor.commit_transaction(output).tx_gas_used());
