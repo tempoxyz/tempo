@@ -376,7 +376,7 @@ jobs:
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Tracy Full' || inputs.profiling == 'Both') && 'full' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || 'off')) }}
       BENCH_TRACY_SAMPLING_HZ: ${{ inputs.tracy-sampling-hz || '1' }}
-      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '30' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
