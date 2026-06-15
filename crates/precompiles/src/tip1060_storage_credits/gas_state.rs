@@ -13,10 +13,7 @@ use crate::storage::FromWord;
 use alloy::primitives::{Address, IntoLogData, LogData, U256};
 use revm::{
     context_interface::cfg::GasParams,
-    interpreter::{
-        InstructionResult, SStoreResult, StateLoad, gas::GasTracker,
-        instruction_context::GasStateOutcome,
-    },
+    interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, TIP1060StorageCreditsEvent};
@@ -110,14 +107,14 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
     caller_state_load: &StateLoad<SStoreResult>,
-) -> Result<GasStateOutcome, B::Error> {
+) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
 
     // Only account for storage credits when the slot crosses the zero boundary
     // (zero -> non-zero or non-zero -> zero). If both values are zero or both are
     // non-zero, slot occupancy is unchanged, so skip storage credits accounting.
     if values.is_present_zero() == values.is_new_zero() {
-        return Ok(GasStateOutcome::default());
+        return Ok(());
     }
 
     // Writes to the storage-credit precompile's own state are protocol bookkeeping
@@ -126,7 +123,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     // default SSTORE gas function so the backing write is charged as an ordinary
     // store and never minted/consumed as a credit.
     if owner == STORAGE_CREDITS_ADDRESS {
-        return Ok(GasStateOutcome::default());
+        return Ok(());
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
@@ -224,5 +221,5 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         };
     }
 
-    Ok(GasStateOutcome::default())
+    Ok(())
 }

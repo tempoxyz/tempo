@@ -172,5 +172,6 @@ where
             owner,
             values,
         )
+        .map(|_| GasStateOutcome::default())
     }
 }

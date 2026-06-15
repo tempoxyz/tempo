@@ -263,28 +263,21 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
-        let outcome = if self.tip1060_storage_credits_enabled {
+        if self.tip1060_storage_credits_enabled {
             sstore_storage_credits(self, address, &result)?
-        } else {
-            Default::default()
-        };
-
-        if !outcome.skip_gas {
-            // dynamic gas
-            self.deduct_gas(self.gas_params.sstore_dynamic_gas(
-                true,
-                &result.data,
-                result.is_cold,
-            ))?;
-
-            // Track state gas (cold SSTORE zero->non-zero only)
-            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
         }
+
+        // dynamic gas
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+
+        // Track state gas (cold SSTORE zero->non-zero only)
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
 
         // refund gas.
-        if !outcome.skip_refund {
-            self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
-        }
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
         Ok(())
     }
