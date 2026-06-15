@@ -72,6 +72,7 @@ impl AASigned {
 
     /// Returns a reference to the transaction.
     #[doc(alias = "transaction")]
+    #[inline]
     pub const fn tx(&self) -> &TempoTransaction {
         &self.tx
     }
@@ -82,6 +83,7 @@ impl AASigned {
     }
 
     /// Returns a reference to the signature.
+    #[inline]
     pub const fn signature(&self) -> &TempoSignature {
         &self.signature
     }
