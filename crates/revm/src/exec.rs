@@ -41,10 +41,12 @@ where
         h.run(self)
     }
 
+    #[inline]
     fn finalize(&mut self) -> Self::State {
         self.inner.ctx.journal_mut().finalize()
     }
 
+    #[inline]
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
