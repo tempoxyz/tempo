@@ -1012,7 +1012,8 @@ where
             };
             let valid_before = tempo_tx_env
                 .valid_before
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
+                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?
+                .get();
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
@@ -1893,8 +1894,15 @@ where
 
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
-            let valid_after = aa_env.valid_after.filter(|_| !evm.skip_valid_after_check);
-            validate_time_window(valid_after, aa_env.valid_before, block_timestamp)?;
+            let valid_after = aa_env
+                .valid_after
+                .filter(|_| !evm.skip_valid_after_check)
+                .map(|valid_after| valid_after.get());
+            validate_time_window(
+                valid_after,
+                aa_env.valid_before.map(|valid_before| valid_before.get()),
+                block_timestamp,
+            )?;
         }
 
         Ok(())

@@ -25,10 +25,10 @@ pub struct TempoBatchCallEnv {
     pub signature: TempoSignature,
 
     /// validBefore timestamp
-    pub valid_before: Option<u64>,
+    pub valid_before: Option<NonZeroU64>,
 
     /// validAfter timestamp
-    pub valid_after: Option<u64>,
+    pub valid_after: Option<NonZeroU64>,
 
     /// Multiple calls for Tempo transactions
     pub aa_calls: Vec<Call>,
@@ -350,8 +350,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
-                valid_before: valid_before.map(NonZeroU64::get),
-                valid_after: valid_after.map(NonZeroU64::get),
+                valid_before: *valid_before,
+                valid_after: *valid_after,
                 aa_calls: calls.clone(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
