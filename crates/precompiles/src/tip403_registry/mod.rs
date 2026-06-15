@@ -885,21 +885,25 @@ impl AuthRole {
     }
 
     /// Hardfork-aware: always returns `Transfer`.
+    #[inline]
     pub fn transfer() -> Self {
         Self::Transfer
     }
 
     /// Hardfork-aware: returns `Sender` for T2+, `Transfer` for pre-T2.
+    #[inline]
     pub fn sender() -> Self {
         Self::transfer_or(Self::Sender)
     }
 
     /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
+    #[inline]
     pub fn recipient() -> Self {
         Self::transfer_or(Self::Recipient)
     }
 
     /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
+    #[inline]
     pub fn mint_recipient() -> Self {
         Self::transfer_or(Self::MintRecipient)
     }
