@@ -24,16 +24,16 @@ use tempo_payload_types::{
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
-const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
+const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_200_000;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
 ///
-/// For example, `1.35` means "when cutoff work is 100 ms, expect the completed
-/// replayable build work to be about 135 ms".
-pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
+/// For example, `1.20` means "when cutoff work is 100 ms, expect the completed
+/// replayable build work to be about 120 ms".
+pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.20;
 
 /// Converts a human-readable build-work multiplier into the fixed-point representation.
 pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn observed_build_multiplier_tracks_tail_cost() {
         assert_eq!(
-            observed_build_time_multiplier(Duration::from_millis(135), Duration::from_millis(100)),
+            observed_build_time_multiplier(Duration::from_millis(120), Duration::from_millis(100)),
             Some(DEFAULT_BUILD_TIME_MULTIPLIER_SCALED)
         );
         assert_eq!(
