@@ -26,7 +26,7 @@ use crate::{
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
-    tip1060_storage_credits::{StorageCreditAccount, StorageCreditDeltas},
+    tip1060_storage_credits::{StorageCreditDeltas, TIP1060StorageCredits},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -86,6 +86,75 @@ impl StablecoinDEX {
     /// Returns the number of reusable order storage credits owned by `user`.
     pub fn storage_credits(&self, user: Address) -> Result<u64> {
         self.dex_storage_credits[user].read()
+    }
+
+    /// Adds reusable-order storage credits for `user`.
+    ///
+    /// If this creates the user's DEX credit counter slot, one TIP-1060 token owned by the DEX must
+    /// be consumed by that bookkeeping slot creation. The token is available because the reusable
+    /// order storage deletion that earned the credit has already happened.
+    fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
+        if slots == 0 || !self.storage.spec().is_t7() {
+            return Ok(());
+        }
+
+        let current = self.dex_storage_credits[user].read()?;
+        let updated = current.saturating_add(slots);
+
+        if current == 0 && updated > 0 {
+            let (_, spent) =
+                TIP1060StorageCredits::new().with_storage_credits_limit(self.address, 1, || {
+                    self.dex_storage_credits[user].write(updated)
+                })?;
+
+            if spent != 1 {
+                return Err(TempoPrecompileError::Fatal(format!(
+                    "DEX storage credit bookkeeping spend mismatch: reserved 1, spent {spent}"
+                )));
+            }
+
+            Ok(())
+        } else {
+            self.dex_storage_credits[user].write(updated)
+        }
+    }
+
+    /// Writes a reusable order record while spending at most the maker's DEX storage credits.
+    ///
+    /// The DEX credit counter is debited before the reusable storage creation so clearing the
+    /// counter slot can mint the TIP-1060 token represented by that bookkeeping slot.
+    fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
+        let slots = order.storage_credits();
+        let user = order.maker();
+
+        if slots == 0 || !self.storage.spec().is_t7() {
+            return self.orders[order.order_id()].write(order);
+        }
+
+        let current = self.dex_storage_credits[user].read()?;
+        let reserved = current.min(slots);
+        if reserved == 0 {
+            return self.orders[order.order_id()].write(order);
+        }
+
+        let checkpoint = self.storage.checkpoint();
+        self.dex_storage_credits[user].write(current - reserved)?;
+
+        let result =
+            TIP1060StorageCredits::new().with_storage_credits_limit(self.address, reserved, || {
+                self.orders[order.order_id()].write(order)
+            });
+
+        match result {
+            Ok(((), spent)) if spent == reserved => {
+                checkpoint.commit();
+                Ok(())
+            }
+            Ok(((), spent)) => Err(TempoPrecompileError::Fatal(format!(
+                "DEX storage credit spend mismatch: reserved {reserved}, spent {spent}"
+            ))),
+            Err(err) => Err(err),
+        }
     }
 
     /// Returns the minimum representable scaled price (`MIN_PRICE`).
@@ -335,7 +404,7 @@ impl StablecoinDEX {
         }
 
         self.transfer(token_out, sender, amount)?;
-        storage_credits.flush(self.address, &mut self.dex_storage_credits)?;
+        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(user, slots))?;
 
         Ok(amount)
     }
@@ -383,7 +452,7 @@ impl StablecoinDEX {
 
         // Transfer only final output ONCE at end
         self.transfer(token_out, sender, amount_out)?;
-        storage_credits.flush(self.address, &mut self.dex_storage_credits)?;
+        storage_credits.flush(|user, slots| self.credit_dex_storage_slots(user, slots))?;
 
         Ok(amount)
     }
@@ -565,12 +634,6 @@ impl StablecoinDEX {
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
-        let storage_credits = if charge_credits {
-            StorageCreditAccount::load(order.maker(), &self.dex_storage_credits)?
-        } else {
-            None
-        };
-
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
@@ -615,14 +678,8 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if let Some(mut storage_credits) = storage_credits {
-            debug_assert_eq!(storage_credits.user, order.maker());
-            storage_credits.spend(
-                order.storage_credits(),
-                self.address,
-                &mut self.dex_storage_credits,
-                || self.orders[order.order_id()].write(order),
-            )
+        if charge_credits {
+            self.write_order_spending_dex_storage_credits(order)
         } else {
             self.orders[order.order_id()].write(order)
         }
@@ -1256,8 +1313,6 @@ impl StablecoinDEX {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
-        let storage_credits = StorageCreditAccount::load(order.maker(), &self.dex_storage_credits)?;
-
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
             .read()?;
@@ -1328,17 +1383,8 @@ impl StablecoinDEX {
         }
 
         // Clear the order from storage
-        if let Some(mut storage_credits) = storage_credits {
-            debug_assert_eq!(storage_credits.user, order.maker());
-            self.orders[order.order_id()].delete()?;
-            storage_credits.add(
-                order.storage_credits(),
-                self.address,
-                &mut self.dex_storage_credits,
-            )?;
-        } else {
-            self.orders[order.order_id()].delete()?;
-        }
+        self.orders[order.order_id()].delete()?;
+        self.credit_dex_storage_slots(order.maker(), order.storage_credits())?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
@@ -1971,7 +2017,6 @@ mod tests {
             Ok(())
         })
     }
-
     #[test]
     fn test_place_order_pair_auto_created() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);

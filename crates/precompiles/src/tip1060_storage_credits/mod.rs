@@ -8,7 +8,7 @@ pub use gas_state::{StorageCreditsBackend, StorageCreditsError, sstore_storage_c
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, Mapping, StorableType, StorageCtx},
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
@@ -175,92 +175,43 @@ impl TIP1060StorageCredits {
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
     }
-}
 
-/// Per-user reusable storage credit state accumulated by a precompile call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StorageCreditAccount {
-    pub user: Address,
-    pub amount: u64,
-}
-
-impl StorageCreditAccount {
-    pub fn new(user: Address, amount: u64) -> Self {
-        Self { user, amount }
-    }
-
-    pub fn load(user: Address, credits: &Mapping<Address, u64>) -> Result<Option<Self>> {
-        if !StorageCtx.spec().is_t7() {
-            return Ok(None);
+    /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
+    /// from `credit_owner`'s balance, returning how many credits were actually consumed.
+    ///
+    /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
+    /// before this returns so later storage writes cannot consume the remaining allowance.
+    pub fn with_storage_credits_limit<T>(
+        &mut self,
+        credit_owner: Address,
+        limit: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, u64)> {
+        if limit == 0 {
+            return f().map(|value| (value, 0));
         }
 
-        Ok(Some(Self::new(user, credits[user].read()?)))
-    }
-
-    fn with_budget<T>(
-        credit_owner: Address,
-        budget: u64,
-        f: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let mut storage_credits = TIP1060StorageCredits::new();
-        storage_credits.set_budget(credit_owner, budget)?;
+        self.set_budget(credit_owner, limit)?;
 
         let result = f();
-        let remaining_budget = storage_credits.credit_state_of(credit_owner)?.budget;
+        let current_state = self.credit_state_of(credit_owner)?;
+        let spent = limit.saturating_sub(current_state.budget.min(limit));
 
-        match result {
-            Ok(value) if remaining_budget == 0 => Ok(value),
-            Ok(_) => Err(TempoPrecompileError::Fatal(
-                "TIP-1060 direct budget was not fully consumed".to_string(),
-            )),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Runs `write_storage` while allowing up to `slots.min(self.amount)` TIP-1060 token
-    /// consumptions from `credit_owner`'s storage-credit balance.
-    ///
-    /// If all credits are spent, this clears the counter slot first so the credit embodied by that
-    /// nonzero slot becomes available for the storage creation.
-    pub fn spend<T>(
-        &mut self,
-        slots: u64,
-        credit_owner: Address,
-        credits: &mut Mapping<Address, u64>,
-        write_storage: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let budget = self.amount.min(slots);
-        if budget == 0 {
-            return write_storage();
+        // If not all budget was spent, manually reset to `Preserve`.
+        if spent < limit {
+            let state = TransientState {
+                budget: 0,
+                mode: CreditMode::Preserve,
+                pending_refunds: current_state.pending_refunds,
+            };
+            self.write_credit_state_of(credit_owner, state)?;
+            self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
+                credit_owner,
+                CreditMode::Preserve.into(),
+            ))?;
         }
 
-        let old = *self;
-        self.amount -= budget;
-        credits[self.user].write(self.amount)?;
-
-        match Self::with_budget(credit_owner, budget, write_storage) {
-            Ok(value) => Ok(value),
-            Err(err) => {
-                *self = old;
-                Err(err)
-            }
-        }
-    }
-
-    pub fn add(
-        &mut self,
-        slots: u64,
-        credit_owner: Address,
-        credits: &mut Mapping<Address, u64>,
-    ) -> Result<()> {
-        let was_empty = self.amount == 0;
-        self.amount = self.amount.saturating_add(slots);
-
-        if was_empty && self.amount > 0 {
-            Self::with_budget(credit_owner, 1, || credits[self.user].write(self.amount))
-        } else {
-            credits[self.user].write(self.amount)
-        }
+        result.map(|value| (value, spent))
     }
 }
 
@@ -290,11 +241,7 @@ impl StorageCreditDeltas {
         self.deltas.push((user, slots));
     }
 
-    pub fn flush(
-        mut self,
-        credit_owner: Address,
-        credits: &mut Mapping<Address, u64>,
-    ) -> Result<()> {
+    pub fn flush(mut self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
         self.deltas.sort_by_key(|(user, _)| *user);
 
         for group in self.deltas.chunk_by(|a, b| a.0 == b.0) {
@@ -302,11 +249,7 @@ impl StorageCreditDeltas {
             let slots = group
                 .iter()
                 .fold(0u64, |total, (_, slots)| total.saturating_add(*slots));
-            StorageCreditAccount::new(user, credits[user].read()?).add(
-                slots,
-                credit_owner,
-                credits,
-            )?;
+            apply(user, slots)?;
         }
 
         Ok(())
