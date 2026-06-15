@@ -1030,6 +1030,7 @@ impl TIP20Token {
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
     /// Returns `None` when funds were blocked, and the caller should return immediately.
+    #[inline]
     fn validate_transfer(
         &mut self,
         spender: Option<Address>,
@@ -1401,6 +1402,7 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
+    #[inline]
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
@@ -1416,6 +1418,7 @@ impl Recipient {
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
+    #[inline]
     pub(crate) fn validate(&self) -> Result<()> {
         if self.target.is_zero() || self.target.is_tip20() {
             return Err(TIP20Error::invalid_recipient().into());
@@ -1427,12 +1430,14 @@ impl Recipient {
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
+    #[inline]
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
+    #[inline]
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr
             .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
