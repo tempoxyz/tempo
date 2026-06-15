@@ -136,43 +136,7 @@ impl PrimitiveSignature {
             return Ok(Self::Secp256k1(sig));
         }
 
-        // For all other lengths, first byte is the type identifier
-        if data.len() < 2 {
-            return Err("Signature data too short: expected type identifier + signature data");
-        }
-
-        let type_id = data[0];
-        let sig_data = &data[1..];
-
-        match type_id {
-            SIGNATURE_TYPE_P256 => {
-                if sig_data.len() != P256_SIGNATURE_LENGTH {
-                    return Err("Invalid P256 signature length");
-                }
-                Ok(Self::P256(P256SignatureWithPreHash {
-                    r: B256::from_slice(&sig_data[0..32]),
-                    s: B256::from_slice(&sig_data[32..64]),
-                    pub_key_x: B256::from_slice(&sig_data[64..96]),
-                    pub_key_y: B256::from_slice(&sig_data[96..128]),
-                    pre_hash: sig_data[128] != 0,
-                }))
-            }
-            SIGNATURE_TYPE_WEBAUTHN => {
-                let len = sig_data.len();
-                if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
-                    return Err("Invalid WebAuthn signature length");
-                }
-                Ok(Self::WebAuthn(WebAuthnSignature {
-                    r: B256::from_slice(&sig_data[len - 128..len - 96]),
-                    s: B256::from_slice(&sig_data[len - 96..len - 64]),
-                    pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
-                    pub_key_y: B256::from_slice(&sig_data[len - 32..]),
-                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
-                }))
-            }
-
-            _ => Err("Unknown signature type identifier"),
-        }
+        parse_typed_primitive_signature(data)
     }
 
     /// Encode signature to bytes
@@ -311,6 +275,48 @@ impl PrimitiveSignature {
                 ))
             }
         }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn parse_typed_primitive_signature(data: &[u8]) -> Result<PrimitiveSignature, &'static str> {
+    // For all other lengths, first byte is the type identifier
+    if data.len() < 2 {
+        return Err("Signature data too short: expected type identifier + signature data");
+    }
+
+    let type_id = data[0];
+    let sig_data = &data[1..];
+
+    match type_id {
+        SIGNATURE_TYPE_P256 => {
+            if sig_data.len() != P256_SIGNATURE_LENGTH {
+                return Err("Invalid P256 signature length");
+            }
+            Ok(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::from_slice(&sig_data[0..32]),
+                s: B256::from_slice(&sig_data[32..64]),
+                pub_key_x: B256::from_slice(&sig_data[64..96]),
+                pub_key_y: B256::from_slice(&sig_data[96..128]),
+                pre_hash: sig_data[128] != 0,
+            }))
+        }
+        SIGNATURE_TYPE_WEBAUTHN => {
+            let len = sig_data.len();
+            if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
+                return Err("Invalid WebAuthn signature length");
+            }
+            Ok(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r: B256::from_slice(&sig_data[len - 128..len - 96]),
+                s: B256::from_slice(&sig_data[len - 96..len - 64]),
+                pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
+                pub_key_y: B256::from_slice(&sig_data[len - 32..]),
+                webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+            }))
+        }
+
+        _ => Err("Unknown signature type identifier"),
     }
 }
 
