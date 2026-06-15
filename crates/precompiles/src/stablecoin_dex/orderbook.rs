@@ -428,6 +428,8 @@ impl From<Orderbook> for IStablecoinDEX::Orderbook {
 }
 
 /// Compute deterministic book key from ordered (base, quote) token pair
+#[cold]
+#[inline(never)]
 pub fn compute_book_key(base: Address, quote: Address) -> B256 {
     // Compute keccak256(abi.encodePacked(base, quote))
     let mut buf = [0u8; 40];
@@ -457,6 +459,8 @@ pub fn price_to_tick(price: u32) -> Result<i16> {
 ///
 /// # Errors
 /// - `InvalidTick` — tick is not a multiple of [`TICK_SPACING`]
+#[cold]
+#[inline(never)]
 pub fn validate_tick_spacing(tick: i16) -> Result<()> {
     if tick % TICK_SPACING != 0 {
         return Err(StablecoinDEXError::invalid_tick().into());
