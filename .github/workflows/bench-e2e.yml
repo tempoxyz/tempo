@@ -619,8 +619,10 @@ jobs:
       - name: Configure Tracy CPU sampling
         if: env.BENCH_TRACY != 'off'
         run: |
-          sudo sysctl kernel.perf_event_paranoid=1
+          sudo sysctl kernel.perf_event_paranoid=-1
           sudo sysctl kernel.kptr_restrict=0
+          cat /proc/sys/kernel/perf_event_paranoid
+          cat /proc/sys/kernel/kptr_restrict
 
       - name: Resolve PR head branch
         id: pr-info

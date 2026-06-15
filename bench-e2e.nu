@@ -986,6 +986,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let tracy_env_prefix = if $ctx.tracy in ["on" "full"] {
         $"TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) "
     } else { "" }
+    if $ctx.tracy != "off" {
+        print $"  Tracy mode: ($ctx.tracy), sampling hz: ($ctx.tracy_sampling_hz), env: ($tracy_env_prefix)"
+    }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
@@ -1017,7 +1020,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
         let capture_path = ($env.PATH | str join (char esep))
-        let capture_cmd = $"sudo env PATH=($capture_path) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
+        let capture_env = if $ctx.tracy in ["on" "full"] { $"TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) " } else { "" }
+        let capture_cmd = $"sudo env PATH=($capture_path) ($capture_env)tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
             print $"  Tracy-capture will start in ($ctx.tracy_offset)s($limit_msg)..."
             job spawn { sleep ($"($ctx.tracy_offset)sec" | into duration); sh -c $capture_cmd }
