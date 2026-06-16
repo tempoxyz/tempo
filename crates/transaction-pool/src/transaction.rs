@@ -297,7 +297,9 @@ impl TempoPooledTransaction {
 
     /// Returns a tuple that can be passed to block executor.
     pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+        let mut tx_env = self.tx_env().clone();
+        tx_env.pooled_payment_classification = Some(self.is_payment);
+        (tx_env, &self.inner.transaction)
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -918,6 +920,10 @@ mod tests {
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(pooled_tx.is_payment());
+        assert_eq!(
+            pooled_tx.executable().0.pooled_payment_classification,
+            Some(true)
+        );
     }
 
     #[test]
@@ -943,6 +949,10 @@ mod tests {
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(!pooled_tx.is_payment());
+        assert_eq!(
+            pooled_tx.executable().0.pooled_payment_classification,
+            Some(false)
+        );
     }
 
     #[test]
@@ -953,6 +963,10 @@ mod tests {
             .gas_limit(21000)
             .build_eip1559();
         assert!(!pooled_tx.is_payment());
+        assert_eq!(
+            pooled_tx.executable().0.pooled_payment_classification,
+            Some(false)
+        );
     }
 
     #[test]

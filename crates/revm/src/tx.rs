@@ -78,6 +78,9 @@ pub struct TempoTxEnv {
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
 
+    /// Optional T5+ payment classification supplied by the transaction pool.
+    pub pooled_payment_classification: Option<bool>,
+
     /// Sender-scoped transaction identifier used for replay-sensitive features.
     ///
     /// Synthetic transaction environments used by tests and simulations may leave this unset.
@@ -343,6 +346,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
+            pooled_payment_classification: None,
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
@@ -379,6 +383,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
+                pooled_payment_classification: None,
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
