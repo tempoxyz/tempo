@@ -59,6 +59,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
             ty: f.ty.clone(),
             slot: None,
             base_slot: None,
+            raw_domain: None,
         })
         .collect();
 

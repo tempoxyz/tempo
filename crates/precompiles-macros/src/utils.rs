@@ -1,10 +1,42 @@
 //! Utility functions for the contract macro implementation.
 
 use alloy::primitives::{U256, keccak256};
-use syn::{Attribute, Lit, Type};
+use syn::{
+    Attribute, Expr, Ident, Lit, Token, Type,
+    parse::{Parse, ParseStream},
+};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot)
-type ExtractedAttributes = (Option<U256>, Option<U256>);
+/// Return type for [`extract_attributes`]: (slot, base_slot, raw_map_domain)
+type ExtractedAttributes = (Option<U256>, Option<U256>, Option<Expr>);
+
+struct RawMapArgs {
+    domain: Expr,
+}
+
+impl Parse for RawMapArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident != "domain" {
+            return Err(syn::Error::new(
+                ident.span(),
+                "raw_map only supports `domain = ...`",
+            ));
+        }
+
+        input.parse::<Token![=]>()?;
+        let domain = input.parse()?;
+
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+
+        if !input.is_empty() {
+            return Err(input.error("unexpected raw_map attribute argument"));
+        }
+
+        Ok(Self { domain })
+    }
+}
 
 /// Parses a slot value from a literal.
 ///
@@ -85,12 +117,13 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     result
 }
 
-/// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
+/// Extracts `#[slot(N)]`, `#[base_slot(N)]`, and `#[raw_map(domain = X)]` attributes.
 ///
 /// This function iterates through the attributes a single time to find all
 /// relevant values. It returns a tuple containing:
 /// - The slot number (if present)
 /// - The base_slot number (if present)
+/// - The raw_map domain expression (if present)
 ///
 /// # Errors
 ///
@@ -100,6 +133,7 @@ pub(crate) fn to_camel_case(s: &str) -> String {
 pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAttributes> {
     let mut slot_attr: Option<U256> = None;
     let mut base_slot_attr: Option<U256> = None;
+    let mut raw_map_attr: Option<Expr> = None;
 
     for attr in attrs {
         // Extract `#[slot(N)]` attribute
@@ -135,9 +169,20 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
             let value: Lit = attr.parse_args()?;
             base_slot_attr = Some(parse_slot_value(&value)?);
         }
+        // Extract `#[raw_map(domain = X)]` attribute
+        else if attr.path().is_ident("raw_map") {
+            if raw_map_attr.is_some() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "duplicate `raw_map` attribute",
+                ));
+            }
+
+            raw_map_attr = Some(attr.parse_args::<RawMapArgs>()?.domain);
+        }
     }
 
-    Ok((slot_attr, base_slot_attr))
+    Ok((slot_attr, base_slot_attr, raw_map_attr))
 }
 
 /// Extracts array sizes from the `#[storable_arrays(...)]` attribute.
@@ -254,6 +299,19 @@ pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
         }
     }
     None
+}
+
+/// Returns true if a type path resolves to an `Address` type.
+pub(crate) fn is_address_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        return type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Address");
+    }
+
+    false
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Mapping storage tests.
 
 use super::*;
-use tempo_precompiles::storage::{Mapping, StorageCtx};
+use tempo_precompiles::storage::{Mapping, StorageCtx, domains, raw_address_slot};
 
 #[test]
 fn test_mapping() {
@@ -87,6 +87,45 @@ fn test_mapping() {
             layout.profile_mapping[test_address(20)].read().unwrap(),
             profile2
         );
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_raw_address_mapping() {
+    #[contract]
+    pub struct Layout {
+        #[raw_map(domain = crate::storage::domains::TIP20_BALANCES)]
+        pub balances: Mapping<Address, U256>,
+        #[raw_map(domain = crate::storage::domains::TIP20_PERMIT_NONCES)]
+        pub nonces: Mapping<Address, U256>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
+    let account = test_address(42);
+
+    assert_eq!(
+        layout.balances[account].slot(),
+        raw_address_slot::<{ domains::TIP20_BALANCES }>(account)
+    );
+    assert_eq!(
+        layout.nonces[account].slot(),
+        raw_address_slot::<{ domains::TIP20_PERMIT_NONCES }>(account)
+    );
+    assert_ne!(
+        layout.balances[account].slot(),
+        layout.nonces[account].slot()
+    );
+
+    StorageCtx::enter(&mut storage, || {
+        layout.balances[account].write(U256::from(123))?;
+        layout.nonces[account].write(U256::from(7))?;
+
+        assert_eq!(layout.balances[account].read()?, U256::from(123));
+        assert_eq!(layout.nonces[account].read()?, U256::from(7));
 
         Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
     })

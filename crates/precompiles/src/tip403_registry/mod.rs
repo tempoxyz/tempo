@@ -60,6 +60,7 @@ pub struct TIP403Registry {
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
+    #[raw_map(domain = crate::storage::domains::TIP403_RECEIVE_POLICIES)]
     receive_policies: Mapping<Address, ReceivePolicy>,
 }
 
@@ -949,15 +950,32 @@ mod tests {
     use crate::{
         SYSTEM_PRECOMPILES,
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{
+            ContractStorage, StorageCtx, domains, hashmap::HashMapStorageProvider, raw_address_slot,
+        },
     };
     use alloy::{
-        primitives::{Address, Log},
+        primitives::{Address, Log, U256},
         sol_types::SolEvent,
     };
     use rand_08::Rng;
     use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+
+    #[test]
+    fn test_raw_address_storage_domains() {
+        let registry = TIP403Registry::new();
+        let account = Address::repeat_byte(0x43);
+        let receive_policy_base = raw_address_slot::<{ domains::TIP403_RECEIVE_POLICIES }>(account);
+        let receive_policy = &registry.receive_policies[account];
+
+        assert_eq!(receive_policy.base_slot(), receive_policy_base);
+        assert_eq!(receive_policy.config.base_slot(), receive_policy_base);
+        assert_eq!(
+            receive_policy.recovery_address.slot(),
+            receive_policy_base + U256::ONE
+        );
+    }
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {

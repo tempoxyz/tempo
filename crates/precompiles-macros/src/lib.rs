@@ -118,6 +118,7 @@ struct FieldInfo {
     ty: Type,
     slot: Option<U256>,
     base_slot: Option<U256>,
+    raw_domain: Option<Expr>,
 }
 
 /// Classification of a field based on its type
@@ -166,12 +167,13 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
                 ));
             }
 
-            let (slot, base_slot) = extract_attributes(&field.attrs)?;
+            let (slot, base_slot, raw_domain) = extract_attributes(&field.attrs)?;
             Ok(FieldInfo {
                 name: name.to_owned(),
                 ty: field.ty,
                 slot,
                 base_slot,
+                raw_domain,
             })
         })
         .collect()

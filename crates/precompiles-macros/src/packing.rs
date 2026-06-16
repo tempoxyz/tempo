@@ -6,7 +6,7 @@
 use alloy::primitives::U256;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, Type};
+use syn::{Expr, Ident, Type};
 
 use crate::{FieldInfo, FieldKind};
 
@@ -79,6 +79,8 @@ pub(crate) struct LayoutField<'a> {
     pub kind: FieldKind<'a>,
     /// The assigned storage slot for this field (or base for const-eval chain)
     pub assigned_slot: SlotAssignment,
+    /// Optional raw address mapping domain.
+    pub raw_domain: Option<&'a Expr>,
 }
 
 /// Build layout IR from field information.
@@ -96,6 +98,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
 
     for field in fields.iter() {
         let kind = classify_field_type(&field.ty)?;
+        validate_raw_map(field, &kind)?;
 
         // Explicit fixed slot, doesn't affect auto-assignment chain
         let assigned_slot = if let Some(explicit) = field.slot {
@@ -117,10 +120,29 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
             ty: &field.ty,
             kind,
             assigned_slot,
+            raw_domain: field.raw_domain.as_ref(),
         });
     }
 
     Ok(result)
+}
+
+fn validate_raw_map(field: &FieldInfo, kind: &FieldKind<'_>) -> syn::Result<()> {
+    let Some(raw_domain) = &field.raw_domain else {
+        return Ok(());
+    };
+
+    match kind {
+        FieldKind::Mapping { key, .. } if crate::utils::is_address_type(key) => Ok(()),
+        FieldKind::Mapping { key, .. } => Err(syn::Error::new_spanned(
+            key,
+            "`raw_map` is only supported for `Mapping<Address, _>` fields",
+        )),
+        FieldKind::Direct(_) => Err(syn::Error::new_spanned(
+            raw_domain,
+            "`raw_map` can only be used on mapping fields",
+        )),
+    }
 }
 
 /// Generate packing constants from layout IR.
@@ -466,6 +488,7 @@ mod tests {
             ty,
             slot: slot.map(U256::from),
             base_slot: base_slot.map(U256::from),
+            raw_domain: None,
         }
     }
 

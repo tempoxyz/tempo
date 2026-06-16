@@ -111,7 +111,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tokenCount, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, baselineFeatures, featureFeatures, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, valscope, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, metrics, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
+            let pr, actor, mode, preset, duration, bloat, tokenCount, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, baselineFeatures, featureFeatures, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, valscope, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, metrics, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs, snapshotKey;
             let explicitWarmup = false;
             let explicitDuration = false;
             let explicitRunPairs = false;
@@ -123,11 +123,11 @@ jobs:
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
+            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'snapshot-key', 'state-layout-key']);
             const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics']);
             const bloatValues = new Set(['1', '10', '100']);
             const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'snapshot-key': '', 'state-layout-key': '' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -207,10 +207,13 @@ jobs:
               }
             }
             const errors = [];
+            if (defaults['snapshot-key'] && defaults['state-layout-key'] && defaults['snapshot-key'] !== defaults['state-layout-key']) {
+              invalid.push('`snapshot-key` and `state-layout-key` must match when both are provided');
+            }
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=tracy|off] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=tracy|off] [tracy-seconds=N] [tracy-offset=N] [snapshot-key=NAME] [state-layout-key=NAME] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -250,6 +253,10 @@ jobs:
             noCache = defaults['no-cache'];
             noSlack = defaults['no-slack'];
             benchArgs = defaults['bench-args'];
+            snapshotKey = defaults['snapshot-key'] || defaults['state-layout-key'];
+            if (snapshotKey) {
+              benchArgs = `snapshot-key=${snapshotKey}${benchArgs ? ` ${benchArgs}` : ''}`;
+            }
             benchEnv = defaults['bench-env'];
             baselineEnv = defaults['baseline-env'];
             featureEnv = defaults['feature-env'];
@@ -268,7 +275,7 @@ jobs:
               tracyOffset = String(Math.floor(Number(duration) / 2));
             }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=tracy|off] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=tracy|off] [tracy-seconds=N] [tracy-offset=N] [snapshot-key=NAME] [state-layout-key=NAME] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -461,6 +468,7 @@ jobs:
           ACK_VALSCOPE: ${{ steps.args.outputs.valscope }}
           ACK_BASELINE_ARGS: ${{ steps.args.outputs.baseline-args }}
           ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
+          ACK_BENCH_ARGS: ${{ steps.args.outputs.bench-args }}
           ACK_GAS_LIMIT: ${{ steps.args.outputs.gas-limit }}
           ACK_RUN_PAIRS: ${{ steps.args.outputs.run-pairs }}
           ACK_NO_CACHE: ${{ steps.args.outputs.no-cache }}
@@ -512,9 +520,12 @@ jobs:
             const runPairs = process.env.ACK_RUN_PAIRS || '2';
             const noCache = process.env.ACK_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
+            const benchArgs = process.env.ACK_BENCH_ARGS || '';
+            const snapshotKeyMatch = benchArgs.match(/(?:^|\s)(?:--)?(?:snapshot-key|state-layout-key|BENCH_SNAPSHOT_KEY)=([^\s]+)/);
+            const snapshotKeyNote = snapshotKeyMatch ? `, snapshot-key: \`${snapshotKeyMatch[1].replace(/`/g, '\\`')}\`` : '';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${naNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${naNote}${noCacheNote}${snapshotKeyNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,

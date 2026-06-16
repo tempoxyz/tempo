@@ -111,6 +111,98 @@ def removed-node-args-label [removed: list<string>] {
     }
 }
 
+def e2e-env-token-value [env_text: string, name: string] {
+    let trimmed = ($env_text | str trim)
+    if $trimmed == "" {
+        return ""
+    }
+
+    for token in ($trimmed | split row " " | where { |arg| $arg != "" }) {
+        if ($token | str starts-with $"($name)=") {
+            return ($token | str replace $"($name)=" "")
+        }
+    }
+
+    ""
+}
+
+def e2e-snapshot-key-token-value [arg: string] {
+    let normalized = ($arg | str replace --regex '^--' '')
+    for name in ["snapshot-key" "state-layout-key" "BENCH_SNAPSHOT_KEY"] {
+        if ($normalized | str starts-with $"($name)=") {
+            return ($normalized | str replace $"($name)=" "")
+        }
+    }
+
+    ""
+}
+
+def e2e-snapshot-key-from-bench-args [bench_args: string] {
+    for arg in (txgen-parse-bench-args $bench_args) {
+        let value = (e2e-snapshot-key-token-value $arg)
+        if $value != "" {
+            return $value
+        }
+    }
+
+    ""
+}
+
+def e2e-strip-snapshot-key-bench-args [bench_args: string] {
+    txgen-parse-bench-args $bench_args
+    | where { |arg| (e2e-snapshot-key-token-value $arg) == "" }
+    | str join " "
+}
+
+def e2e-sanitize-snapshot-key [key: string] {
+    let sanitized = ($key | str trim | str replace --all --regex '[^A-Za-z0-9._+-]' "_")
+    if $sanitized == "" {
+        print "Error: snapshot key must contain at least one non-separator character"
+        exit 1
+    }
+
+    $sanitized
+}
+
+def e2e-resolve-snapshot-key [bench_env: string, bench_args: string] {
+    let env_key = ($env | get --optional BENCH_SNAPSHOT_KEY)
+    if $env_key != null and ($env_key | str trim) != "" {
+        return (e2e-sanitize-snapshot-key $env_key)
+    }
+
+    let bench_env_key = (e2e-env-token-value $bench_env "BENCH_SNAPSHOT_KEY")
+    if $bench_env_key != "" {
+        return (e2e-sanitize-snapshot-key $bench_env_key)
+    }
+
+    let bench_args_key = (e2e-snapshot-key-from-bench-args $bench_args)
+    if $bench_args_key != "" {
+        return (e2e-sanitize-snapshot-key $bench_args_key)
+    }
+
+    ""
+}
+
+def grant-sys-nice-capability [binaries: list<string>] {
+    for bin in ($binaries | where { |b| $b != "" } | uniq) {
+        let setcap_result = (sudo setcap cap_sys_nice+ep $bin | complete)
+        if $setcap_result.stdout != "" { print $setcap_result.stdout }
+        if $setcap_result.stderr != "" { print $setcap_result.stderr }
+        if $setcap_result.exit_code != 0 {
+            error make { msg: $"failed to grant cap_sys_nice to ($bin)" }
+        }
+
+        let getcap_result = (getcap $bin | complete)
+        if $getcap_result.stdout != "" {
+            print $getcap_result.stdout
+        }
+        if $getcap_result.stderr != "" { print $getcap_result.stderr }
+        if $getcap_result.exit_code != 0 or not ($getcap_result.stdout | str contains "cap_sys_nice=ep") {
+            error make { msg: $"failed to verify cap_sys_nice on ($bin)" }
+        }
+    }
+}
+
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
     if $result.stdout != "" { print $result.stdout }
@@ -804,13 +896,13 @@ def init-local-e2e-side [
     generated_node_dir: string,
     generated_genesis: string,
     trusted_peers: string,
+    generated_trusted_peers: string,
     bloat: int,
     bloat_file: string,
     tempo_bin: string,
     marker: record,
 ] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers.txt"
 
     bench-clean-datadir $datadir
     mkdir $datadir
@@ -1283,7 +1375,9 @@ def "main e2e" [
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
+    let snapshot_key = (e2e-resolve-snapshot-key $bench_env $bench_args)
+    let txgen_bench_args = (e2e-strip-snapshot-key-bench-args $bench_args)
+    txgen-validate-bench-args $txgen_bench_args
     if $tracy not-in ["off" "tracy"] {
         print $"Error: --tracy must be one of: off, tracy \(got '($tracy)'\)"
         exit 1
@@ -1336,8 +1430,10 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let snapshot_suffix = if $snapshot_key == "" { "" } else { $"_($snapshot_key)" }
+    let snapshot_key_label = if $snapshot_key == "" { "default" } else { $snapshot_key }
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($snapshot_suffix)"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($snapshot_suffix)"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
@@ -1358,8 +1454,20 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
+    let bloat_tmp_key = (e2e-sanitize-snapshot-key $"($benchmark_id)-($snapshot_key_label)")
+    let bloat_tmp_dir = $"($E2E_BLOAT_TMP_DIR)-($bloat_tmp_key)"
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
+    }
+    print $"Using local e2e snapshot key: ($snapshot_key_label)"
+    if $snapshot_key != "" {
+        let current_config = ($env | get -o BENCH_CONFIG | default "")
+        let updated_config = $"($current_config), snapshot-key: `($snapshot_key_label)`"
+        $env.BENCH_CONFIG = $updated_config
+        let github_env = ($env | get -o GITHUB_ENV | default "")
+        if $github_env != "" {
+            $"BENCH_CONFIG=($updated_config)\n" | save --append $github_env
+        }
     }
 
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
@@ -1383,15 +1491,16 @@ def "main e2e" [
     }
 
     if $should_init_snapshots {
-        let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
+        let init_dir = $"($LOCALNET_DIR)/e2e-local-init-($bloat_tmp_key)"
         let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        let generated_trusted_peers = $"($init_dir)/trusted-peers.txt"
+        let bloat_file = $"($bloat_tmp_dir)/state_bloat.bin"
         mark-schelk-dirty-at $E2E_A_STATE_PATH
         mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
-        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
-        mkdir $E2E_BLOAT_TMP_DIR
+        if ($bloat_tmp_dir | path exists) { rm -rf $bloat_tmp_dir }
+        mkdir $bloat_tmp_dir
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
@@ -1422,11 +1531,15 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            snapshot_key: $snapshot_key_label
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
-            rm -rf $E2E_BLOAT_TMP_DIR
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+        if ($bloat_tmp_dir | path exists) {
+            rm -rf $bloat_tmp_dir
+        }
+        if ($init_dir | path exists) {
+            rm -rf $init_dir
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
@@ -1570,7 +1683,7 @@ def "main e2e" [
         txgen_cpus: $E2E_TXGEN_CPUS
         baseline_args: $baseline_args
         feature_args: $feature_args
-        bench_args: $bench_args
+        bench_args: $txgen_bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
         bench_env: $bench_env

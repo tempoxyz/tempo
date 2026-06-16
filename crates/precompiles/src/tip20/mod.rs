@@ -95,8 +95,10 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
+    #[raw_map(domain = crate::storage::domains::TIP20_BALANCES)]
     balances: Mapping<Address, U256>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
+    #[raw_map(domain = crate::storage::domains::TIP20_PERMIT_NONCES)]
     permit_nonces: Mapping<Address, U256>,
     paused: bool,
     supply_cap: U256,
@@ -106,6 +108,7 @@ pub struct TIP20Token {
     // TIP20 Rewards
     global_reward_per_token: U256,
     opted_in_supply: u128,
+    #[raw_map(domain = crate::storage::domains::TIP20_USER_REWARD_INFO)]
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 
@@ -1559,7 +1562,7 @@ pub(crate) mod tests {
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, domains, hashmap::HashMapStorageProvider, raw_address_slot},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
         tip403_registry::REJECT_ALL_POLICY_ID,
     };
@@ -1569,6 +1572,31 @@ pub(crate) mod tests {
     use tempo_contracts::precompiles::{
         IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
     };
+
+    #[test]
+    fn test_raw_address_storage_domains() {
+        let token = TIP20Token::__new(Address::random());
+        let account = Address::repeat_byte(0x42);
+
+        assert_eq!(
+            token.balances[account].slot(),
+            raw_address_slot::<{ domains::TIP20_BALANCES }>(account)
+        );
+        assert_eq!(
+            token.permit_nonces[account].slot(),
+            raw_address_slot::<{ domains::TIP20_PERMIT_NONCES }>(account)
+        );
+
+        let reward_base = raw_address_slot::<{ domains::TIP20_USER_REWARD_INFO }>(account);
+        let reward_info = &token.user_reward_info[account];
+        assert_eq!(reward_info.base_slot(), reward_base);
+        assert_eq!(reward_info.reward_recipient.slot(), reward_base);
+        assert_eq!(reward_info.reward_per_token.slot(), reward_base + U256::ONE);
+        assert_eq!(
+            reward_info.reward_balance.slot(),
+            reward_base + U256::from(2)
+        );
+    }
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {

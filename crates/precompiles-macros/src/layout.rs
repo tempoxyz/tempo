@@ -13,7 +13,11 @@ pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::To
             quote! { <#ty as crate::storage::StorableType>::Handler }
         }
         FieldKind::Mapping { key, value } => {
-            quote! { <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::Handler }
+            if let Some(domain) = field.raw_domain {
+                quote! { <crate::storage::RawAddressMapping<#value, { #domain }> as crate::storage::StorableType>::Handler }
+            } else {
+                quote! { <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::Handler }
+            }
         }
     };
 
@@ -93,10 +97,18 @@ pub(crate) fn gen_handler_field_init(
             }
         }
         FieldKind::Mapping { key, value } => {
-            quote! {
-                #field_name: <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::handle(
-                    #slot_expr, crate::storage::LayoutCtx::FULL, address
-                )
+            if let Some(domain) = field.raw_domain {
+                quote! {
+                    #field_name: <crate::storage::RawAddressMapping<#value, { #domain }> as crate::storage::StorableType>::handle(
+                        #slot_expr, crate::storage::LayoutCtx::FULL, address
+                    )
+                }
+            } else {
+                quote! {
+                    #field_name: <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::handle(
+                        #slot_expr, crate::storage::LayoutCtx::FULL, address
+                    )
+                }
             }
         }
     }
@@ -228,14 +240,58 @@ pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_mac
     // Generate constants and collision check functions
     let constants = packing::gen_constants_from_ir(allocated_fields, false);
     let collision_checks = gen_collision_checks(allocated_fields);
+    let raw_domain_checks = gen_raw_domain_checks(allocated_fields);
 
     quote! {
         pub mod slots {
             use super::*;
 
             #constants
+            #raw_domain_checks
             #collision_checks
         }
+    }
+}
+
+/// Generate compile-time checks for raw address mapping domains.
+fn gen_raw_domain_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
+    let raw_domains: Vec<_> = allocated_fields
+        .iter()
+        .filter_map(|field| field.raw_domain.map(|domain| (field.name, domain)))
+        .collect();
+
+    let nonzero_checks = raw_domains.iter().map(|(name, domain)| {
+        quote! {
+            const _: () = assert!(
+                #domain != 0u16,
+                concat!("raw_map domain for `", stringify!(#name), "` must not be 0")
+            );
+        }
+    });
+
+    let mut duplicate_checks = Vec::new();
+    for i in 0..raw_domains.len() {
+        for j in i + 1..raw_domains.len() {
+            let (left_name, left_domain) = raw_domains[i];
+            let (right_name, right_domain) = raw_domains[j];
+            duplicate_checks.push(quote! {
+                const _: () = assert!(
+                    #left_domain != #right_domain,
+                    concat!(
+                        "duplicate raw_map domain for `",
+                        stringify!(#left_name),
+                        "` and `",
+                        stringify!(#right_name),
+                        "`"
+                    )
+                );
+            });
+        }
+    }
+
+    quote! {
+        #(#nonzero_checks)*
+        #(#duplicate_checks)*
     }
 }
 

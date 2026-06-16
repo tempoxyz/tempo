@@ -1,4 +1,4 @@
-//! Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
+//! Type-safe wrappers for precompile storage mappings.
 
 use alloy::primitives::{Address, U256};
 use std::{
@@ -6,12 +6,12 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::HandlerCache};
+use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, domains, types::HandlerCache};
 
-/// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
+/// Type-safe access wrapper for hash-based EVM storage mappings.
 ///
 /// This struct does not store data itself. Instead, it provides a zero-cost abstraction
-/// for accessing mapping storage slots using Solidity's hash-based layout. It wraps a
+/// for accessing mapping storage slots using Tempo's hash-based layout. It wraps a
 /// base slot number and provides methods to compute the actual storage slots for keys.
 ///
 /// # Type Parameters
@@ -20,14 +20,14 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 /// - `V`: Value type (must implement `StorableType`)
 ///
 /// `Mapping<K, V>` is essentially a slot computation helper. The `[key]` method
-/// performs the keccak256 hash to compute the actual storage slot and returns a
+/// performs the BLAKE3 hash to compute the actual storage slot and returns a
 /// `Handler` that can be used for read/write operations.
 ///
 /// # Storage Layout
 ///
-/// Mappings use a Solidity-equivalent storage layout:
+/// Mappings use a hash-derived storage layout:
 /// - Base slot: stored in `base_slot` field (never accessed directly)
-/// - Actual slot for key `k`: `keccak256(k || base_slot)`
+/// - Actual slot for key `k`: `blake3(k || base_slot)`, tagged with namespace `0x00`
 ///
 /// # Usage Pattern
 ///
@@ -153,19 +153,117 @@ where
     }
 }
 
+/// Computes the base slot for a raw address-keyed mapping entry.
+///
+/// The key format is:
+///
+/// ```text
+/// 0x01 || precompile_id || field_id || reserved || address:20 || reserved:8
+/// ```
+///
+/// Multi-slot values occupy consecutive offsets from this base slot.
+#[inline]
+pub fn raw_address_slot<const DOMAIN: u16>(key: Address) -> U256 {
+    debug_assert_ne!(DOMAIN, 0, "raw address mapping domain 0 is reserved");
+
+    let mut bytes = [0u8; 32];
+    bytes[0] = domains::RAW_NAMESPACE;
+    bytes[1] = domains::precompile_id(DOMAIN);
+    bytes[2] = domains::field_id(DOMAIN);
+    bytes[4..24].copy_from_slice(key.as_slice());
+
+    U256::from_be_bytes(bytes)
+}
+
+/// Type-safe access wrapper for raw address-keyed mappings.
+///
+/// Raw address mappings skip hashing for the first-level address key. The const generic
+/// domain must be globally stable and unique for the map.
+#[derive(Debug, Clone)]
+pub struct RawAddressMapping<V: StorableType, const DOMAIN: u16> {
+    address: Address,
+    cache: HandlerCache<Address, V::Handler>,
+}
+
+impl<V: StorableType, const DOMAIN: u16> RawAddressMapping<V, DOMAIN> {
+    /// Creates a new raw address mapping for the given contract address.
+    #[inline]
+    pub fn new(address: Address) -> Self {
+        Self {
+            address,
+            cache: HandlerCache::new(),
+        }
+    }
+
+    /// Returns the base storage slot for a given address key.
+    #[inline]
+    pub fn slot(&self, key: Address) -> U256 {
+        raw_address_slot::<DOMAIN>(key)
+    }
+
+    /// Returns a handler for the given address key.
+    pub fn at(&self, key: &Address) -> &V::Handler {
+        let address = self.address;
+        self.cache.get_or_insert(key, || {
+            V::handle(raw_address_slot::<DOMAIN>(*key), LayoutCtx::FULL, address)
+        })
+    }
+
+    /// Returns a mutable handler for the given address key.
+    pub fn at_mut(&mut self, key: &Address) -> &mut V::Handler {
+        let address = self.address;
+        self.cache.get_or_insert_mut(key, || {
+            V::handle(raw_address_slot::<DOMAIN>(*key), LayoutCtx::FULL, address)
+        })
+    }
+}
+
+impl<V: StorableType, const DOMAIN: u16> Default for RawAddressMapping<V, DOMAIN> {
+    fn default() -> Self {
+        Self::new(Address::ZERO)
+    }
+}
+
+impl<V: StorableType, const DOMAIN: u16> Index<Address> for RawAddressMapping<V, DOMAIN> {
+    type Output = V::Handler;
+
+    fn index(&self, key: Address) -> &Self::Output {
+        self.at(&key)
+    }
+}
+
+impl<V: StorableType, const DOMAIN: u16> IndexMut<Address> for RawAddressMapping<V, DOMAIN> {
+    fn index_mut(&mut self, key: Address) -> &mut Self::Output {
+        self.at_mut(&key)
+    }
+}
+
+impl<V, const DOMAIN: u16> StorableType for RawAddressMapping<V, DOMAIN>
+where
+    V: StorableType,
+{
+    const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Self;
+
+    fn handle(_slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
+        Self::new(address)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::StorageKey;
-    use alloy::primitives::{Address, B256, keccak256};
+    use alloy::primitives::{Address, B256};
 
-    // Backward compatibility helper to verify the trait impl.
-    fn old_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
+    fn hashed_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
         let key = key.as_ref();
         let mut buf = [0u8; 64];
         buf[32 - key.len()..32].copy_from_slice(key);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
+        let mut hash = *blake3::hash(&buf).as_bytes();
+        hash[0] = domains::HASHED_NAMESPACE;
+        U256::from_be_bytes(hash)
     }
 
     #[test]
@@ -180,33 +278,69 @@ mod tests {
         // Slot in big-endian
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
-        let expected = U256::from_be_bytes(keccak256(buf).0);
+        let mut hash = *blake3::hash(&buf).as_bytes();
+        hash[0] = domains::HASHED_NAMESPACE;
+        let expected = U256::from_be_bytes(hash);
         let computed = key.mapping_slot(base_slot);
 
         assert_eq!(computed, expected, "mapping_slot encoding mismatch");
+        assert_eq!(computed.to_be_bytes::<32>()[0], domains::HASHED_NAMESPACE);
     }
 
     #[test]
-    fn test_mapping_slot_matches_old_impl() {
+    fn test_mapping_slot_matches_manual_impl() {
         let slot = U256::random();
 
         let addr = Address::random();
         assert_eq!(
             addr.mapping_slot(slot),
-            old_mapping_slot(addr.as_slice(), slot),
+            hashed_mapping_slot(addr.as_slice(), slot),
         );
 
         let b256 = B256::random();
         assert_eq!(
             b256.mapping_slot(slot),
-            old_mapping_slot(b256.as_slice(), slot),
+            hashed_mapping_slot(b256.as_slice(), slot),
         );
 
         let u256 = U256::random();
         assert_eq!(
             u256.mapping_slot(slot),
-            old_mapping_slot(u256.to_be_bytes::<32>(), slot),
+            hashed_mapping_slot(u256.to_be_bytes::<32>(), slot),
         );
+    }
+
+    #[test]
+    fn test_raw_address_slot_encoding() {
+        let key = Address::random();
+        let slot = raw_address_slot::<{ domains::TIP20_BALANCES }>(key);
+        let bytes = slot.to_be_bytes::<32>();
+
+        assert_eq!(bytes[0], domains::RAW_NAMESPACE);
+        assert_eq!(bytes[1], domains::PRECOMPILE_TIP20);
+        assert_eq!(bytes[2], 0x01);
+        assert_eq!(bytes[3], 0x00);
+        assert_eq!(&bytes[4..24], key.as_slice());
+        assert_eq!(&bytes[24..], &[0u8; 8]);
+    }
+
+    #[test]
+    fn test_raw_address_mapping_basic_properties() {
+        let address = Address::random();
+        let mapping = RawAddressMapping::<U256, { domains::TIP20_BALANCES }>::new(address);
+
+        let key = Address::random();
+        assert_eq!(
+            mapping.slot(key),
+            raw_address_slot::<{ domains::TIP20_BALANCES }>(key)
+        );
+        assert_eq!(
+            mapping[key].slot(),
+            raw_address_slot::<{ domains::TIP20_BALANCES }>(key)
+        );
+
+        let other = Address::random();
+        assert_ne!(mapping[key].slot(), mapping[other].slot());
     }
 
     #[test]

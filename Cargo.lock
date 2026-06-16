@@ -13406,6 +13406,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "blake3",
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
