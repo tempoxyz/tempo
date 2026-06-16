@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
@@ -16,7 +16,7 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
@@ -191,13 +191,11 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches = storage_touches_for_transaction(
-                    &tx,
-                    prewarm.evm_env.block_env.beneficiary,
-                    expiring_nonce_offset,
-                );
-
+            let touched = if let Some(touches) = tip20_transfer_storage_touches_for_transaction(
+                &tx,
+                prewarm.evm_env.block_env.beneficiary,
+                expiring_nonce_offset,
+            ) {
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
@@ -245,6 +243,86 @@ impl BestTransactionsPrewarming {
             );
         });
     }
+}
+
+/// Builds direct storage touches for payment transactions whose calls are all
+/// TIP20 transfer-family calls. Returns `None` so callers can fall back to
+/// pre-executing the transaction when any call needs general EVM handling.
+fn tip20_transfer_storage_touches_for_transaction(
+    tx: &BestTransaction,
+    fee_recipient: Address,
+    expiring_nonce_offset: Option<usize>,
+) -> Option<Vec<StorageTouch>> {
+    if !tx.transaction.is_payment() {
+        return None;
+    }
+
+    let mut touches = Vec::new();
+    let sender = tx.transaction.sender();
+    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
+    let fee_token = tx.transaction.effective_fee_token();
+
+    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+
+    let mut has_call = false;
+    for (kind, input) in tx.transaction.inner().calls() {
+        has_call = true;
+        add_tip20_transfer_call_touches(&mut touches, sender, kind, input)?;
+    }
+
+    if !has_call {
+        return None;
+    }
+
+    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
+
+    Some(touches)
+}
+
+fn add_tip20_transfer_call_touches(
+    touches: &mut Vec<StorageTouch>,
+    sender: Address,
+    kind: TxKind,
+    input: &[u8],
+) -> Option<()> {
+    let token = kind.to().copied()?;
+    if !token.is_tip20() {
+        return None;
+    }
+
+    add_tip20_common_touches(touches, token);
+    match ITIP20::ITIP20Calls::abi_decode(input).ok()? {
+        ITIP20::ITIP20Calls::transfer(call) => {
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferWithMemo(call) => {
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFrom(call) => {
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        _ => return None,
+    }
+
+    Some(())
 }
 
 impl Drop for BestTransactionsPrewarming {
@@ -410,67 +488,6 @@ impl StorageTouch {
     }
 }
 
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
-}
-
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
-    let mut has_call = false;
-    for (kind, input) in calls {
-        has_call = true;
-        if !is_tip20_transfer_call(kind, input) {
-            return false;
-        }
-    }
-    has_call
-}
-
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
-    let Some(token) = kind.to().copied() else {
-        return false;
-    };
-    if !token.is_tip20() {
-        return false;
-    }
-
-    matches!(
-        ITIP20::ITIP20Calls::abi_decode(input),
-        Ok(ITIP20::ITIP20Calls::transfer(_)
-            | ITIP20::ITIP20Calls::transferWithMemo(_)
-            | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
-    )
-}
-
-fn storage_touches_for_transaction(
-    tx: &BestTransaction,
-    fee_recipient: Address,
-    expiring_nonce_offset: Option<usize>,
-) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
-    let sender = tx.transaction.sender();
-    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-        tx.transaction
-            .inner()
-            .fee_token()
-            .unwrap_or(DEFAULT_FEE_TOKEN)
-    });
-
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
-
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
-        }
-    }
-
-    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
-
-    touches
-}
-
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
@@ -480,70 +497,6 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
     add_tip20_balance_touch(touches, fee_token, fee_payer);
     add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
     add_tip20_reward_touches(touches, fee_token, fee_payer);
-}
-
-fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
-    sender: Address,
-    kind: TxKind,
-    input: &[u8],
-) {
-    let Some(token) = kind.to().copied() else {
-        return;
-    };
-    if !token.is_tip20() {
-        return;
-    }
-
-    add_tip20_common_touches(touches, token);
-    let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
-        return;
-    };
-
-    match call {
-        ITIP20::ITIP20Calls::transfer(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFrom(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::approve(call) => {
-            add_tip20_allowance_touch(touches, token, sender, call.spender);
-        }
-        ITIP20::ITIP20Calls::mint(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::mintWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_reward_touches(touches, token, sender);
-        }
-        _ => {}
-    }
 }
 
 fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
@@ -698,6 +651,7 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+    use tempo_precompiles::DEFAULT_FEE_TOKEN;
     use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -887,14 +841,14 @@ mod tests {
     }
 
     #[test]
-    fn tip20_touch_collection_dedups_overlapping_fee_and_call_slots() {
+    fn tip20_transfer_touch_collection_dedups_overlapping_fee_and_call_slots() {
         let sender = Address::random();
         let recipient = Address::random();
         let token = DEFAULT_FEE_TOKEN;
         let mut touches = Vec::new();
 
         add_tip20_fee_touches(&mut touches, token, sender);
-        add_tip20_call_touches(
+        add_tip20_transfer_call_touches(
             &mut touches,
             sender,
             TxKind::Call(token),
@@ -903,7 +857,8 @@ mod tests {
                 amount: U256::from(1),
             }
             .abi_encode(),
-        );
+        )
+        .expect("transfer touches");
 
         for (index, touch) in touches.iter().enumerate() {
             assert!(
@@ -949,18 +904,34 @@ mod tests {
             .abi_encode(),
         );
 
-        assert!(is_tip20_transfer_call(TxKind::Call(token), &transfer));
-        assert!(is_tip20_transfer_calls(
-            [&transfer, &transfer_from]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
-        assert!(!is_tip20_transfer_call(TxKind::Call(token), &approve));
-        assert!(!is_tip20_transfer_calls(
-            [&transfer, &approve]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
+        let mut touches = Vec::new();
+        assert!(
+            add_tip20_transfer_call_touches(
+                &mut touches,
+                Address::random(),
+                TxKind::Call(token),
+                &transfer
+            )
+            .is_some()
+        );
+        assert!(
+            add_tip20_transfer_call_touches(
+                &mut touches,
+                Address::random(),
+                TxKind::Call(token),
+                &transfer_from
+            )
+            .is_some()
+        );
+        assert!(
+            add_tip20_transfer_call_touches(
+                &mut touches,
+                Address::random(),
+                TxKind::Call(token),
+                &approve
+            )
+            .is_none()
+        );
     }
 
     #[test]
