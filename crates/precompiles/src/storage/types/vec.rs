@@ -438,6 +438,8 @@ fn clear_elements<T: Storable, S: StorageOps>(
 /// Load packed elements from storage.
 ///
 /// Used when `T::BYTES <= 16`, allowing multiple elements per slot.
+#[cold]
+#[inline(never)]
 fn load_packed_elements<T: Storable, S: StorageOps>(
     storage: &S,
     data_start: U256,
@@ -489,6 +491,8 @@ fn load_packed_elements<T: Storable, S: StorageOps>(
 /// Store packed elements to storage.
 ///
 /// Packs multiple small elements into each 32-byte slot using bit manipulation.
+#[cold]
+#[inline(never)]
 fn store_packed_elements<T: Storable, S: StorageOps>(
     elements: &[T],
     storage: &mut S,
@@ -516,6 +520,8 @@ fn store_packed_elements<T: Storable, S: StorageOps>(
 /// Build a packed storage slot from multiple elements.
 ///
 /// Takes a slice of elements and packs them into a single U256 word.
+#[cold]
+#[inline(never)]
 fn build_packed_slot<T: Storable>(elements: &[T], byte_count: usize) -> Result<U256> {
     debug_assert!(T::BYTES <= 16, "build_packed_slot requires T::BYTES <= 16");
     let mut slot_value = PackedSlot(U256::ZERO);
@@ -537,6 +543,8 @@ fn build_packed_slot<T: Storable>(elements: &[T], byte_count: usize) -> Result<U
 ///
 /// Used when elements don't pack efficiently (32 bytes or multi-slot types).
 /// Each element occupies `T::SLOTS` consecutive slots.
+#[cold]
+#[inline(never)]
 fn load_unpacked_elements<T: Storable, S: StorageOps>(
     storage: &S,
     data_start: U256,
@@ -555,6 +563,8 @@ fn load_unpacked_elements<T: Storable, S: StorageOps>(
 /// Store unpacked elements to storage.
 ///
 /// Each element uses `T::SLOTS` consecutive slots.
+#[cold]
+#[inline(never)]
 fn store_unpacked_elements<T: Storable, S: StorageOps>(
     elements: &[T],
     storage: &mut S,
