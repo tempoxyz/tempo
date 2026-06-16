@@ -8,7 +8,6 @@ pub mod gas {
 
     use alloy_eips::eip1559::BaseFeeParams;
 
-    pub const SSTORE_SET: u64 = 20_000;
     const COLD_SLOAD: u64 = 2100;
     const WARM_SLOAD: u64 = 100;
     const WARM_SSTORE_RESET: u64 = 2900;

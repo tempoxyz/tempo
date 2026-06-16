@@ -52,15 +52,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         }
     }
 
-    /// Enables or disables TIP-1060 storage-credit accounting for storage writes through this provider.
-    ///
-    /// This is intentionally provider-scoped so protocol-internal phases such as fee collection can
-    /// opt out without affecting user execution or other precompile calls.
-    pub fn with_tip1060_storage_credits(mut self, enabled: bool) -> Self {
-        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
-        self
-    }
-
     /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
         Self::new(

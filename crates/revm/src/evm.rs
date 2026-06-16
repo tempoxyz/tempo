@@ -587,23 +587,14 @@ mod tests {
             &self,
             tx: TempoTransaction,
         ) -> eyre::Result<tempo_primitives::AASigned> {
-            self.sign_tx_keychain_for_user(tx, self.address)
-        }
-
-        /// Sign a keychain transaction as this access key for the given root user.
-        fn sign_tx_keychain_for_user(
-            &self,
-            tx: TempoTransaction,
-            user: Address,
-        ) -> eyre::Result<tempo_primitives::AASigned> {
             // V2: sign keccak256(0x04 || sig_hash || user_address)
             let sig_hash = tx.signature_hash();
             let effective_hash = alloy_primitives::keccak256(
-                [&[0x04], sig_hash.as_slice(), user.as_slice()].concat(),
+                [&[0x04], sig_hash.as_slice(), self.address.as_slice()].concat(),
             );
             let webauthn_sig = self.sign_webauthn(effective_hash.as_slice())?;
             let keychain_sig =
-                KeychainSignature::new(user, PrimitiveSignature::WebAuthn(webauthn_sig));
+                KeychainSignature::new(self.address, PrimitiveSignature::WebAuthn(webauthn_sig));
             Ok(tx.into_signed(TempoSignature::Keychain(keychain_sig)))
         }
     }
@@ -3097,8 +3088,7 @@ mod tests {
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input =
-            ITIP1060StorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        let set_budget_input = ITIP1060StorageCredits::setBudgetCall { credits: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 

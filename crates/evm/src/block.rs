@@ -189,7 +189,7 @@ where
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
-    ) -> Result<bool, BlockExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         let info = self
             .inner
             .evm
@@ -205,9 +205,8 @@ where
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
             self.inner.evm.db_mut().commit(state);
-            return Ok(true);
         }
-        Ok(false)
+        Ok(())
     }
 
     /// Validates a system transaction.
@@ -483,20 +482,17 @@ where
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            _ = self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            _ = self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            _ = self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
+            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            _ = self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            _ = self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
-        }
-        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
-            _ = self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
         }
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;

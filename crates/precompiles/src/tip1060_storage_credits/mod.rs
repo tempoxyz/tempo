@@ -64,8 +64,11 @@ impl From<CreditMode> for Mode {
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    pub budget: u64,
+    /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Remaining number of credits that may be spent directly in `Direct` mode.
+    pub budget: u64,
+    /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
 
@@ -76,8 +79,8 @@ impl TryFrom<U256> for TransientState {
     fn try_from(value: U256) -> Result<Self> {
         let limbs = value.as_limbs();
         Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
+            mode: (limbs[0] as u8).try_into()?,
+            budget: limbs[1],
             pending_refunds: limbs[3],
         })
     }
@@ -86,7 +89,7 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
+        Self::from_limbs([value.mode as u64, value.budget, 0, value.pending_refunds])
     }
 }
 
@@ -181,7 +184,7 @@ impl TIP1060StorageCredits {
     ///
     /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
     /// before this returns so later storage writes cannot consume the remaining allowance.
-    pub fn with_storage_credits_limit<T>(
+    pub fn with_storage_credits_budget<T>(
         &mut self,
         credit_owner: Address,
         limit: u64,

@@ -102,10 +102,11 @@ impl StablecoinDEX {
         let updated = current.saturating_add(slots);
 
         if current == 0 && updated > 0 {
-            let (_, spent) =
-                TIP1060StorageCredits::new().with_storage_credits_limit(self.address, 1, || {
-                    self.dex_storage_credits[user].write(updated)
-                })?;
+            let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
+                self.address,
+                1,
+                || self.dex_storage_credits[user].write(updated),
+            )?;
 
             if spent != 1 {
                 return Err(TempoPrecompileError::Fatal(format!(
@@ -140,10 +141,11 @@ impl StablecoinDEX {
         let checkpoint = self.storage.checkpoint();
         self.dex_storage_credits[user].write(current - reserved)?;
 
-        let result =
-            TIP1060StorageCredits::new().with_storage_credits_limit(self.address, reserved, || {
-                self.orders[order.order_id()].write(order)
-            });
+        let result = TIP1060StorageCredits::new().with_storage_credits_budget(
+            self.address,
+            reserved,
+            || self.orders[order.order_id()].write(order),
+        );
 
         match result {
             Ok(((), spent)) if spent == reserved => {
