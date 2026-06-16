@@ -92,6 +92,10 @@ impl TIP20Token {
         let cached_delegate = info.reward_recipient;
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
+        if global_reward_per_token == info.reward_per_token {
+            return Ok(cached_delegate);
+        }
+
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(info.reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
