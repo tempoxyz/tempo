@@ -625,7 +625,6 @@ impl TIP20ChannelReserve {
         }
 
         self.credit_channel_storage_slots(payer, current.saturating_sub(spent_credits))?;
-
         checkpoint.commit();
         Ok(())
     }
