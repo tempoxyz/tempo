@@ -59,6 +59,7 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
+    tip1060_storage_credits::TIP1060StorageCredits,
     validator_config_v2::ValidatorConfigV2,
 };
 
@@ -460,6 +461,11 @@ impl GenesisArgs {
         if self.t6_time == 0 {
             println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
             initialize_receive_policy_guard(&mut evm)?;
+        }
+
+        if self.t7_time == 0 {
+            println!("Initializing TIP-1060 StorageCredits (T7 active at genesis)");
+            initialize_storage_credits(&mut evm)?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -988,6 +994,19 @@ fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre
         &ctx.cfg,
         &ctx.tx,
         || ReceivePolicyGuard::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_storage_credits(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || TIP1060StorageCredits::new().initialize(),
     )?;
 
     Ok(())

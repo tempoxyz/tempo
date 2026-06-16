@@ -6,6 +6,11 @@ const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
+const TXGEN_HELPER_TIP1060_REVERT_CREDIT_PRESETS = ["tip1060_revert_credit"]
+const TXGEN_HELPER_TIP1060_REVERT_CHILD_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+const TXGEN_HELPER_TIP1060_REVERT_CHILD_CREDITS = "18446744073709551615"
+const TXGEN_HELPER_TIP1060_MASS_REDEEM_ADDRESS = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+const TXGEN_HELPER_TIP1060_MASS_REDEEM_CREDITS = "18446744073709551615"
 
 def txgen-tip20-token-address [token_id: int] {
     ^printf "0x20c000000000000000000000%016x" $token_id
@@ -17,6 +22,10 @@ def txgen-tip20-token-choices [token_count: int] {
     }
 
     0..<$token_count | each { |id| txgen-tip20-token-address $id } | to json -r
+}
+
+def txgen-preset-name [preset_path: string] {
+    $preset_path | path basename | str replace --regex '\.yml$' ''
 }
 
 def --env txgen-configure-tip20-token-env [token_count: int] {
@@ -157,7 +166,7 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 }
 
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
-    let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
+    let preset_name = (txgen-preset-name $preset_path)
     if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
         return
     }
@@ -174,6 +183,52 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
     $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
     $env.TXGEN_EXISTING_RECIPIENTS_END = ($recipient_end | into string)
     print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
+}
+
+def txgen-state-bloat-extra-args [preset_path: string] {
+    let preset_name = (txgen-preset-name $preset_path)
+    if $preset_name in $TXGEN_HELPER_TIP1060_REVERT_CREDIT_PRESETS {
+        return [
+            "--storage-credit"
+            $"($TXGEN_HELPER_TIP1060_REVERT_CHILD_ADDRESS)=($TXGEN_HELPER_TIP1060_REVERT_CHILD_CREDITS)"
+            "--storage-credit"
+            $"($TXGEN_HELPER_TIP1060_MASS_REDEEM_ADDRESS)=($TXGEN_HELPER_TIP1060_MASS_REDEEM_CREDITS)"
+        ]
+    }
+
+    []
+}
+
+def txgen-validate-state-bloat-extra-args [preset_path: string, bloat_mib: int] {
+    if $bloat_mib < 0 {
+        error make { msg: "bloat size cannot be negative" }
+    }
+
+    let extra_args = (txgen-state-bloat-extra-args $preset_path)
+    if ($extra_args | is-empty) {
+        return
+    }
+}
+
+def txgen-state-bloat-enabled [preset_path: string, bloat_mib: int] {
+    let extra_args = (txgen-state-bloat-extra-args $preset_path)
+    ($bloat_mib > 0) or (not ($extra_args | is-empty))
+}
+
+def --env txgen-configure-state-bloat-env [preset_path: string, bloat_mib: int] {
+    let extra_args = (txgen-state-bloat-extra-args $preset_path)
+    if ($extra_args | is-empty) {
+        return
+    }
+
+    txgen-validate-state-bloat-extra-args $preset_path $bloat_mib
+
+    $env.TXGEN_TIP1060_REVERT_CHILD_ADDRESS = $TXGEN_HELPER_TIP1060_REVERT_CHILD_ADDRESS
+    $env.TXGEN_TIP1060_REVERT_CHILD_CREDITS = $TXGEN_HELPER_TIP1060_REVERT_CHILD_CREDITS
+    print $"  Seeding TIP-1060 storage credits for ($TXGEN_HELPER_TIP1060_REVERT_CHILD_ADDRESS): ($TXGEN_HELPER_TIP1060_REVERT_CHILD_CREDITS)"
+    $env.TXGEN_TIP1060_MASS_REDEEM_ADDRESS = $TXGEN_HELPER_TIP1060_MASS_REDEEM_ADDRESS
+    $env.TXGEN_TIP1060_MASS_REDEEM_CREDITS = $TXGEN_HELPER_TIP1060_MASS_REDEEM_CREDITS
+    print $"  Seeding TIP-1060 storage credits for ($TXGEN_HELPER_TIP1060_MASS_REDEEM_ADDRESS): ($TXGEN_HELPER_TIP1060_MASS_REDEEM_CREDITS)"
 }
 
 def txgen-rpc-call [rpc_url: string, payload: string] {
@@ -278,6 +333,7 @@ def txgen-run-preset-pipeline [
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    txgen-configure-state-bloat-env $spec_path $bloat_mib
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }

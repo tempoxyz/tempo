@@ -1,0 +1,18 @@
+{
+  "abi": [
+    {
+      "type": "function",
+      "name": "run",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "fallback",
+      "stateMutability": "nonpayable"
+    }
+  ],
+  "bytecode": {
+    "object": "0x6037600c60003960376000f360645b80156100355760006000600060006000735fbdb2315678afecb367f032d93f642f64180aa3620f4240f150600103610002565b00"
+  }
+}

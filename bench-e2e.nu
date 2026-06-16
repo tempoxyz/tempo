@@ -267,25 +267,47 @@ def trusted-peers-from-localnet [localnet_dir: string] {
     } | str join ","
 }
 
-def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
-    print $"Initializing database at ($datadir)..."
-    let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
+def init-e2e-db [
+    tempo_bin: string,
+    genesis: string,
+    datadir: string,
+    bloat: int,
+    bloat_file: string,
+    --load-state-bloat
+] {
+    let caller_pwd = $env.PWD
+    let tempo_bin_abs = ($tempo_bin | path expand)
+    let genesis_abs = ($genesis | path expand)
+    let datadir_abs = ($datadir | path expand)
+    let bloat_file_abs = ($bloat_file | path expand)
+
+    # Keep Nushell's process cwd on a mounted path that will survive schelk
+    # restore/promote churn; run-external refuses to start if $env.PWD is stale.
+    cd $datadir_abs
+
+    print $"Initializing database at ($datadir_abs)..."
+    let init_result = (run-external $tempo_bin_abs "init" "--chain" $genesis_abs "--datadir" $datadir_abs | complete)
     if $init_result.stdout != "" { print $init_result.stdout }
     if $init_result.stderr != "" { print $init_result.stderr }
     if $init_result.exit_code != 0 {
-        print $"Error: tempo init failed for ($datadir) with exit code ($init_result.exit_code)"
+        print $"Error: tempo init failed for ($datadir_abs) with exit code ($init_result.exit_code)"
         exit $init_result.exit_code
     }
 
-    if $bloat > 0 {
-        print $"Loading state bloat into ($datadir)..."
-        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+    if $load_state_bloat or ($bloat > 0) {
+        print $"Loading state bloat into ($datadir_abs)..."
+        cd $datadir_abs
+        let bloat_result = (run-external $tempo_bin_abs "init-from-binary-dump" "--chain" $genesis_abs "--datadir" $datadir_abs $bloat_file_abs | complete)
         if $bloat_result.stdout != "" { print $bloat_result.stdout }
         if $bloat_result.stderr != "" { print $bloat_result.stderr }
         if $bloat_result.exit_code != 0 {
-            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
+            print $"Error: state bloat load failed for ($datadir_abs) with exit code ($bloat_result.exit_code)"
             exit $bloat_result.exit_code
         }
+    }
+
+    if ($caller_pwd | path exists) {
+        cd $caller_pwd
     }
 }
 
@@ -324,6 +346,15 @@ def e2e-snapshot-ready [datadir: string] {
 
 def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
+def e2e-snapshot-state-bloat-extra-args-ready [datadir: string, state_bloat_extra_args: list<string>] {
+    let marker = (read-bench-marker $datadir)
+    if $marker == null {
+        return false
+    }
+
+    ($marker | get -o state_bloat_extra_args | default []) == $state_bloat_extra_args
 }
 
 def e2e-snapshot-state-hardfork [datadir: string] {
@@ -801,21 +832,29 @@ def init-local-e2e-side [
     bloat_file: string,
     tempo_bin: string,
     marker: record,
+    --load-state-bloat
 ] {
-    let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers.txt"
+    let localnet_dir = ($LOCALNET_DIR | path expand)
+    let datadir_abs = ($datadir | path expand)
+    let node_dir_abs = ($node_dir | path expand)
+    let generated_node_dir_abs = ($generated_node_dir | path expand)
+    let generated_genesis_abs = ($generated_genesis | path expand)
+    let bloat_file_abs = ($bloat_file | path expand)
+    let tempo_bin_abs = ($tempo_bin | path expand)
+    let meta_dir = $"($datadir_abs)/($BENCH_META_SUBDIR)"
+    let generated_trusted_peers = $"($localnet_dir)/e2e-local-init/trusted-peers.txt"
 
-    bench-clean-datadir $datadir
-    mkdir $datadir
-    mkdir $node_dir
+    bench-clean-datadir $datadir_abs
+    mkdir $datadir_abs
+    mkdir $node_dir_abs
 
-    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    init-e2e-db $tempo_bin_abs $generated_genesis_abs $datadir_abs $bloat $bloat_file_abs --load-state-bloat=$load_state_bloat
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
-        cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
+        cp $"($generated_node_dir_abs)/($file)" $"($node_dir_abs)/($file)"
     }
     $trusted_peers | save -f $generated_trusted_peers
 
-    bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
+    bench-save-e2e-meta $datadir_abs $meta_dir ($marker | insert validator_role $role) [[$generated_genesis_abs "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
 }
 
 # Update the PR comment with current benchmark phase status.
@@ -1258,6 +1297,9 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    let state_bloat_extra_args = (txgen-state-bloat-extra-args $preset_path)
+    txgen-validate-state-bloat-extra-args $preset_path $bloat_mib
+    let state_bloat_enabled = (txgen-state-bloat-enabled $preset_path $bloat_mib)
     e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
@@ -1330,7 +1372,11 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    let snapshots_state_bloat_ready = (
+        (e2e-snapshot-state-bloat-extra-args-ready $a_db $state_bloat_extra_args)
+        and (e2e-snapshot-state-bloat-extra-args-ready $b_db $state_bloat_extra_args)
+    )
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready) or (not $snapshots_state_bloat_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
@@ -1341,6 +1387,9 @@ def "main e2e" [
         if ($missing_b | length) > 0 {
             print $"  Missing from b: ($missing_b | str join ', ')"
         }
+    }
+    if $snapshots_ready and (not $snapshots_state_bloat_ready) and (not $force_bloat) {
+        print "Local e2e snapshot state-bloat seed args differ from the requested txgen preset; reinitializing it once."
     }
 
     if $should_init_snapshots {
@@ -1366,11 +1415,15 @@ def "main e2e" [
             print "Error: generated localnet did not produce trusted peers"
             exit 1
         }
-        if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
+        if $state_bloat_enabled {
+            if $bloat_mib > 0 {
+                ensure-bloat-space $bloat_mib
+                print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
+            } else {
+                print "Generating local e2e storage-credit state seed..."
+            }
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args ...$state_bloat_extra_args
         }
 
         let marker = {
@@ -1383,9 +1436,10 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            state_bloat_extra_args: $state_bloat_extra_args
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator) --load-state-bloat=$state_bloat_enabled
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator) --load-state-bloat=$state_bloat_enabled
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }

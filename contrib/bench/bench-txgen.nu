@@ -243,6 +243,9 @@ def "main run" [
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
     let preset_path = (txgen-preset-path $preset)
+    let state_bloat_extra_args = (txgen-state-bloat-extra-args $preset_path)
+    txgen-validate-state-bloat-extra-args $preset_path $bloat
+    let state_bloat_enabled = (txgen-state-bloat-enabled $preset_path $bloat)
     txgen-validate-bench-args $bench_args
     let resolved_scenario = if $scenario != "" {
         $scenario
@@ -379,6 +382,7 @@ def "main run" [
             and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
             and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
             and ($marker | get -o gas_limit | default "") == $gas_limit
+            and ($marker | get -o state_bloat_extra_args | default []) == $state_bloat_extra_args
             and ($"($baseline_datadir)/db" | path exists)
             and ($"($feature_datadir)/db" | path exists)
             and ($"($meta_dir)/genesis-baseline.json" | path exists)
@@ -418,14 +422,14 @@ def "main run" [
             cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
             rm -rf $feature_genesis_dir
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
+            if $state_bloat_enabled and ((not ($bloat_file | path exists)) or (not ($state_bloat_extra_args | is-empty))) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args ...$state_bloat_extra_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args ...$state_bloat_extra_args
                     }
                 }
             }
@@ -436,7 +440,7 @@ def "main run" [
             ] {
                 bench-clean-datadir $side.dd
                 mkdir $side.dd
-                bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file
+                bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file --load-state-bloat=$state_bloat_enabled
             }
 
             bench-save-and-promote $datadir $meta_dir {
@@ -447,7 +451,8 @@ def "main run" [
                 baseline_hardfork: ($baseline_hardfork | str upcase)
                 feature_hardfork: ($feature_hardfork | str upcase)
                 gas_limit: $gas_limit
-            } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
+                state_bloat_extra_args: $state_bloat_extra_args
+            } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file --save-state-bloat=$state_bloat_enabled
         }
     } else {
         let genesis_path_std = $"($abs_localnet)/genesis.json"
@@ -459,6 +464,7 @@ def "main run" [
             and ($marker.accounts | into int) == $genesis_accounts
             and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o gas_limit | default "") == $gas_limit
+            and ($marker | get -o state_bloat_extra_args | default []) == $state_bloat_extra_args
             and ($"($datadir)/db" | path exists)
             and ($"($meta_dir)/genesis.json" | path exists)
         )
@@ -479,27 +485,28 @@ def "main run" [
                 }
             }
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
+            if $state_bloat_enabled and ((not ($bloat_file | path exists)) or (not ($state_bloat_extra_args | is-empty))) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args ...$state_bloat_extra_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args ...$state_bloat_extra_args
                     }
                 }
             }
 
             bench-clean-datadir $datadir
-            bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
+            bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file --load-state-bloat=$state_bloat_enabled
             bench-save-and-promote $datadir $meta_dir {
                 bloat_mib: $bloat
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
                 txgen_mnemonic: $txgen_mnemonic
                 gas_limit: $gas_limit
-            } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
+                state_bloat_extra_args: $state_bloat_extra_args
+            } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file --save-state-bloat=$state_bloat_enabled
         }
     }
 

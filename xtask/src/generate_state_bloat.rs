@@ -21,9 +21,11 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::PathBuf,
+    str::FromStr,
     sync::Arc,
 };
-use tempo_precompiles::tip20::tip20_slots;
+use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
+use tempo_precompiles::{tip20::tip20_slots, tip1060_storage_credits::TIP1060StorageCredits};
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -71,6 +73,36 @@ pub(crate) struct GenerateStateBloat {
     /// Number of entries to process per chunk. Controls peak memory usage.
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
+
+    /// Seed a TIP-1060 storage credit balance as ADDRESS=BALANCE.
+    ///
+    /// Can be repeated. The TIP-1060 precompile account must exist in genesis before loading the dump.
+    #[arg(long = "storage-credit", value_name = "ADDRESS=BALANCE")]
+    storage_credit: Vec<StorageCreditSeed>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StorageCreditSeed {
+    account: Address,
+    balance: u64,
+}
+
+impl FromStr for StorageCreditSeed {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (account, balance) = value
+            .split_once('=')
+            .ok_or_else(|| "expected ADDRESS=BALANCE".to_string())?;
+        let account = account
+            .parse::<Address>()
+            .map_err(|err| format!("invalid storage credit address: {err}"))?;
+        let balance = balance
+            .parse::<u64>()
+            .map_err(|err| format!("invalid storage credit balance: {err}"))?;
+
+        Ok(Self { account, balance })
+    }
 }
 
 impl GenerateStateBloat {
@@ -83,141 +115,161 @@ impl GenerateStateBloat {
             balance,
             signable_count,
             chunk_size,
+            storage_credit,
         } = self;
 
         ensure!(
-            !tokens.is_empty(),
-            "at least one token ID must be specified"
+            size > 0 || !storage_credit.is_empty(),
+            "size must be greater than 0 unless --storage-credit is provided"
         );
-        ensure!(size > 0, "size must be greater than 0");
         ensure!(chunk_size > 0, "chunk_size must be greater than 0");
 
-        let target_bytes = size * 1024 * 1024; // MiB to bytes
-        let num_tokens = tokens.len() as u64;
-
-        // Calculate number of accounts needed
-        // Per token: 1 header (40 bytes) + 1 total_supply (64 bytes) + N balances (64 bytes each)
-        // With chunking, each chunk gets its own header, so overhead increases slightly.
-        // We calculate based on the simple model first, then adjust.
-        let header_size = 40u64;
-        let entry_size = 64u64;
-        let overhead_per_token = header_size + entry_size; // header + total_supply
-        let available_for_balances = target_bytes.saturating_sub(num_tokens * overhead_per_token);
-        let total_balance_entries = available_for_balances / entry_size;
-        let accounts_per_token = total_balance_entries / num_tokens;
-
-        ensure!(
-            accounts_per_token > 0,
-            "target size too small for the number of tokens"
-        );
-
-        let total_accounts = accounts_per_token as usize;
-        let actual_signable = signable_count.min(total_accounts);
-
-        let estimated_size_mib =
-            (num_tokens * (overhead_per_token + accounts_per_token * entry_size)) as f64
-                / (1024.0 * 1024.0);
         let out_display = out.display();
-        let num_chunks = total_accounts.div_ceil(chunk_size);
-        println!("State bloat generation:");
-        println!("  Target size: {size} MiB");
-        println!("  Tokens: {num_tokens}");
-        println!("  Accounts per token: {accounts_per_token}");
-        println!("  Estimated file size: {estimated_size_mib:.2} MiB");
-        println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
-        println!("  Output: {out_display}");
-
-        // Step 1: Derive parent key
-        let parent_key = derive_parent_key(&mnemonic)?;
-        let parent_key = Arc::new(parent_key);
-        let seed = keccak256(mnemonic.as_bytes());
-
-        // Step 2: Generate token addresses
-        let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
-
-        println!("\nToken addresses:");
-        for (id, addr) in tokens.iter().zip(&token_addresses) {
-            println!("  Token {id}: {addr}");
-        }
-
-        // Step 3: Precompute constants
-        let balance_value = U256::from(balance);
-        let total_supply = balance_value * U256::from(total_accounts);
-        let balance_bytes = balance_value.to_be_bytes::<32>();
-        let total_supply_bytes = total_supply.to_be_bytes::<32>();
-        let total_supply_slot_bytes = tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>();
-
-        // Step 4: Stream-write the binary file in chunks
         let file = File::create(&out).wrap_err("failed to create output file")?;
         let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
 
-        println!("\nGenerating and writing in {num_chunks} chunks...");
+        if size > 0 {
+            ensure!(
+                !tokens.is_empty(),
+                "at least one token ID must be specified"
+            );
 
-        let pb = ProgressBar::new(total_accounts as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({per_sec}) ({eta})")
-                .expect("valid template"),
-        );
+            let target_bytes = size * 1024 * 1024; // MiB to bytes
+            let num_tokens = tokens.len() as u64;
 
-        let mut chunk_buf = Vec::with_capacity(chunk_size.min(total_accounts) * 64);
+            // Calculate number of accounts needed
+            // Per token: 1 header (40 bytes) + 1 total_supply (64 bytes) + N balances (64 bytes each)
+            // With chunking, each chunk gets its own header, so overhead increases slightly.
+            // We calculate based on the simple model first, then adjust.
+            let header_size = 40u64;
+            let entry_size = 64u64;
+            let overhead_per_token = header_size + entry_size; // header + total_supply
+            let available_for_balances =
+                target_bytes.saturating_sub(num_tokens * overhead_per_token);
+            let total_balance_entries = available_for_balances / entry_size;
+            let accounts_per_token = total_balance_entries / num_tokens;
 
-        let mut is_first_chunk = true;
+            ensure!(
+                accounts_per_token > 0,
+                "target size too small for the number of tokens"
+            );
 
-        for chunk in &(0..total_accounts).chunks(chunk_size) {
-            let chunk_indices: Vec<_> = chunk.collect();
-            let chunk_len = chunk_indices.len();
+            let total_accounts = accounts_per_token as usize;
+            let actual_signable = signable_count.min(total_accounts);
 
-            // Derive addresses and compute slot bytes for this chunk only
-            let slot_bytes: Vec<[u8; 32]> = chunk_indices
-                .into_par_iter()
-                .map(|i| {
-                    let addr = if i < actual_signable {
-                        let child = parent_key
-                            .derive_child(i as u32)
-                            .expect("child derivation should not fail");
-                        let key: &coins_bip32::prelude::SigningKey = child.as_ref();
-                        let credential =
-                            k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
-                        secret_key_to_address(&credential)
-                    } else {
-                        derive_address_fast(&seed, i as u64)
-                    };
-                    compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
-                })
-                .collect();
+            let estimated_size_mib =
+                (num_tokens * (overhead_per_token + accounts_per_token * entry_size)) as f64
+                    / (1024.0 * 1024.0);
+            let num_chunks = total_accounts.div_ceil(chunk_size);
+            println!("State bloat generation:");
+            println!("  Target size: {size} MiB");
+            println!("  Tokens: {num_tokens}");
+            println!("  Accounts per token: {accounts_per_token}");
+            println!("  Estimated file size: {estimated_size_mib:.2} MiB");
+            println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
+            println!("  Output: {out_display}");
 
-            // Write one block per token for this chunk
-            for (token_idx, token_addr) in token_addresses.iter().enumerate() {
-                let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
+            // Step 1: Derive parent key
+            let parent_key = derive_parent_key(&mnemonic)?;
+            let parent_key = Arc::new(parent_key);
+            let seed = keccak256(mnemonic.as_bytes());
 
-                write_header(&mut writer, *token_addr, pair_count)?;
+            // Step 2: Generate token addresses
+            let token_addresses: Vec<Address> =
+                tokens.iter().map(|&id| token_address(id)).collect();
 
-                // Only write total_supply in the first chunk for each token
-                if is_first_chunk {
-                    writer.write_all(&total_supply_slot_bytes)?;
-                    writer.write_all(&total_supply_bytes)?;
-                }
-
-                // Write balance entries in chunks
-                chunk_buf.clear();
-                for slot in &slot_bytes {
-                    chunk_buf.extend_from_slice(slot);
-                    chunk_buf.extend_from_slice(&balance_bytes);
-                }
-                writer.write_all(&chunk_buf)?;
-
-                // Only count progress once per chunk (on the last token)
-                if token_idx == token_addresses.len() - 1 {
-                    pb.inc(chunk_len as u64);
-                }
+            println!("\nToken addresses:");
+            for (id, addr) in tokens.iter().zip(&token_addresses) {
+                println!("  Token {id}: {addr}");
             }
 
-            is_first_chunk = false;
+            // Step 3: Precompute constants
+            let balance_value = U256::from(balance);
+            let total_supply = balance_value * U256::from(total_accounts);
+            let balance_bytes = balance_value.to_be_bytes::<32>();
+            let total_supply_bytes = total_supply.to_be_bytes::<32>();
+            let total_supply_slot_bytes = tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>();
+
+            // Step 4: Stream-write the binary file in chunks
+            println!("\nGenerating and writing in {num_chunks} chunks...");
+
+            let pb = ProgressBar::new(total_accounts as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({per_sec}) ({eta})",
+                    )
+                    .expect("valid template"),
+            );
+
+            let mut chunk_buf = Vec::with_capacity(chunk_size.min(total_accounts) * 64);
+
+            let mut is_first_chunk = true;
+
+            for chunk in &(0..total_accounts).chunks(chunk_size) {
+                let chunk_indices: Vec<_> = chunk.collect();
+                let chunk_len = chunk_indices.len();
+
+                // Derive addresses and compute slot bytes for this chunk only
+                let slot_bytes: Vec<[u8; 32]> = chunk_indices
+                    .into_par_iter()
+                    .map(|i| {
+                        let addr = if i < actual_signable {
+                            let child = parent_key
+                                .derive_child(i as u32)
+                                .expect("child derivation should not fail");
+                            let key: &coins_bip32::prelude::SigningKey = child.as_ref();
+                            let credential =
+                                k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+                            secret_key_to_address(&credential)
+                        } else {
+                            derive_address_fast(&seed, i as u64)
+                        };
+                        compute_mapping_slot(addr, tip20_slots::BALANCES).to_be_bytes::<32>()
+                    })
+                    .collect();
+
+                // Write one block per token for this chunk
+                for (token_idx, token_addr) in token_addresses.iter().enumerate() {
+                    let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
+
+                    write_header(&mut writer, *token_addr, pair_count)?;
+
+                    // Only write total_supply in the first chunk for each token
+                    if is_first_chunk {
+                        writer.write_all(&total_supply_slot_bytes)?;
+                        writer.write_all(&total_supply_bytes)?;
+                    }
+
+                    // Write balance entries in chunks
+                    chunk_buf.clear();
+                    for slot in &slot_bytes {
+                        chunk_buf.extend_from_slice(slot);
+                        chunk_buf.extend_from_slice(&balance_bytes);
+                    }
+                    writer.write_all(&chunk_buf)?;
+
+                    // Only count progress once per chunk (on the last token)
+                    if token_idx == token_addresses.len() - 1 {
+                        pb.inc(chunk_len as u64);
+                    }
+                }
+
+                is_first_chunk = false;
+            }
+
+            pb.finish_with_message("done");
+        } else {
+            println!("State bloat generation:");
+            println!("  Target size: 0 MiB");
+            println!("  TIP20 storage: skipped");
+            println!("  Output: {out_display}");
         }
 
+        if !storage_credit.is_empty() {
+            write_storage_credit_entries(&mut writer, &storage_credit)?;
+        }
         writer.flush()?;
-        pb.finish_with_message("done");
 
         let file_size = std::fs::metadata(&out)?.len();
         println!(
@@ -275,6 +327,29 @@ fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
     U256::from_be_bytes(keccak256(buf).0)
 }
 
+fn storage_credit_slot(account: Address) -> U256 {
+    TIP1060StorageCredits::slot(account)
+}
+
+fn write_storage_credit_entries(
+    writer: &mut impl Write,
+    storage_credits: &[StorageCreditSeed],
+) -> eyre::Result<()> {
+    println!("\nStorage credit seeds:");
+    write_header(
+        writer,
+        STORAGE_CREDITS_ADDRESS,
+        storage_credits.len() as u64,
+    )?;
+    for seed in storage_credits {
+        println!("  {}: {}", seed.account, seed.balance);
+        writer.write_all(&storage_credit_slot(seed.account).to_be_bytes::<32>())?;
+        writer.write_all(&U256::from(seed.balance).to_be_bytes::<32>())?;
+    }
+
+    Ok(())
+}
+
 /// Write a block header to the output.
 /// Format: `[magic:8][version:2][flags:2][address:20][pair_count:8] = 40 bytes`
 fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> eyre::Result<()> {
@@ -327,6 +402,31 @@ mod tests {
             .unwrap();
         let other_slot = compute_mapping_slot(other_addr, tip20_slots::BALANCES);
         assert_ne!(slot, other_slot);
+    }
+
+    #[test]
+    fn test_storage_credit_seed_parse() {
+        let seed: StorageCreditSeed = "0x1234567890123456789012345678901234567890=100"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            seed.account,
+            "0x1234567890123456789012345678901234567890"
+                .parse::<Address>()
+                .unwrap()
+        );
+        assert_eq!(seed.balance, 100);
+    }
+
+    #[test]
+    fn test_storage_credit_slot_is_left_padded_address() {
+        let addr: Address = "0x1234567890123456789012345678901234567890"
+            .parse()
+            .unwrap();
+        let mut expected = [0u8; 32];
+        expected[12..].copy_from_slice(addr.as_slice());
+
+        assert_eq!(storage_credit_slot(addr).to_be_bytes::<32>(), expected);
     }
 
     #[test]

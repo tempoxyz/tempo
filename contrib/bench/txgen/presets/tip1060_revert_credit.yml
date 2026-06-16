@@ -1,0 +1,123 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  TIP1060RevertChild:
+    abi: ../tip1060_revert_child.json
+    bytecode: ../tip1060_revert_child.json
+  TIP1060RevertParent:
+    abi: ../tip1060_revert_parent.json
+    bytecode: ../tip1060_revert_parent.json
+  TIP1060MassRedeem:
+    abi: ../tip1060_mass_redeem.json
+    bytecode: ../tip1060_mass_redeem.json
+
+setup:
+  steps:
+    - id: child
+      deploy:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        artifact: TIP1060RevertChild
+        gas_limit: 2000000
+        constructor_args: []
+    - id: parent
+      deploy:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        artifact: TIP1060RevertParent
+        gas_limit: 2000000
+        constructor_args: []
+    - id: mass_redeem
+      deploy:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        artifact: TIP1060MassRedeem
+        gas_limit: 2000000
+        constructor_args: []
+
+templates:
+  revert_credit:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 12000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    call:
+      to: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+      abi: TIP1060RevertParent
+      function: run
+      args: []
+
+  mass_redeem_100:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 10000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    call:
+      to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      abi: TIP1060MassRedeem
+      function: run
+      args:
+        - 100
+
+  mass_redeem_1000:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 80000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    call:
+      to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      abi: TIP1060MassRedeem
+      function: run
+      args:
+        - 1000
+
+  mass_redeem_10000:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 800000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    call:
+      to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      abi: TIP1060MassRedeem
+      function: run
+      args:
+        - 10000
+
+mix:
+  - template: revert_credit
+    weight: 40
+  - template: mass_redeem_100
+    weight: 30
+  - template: mass_redeem_1000
+    weight: 20
+  - template: mass_redeem_10000
+    weight: 10
