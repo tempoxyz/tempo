@@ -23,7 +23,8 @@ pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 ///
 /// # Errors
 /// - `UnderOverflow` — multiplication of `amount_in * M` overflows
-#[inline]
+#[cold]
+#[inline(never)]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
     amount_in
         .checked_mul(M)
