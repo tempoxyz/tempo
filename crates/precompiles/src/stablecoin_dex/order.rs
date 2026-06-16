@@ -239,6 +239,8 @@ impl Order {
     ///
     /// # Errors
     /// - `FillAmountExceedsRemaining` — `fill_amount` is greater than `remaining`
+    #[cold]
+    #[inline(never)]
     pub fn fill(&mut self, fill_amount: u128) -> Result<(), OrderError> {
         if fill_amount > self.remaining {
             return Err(OrderError::FillAmountExceedsRemaining {
