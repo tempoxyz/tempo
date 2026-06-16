@@ -654,6 +654,24 @@ def stop-tracy-capture [] {
     }
 }
 
+def wait-for-tracy-capture-exit [job_id: int, phase: string] {
+    print "  Waiting for tracy-capture to exit and close trace..."
+    let result = (try {
+        job recv --tag 18999 --timeout 45sec
+    } catch {
+        null
+    })
+    if $result == null {
+        print $"  Warning: tracy-capture job did not report completion for ($phase); killing job ($job_id)"
+        try { job kill $job_id } catch {}
+        return
+    }
+    let exit_code = ($result | get --optional exit_code | default 0)
+    if $exit_code != 0 {
+        print $"  Warning: tracy-capture exited with code ($exit_code) for ($phase)"
+    }
+}
+
 def wait-for-samply-profile [] {
     print "  Waiting for samply to finish saving profile..."
     mut wait = 0
@@ -1014,6 +1032,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
     let tracy_log = $"($ctx.results_dir)/tracy-capture-($phase).log"
     mut tracy_capture_started = false
+    mut tracy_capture_job = 0
     if $phase_exit == 0 and $ctx.tracy != "off" {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
@@ -1021,10 +1040,17 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
             print $"  Tracy-capture will start in ($ctx.tracy_offset)s($limit_msg)..."
-            job spawn { sleep ($"($ctx.tracy_offset)sec" | into duration); sh -c $capture_cmd }
+            $tracy_capture_job = (job spawn {
+                sleep ($"($ctx.tracy_offset)sec" | into duration)
+                let result = (sh -c $capture_cmd | complete)
+                { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
+            })
         } else {
             print $"  Starting tracy-capture($limit_msg)..."
-            job spawn { sh -c $capture_cmd }
+            $tracy_capture_job = (job spawn {
+                let result = (sh -c $capture_cmd | complete)
+                { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
+            })
             sleep 500ms
         }
         $tracy_capture_started = true
@@ -1101,6 +1127,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     if $tracy_capture_started {
         stop-tracy-capture
+        if $tracy_capture_job > 0 {
+            wait-for-tracy-capture-exit $tracy_capture_job $phase
+        }
         if not ($tracy_output | path exists) {
             print $"  Warning: tracy-capture did not write ($tracy_output)"
             if ($tracy_log | path exists) {
