@@ -275,6 +275,7 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 }
 
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    #[inline(never)]
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
