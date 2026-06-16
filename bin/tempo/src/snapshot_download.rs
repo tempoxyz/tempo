@@ -283,7 +283,7 @@ async fn install_consensus_prunable_archive(
         &loaded.manifest.consensus_block_partitions,
     )?;
 
-    eprintln!("persisted consensus prunable archive");
+    info!("persisted consensus prunable archive");
     Ok(())
 }
 
