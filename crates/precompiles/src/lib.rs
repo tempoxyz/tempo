@@ -377,48 +377,6 @@ fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
     Ok(())
 }
 
-/// Dispatches a state-mutating call with TIP-1060 storage creation mode set to `Preserve` first.
-#[inline]
-fn mutate_preserving_storage_credits<T: SolCall>(
-    call: T,
-    sender: Address,
-    credit_owner: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-
-    preserve_storage_credits(credit_owner)
-        .and_then(|()| f(sender, call))
-        .into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a state-mutating call that returns no data with TIP-1060 storage creation mode set to `Preserve` first.
-#[inline]
-fn mutate_void_preserving_storage_credits<T: SolCall>(
-    call: T,
-    sender: Address,
-    credit_owner: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-
-    preserve_storage_credits(credit_owner)
-        .and_then(|()| f(sender, call))
-        .into_precompile_result(0, 0, |()| Bytes::new())
-}
-
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
 pub(crate) fn charge_input_cost(
