@@ -82,6 +82,8 @@ use tempo_transaction_pool::{
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const FILL_IDLE_SLEEP: Duration = Duration::from_millis(1);
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -606,8 +608,8 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    std::thread::sleep(FILL_IDLE_SLEEP);
+                    normal_transaction_fill_idle_elapsed += FILL_IDLE_SLEEP;
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
