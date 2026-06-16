@@ -305,13 +305,13 @@ impl ReceivePolicyGuard {
 }
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
-#[inline]
+#[inline(always)]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
-#[inline]
+#[inline(always)]
 fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
@@ -319,7 +319,7 @@ fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> Precompi
 /// Dispatches a state-mutating call that returns ABI-encoded data.
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
+#[inline(always)]
 fn mutate<T: SolCall>(
     call: T,
     sender: Address,
@@ -338,7 +338,7 @@ fn mutate<T: SolCall>(
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
+#[inline(always)]
 fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
