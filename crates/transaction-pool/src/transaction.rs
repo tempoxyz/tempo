@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::ITIP20;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -429,7 +430,7 @@ impl TempoPooledTransaction {
     /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
     /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
-    pub fn precalculate_keccak_slots(&self) {
+    pub fn precalculate_keccak_slots(&self, spec: TempoHardfork) {
         if !self.is_payment {
             return;
         }
@@ -449,11 +450,13 @@ impl TempoPooledTransaction {
                         addr.mapping_slot(tip20_slots::BALANCES);
                     }
                 }
-                for addr in call.reward_addresses(sender).into_iter().flatten() {
-                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
-                        continue;
+                if !spec.is_t8() {
+                    for addr in call.reward_addresses(sender).into_iter().flatten() {
+                        if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
+                            continue;
+                        }
+                        addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
                     }
-                    addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
                 }
                 if let Some(slot) = call
                     .to()

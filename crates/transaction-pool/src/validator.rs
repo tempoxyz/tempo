@@ -641,7 +641,7 @@ where
                 let _ = transaction.transaction().nonce_key_slot();
 
                 // Warm the global keccak cache with storage slot hashes for this transaction.
-                transaction.transaction().precalculate_keccak_slots();
+                transaction.transaction().precalculate_keccak_slots(spec);
 
                 TransactionValidationOutcome::Valid {
                     balance,
