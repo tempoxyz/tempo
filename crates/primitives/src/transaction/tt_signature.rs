@@ -36,6 +36,8 @@ pub const P256N_HALF: U256 =
 /// valid scalar). This function should be called by all P256 signing code
 /// before creating a signature, as the p256 crate does not guarantee low-s
 /// signatures.
+#[cold]
+#[inline(never)]
 pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
     let s = U256::from_be_slice(s_bytes);
     if s.is_zero() || s >= P256_ORDER {
