@@ -262,6 +262,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns true if this is a Tempo transaction
+    #[inline]
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
     }
