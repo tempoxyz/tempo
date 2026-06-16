@@ -613,6 +613,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Loads an active channel or returns `ChannelNotFound`.
+    #[cold]
+    #[inline(never)]
     fn load_existing_state(&self, channel_id: B256) -> Result<PackedChannelState> {
         let state = self.channel_states[channel_id].read()?;
         if !state.exists() {
@@ -622,6 +624,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Returns the address authorized to sign vouchers for this descriptor.
+    #[cold]
+    #[inline(never)]
     fn expected_signer(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Address {
         if descriptor.authorizedSigner.is_zero() {
             descriptor.payer
@@ -631,6 +635,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Validates a voucher signature against the descriptor's expected signer.
+    #[cold]
+    #[inline(never)]
     fn validate_voucher(
         &self,
         descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
@@ -649,6 +655,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Computes the EIP-712 voucher digest.
+    #[cold]
+    #[inline(never)]
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
         let struct_hash = self
             .storage
