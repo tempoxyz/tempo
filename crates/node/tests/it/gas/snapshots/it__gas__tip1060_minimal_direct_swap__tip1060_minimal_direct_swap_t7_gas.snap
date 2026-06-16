@@ -1,0 +1,9 @@
+---
+source: crates/node/tests/it/gas/tip1060_minimal_direct_swap.rs
+expression: gas
+---
+minimal_direct_swap: 1154612
+minimal_direct_swap_authorization_check: 4218
+minimal_direct_swap_pathusd_transfer_from_user: 289580
+minimal_direct_swap_unwrap_pathusd: 583318
+minimal_direct_swap_wrap_dlusd: 306492
