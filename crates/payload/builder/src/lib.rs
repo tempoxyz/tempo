@@ -337,6 +337,7 @@ where
         check_cancel!();
 
         let start = Instant::now();
+        let payload_timestamp = attributes.timestamp;
 
         let block_time_millis =
             (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
@@ -373,20 +374,19 @@ where
         let is_osaka = self
             .provider
             .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp);
+            .is_osaka_active_at_timestamp(payload_timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
-        let shared_gas_limit =
-            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
+        let shared_gas_limit = chain_spec.shared_gas_limit_at(payload_timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
         // The remaining `shared_gas_limit` is reserved for validator subblocks.
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let general_gas_limit = chain_spec.general_gas_limit_at(
-            attributes.timestamp,
+            payload_timestamp,
             block_gas_limit,
             shared_gas_limit,
         );
-        let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let hardfork = chain_spec.tempo_hardfork_at(payload_timestamp);
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -422,7 +422,7 @@ where
             // We pre-validate all of the subblocks on top of parent state in subblocks service
             // which leaves the only reason for transactions to get invalidated by expiry of
             // `valid_before` field.
-            if subblock.has_expired_transactions(attributes.timestamp) {
+            if subblock.has_expired_transactions(payload_timestamp) {
                 self.metrics.inc_subblocks_expired();
                 return false;
             }
@@ -445,7 +445,7 @@ where
 
         let next_attributes = TempoNextBlockEnvAttributes {
             inner: NextBlockEnvAttributes {
-                timestamp: attributes.timestamp,
+                timestamp: payload_timestamp,
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
                 gas_limit: block_gas_limit,
@@ -1031,7 +1031,7 @@ where
             .set(shared_gas_limit as f64);
 
         let requests = chain_spec
-            .is_prague_active_at_timestamp(attributes.timestamp)
+            .is_prague_active_at_timestamp(payload_timestamp)
             .then(|| execution_result.requests.clone());
 
         let rlp_length = block.rlp_length();
