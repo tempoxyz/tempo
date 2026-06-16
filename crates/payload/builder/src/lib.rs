@@ -316,9 +316,9 @@ where
         } = args;
         let PayloadConfig {
             parent_header,
+            parent_block_info,
             attributes,
             payload_id,
-            ..
         } = config;
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
@@ -464,10 +464,28 @@ where
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
-        let ctx = self
+        let pool_fetch_start = Instant::now();
+        let base_fee = evm_env.block_env.basefee;
+        let best_txs = best_txs(BestTransactionsAttributes::new(
+            base_fee,
+            evm_env
+                .block_env
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
+        let best_txs_size_hint = best_txs.size_hint();
+        self.metrics
+            .pool_fetch_duration_seconds
+            .record(pool_fetch_start.elapsed());
+        let mut ctx = self
             .evm_config
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
+        let tx_count_hint = payload_tx_count_hint(
+            parent_block_info.map(|info| info.transaction_count),
+            best_txs_size_hint,
+        );
+        ctx.inner.tx_count_hint = tx_count_hint;
 
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
@@ -508,7 +526,7 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let (roots_tx, roots_rx) = self.spawn_roots_task(tx_count_hint);
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -521,16 +539,6 @@ where
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
 
-        let base_fee = executor.evm().block().basefee;
-        let pool_fetch_start = Instant::now();
-        let best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
@@ -545,9 +553,6 @@ where
         } else {
             Box::new(best_txs)
         });
-        self.metrics
-            .pool_fetch_duration_seconds
-            .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -1163,6 +1168,7 @@ where
     #[expect(clippy::type_complexity)]
     fn spawn_roots_task(
         &self,
+        tx_count_hint: Option<usize>,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
@@ -1172,9 +1178,10 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+            .spawn_blocking_named("builder-roots-task", move || {
+                let tx_count_hint = tx_count_hint.unwrap_or_default();
+                let mut transactions = Vec::with_capacity(tx_count_hint);
+                let mut senders = Vec::with_capacity(tx_count_hint);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
@@ -1272,6 +1279,35 @@ impl BalTaskHandle {
 enum BalMessage {
     State(EvmState),
     BumpIndex,
+}
+
+/// Returns the transaction capacity hint for a new block under construction.
+///
+/// The previous block's transaction count is the best stable signal we have for current
+/// block demand at full capacity, but observed Tempo blocks can still swing materially from one
+/// block to the next. We therefore reserve 4/3 of the parent count, rounded up, so a 9k parent
+/// hints 12k slots while an average 11.3k block hints a bit over today's observed 14k ceiling.
+///
+/// When the transaction iterator reports an upper bound, cap the hint to that bound to avoid
+/// reserving more slots than the pool can currently yield. If the pool cannot provide an upper
+/// bound, prefer the parent-derived hint over no hint.
+fn payload_tx_count_hint(
+    parent_transaction_count: Option<usize>,
+    best_txs_size_hint: (usize, Option<usize>),
+) -> Option<usize> {
+    const PARENT_TX_COUNT_SCALE_NUMERATOR: usize = 4;
+    const PARENT_TX_COUNT_SCALE_DENOMINATOR: usize = 3;
+
+    let parent_transaction_count = parent_transaction_count?;
+    let parent_scaled = parent_transaction_count
+        .saturating_mul(PARENT_TX_COUNT_SCALE_NUMERATOR)
+        .saturating_add(PARENT_TX_COUNT_SCALE_DENOMINATOR - 1)
+        / PARENT_TX_COUNT_SCALE_DENOMINATOR;
+
+    match best_txs_size_hint.1 {
+        Some(pool_upper_bound) => Some(parent_scaled.min(pool_upper_bound)),
+        None => Some(parent_scaled),
+    }
 }
 
 pub fn is_more_subblocks(
@@ -1454,6 +1490,29 @@ mod tests {
         .unwrap();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+    }
+
+    #[test]
+    fn test_payload_tx_count_hint_scales_parent_count() {
+        assert_eq!(payload_tx_count_hint(Some(9_000), (0, None)), Some(12_000));
+        assert_eq!(payload_tx_count_hint(Some(11_343), (0, None)), Some(15_124));
+    }
+
+    #[test]
+    fn test_payload_tx_count_hint_caps_to_pool_upper_bound() {
+        assert_eq!(
+            payload_tx_count_hint(Some(14_000), (0, Some(10_000))),
+            Some(10_000)
+        );
+        assert_eq!(
+            payload_tx_count_hint(Some(9_000), (0, Some(20_000))),
+            Some(12_000)
+        );
+    }
+
+    #[test]
+    fn test_payload_tx_count_hint_requires_parent_count() {
+        assert_eq!(payload_tx_count_hint(None, (0, Some(20_000))), None);
     }
 
     #[test]
