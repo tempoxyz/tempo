@@ -64,6 +64,43 @@ pub struct TempoBatchCallEnv {
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+/// Recovered fee-payer sidecar state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FeePayerState {
+    /// No fee-payer sidecar was provided; the transaction caller pays fees.
+    #[default]
+    Absent,
+    /// A fee-payer sidecar was provided but did not recover to an address.
+    InvalidSignature,
+    /// A fee-payer sidecar was provided and recovered successfully.
+    Signed(Address),
+}
+
+impl FeePayerState {
+    #[inline]
+    fn from_recovered(fee_payer: Option<Address>) -> Self {
+        match fee_payer {
+            Some(address) => Self::Signed(address),
+            None => Self::InvalidSignature,
+        }
+    }
+
+    #[inline]
+    fn has_signature(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    #[inline]
+    fn resolve(self, caller: Address) -> Result<Address, TempoInvalidTransaction> {
+        match self {
+            Self::Absent => Ok(caller),
+            Self::Signed(address) => Ok(address),
+            Self::InvalidSignature => Err(TempoInvalidTransaction::InvalidFeePayerSignature),
+        }
+    }
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -85,10 +122,7 @@ pub struct TempoTxEnv {
 
     /// Optional fee payer specified for the transaction.
     ///
-    /// - Some(Some(address)) corresponds to a successfully recovered fee payer
-    /// - Some(None) corresponds to a failed recovery and means that transaction is invalid
-    /// - None corresponds to a transaction without a fee payer
-    pub fee_payer: Option<Option<Address>>,
+    pub fee_payer: FeePayerState,
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
@@ -97,16 +131,12 @@ pub struct TempoTxEnv {
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
-        if let Some(fee_payer) = self.fee_payer {
-            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
-        } else {
-            Ok(self.caller())
-        }
+        self.fee_payer.resolve(self.caller())
     }
 
     /// Returns true if transaction carries a fee payer signature.
     pub fn has_fee_payer_signature(&self) -> bool {
-        self.fee_payer.is_some()
+        self.fee_payer.has_signature()
     }
 
     /// Returns true if the transaction is a subblock transaction.
@@ -344,9 +374,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
-            fee_payer: fee_payer_signature.map(|sig| {
-                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
-            }),
+            fee_payer: match fee_payer_signature {
+                Some(sig) => FeePayerState::from_recovered(
+                    secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok(),
+                ),
+                None => FeePayerState::Absent,
+            },
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
@@ -380,7 +413,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                fee_payer: None,
+                fee_payer: FeePayerState::Absent,
                 tempo_tx_env: None, // Non-AA transaction
             },
             TempoTxEnvelope::Eip2930(inner) => Self {
@@ -608,7 +641,7 @@ mod tests {
         assert!(tx_env.inner.access_list.is_empty());
         assert!(tx_env.fee_token.is_none());
         assert!(!tx_env.is_system_tx);
-        assert!(tx_env.fee_payer.is_none());
+        assert_eq!(tx_env.fee_payer, super::FeePayerState::Absent);
         assert!(tx_env.tempo_tx_env.is_none());
     }
 
@@ -620,7 +653,7 @@ mod tests {
                 caller,
                 ..Default::default()
             },
-            fee_payer: None,
+            fee_payer: super::FeePayerState::Absent,
             ..Default::default()
         };
 
@@ -630,7 +663,7 @@ mod tests {
     #[test]
     fn test_fee_payer_invalid_signature_rejected() {
         let tx_env = super::TempoTxEnv {
-            fee_payer: Some(None),
+            fee_payer: super::FeePayerState::InvalidSignature,
             ..Default::default()
         };
 
@@ -648,7 +681,7 @@ mod tests {
                 caller,
                 ..Default::default()
             },
-            fee_payer: Some(Some(caller)),
+            fee_payer: super::FeePayerState::Signed(caller),
             ..Default::default()
         };
 
@@ -658,13 +691,13 @@ mod tests {
     #[test]
     fn test_has_fee_payer_signature() {
         let without_sig = super::TempoTxEnv {
-            fee_payer: None,
+            fee_payer: super::FeePayerState::Absent,
             ..Default::default()
         };
         assert!(!without_sig.has_fee_payer_signature());
 
         let with_sig = super::TempoTxEnv {
-            fee_payer: Some(Some(Address::repeat_byte(0xAB))),
+            fee_payer: super::FeePayerState::Signed(Address::repeat_byte(0xAB)),
             ..Default::default()
         };
         assert!(with_sig.has_fee_payer_signature());
@@ -771,7 +804,7 @@ mod tests {
         assert_eq!(Transaction::nonce(&tx_env), 55);
         assert!(tx_env.fee_token.is_none());
         assert!(!tx_env.is_system_tx);
-        assert!(tx_env.fee_payer.is_none());
+        assert_eq!(tx_env.fee_payer, super::FeePayerState::Absent);
         assert!(tx_env.tempo_tx_env.is_none());
     }
 

@@ -2413,7 +2413,7 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{
-        TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
+        FeePayerState, TempoBlockEnv, TempoTxEnv, evm::TempoEvm, gas_params::tempo_gas_params,
         tx::TempoBatchCallEnv,
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -2632,7 +2632,7 @@ mod tests {
         let mut test = TestHandlerEvm::tx(TempoHardfork::T2, |tx_env| {
             tx_env.inner.caller = caller;
             tx_env.fee_token = Some(invalid_token);
-            tx_env.fee_payer = Some(Some(caller));
+            tx_env.fee_payer = FeePayerState::Signed(caller);
         });
 
         let result = test.validate_env();
@@ -2659,7 +2659,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(invalid_token),
-            fee_payer: Some(Some(caller)),
+            fee_payer: FeePayerState::Signed(caller),
             ..Default::default()
         };
 

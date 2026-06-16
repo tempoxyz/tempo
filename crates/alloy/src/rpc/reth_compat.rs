@@ -15,7 +15,7 @@ use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
     transaction::{Call, RecoveredTempoAuthorization},
 };
-use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
+use tempo_revm::{FeePayerState, TempoBatchCallEnv, TempoTxEnv};
 
 /// Non-zero transaction identifier used only for RPC simulations.
 ///
@@ -529,7 +529,7 @@ mod tests {
         );
         assert_eq!(
             tx_env.fee_payer,
-            Some(Some(sponsor.address())),
+            FeePayerState::Signed(sponsor.address()),
             "fee_payer should recover sponsor address"
         );
     }
@@ -602,7 +602,7 @@ mod tests {
         );
         assert_eq!(
             tx_env.fee_payer,
-            Some(None),
+            FeePayerState::InvalidSignature,
             "invalid fee_payer_signature should remain unresolved"
         );
     }
