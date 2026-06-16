@@ -811,16 +811,16 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
-        let tx = evm.tx();
-
-        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
+        if let Some(oog) = {
+            let ctx = &evm.inner.ctx;
+            check_gas_limit(ctx.cfg.spec, &ctx.tx, init_and_floor_gas)
+        } {
             return Ok(oog);
         }
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        if let Some(tempo_tx_env) = evm.inner.ctx.tx.tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
