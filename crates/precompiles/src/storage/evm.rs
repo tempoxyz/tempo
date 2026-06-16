@@ -193,17 +193,20 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
 
+        let dynamic_gas = self
+            .gas_params
+            .sstore_dynamic_gas(true, &result.data, result.is_cold);
+        let state_gas = self.gas_params.sstore_state_gas(&result.data);
+        let refund_gas = self.gas_params.sstore_refund(true, &result.data);
+
         // dynamic gas
-        self.deduct_gas(
-            self.gas_params
-                .sstore_dynamic_gas(true, &result.data, result.is_cold),
-        )?;
+        self.deduct_gas(dynamic_gas)?;
 
         // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        self.deduct_state_gas(state_gas)?;
 
         // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        self.refund_gas(refund_gas);
 
         Ok(())
     }
