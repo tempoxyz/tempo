@@ -468,10 +468,9 @@ jobs:
             core.info(`PR #${process.env.BENCH_PR}, using pinned head SHA ${sha}`);
             core.setOutput('ref', sha);
 
-      - name: Clean up checkout workspace
+      - name: Repair checkout workspace ownership
         run: |
-          sudo rm -rf "$GITHUB_WORKSPACE"
-          mkdir -p "$GITHUB_WORKSPACE"
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/localnet" "$GITHUB_WORKSPACE/.bench-worktrees" 2>/dev/null || true
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

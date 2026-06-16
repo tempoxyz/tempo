@@ -484,7 +484,12 @@ def derive-tracing-otlp [tracing_otlp: string] {
 }
 
 def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
-    let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
+    let user_systemd = if (which systemctl | length) > 0 {
+        (systemctl --user show-environment | complete).exit_code == 0
+    } else {
+        false
+    }
+    let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and $user_systemd and ($cpus != "" or $memory != "")
     if not $can_scope {
         return ["bash" "-lc" $script]
     }
@@ -501,19 +506,15 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         [$"--preserve-env=($telemetry_env_names | str join ',')"]
     } else { [] }
     let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
-    let uid = (id -u | str trim)
-    let gid = (id -g | str trim)
     [
-        "sudo"
-        ...$preserve_env_args
         "systemd-run"
+        "--user"
         "--scope"
         "--quiet"
         "--collect"
         "--same-dir"
         "--unit" $unit
-        "--uid" $uid
-        "--gid" $gid
+        ...$preserve_env_args
         ...$telemetry_env
         ...$memory_args
         "bash"
@@ -532,7 +533,7 @@ def taskset-command [cmd: list<string>, cpus: string] {
 
 def wrap-e2e-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
     if $samply {
-        ["sudo" "samply" "record" ...$samply_args "--" ...$cmd]
+        ["samply" "record" ...$samply_args "--" ...$cmd]
     } else {
         $cmd
     }
@@ -694,14 +695,14 @@ def stop-local-e2e-systemd-scopes [] {
     }
 
     let units = (
-        bash -lc "systemctl list-units 'tempo-e2e-*.scope' --all --plain --no-legend 2>/dev/null | awk '{print $1}'"
+        bash -lc "systemctl --user list-units 'tempo-e2e-*.scope' --all --plain --no-legend 2>/dev/null | awk '{print $1}'"
         | lines
         | where { |unit| $unit != "" }
     )
     for unit in $units {
         print $"Stopping stale local e2e scope: ($unit)"
-        sudo systemctl kill --kill-whom=all $unit | ignore
-        sudo systemctl reset-failed $unit | ignore
+        systemctl --user kill --kill-whom=all $unit | ignore
+        systemctl --user reset-failed $unit | ignore
     }
 }
 
