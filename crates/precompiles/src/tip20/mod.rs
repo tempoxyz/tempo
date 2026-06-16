@@ -362,6 +362,8 @@ impl TIP20Token {
     /// value, and emits `LogoURIUpdated`.
     ///
     /// **IMPORTANT:** this function performs NO role check. It is the caller's responsibility.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
         Self::validate_logo_uri(&new_logo_uri)?;
 
