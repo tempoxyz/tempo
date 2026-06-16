@@ -249,14 +249,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             false
         };
 
-        let value;
-        let is_cold;
-        {
+        let (value, is_cold) = {
             let mut account = self.internals.load_account_mut(address)?;
             let val = account.sload(key, insufficient_gas_for_cold_load)?;
-
-            value = val.present_value;
-            is_cold = val.is_cold;
+            (val.present_value, val.is_cold)
         };
 
         if !self.spec.is_t4() {
