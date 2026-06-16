@@ -167,7 +167,7 @@ impl PolicyData {
 
     /// Returns `true` if the policy data is the default (uninitialized) value.
     fn is_default(&self) -> bool {
-        self.policy_type == 0 && self.admin == Address::ZERO
+        self.policy_type == 0 && self.admin.is_zero()
     }
 }
 
