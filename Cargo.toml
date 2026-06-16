@@ -35,6 +35,7 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
+  "examples/programmatic-node",
   "xtask",
 ]
 

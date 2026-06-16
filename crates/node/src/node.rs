@@ -188,6 +188,39 @@ impl TempoNode {
         ProviderFactoryBuilder::default()
     }
 
+    /// Sets the transaction pool builder.
+    pub fn with_pool_builder(mut self, pool_builder: TempoPoolBuilder) -> Self {
+        self.pool_builder = pool_builder;
+        self
+    }
+
+    /// Maps the transaction pool builder.
+    pub fn map_pool_builder<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(TempoPoolBuilder) -> TempoPoolBuilder,
+    {
+        self.pool_builder = f(self.pool_builder);
+        self
+    }
+
+    /// Sets the payload builder builder.
+    pub fn with_payload_builder_builder(
+        mut self,
+        payload_builder_builder: TempoPayloadBuilderBuilder,
+    ) -> Self {
+        self.payload_builder_builder = payload_builder_builder;
+        self
+    }
+
+    /// Maps the payload builder builder.
+    pub fn map_payload_builder_builder<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(TempoPayloadBuilderBuilder) -> TempoPayloadBuilderBuilder,
+    {
+        self.payload_builder_builder = f(self.payload_builder_builder);
+        self
+    }
+
     /// Sets the validator key for filtering subblock transactions.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
@@ -477,7 +510,14 @@ impl TempoPoolBuilder {
     /// Sets an additional stateless validation check applied at the end of the inner ETH
     /// validator's stateless validation.
     ///
-    /// See [`EthTransactionValidator::set_additional_stateless_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateless_validation).
+    /// This is the programmatic equivalent of installing a custom check with
+    /// [`EthTransactionValidator::set_additional_stateless_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateless_validation).
+    /// It is intended to be used from a [`TempoNode`] mapper, for example via
+    /// `tempo::TempoOverrides::map_tempo_node`, when the validation policy should not be exposed
+    /// as a CLI argument.
+    ///
+    /// The closure receives the transaction origin and pooled transaction. Return `Ok(())` to
+    /// accept the transaction or [`InvalidPoolTransactionError`] to reject it.
     pub fn with_additional_stateless_validation<F>(mut self, f: F) -> Self
     where
         F: Fn(
@@ -693,5 +733,61 @@ where
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder};
+
+    #[test]
+    fn tempo_node_maps_pool_builder() {
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                aa_valid_after_max_secs: 12,
+                ..Default::default()
+            },
+            None,
+        )
+        .map_pool_builder(|pool| pool.with_max_tempo_authorizations(7));
+
+        assert_eq!(node.pool_builder.aa_valid_after_max_secs, 12);
+        assert_eq!(node.pool_builder.max_tempo_authorizations, 7);
+    }
+
+    #[test]
+    fn tempo_node_sets_pool_builder() {
+        let node = TempoNode::default().with_pool_builder(TempoPoolBuilder {
+            aa_valid_after_max_secs: 42,
+            ..Default::default()
+        });
+
+        assert_eq!(node.pool_builder.aa_valid_after_max_secs, 42);
+    }
+
+    #[test]
+    fn tempo_node_maps_payload_builder_builder() {
+        let node = TempoNode::new(&TempoNodeArgs::default(), None).map_payload_builder_builder(
+            |mut payload| {
+                payload.state_provider_metrics = true;
+                payload
+            },
+        );
+
+        assert!(node.payload_builder_builder.state_provider_metrics);
+        assert_eq!(
+            node.payload_builder_builder.build_time_multiplier,
+            TempoNodeArgs::default().builder_build_time_multiplier
+        );
+    }
+
+    #[test]
+    fn tempo_node_sets_payload_builder_builder() {
+        let node = TempoNode::default().with_payload_builder_builder(TempoPayloadBuilderBuilder {
+            state_provider_metrics: true,
+            ..Default::default()
+        });
+
+        assert!(node.payload_builder_builder.state_provider_metrics);
     }
 }
