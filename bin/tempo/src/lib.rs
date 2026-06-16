@@ -604,6 +604,34 @@ mod tests {
     }
 
     #[test]
+    fn follow_certification_defaults() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--follow"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(!node_cmd.ext.is_following_uncertified());
+        assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn follow_certification_disable() {
+        init_defaults_once();
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--follow", "--follow.nocertify"]).unwrap();
+
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(node_cmd.ext.is_following_uncertified());
+        assert!(!node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
     fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
