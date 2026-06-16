@@ -33,8 +33,6 @@ pub(crate) enum ForkSchedule {
     Testnet,
     /// Fork schedule matching mainnet (presto): only forks active *now* are set to t=0.
     Mainnet,
-    /// Activates exactly the forks up to and including the given hardfork.
-    Hardfork(TempoHardfork),
 }
 
 impl ForkSchedule {
@@ -44,7 +42,6 @@ impl ForkSchedule {
             Self::Devnet => None,
             Self::Testnet => Some(include_str!("../../../chainspec/src/genesis/moderato.json")),
             Self::Mainnet => Some(include_str!("../../../chainspec/src/genesis/presto.json")),
-            Self::Hardfork(_) => None,
         }
     }
 
@@ -54,18 +51,6 @@ impl ForkSchedule {
     /// For other schedules, a fork is active only if its timestamp in the
     /// reference genesis is in the past.
     pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
-        if let Self::Hardfork(last_active) = self {
-            let fork_idx = TempoHardfork::VARIANTS
-                .iter()
-                .position(|candidate| *candidate == fork)
-                .expect("fork must be a known Tempo hardfork");
-            let last_active_idx = TempoHardfork::VARIANTS
-                .iter()
-                .position(|candidate| candidate == last_active)
-                .expect("last active fork must be a known Tempo hardfork");
-            return fork_idx <= last_active_idx;
-        }
-
         let Some(reference_json) = self.reference_genesis() else {
             return true; // devnet: all forks active
         };
@@ -86,12 +71,6 @@ impl ForkSchedule {
     /// reference network are set to `0`; forks that are still in the future
     /// or absent from the reference are set to `u64::MAX`.
     pub(crate) fn apply(&self, genesis: &mut serde_json::Value) {
-        if let Self::Hardfork(last_active) = self {
-            *genesis = serde_json::from_str(&make_genesis_at(*last_active))
-                .expect("hardfork genesis must parse");
-            return;
-        }
-
         let Some(reference_json) = self.reference_genesis() else {
             return; // keep test genesis timestamps unchanged
         };

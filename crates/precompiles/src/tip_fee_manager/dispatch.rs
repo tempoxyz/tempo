@@ -2,7 +2,7 @@
 
 use crate::{
     Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    storage::{Handler, StorageCtx},
+    storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
         amm::{M, MIN_LIQUIDITY, N, SCALE},
@@ -66,10 +66,7 @@ impl Precompile for TipFeeManager {
                 }
                 TipFeeManagerCall::FeeManager(IFeeManagerCalls::distributeFees(call)) => {
                     mutate_void(call, msg_sender, |_, c| {
-                        StorageCtx.set_tip1060_storage_credits(false);
-                        let result = self.distribute_fees(c.validator, c.token);
-                        StorageCtx.set_tip1060_storage_credits(true);
-                        result
+                        self.distribute_fees(c.validator, c.token)
                     })
                 }
 
