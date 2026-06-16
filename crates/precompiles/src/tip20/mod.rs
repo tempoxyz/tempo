@@ -788,7 +788,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
+        self._transfer_to_nonzero_recipient(msg_sender, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -821,7 +821,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(call.from, &to, call.amount)?;
+        self._transfer_to_nonzero_recipient(call.from, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -841,7 +841,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(call.from, &to, call.amount)?;
+        self._transfer_to_nonzero_recipient(call.from, &to, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             call.from,
             call.to,
@@ -889,7 +889,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(from, &to, amount)?;
+        self._transfer_to_nonzero_recipient(from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -924,7 +924,7 @@ impl TIP20Token {
             return Ok(());
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
+        self._transfer_to_nonzero_recipient(msg_sender, &to, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             msg_sender,
             call.to,
@@ -1165,15 +1165,45 @@ impl TIP20Token {
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            self.set_balance(to.target, new_to_balance)?;
+            self.credit_recipient(to.target, amount)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    fn _transfer_to_nonzero_recipient(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<()> {
+        debug_assert!(!to.target.is_zero(), "recipient must be validated");
+
+        let from_balance = self.get_balance(from)?;
+        if amount > from_balance {
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
+            );
+        }
+
+        self.handle_rewards_on_transfer(from, to.target, amount)?;
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_balance(from, new_from_balance)?;
+        self.credit_recipient(to.target, amount)?;
+
+        self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    fn credit_recipient(&mut self, to: Address, amount: U256) -> Result<()> {
+        let to_balance = self.get_balance(to)?;
+        let new_to_balance = to_balance
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        self.set_balance(to, new_to_balance)
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1207,7 +1237,7 @@ impl TIP20Token {
             self.emit_event(TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
-            self._transfer(originator, &guard, amount)?;
+            self._transfer_to_nonzero_recipient(originator, &guard, amount)?;
             InboundKind::TRANSFER
         };
         ReceivePolicyGuard::new()
@@ -1251,7 +1281,7 @@ impl TIP20Token {
             self.ensure_authorized_as(destination.target, AuthRole::recipient())?;
         }
 
-        self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
+        self._transfer_to_nonzero_recipient(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
