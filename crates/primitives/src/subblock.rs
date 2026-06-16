@@ -86,6 +86,8 @@ pub struct SubBlock {
 
 impl SubBlock {
     /// Returns the hash for the signature.
+    #[cold]
+    #[inline(never)]
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::with_capacity(self.length() + 1);
         buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
@@ -93,6 +95,8 @@ impl SubBlock {
         keccak256(&buf)
     }
 
+    #[cold]
+    #[inline(never)]
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
         self.version.encode(out);
         self.parent_hash.encode(out);
@@ -114,6 +118,8 @@ impl SubBlock {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Ok(Self {
             version: Decodable::decode(buf)?,
@@ -150,6 +156,8 @@ pub struct SignedSubBlock {
 }
 
 impl SignedSubBlock {
+    #[cold]
+    #[inline(never)]
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
         self.inner.rlp_encode_fields(out);
         self.signature.encode(out);
@@ -166,6 +174,8 @@ impl SignedSubBlock {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         Ok(Self {
             inner: SubBlock::rlp_decode_fields(buf)?,
