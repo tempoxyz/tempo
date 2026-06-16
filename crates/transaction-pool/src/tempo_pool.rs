@@ -350,8 +350,7 @@ where
                                     fee_payer,
                                     spec,
                                     StorageActions::disabled(),
-                                )
-                                else {
+                                ) else {
                                     continue;
                                 };
                                 *entry.insert(balance)
