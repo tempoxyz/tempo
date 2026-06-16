@@ -643,6 +643,13 @@ impl AA2dPool {
     /// Returns the best, executable transactions for this sub-pool at `base_fee`.
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
+        if self.pending_count == 0 {
+            return BestAA2dTransactions::empty_subscribed(
+                self.new_transaction_notifier.subscribe(),
+                base_fee,
+            );
+        }
+
         let expiring_nonce_order = if base_fee == self.base_fee {
             self.expiring_nonce_eviction_order.clone()
         } else {
@@ -2003,6 +2010,21 @@ pub(crate) struct BestAA2dTransactions {
 }
 
 impl BestAA2dTransactions {
+    fn empty_subscribed(
+        new_transaction_receiver: broadcast::Receiver<AA2dStoredTransaction>,
+        base_fee: u64,
+    ) -> Self {
+        Self {
+            independent: BTreeSet::new(),
+            by_id: HashMap::default(),
+            expiring_nonce_order: BTreeSet::new(),
+            invalid: Default::default(),
+            new_transaction_receiver: Some(new_transaction_receiver),
+            last_priority: None,
+            base_fee,
+        }
+    }
+
     /// Removes the best regular transaction from the set.
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let tx = self.independent.pop_last()?;
