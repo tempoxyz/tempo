@@ -217,9 +217,7 @@ where
     }
 
     fn store<S: StorageOps>(&self, _storage: &mut S, _slot: U256, _ctx: LayoutCtx) -> Result<()> {
-        Err(TempoPrecompileError::Fatal(
-            "Set must be stored via SetHandler::write() to maintain position invariants".into(),
-        ))
+        Err(set_store_invariant_error())
     }
 
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
@@ -232,6 +230,14 @@ where
 
         <Vec<T> as Storable>::delete(storage, slot, ctx)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn set_store_invariant_error() -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(
+        "Set must be stored via SetHandler::write() to maintain position invariants".into(),
+    )
 }
 
 /// Converts a 0-based index to a 1-based position for storage.
