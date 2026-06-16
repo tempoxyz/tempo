@@ -25,6 +25,7 @@ use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
 /// when the call still moves tokens.
+#[inline]
 fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
