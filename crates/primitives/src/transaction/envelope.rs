@@ -243,6 +243,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the proposer of the subblock if this is a subblock transaction.
+    #[inline]
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
         let Self::AA(tx) = &self else { return None };
         tx.tx().subblock_proposer()
