@@ -530,6 +530,14 @@ def taskset-command [cmd: list<string>, cpus: string] {
     }
 }
 
+def wrap-e2e-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
+    if $samply {
+        ["sudo" "samply" "record" ...$samply_args "--" ...$cmd]
+    } else {
+        $cmd
+    }
+}
+
 def start-e2e-local-node [
     role: string,
     phase: string,
@@ -549,7 +557,7 @@ def start-e2e-local-node [
         $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($profile_label).json.gz"]
     } else { [] }
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
-    let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
+    let node_cmd = wrap-e2e-samply $pinned_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
@@ -562,7 +570,21 @@ def start-e2e-local-node [
     }
 }
 
-def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+def e2e-signing-key-is-encrypted [node_dir: string] {
+    let signing_key = $"($node_dir)/signing.key"
+    let signing_key_contents = (open --raw $signing_key | into binary)
+    $signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f]
+}
+
+def e2e-consensus-secret-path [node_dir: string] {
+    if (e2e-signing-key-is-encrypted $node_dir) {
+        prepare-localnet-consensus-secret-fifo $node_dir
+    } else {
+        ""
+    }
+}
+
+def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string, consensus_secret: string] {
     let addr = ($node_dir | path basename)
     let inferred_ip = if ($addr | str contains ":") {
         $addr | split row ":" | get 0
@@ -573,10 +595,8 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-    let signing_key_contents = (open --raw $signing_key | into binary)
-    let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
-    let signing_secret_args = if $signing_key_is_encrypted {
-        ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
+    let signing_secret_args = if $consensus_secret != "" {
+        ["--consensus.secret" $consensus_secret]
     } else {
         []
     }
@@ -609,7 +629,10 @@ def stop-e2e-processes-gracefully [] {
         print $"Stopping tempo processes: ($pids | str join ', ')"
     }
     for pid in $pids {
-        kill -s 2 $pid
+        let result = (^kill -s 2 $pid | complete)
+        if $result.exit_code != 0 {
+            sudo kill -s 2 $pid | ignore
+        }
     }
     for pid in $pids {
         mut wait = 0
@@ -620,7 +643,10 @@ def stop-e2e-processes-gracefully [] {
         }
         if $wait >= 30 {
             print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
-            kill -s 9 $pid
+            let result = (^kill -s 9 $pid | complete)
+            if $result.exit_code != 0 {
+                sudo kill -s 9 $pid | ignore
+            }
             sleep 1sec
         }
     }
@@ -950,8 +976,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
+    let a_consensus_secret = (e2e-consensus-secret-path $ctx.a.node_dir)
+    let b_consensus_secret = (e2e-consensus-secret-path $ctx.b.node_dir)
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip $a_consensus_secret)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -959,7 +987,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip $b_consensus_secret)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -981,6 +1009,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
+    if $a_consensus_secret != "" { start-localnet-consensus-secret-writer $a_consensus_secret }
+    if $b_consensus_secret != "" { start-localnet-consensus-secret-writer $b_consensus_secret }
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
