@@ -5,6 +5,7 @@ use crate::{
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_sol_types::SolEvent;
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -13,7 +14,10 @@ use reth_transaction_pool::{
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_precompiles::{
+    storage::StorageKey,
+    tip20::{ITIP20, is_tip20_prefix, tip20_slots},
+};
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -158,20 +162,47 @@ where
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
+    pub fn on_new_result(&mut self, included: &BestTransaction, result: &TempoTxResult) {
+        if let Some((address, slot)) = included.transaction.fee_balance_slot() {
+            self.record_balance_change(result, address, slot);
+        }
+
+        for log in result.result().result.logs() {
+            if !is_tip20_prefix(log.address) {
                 continue;
             }
 
-            for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
-                    self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
-                }
+            if log.topics().first() != Some(&ITIP20::Transfer::SIGNATURE_HASH) {
+                continue;
             }
+
+            let Some(from) = log.topics().get(1).copied().map(Address::from_word) else {
+                continue;
+            };
+
+            self.record_balance_change(
+                result,
+                log.address,
+                from.mapping_slot(tip20_slots::BALANCES),
+            );
+        }
+    }
+
+    fn record_balance_change(&mut self, result: &TempoTxResult, address: Address, slot: U256) {
+        let Some(storage_slot) = result
+            .result()
+            .state
+            .get(&address)
+            .and_then(|account| account.storage.get(&slot))
+        else {
+            return;
+        };
+
+        if storage_slot.present_value < storage_slot.original_value {
+            self.decreased_balances
+                .insert((address, slot), storage_slot.present_value);
+        } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+            *balance = storage_slot.present_value;
         }
     }
 }

@@ -703,7 +703,7 @@ where
                     total_fees += result.validator_fee();
 
                     // Notify transactions iterator about the new state.
-                    best_txs.on_new_result(result);
+                    best_txs.on_new_result(&pool_tx, result);
                 },
             );
             if let Err(err) = execution_result {
