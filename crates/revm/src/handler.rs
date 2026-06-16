@@ -2105,7 +2105,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
-    gas.initial_regular_gas += gas_params.tx_base_stipend();
+    gas.initial_regular_gas += gas_params.get(GasId::tx_base_stipend());
 
     // 2. Signature verification gas
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
