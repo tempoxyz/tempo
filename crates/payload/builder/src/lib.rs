@@ -308,7 +308,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -905,17 +905,9 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
-            .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
-        } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
-        };
-
-        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
+        let (state_root_outcome, sparse_trie_state_root_wait_elapsed, hashed_state_rx) =
             if let Some(mut handle) = trie_handle {
+                let hashed_state_rx = Some(handle.take_hashed_state_rx());
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -930,7 +922,7 @@ where
                             state_root = ?outcome.state_root,
                             "received state root from sparse trie"
                         );
-                        Some((outcome, elapsed))
+                        (Some(outcome), Some(elapsed), hashed_state_rx)
                     }
                     Err(err) => {
                         warn!(
@@ -939,13 +931,12 @@ where
                             %err,
                             "sparse trie failed, falling back to sync state root"
                         );
-                        None
+                        (None, None, hashed_state_rx)
                     }
                 }
             } else {
-                None
-            }
-            .unzip();
+                (None, None, None)
+            };
 
         let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
             let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
@@ -953,6 +944,10 @@ where
         } else {
             (None, None)
         };
+
+        let hashed_state = hashed_state_rx
+            .and_then(|rx| rx.recv().ok())
+            .unwrap_or_else(|| finish_provider.hashed_post_state(&db.bundle_state));
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
