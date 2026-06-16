@@ -9,7 +9,10 @@ use crate::{
     },
     view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::{Address, B256},
+    sol_types::SolInterface,
+};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
@@ -30,6 +33,15 @@ impl TipFeeManagerCall {
             ITIPFeeAMMCalls::abi_decode(calldata).map(Self::Amm)
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn get_pool_id_view(
+    manager: &TipFeeManager,
+    call: ITIPFeeAMM::getPoolIdCall,
+) -> crate::error::Result<B256> {
+    Ok(manager.pool_id(call.userToken, call.validatorToken))
 }
 
 impl Precompile for TipFeeManager {
@@ -86,7 +98,7 @@ impl Precompile for TipFeeManager {
 
                 // ITIPFeeAMM view functions
                 TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPoolId(call)) => {
-                    view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
+                    view(call, |c| get_pool_id_view(self, c))
                 }
                 TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPool(call)) => {
                     view(call, |c| Ok(self.get_pool(c)?.into()))
