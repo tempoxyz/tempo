@@ -213,7 +213,7 @@ fn init_engine_defaults() {
         .with_suppress_persistence_during_build(true)
         .with_share_sparse_trie_with_payload_builder(true)
         .with_share_execution_cache_with_payload_builder(true)
-        .with_prewarming_threads(Some(32))
+        .with_prewarming_threads(Some(64))
         .try_init()
         .expect("failed to initialize engine defaults");
 }
