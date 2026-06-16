@@ -64,6 +64,17 @@ pub struct TempoBatchCallEnv {
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+#[inline]
+fn clone_key_authorization(
+    key_authorization: &Option<SignedKeyAuthorization>,
+) -> Option<SignedKeyAuthorization> {
+    match key_authorization {
+        Some(key_authorization) => Some(key_authorization.clone()),
+        None => None,
+    }
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -360,7 +371,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .collect(),
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
-                key_authorization: key_authorization.clone(),
+                key_authorization: clone_key_authorization(key_authorization),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution
