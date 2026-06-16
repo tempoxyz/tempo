@@ -151,37 +151,43 @@ where
     T: Storable,
 {
     /// Reads the entire vector from storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn read(&self) -> Result<Vec<T>> {
         self.as_slot().read()
     }
 
     /// Writes the entire vector to storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn write(&mut self, value: Vec<T>) -> Result<()> {
         self.as_slot().write(value)
     }
 
     /// Deletes the entire vector from storage (clears length and all elements).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn delete(&mut self) -> Result<()> {
         self.as_slot().delete()
     }
 
     /// Reads the entire vector from transient storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_read(&self) -> Result<Vec<T>> {
         self.as_slot().t_read()
     }
 
     /// Writes the entire vector to transient storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_write(&mut self, value: Vec<T>) -> Result<()> {
         self.as_slot().t_write(value)
     }
 
     /// Deletes the entire vector from transient storage.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_delete(&mut self) -> Result<()> {
         self.as_slot().t_delete()
     }
