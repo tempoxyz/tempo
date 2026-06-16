@@ -632,7 +632,9 @@ impl TempoSignature {
     /// Get signature type
     pub fn signature_type(&self) -> SignatureType {
         match self {
-            Self::Primitive(primitive_sig) => primitive_sig.signature_type(),
+            Self::Primitive(PrimitiveSignature::Secp256k1(_)) => SignatureType::Secp256k1,
+            Self::Primitive(PrimitiveSignature::P256(_)) => SignatureType::P256,
+            Self::Primitive(PrimitiveSignature::WebAuthn(_)) => SignatureType::WebAuthn,
             Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
         }
     }
