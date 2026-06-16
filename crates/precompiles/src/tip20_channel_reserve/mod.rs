@@ -63,16 +63,22 @@ struct PackedChannelState {
 
 impl PackedChannelState {
     /// Returns whether this storage slot contains an active channel.
+    #[cold]
+    #[inline(never)]
     fn exists(self) -> bool {
         !self.deposit.is_zero()
     }
 
     /// Returns the payer's close request timestamp, if the close timer is active.
+    #[cold]
+    #[inline(never)]
     fn close_requested_at(self) -> Option<u32> {
         (self.close_requested_at != 0).then_some(self.close_requested_at)
     }
 
     /// Converts packed native storage to the public Solidity ABI shape.
+    #[cold]
+    #[inline(never)]
     fn to_sol(self) -> ITIP20ChannelReserve::ChannelState {
         ITIP20ChannelReserve::ChannelState {
             settled: self.settled,
