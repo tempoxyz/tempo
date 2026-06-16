@@ -23,6 +23,6 @@ crate::sol! {
         function budgetOf(address account) external view returns (uint64);
 
         function setMode(Mode newMode) external;
-        function setBudget(uint64 credits) external;
+        function setBudget(uint64 creditBudget) external;
     }
 }

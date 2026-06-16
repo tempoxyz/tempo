@@ -2,7 +2,7 @@
 name = "tempo-contracts"
 description = "Tempo blockchain contract bindings and ABI definitions"
 
-version = "1.8.0"
+version = "1.8.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

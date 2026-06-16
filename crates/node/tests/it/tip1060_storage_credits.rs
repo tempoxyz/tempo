@@ -1,4 +1,4 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, U256},
@@ -9,17 +9,19 @@ use alloy::{
     },
     sol_types::SolCall,
 };
-use alloy_eips::Encodable2718;
+use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, ITIP1060StorageCredits,
+    DEFAULT_FEE_TOKEN, IFeeManager, ITIP20, ITIP1060StorageCredits,
     account_keychain::IAccountKeychain::{
         IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
     },
     authorizeKeyCall,
 };
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS};
+use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -27,6 +29,32 @@ use tempo_primitives::{
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     },
 };
+
+async fn wait_for_latest_beneficiary<P: Provider>(
+    provider: &P,
+    expected: Address,
+) -> eyre::Result<()> {
+    for _ in 0..30 {
+        let beneficiary = provider
+            .get_block(BlockId::latest())
+            .await?
+            .ok_or_else(|| eyre::eyre!("latest block missing"))?
+            .header
+            .beneficiary;
+        if beneficiary == expected {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let beneficiary = provider
+        .get_block(BlockId::latest())
+        .await?
+        .ok_or_else(|| eyre::eyre!("latest block missing"))?
+        .header
+        .beneficiary;
+    eyre::bail!("latest beneficiary {beneficiary:?} did not become {expected:?}")
+}
 
 /// Regression for the TIP-1060 fee-collection path reported in PR review.
 ///
@@ -153,6 +181,240 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     assert_eq!(
         credit_after, credit_before,
         "fee precharge/reimbursement bookkeeping must not change keychain storage credits"
+    );
+
+    Ok(())
+}
+
+/// Fee distribution must not run TIP-1060 accounting for fee-manager bookkeeping.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_distribute_fees_does_not_mint_unbacked_tip20_credit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let initial_validator = Address::repeat_byte(0x42);
+    let dynamic_validator = std::sync::Arc::new(std::sync::Mutex::new(initial_validator));
+    let setup = TestNodeBuilder::new()
+        .with_dynamic_validator(dynamic_validator.clone())
+        .build_http_only()
+        .await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let distributor = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let distributor_addr = distributor.address();
+    let validator = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(2)?
+        .build()?;
+    let validator_addr = validator.address();
+    let provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url.clone());
+    let distributor_provider = ProviderBuilder::new()
+        .wallet(distributor)
+        .connect_http(setup.http_url.clone());
+    let validator_provider = ProviderBuilder::new()
+        .wallet(validator)
+        .connect_http(setup.http_url);
+
+    let fee_token = setup_test_token(provider.clone(), root_addr).await?;
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+    let root_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let validator_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator_provider);
+    let distributor_fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, distributor_provider);
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+
+    fee_token
+        .mint(root_addr, U256::from(10_000_000_000u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    fee_token
+        .mint(validator_addr, U256::from(10_000u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    path_usd
+        .transfer(distributor_addr, U256::from(10_000_000_000u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    path_usd
+        .transfer(validator_addr, U256::from(10_000_000_000u64))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let set_validator_receipt = validator_fee_manager
+        .setValidatorToken(*fee_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(set_validator_receipt.status());
+
+    *dynamic_validator.lock().unwrap() = validator_addr;
+    wait_for_latest_beneficiary(&provider, validator_addr).await?;
+
+    let collected_before = root_fee_manager
+        .collectedFees(validator_addr, *fee_token.address())
+        .call()
+        .await?;
+    let fee_manager_token_balance_before =
+        fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+
+    let gas_price = 1_000_000_000_000u128;
+    let fee_collection_tx = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: Address::repeat_byte(0x55).into(),
+            value: U256::ZERO,
+            input: Default::default(),
+        }],
+        fee_token: Some(*fee_token.address()),
+        ..Default::default()
+    };
+    let fee_collection_signature = root.sign_hash_sync(&fee_collection_tx.signature_hash())?;
+    let fee_collection_envelope: TempoTxEnvelope = fee_collection_tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            fee_collection_signature,
+        )))
+        .into();
+    let fee_collection_hash = provider
+        .send_raw_transaction(&fee_collection_envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let fee_collection_receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>(
+            "eth_getTransactionReceipt".into(),
+            (fee_collection_hash,),
+        )
+        .await?;
+    assert!(fee_collection_receipt.status());
+
+    let collected_after_fee_collection = root_fee_manager
+        .collectedFees(validator_addr, *fee_token.address())
+        .call()
+        .await?;
+    let fee_manager_token_balance_after_fee_collection =
+        fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    assert!(collected_after_fee_collection > collected_before);
+    assert!(fee_manager_token_balance_after_fee_collection > fee_manager_token_balance_before);
+
+    *dynamic_validator.lock().unwrap() = initial_validator;
+    wait_for_latest_beneficiary(&provider, initial_validator).await?;
+
+    let token_credit_before = credits.balanceOf(*fee_token.address()).call().await?;
+    let distribute_receipt = distributor_fee_manager
+        .distributeFees(validator_addr, *fee_token.address())
+        .gas(2_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(distribute_receipt.status());
+
+    assert_eq!(
+        fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?,
+        U256::ZERO,
+        "distributeFees must clear the custom-token fee-manager custody slot"
+    );
+    assert_eq!(
+        credits.balanceOf(*fee_token.address()).call().await?,
+        token_credit_before,
+        "clearing fee-manager custody during distributeFees must not mint a storage credit"
+    );
+
+    Ok(())
+}
+
+/// A normal TIP-20 precompile storage clear should mint a persistent TIP-1060 credit for the token.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url);
+
+    let token = setup_test_token(provider.clone(), root_addr).await?;
+    let recipient = Address::repeat_byte(0xcc);
+    let amount = U256::from(1234u64);
+
+    // Seed recipient with non-zero balance so the transfer clears the sender's balance slot.
+    // Does not create a new recipient balance slot that could consume the credit.
+    let recipient_seed_receipt = token
+        .mint(recipient, U256::ONE)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(recipient_seed_receipt.status());
+    let sender_seed_receipt = token
+        .mint(root_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(sender_seed_receipt.status());
+
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credit_before = credits.balanceOf(*token.address()).call().await?;
+
+    let gas_price = 1_000_000_000_000u128;
+    let tx = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: (*token.address()).into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let sig = root.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+    let hash = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(root_addr).call().await?, U256::ZERO);
+    assert_eq!(token.balanceOf(recipient).call().await?, amount + U256::ONE);
+    assert_eq!(
+        credits.balanceOf(*token.address()).call().await?,
+        credit_before + 1,
+        "clearing the sender TIP-20 precompile balance slot must persist one storage credit for the token"
     );
 
     Ok(())

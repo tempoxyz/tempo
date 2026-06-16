@@ -291,6 +291,10 @@ impl TipFeeManager {
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
+        // +T7: Fee collection bypasses TIP-1060, so disable storage-credit accounting to avoid
+        // minting user-refundable storage credits when clearing fee-manager slots.
+        self.storage.set_tip1060_storage_credits(false);
+
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());

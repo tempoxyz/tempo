@@ -1,7 +1,7 @@
 [workspace.package]
-version = "1.8.1"
+version = "1.8.2"
 edition = "2024"
-rust-version = "1.93.0"
+rust-version = "1.95.0"
 authors = ["Tempo Contributors"]
 license = "MIT OR Apache-2.0"
 homepage = "https://docs.tempo.xyz"
@@ -150,7 +150,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060"
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
-reth-codecs = { version = "0.4.0", default-features = false }
+reth-codecs = { version = "0.5.1", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
@@ -181,7 +181,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "ci
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
-reth-primitives-traits = { version = "0.4.0", default-features = false }
+reth-primitives-traits = { version = "0.5.1", default-features = false }
 reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060" }
@@ -207,37 +207,37 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "ci/tip-1060
   "std",
   "optional-checks",
 ] }
-revm = { version = "40.0.3", features = ["optional_fee_charge"], default-features = false }
+revm = { version = "41.0.0", features = ["optional_fee_charge"], default-features = false }
 
-alloy = { version = "2.0.5", default-features = false }
-alloy-consensus = { version = "2.0.5", default-features = false }
-alloy-contract = { version = "2.0.5", default-features = false }
-alloy-eip7928 = { version = "0.4.1", default-features = false }
-alloy-eips = { version = "2.0.5", default-features = false }
-alloy-evm = { version = "0.36.0", default-features = false }
-revm-inspectors = "0.40.0"
-alloy-genesis = { version = "2.0.5", default-features = false }
+alloy = { version = "=2.0.5", default-features = false }
+alloy-consensus = { version = "=2.0.5", default-features = false }
+alloy-contract = { version = "=2.0.5", default-features = false }
+alloy-eip7928 = { version = "0.4.3", default-features = false }
+alloy-eips = { version = "=2.0.5", default-features = false }
+alloy-evm = { version = "0.37.0", default-features = false }
+revm-inspectors = "0.41.1"
+alloy-genesis = { version = "=2.0.5", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-abi = { version = "1.6.0", default-features = false }
-alloy-network = { version = "2.0.5", default-features = false }
+alloy-network = { version = "=2.0.5", default-features = false }
 alloy-primitives = { version = "1.6.0", default-features = false }
-alloy-provider = { version = "2.0.5", default-features = false }
+alloy-provider = { version = "=2.0.5", default-features = false }
 alloy-rlp = { version = "0.3.15", default-features = false }
-alloy-rpc-types-admin = "2.0.5"
-alloy-rpc-client = { version = "2.0.5", default-features = false }
-alloy-rpc-types-engine = "2.0.5"
-alloy-rpc-types-eth = { version = "2.0.5" }
-alloy-serde = { version = "2.0.5", default-features = false }
-alloy-signer = "2.0.5"
-alloy-signer-aws = "2.0.5"
-alloy-signer-gcp = "2.0.5"
-alloy-signer-ledger = "2.0.5"
-alloy-signer-local = "2.0.5"
-alloy-signer-trezor = "2.0.5"
+alloy-rpc-types-admin = "=2.0.5"
+alloy-rpc-client = { version = "=2.0.5", default-features = false }
+alloy-rpc-types-engine = "=2.0.5"
+alloy-rpc-types-eth = { version = "=2.0.5" }
+alloy-serde = { version = "=2.0.5", default-features = false }
+alloy-signer = "=2.0.5"
+alloy-signer-aws = "=2.0.5"
+alloy-signer-gcp = "=2.0.5"
+alloy-signer-ledger = "=2.0.5"
+alloy-signer-local = "=2.0.5"
+alloy-signer-trezor = "=2.0.5"
 
 alloy-sol-types = { version = "1.6.0", default-features = false }
-alloy-json-rpc = "2.0.5"
-alloy-transport = "2.0.5"
+alloy-json-rpc = "=2.0.5"
+alloy-transport = "=2.0.5"
 
 commonware-broadcast = "2026.4.0"
 commonware-codec = "2026.4.0"
