@@ -399,7 +399,7 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
-        let mut block_size_used = attributes
+        let mut estimated_rlp_block_size = attributes
             .withdrawals
             .as_ref()
             .map(|w| w.length())
@@ -435,7 +435,7 @@ where
             }
 
             // Account for the subblock's size
-            block_size_used += subblock.total_tx_size();
+            estimated_rlp_block_size += subblock.total_tx_size();
 
             true
         });
@@ -521,16 +521,16 @@ where
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
         for tx in &system_txs {
-            block_size_used += tx.inner().length();
+            estimated_rlp_block_size += tx.inner().length();
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
         self.metrics
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
 
-        if is_osaka && block_size_used > MAX_RLP_BLOCK_SIZE {
+        if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length: block_size_used,
+                rlp_length: estimated_rlp_block_size,
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
@@ -589,7 +589,7 @@ where
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
                     marshal_persist,
-                    block_size_used,
+                    estimated_rlp_block_size,
                     validation_latency,
                     current_workload,
                 );
@@ -606,7 +606,7 @@ where
                         ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
-                        block_size_used,
+                        estimated_rlp_block_size,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
                         "stopping pool transaction execution before payload build budget is exhausted"
@@ -684,7 +684,7 @@ where
             }
 
             let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+            let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
@@ -755,7 +755,7 @@ where
             }
 
             pool_transactions_included += 1;
-            block_size_used += tx_rlp_length;
+            estimated_rlp_block_size += tx_rlp_length;
             let _ = roots_tx.send((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
@@ -1090,7 +1090,6 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
-        let estimated_rlp_block_size = block_size_used;
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
                 rlp_length: estimated_rlp_block_size,
