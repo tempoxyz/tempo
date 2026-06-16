@@ -187,6 +187,8 @@ pub struct SpendingLimitState {
 impl SpendingLimitState {
     /// Computes the period end for the current rollover window, saturating on
     /// all intermediate operations to avoid overflow in extreme timestamps.
+    #[cold]
+    #[inline(never)]
     fn compute_next_period_end(&self, current_timestamp: u64) -> u64 {
         debug_assert!(
             self.period != 0,
@@ -211,7 +213,8 @@ impl AccountKeychain {
         keccak256(data)
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t3_spending_limit_cap(limit: U256) -> Result<u128> {
         if limit > U256::from(u128::MAX) {
             return Err(AccountKeychainError::invalid_spending_limit().into());
