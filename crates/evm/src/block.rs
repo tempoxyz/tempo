@@ -561,8 +561,7 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            is_payment =
-                self.is_payment_with_hint(recovered.tx(), pooled_payment_classification);
+            is_payment = self.is_payment_with_hint(recovered.tx(), pooled_payment_classification);
             self.validate_tx_with_payment(recovered.tx(), block_gas_used, is_payment)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
