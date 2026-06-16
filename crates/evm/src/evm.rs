@@ -704,30 +704,6 @@ mod tests {
                     StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
                     // SLOAD balances[sender]: read sender balance before fee escrow debit.
                     StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, starting_balance),
-                    // SLOAD userRewardInfo[sender].rewardRecipient: fee payer is opted out.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_recipient_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardPerToken: load fee payer reward checkpoint.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_per_token_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardBalance: load fee payer unclaimed rewards.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_balance_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD globalRewardPerToken: compute fee payer reward delta.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
-                        U256::ZERO,
-                    ),
                     // SSTORE balances[sender]: debit max fee escrow.
                     StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
                     // SLOAD balances[FeeManager]: read fee escrow custody balance.
@@ -754,54 +730,6 @@ mod tests {
                     ),
                     // SLOAD balances[sender]: read post-escrow balance before user transfer debit.
                     StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_recipient_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardPerToken: load sender reward checkpoint.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_per_token_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardBalance: load sender unclaimed rewards.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_balance_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD globalRewardPerToken: compute sender reward delta.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[recipient].rewardRecipient: recipient is opted out.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        recipient_reward_info_slot + reward_recipient_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[recipient].rewardPerToken: load recipient reward checkpoint.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        recipient_reward_info_slot + reward_per_token_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[recipient].rewardBalance: load recipient unclaimed rewards.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        recipient_reward_info_slot + reward_balance_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD globalRewardPerToken: compute recipient reward delta.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
-                        U256::ZERO,
-                    ),
                     // SSTORE balances[sender]: debit user transfer.
                     StorageAction::Sstore(
                         PATH_USD_ADDRESS,
@@ -815,30 +743,6 @@ mod tests {
                         PATH_USD_ADDRESS,
                         recipient_balance_slot,
                         transfer_amount,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out before fee refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_recipient_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardPerToken: load sender checkpoint before refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_per_token_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD userRewardInfo[sender].rewardBalance: load sender rewards before refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_reward_info_slot + reward_balance_offset,
-                        U256::ZERO,
-                    ),
-                    // SLOAD globalRewardPerToken: compute sender reward delta before refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
-                        U256::ZERO,
                     ),
                     // SLOAD balances[FeeManager]: read escrow custody before refunding unused fee.
                     StorageAction::Sload(
