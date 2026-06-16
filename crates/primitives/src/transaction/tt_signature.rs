@@ -99,7 +99,7 @@ pub struct WebAuthnSignature {
 ///
 /// Note: This enum uses custom RLP encoding via `to_bytes()` and does NOT derive Compact.
 /// The Compact encoding is handled at the parent struct level (e.g., KeyAuthorization).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
 #[cfg_attr(
@@ -116,6 +116,17 @@ pub enum PrimitiveSignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+}
+
+impl Clone for PrimitiveSignature {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Self::Secp256k1(signature) => Self::Secp256k1(*signature),
+            Self::P256(signature) => Self::P256(*signature),
+            Self::WebAuthn(signature) => Self::WebAuthn(signature.clone()),
+        }
+    }
 }
 
 impl PrimitiveSignature {
@@ -528,7 +539,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 /// AA transaction signature supporting multiple signature schemes
 ///
 /// Note: Uses custom Compact implementation that delegates to `to_bytes()` / `from_bytes()`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -542,6 +553,19 @@ pub enum TempoSignature {
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
     /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
     Keychain(KeychainSignature),
+}
+
+impl Clone for TempoSignature {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Self::Primitive(PrimitiveSignature::Secp256k1(signature)) => {
+                Self::Primitive(PrimitiveSignature::Secp256k1(*signature))
+            }
+            Self::Primitive(signature) => Self::Primitive(signature.clone()),
+            Self::Keychain(signature) => Self::Keychain(signature.clone()),
+        }
+    }
 }
 
 impl TempoSignature {
