@@ -332,6 +332,8 @@ impl ValidatorConfigV2 {
     /// For V4 addresses, that's `keccak256(octets(ip) || big_endian(port))`.
     ///
     /// For V6 addresses, that's `keccak256(octets(ip) || big_endian(scope_id) || big_endian(port))`.
+    #[cold]
+    #[inline(never)]
     fn ingress_key(ingress: &str) -> Result<B256> {
         let ingress = ingress
             .parse::<std::net::SocketAddr>()
@@ -357,6 +359,8 @@ impl ValidatorConfigV2 {
         Ok(hasher.finalize())
     }
 
+    #[cold]
+    #[inline(never)]
     fn require_unique_ingress(&self, ingress: &str) -> Result<B256> {
         let ingress_hash = Self::ingress_key(ingress)?;
         if self.active_ingress_ips[ingress_hash].read()? {
@@ -367,6 +371,8 @@ impl ValidatorConfigV2 {
         Ok(ingress_hash)
     }
 
+    #[cold]
+    #[inline(never)]
     fn update_ingress_ip_tracking(&mut self, old_ingress: &str, new_ingress: &str) -> Result<()> {
         let old_ingress_hash = Self::ingress_key(old_ingress)?;
         let new_ingress_hash = Self::ingress_key(new_ingress)?;
