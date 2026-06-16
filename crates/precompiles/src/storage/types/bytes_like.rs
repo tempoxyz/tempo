@@ -73,7 +73,8 @@ impl<T: Storable> BytesLikeHandler<T> {
     }
 
     /// Returns whether the stored value is empty.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
