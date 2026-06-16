@@ -8,11 +8,12 @@
 pub mod dispatch;
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
     tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
+    tip1060_storage_credits::TIP1060StorageCredits,
 };
 use alloy::{
     primitives::{Address, B256, U256, aliases::U96, keccak256},
@@ -21,8 +22,8 @@ use alloy::{
 use std::sync::LazyLock;
 use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
-    ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
-    TIP20ChannelReserveEvent,
+    ITIP20ChannelReserve, ITIP1060StorageCredits::Mode, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20ChannelReserveError, TIP20ChannelReserveEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -86,6 +87,8 @@ impl PackedChannelState {
 pub struct TIP20ChannelReserve {
     /// Persistent channel state keyed by `compute_channel_id_inner`.
     channel_states: Mapping<B256, PackedChannelState>,
+    /// Per-payer reusable credits for deleted packed channel-state slots.
+    channel_storage_credits: Mapping<Address, u64>,
 
     // WARNING: transient storage slots must remain after persistent storage fields until the
     // `contract` macro supports independent persistent/transient layouts.
@@ -109,6 +112,11 @@ impl TIP20ChannelReserve {
     /// transaction. If this is not called, `open` reads zero from transient storage and reverts.
     pub fn set_channel_open_context_hash(&mut self, hash: B256) -> Result<()> {
         self.channel_open_context_hash.t_write(hash)
+    }
+
+    /// Returns the number of reusable channel storage credits owned by `payer`.
+    pub fn storage_credits(&self, payer: Address) -> Result<u64> {
+        self.channel_storage_credits[payer].read()
     }
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
@@ -156,11 +164,15 @@ impl TIP20ChannelReserve {
         token.ensure_authorized_as(Recipient::resolve(call.payee)?.target, AuthRole::Recipient)?;
         token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
 
-        self.channel_states[channel_id].write(PackedChannelState {
-            settled: U96::ZERO,
-            deposit,
-            close_requested_at: 0,
-        })?;
+        self.write_channel_state_spending_credit(
+            msg_sender,
+            channel_id,
+            PackedChannelState {
+                settled: U96::ZERO,
+                deposit,
+                close_requested_at: 0,
+            },
+        )?;
         self.opened_this_tx[channel_id].t_write(true)?;
 
         self.emit_event(TIP20ChannelReserveEvent::ChannelOpened(
@@ -386,6 +398,7 @@ impl TIP20ChannelReserve {
             .expect("capture amount already checked against deposit");
 
         self.channel_states[channel_id].delete()?;
+        self.credit_channel_storage_slot(call.descriptor.payer)?;
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
@@ -447,6 +460,7 @@ impl TIP20ChannelReserve {
             .expect("settled is always <= deposit");
 
         self.channel_states[channel_id].delete()?;
+        self.credit_channel_storage_slot(call.descriptor.payer)?;
         if !refund.is_zero() {
             TIP20Token::from_address(call.descriptor.token)?.transfer(
                 self.address,
@@ -537,6 +551,74 @@ impl TIP20ChannelReserve {
         };
 
         Ok(hash)
+    }
+
+    /// Credits `payer` for one packed channel-state slot that was just deleted.
+    fn credit_channel_storage_slot(&mut self, payer: Address) -> Result<()> {
+        if !self.storage.spec().is_t7() {
+            return Ok(());
+        }
+
+        let current = self.channel_storage_credits[payer].read()?;
+        let updated = current.saturating_add(1);
+        if updated == current {
+            return Ok(());
+        }
+
+        if current == 0 {
+            let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
+                self.address,
+                1,
+                || self.channel_storage_credits[payer].write(updated),
+            )?;
+
+            if spent != 1 {
+                return Err(TempoPrecompileError::Fatal(format!(
+                    "channel storage credit bookkeeping spend mismatch: reserved 1, spent {spent}"
+                )));
+            }
+
+            Ok(())
+        } else {
+            self.channel_storage_credits[payer].write(updated)
+        }
+    }
+
+    /// Creates a packed channel-state slot, consuming one payer-attributed credit when available.
+    fn write_channel_state_spending_credit(
+        &mut self,
+        payer: Address,
+        channel_id: B256,
+        state: PackedChannelState,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t7() {
+            return self.channel_states[channel_id].write(state);
+        }
+
+        let current = self.channel_storage_credits[payer].read()?;
+        if current == 0 {
+            TIP1060StorageCredits::new().set_mode(self.address, Mode::Preserve)?;
+            return self.channel_states[channel_id].write(state);
+        }
+
+        let checkpoint = self.storage.checkpoint();
+        self.channel_storage_credits[payer].write(current - 1)?;
+
+        let result =
+            TIP1060StorageCredits::new().with_storage_credits_budget(self.address, 1, || {
+                self.channel_states[channel_id].write(state)
+            });
+
+        match result {
+            Ok(((), 1)) => {
+                checkpoint.commit();
+                Ok(())
+            }
+            Ok(((), spent)) => Err(TempoPrecompileError::Fatal(format!(
+                "channel storage credit spend mismatch: reserved 1, spent {spent}"
+            ))),
+            Err(err) => Err(err),
+        }
     }
 
     /// Returns the current block timestamp as `u64`.
@@ -801,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
