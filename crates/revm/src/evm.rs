@@ -312,10 +312,20 @@ mod tests {
 
     /// Fund an account with the default balance (1 ETH).
     fn fund_account(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address) {
+        fund_account_with_nonce(evm, address, 0);
+    }
+
+    /// Fund an account with the default balance and a specific nonce.
+    fn fund_account_with_nonce(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        address: Address,
+        nonce: u64,
+    ) {
         evm.ctx.db_mut().insert_account_info(
             address,
             AccountInfo {
                 balance: U256::from(DEFAULT_BALANCE),
+                nonce,
                 ..Default::default()
             },
         );
@@ -398,6 +408,31 @@ mod tests {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
+    fn create_funded_evm_t7_with_timestamp(
+        address: Address,
+        timestamp: u64,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T7;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        cfg.enable_amsterdam_eip8037 = false;
+
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
             .with_cfg(cfg)
             .with_tx(Default::default());
 
@@ -1992,6 +2027,92 @@ mod tests {
         Bytecode::new_raw(bytecode.into())
     }
 
+    fn run_tx_on_tip1060_contract(
+        mode: CreditMode,
+        contract: Address,
+        bytecode: &[u8],
+    ) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+        run_tx_on_tip1060_contract_with_setup(mode, contract, bytecode, |_, _| Ok(()))
+    }
+
+    fn run_tx_on_tip1060_contract_with_setup(
+        mode: CreditMode,
+        contract: Address,
+        bytecode: &[u8],
+        setup: impl FnOnce(&mut TempoEvm<CacheDB<EmptyDB>, ()>, Address) -> eyre::Result<()>,
+    ) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let mut evm = create_funded_evm_t7(caller);
+
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(mode, bytecode)),
+                ..Default::default()
+            },
+        );
+        setup(&mut evm, contract)?;
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(2_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        assert!(result.is_success(), "test transaction should succeed");
+
+        Ok((result.tx_gas_used(), evm))
+    }
+
+    fn mint_storage_credits_with_clears(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        key_pair: &P256KeyPair,
+        caller: Address,
+        contract: Address,
+        nonce: u64,
+        credits: u64,
+    ) -> eyre::Result<u64> {
+        if credits == 0 {
+            return Ok(nonce);
+        }
+
+        let mut body = Vec::new();
+        for credit in 0..credits {
+            let slot = 0xf0 + credit;
+            assert!(slot <= u64::from(u8::MAX));
+            evm.ctx
+                .db_mut()
+                .insert_account_storage(contract, U256::from(slot), U256::ONE)?;
+            body.extend_from_slice(&[opcode::PUSH1, 0, opcode::PUSH1, slot as u8, opcode::SSTORE]);
+        }
+        body.push(opcode::STOP);
+
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(Bytecode::new_raw(body.into())),
+                ..Default::default()
+            },
+        );
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .nonce(nonce)
+            .gas_limit(2_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        assert!(result.is_success(), "credit-minting prelude should succeed");
+        assert_eq!(
+            storage_credit_balance(evm, contract),
+            credits,
+            "prelude should mint the requested storage credits"
+        );
+
+        Ok(nonce + 1)
+    }
+
     fn branching_bytecode_with_tip1060_mode(mode: CreditMode) -> Bytecode {
         let mut bytecode = Vec::new();
         if mode != CreditMode::Refund {
@@ -2257,47 +2378,32 @@ mod tests {
     /// creation refund at end-of-tx.
     #[test]
     fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
+        // PUSH1 0x00 PUSH1 0x00 SSTORE STOP: no-op write to an empty slot.
+        let noop_body = bytes!("600060005500");
+        let (noop_gas, _) =
+            run_tx_on_tip1060_contract(CreditMode::Refund, Address::repeat_byte(0x60), &noop_body)?;
+
         // PUSH1 0x01 PUSH1 0x00 SSTORE  PUSH1 0x00 PUSH1 0x00 SSTORE  STOP
         let create_clear_body = bytes!("6001600055600060005500");
 
         // (mode, gas used, final credit balance).
+        // The 0->1->0 clear restores slot 0 to its transaction-original value (0), so T7 refunds
+        // only the 5k residual set charge. The 245k credit depends on the TIP-1060 credit mode.
         let cases = [
-            (CreditMode::Refund, 305_968u64, 0u64),
-            (CreditMode::Preserve, 540_514u64, 1u64),
-            (CreditMode::Direct, 540_514u64, 1u64),
+            (CreditMode::Refund, 285_968u64, 0u64),
+            (CreditMode::Preserve, 535_514u64, 1u64),
+            (CreditMode::Direct, 535_514u64, 1u64),
         ];
 
-        for (mode, expected_gas, expected_balance) in cases {
-            let key_pair = P256KeyPair::random();
-            let caller = key_pair.address;
-            let contract = Address::repeat_byte(0x60);
+        for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
+            let contract = Address::repeat_byte(0x60 + case_id as u8);
+            let (gas_used, evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
 
-            let mut evm = create_funded_evm_t7(caller);
-
-            evm.ctx.db_mut().insert_account_info(
-                contract,
-                AccountInfo {
-                    code: Some(bytecode_with_tip1060_mode(mode, &create_clear_body)),
-                    ..Default::default()
-                },
-            );
-
-            seed_storage_credit_balance(&mut evm, contract, 0);
-
-            let tx = TxBuilder::new()
-                .call(contract, &[])
-                .gas_limit(2_000_000)
-                .build();
-            let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-
-            let result = evm.transact_commit(tx_env)?;
             assert!(
-                result.is_success(),
-                "create+clear tx should succeed in {mode:?} mode"
+                gas_used >= noop_gas,
+                "0->x->0 storage churn must not reduce tx gas below no-op: noop={noop_gas}, create_clear={gas_used}"
             );
 
-            let gas_used = result.tx_gas_used();
             assert_eq!(
                 gas_used, expected_gas,
                 "TIP-1060 create+clear gas should be exact in {mode:?} mode"
@@ -2313,10 +2419,346 @@ mod tests {
         Ok(())
     }
 
+    /// TIP-1060: the spec transition table classifies every zero-crossing exactly once.
+    #[test]
+    fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Result<()> {
+        fn append_sstore(body: &mut Vec<u8>, slot: u8, value: u8) {
+            body.extend_from_slice(&[opcode::PUSH1, value, opcode::PUSH1, slot, opcode::SSTORE]);
+        }
+
+        fn transition_body(setup_value: Option<u8>, new_value: u8) -> Bytes {
+            let mut body = Vec::new();
+            if let Some(value) = setup_value {
+                append_sstore(&mut body, 0, value);
+            }
+            append_sstore(&mut body, 0, new_value);
+            body.push(opcode::STOP);
+            body.into()
+        }
+
+        #[derive(Clone, Copy)]
+        struct ModeExpectation {
+            mode: CreditMode,
+            expected_gas: u64,
+            expected_credits: u64,
+        }
+
+        struct CreditCase {
+            name: &'static str,
+            initial_credits: u64,
+            expectations: [ModeExpectation; 3],
+        }
+
+        struct TransitionClass {
+            name: &'static str,
+            original: u8,
+            setup_value: Option<u8>,
+            new_value: u8,
+            expected_slot: u64,
+            credit_cases: Vec<CreditCase>,
+        }
+
+        fn expectations(
+            refund: (u64, u64),
+            preserve: (u64, u64),
+            direct: (u64, u64),
+        ) -> [ModeExpectation; 3] {
+            [
+                ModeExpectation {
+                    mode: CreditMode::Refund,
+                    expected_gas: refund.0,
+                    expected_credits: refund.1,
+                },
+                ModeExpectation {
+                    mode: CreditMode::Preserve,
+                    expected_gas: preserve.0,
+                    expected_credits: preserve.1,
+                },
+                ModeExpectation {
+                    mode: CreditMode::Direct,
+                    expected_gas: direct.0,
+                    expected_credits: direct.1,
+                },
+            ]
+        }
+
+        const SET_MODE_GAS: u64 = 4_546;
+
+        fn same_storage_accounting(refund_gas: u64, expected_credits: u64) -> [ModeExpectation; 3] {
+            expectations(
+                (refund_gas, expected_credits),
+                (refund_gas + SET_MODE_GAS, expected_credits),
+                (refund_gas + SET_MODE_GAS, expected_credits),
+            )
+        }
+
+        fn no_initial_credits(expectations: [ModeExpectation; 3]) -> Vec<CreditCase> {
+            vec![CreditCase {
+                name: "no initial credits",
+                initial_credits: 0,
+                expectations,
+            }]
+        }
+
+        let transition_classes = [
+            TransitionClass {
+                name: "O=0 P=0 N=0 no-op",
+                original: 0,
+                setup_value: None,
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(30_862, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=Y same-tx no-op",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: no_initial_credits(same_storage_accounting(283_068, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=Z dirty overwrite",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 3,
+                expected_slot: 3,
+                credit_cases: no_initial_credits(same_storage_accounting(283_068, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=X N=X no-op",
+                original: 1,
+                setup_value: None,
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: no_initial_credits(same_storage_accounting(30_862, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=X N=Y clean overwrite",
+                original: 1,
+                setup_value: None,
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: no_initial_credits(same_storage_accounting(33_662, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=X dirty restore to original",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: no_initial_credits(same_storage_accounting(30_968, 0)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=Z dirty overwrite",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 3,
+                expected_slot: 3,
+                credit_cases: no_initial_credits(same_storage_accounting(33_768, 0)),
+            },
+            TransitionClass {
+                name: "O=0 P=Y N=0 clear of same-tx creation",
+                original: 0,
+                setup_value: Some(2),
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(expectations(
+                    (35_968, 0),
+                    (285_514, 1),
+                    (285_514, 1),
+                )),
+            },
+            TransitionClass {
+                name: "O=X P=X N=0 clean clear",
+                original: 1,
+                setup_value: None,
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(38_562, 1)),
+            },
+            TransitionClass {
+                name: "O=X P=Y N=0 dirty clear",
+                original: 1,
+                setup_value: Some(2),
+                new_value: 0,
+                expected_slot: 0,
+                credit_cases: no_initial_credits(same_storage_accounting(38_668, 1)),
+            },
+            TransitionClass {
+                name: "O=0 P=0 N=Y clean creation",
+                original: 0,
+                setup_value: None,
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: same_storage_accounting(282_962, 0),
+                    },
+                    CreditCase {
+                        name: "one initial credit",
+                        initial_credits: 1,
+                        expectations: expectations(
+                            (37_962, 0),
+                            (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
+                            (45_308, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (37_962, 1),
+                            (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
+                            (45_308, 1),
+                        ),
+                    },
+                ],
+            },
+            TransitionClass {
+                name: "O=X P=0 N=X recreation to original",
+                original: 1,
+                setup_value: Some(0),
+                new_value: 1,
+                expected_slot: 1,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: expectations(
+                            (35_968, 0),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
+                            (35_968 + SET_MODE_GAS, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (35_968, 2),
+                            (35_968 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 3),
+                            (35_968 + SET_MODE_GAS, 2),
+                        ),
+                    },
+                ],
+            },
+            TransitionClass {
+                name: "O=X P=0 N=Y recreation to other value",
+                original: 1,
+                setup_value: Some(0),
+                new_value: 2,
+                expected_slot: 2,
+                credit_cases: vec![
+                    CreditCase {
+                        name: "no initial credits",
+                        initial_credits: 0,
+                        expectations: expectations(
+                            (38_768, 0),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
+                            (38_768 + SET_MODE_GAS, 0),
+                        ),
+                    },
+                    CreditCase {
+                        name: "surplus initial credits",
+                        initial_credits: 2,
+                        expectations: expectations(
+                            (38_768, 2),
+                            (38_768 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 3),
+                            (38_768 + SET_MODE_GAS, 2),
+                        ),
+                    },
+                ],
+            },
+        ];
+
+        let mut case_id = 0u8;
+        for scenario in transition_classes {
+            for credit_case in &scenario.credit_cases {
+                for expectation in credit_case.expectations {
+                    let mode = expectation.mode;
+                    let key_pair = P256KeyPair::random();
+                    let caller = key_pair.address;
+                    let contract = Address::repeat_byte(0x80 + case_id);
+                    case_id += 1;
+                    let body = transition_body(scenario.setup_value, scenario.new_value);
+
+                    let mut evm = create_funded_evm_t7(caller);
+                    fund_account_with_nonce(&mut evm, caller, 1);
+                    if scenario.original != 0 {
+                        evm.ctx.db_mut().insert_account_storage(
+                            contract,
+                            U256::ZERO,
+                            U256::from(scenario.original),
+                        )?;
+                    }
+                    let nonce = mint_storage_credits_with_clears(
+                        &mut evm,
+                        &key_pair,
+                        caller,
+                        contract,
+                        1,
+                        credit_case.initial_credits,
+                    )?;
+
+                    evm.ctx.db_mut().insert_account_info(
+                        contract,
+                        AccountInfo {
+                            code: Some(bytecode_with_tip1060_mode(mode, &body)),
+                            ..Default::default()
+                        },
+                    );
+
+                    let tx = TxBuilder::new()
+                        .call(contract, &[])
+                        .nonce(nonce)
+                        .gas_limit(2_000_000)
+                        .build();
+                    let signed_tx = key_pair.sign_tx(tx)?;
+                    let result =
+                        evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+                    assert!(
+                        result.is_success(),
+                        "{} / {} in {mode:?} should succeed",
+                        scenario.name,
+                        credit_case.name
+                    );
+
+                    assert_eq!(
+                        result.tx_gas_used(),
+                        expectation.expected_gas,
+                        "{} / {} gas should stay exact in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                    assert_eq!(
+                        storage_credit_balance(&evm, contract),
+                        expectation.expected_credits,
+                        "{} / {} final persistent credit balance should stay exact in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                    assert_eq!(
+                        evm.ctx.db().storage_ref(contract, U256::ZERO)?,
+                        U256::from(scenario.expected_slot),
+                        "{} / {} should leave the expected slot value in {mode:?}",
+                        scenario.name,
+                        credit_case.name
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// TIP-1060: Preserve churn of a pre-existing slot cannot subsidize fresh Direct creates.
     ///
-    /// Dirty restores must cancel the clear-minted credits. Otherwise churned credits could be
-    /// spent on genuinely fresh Direct creates below the intended storage-creation price.
+    /// Each clear mints a credit, but in Preserve mode the matching recreation pays the 245k
+    /// creditable portion as gas, so accumulating churned credits costs full price per credit and
+    /// cannot fund cheaper Direct creates. Here the 500-cycle Preserve churn exhausts gas (each
+    /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
     #[test]
     fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
@@ -2421,19 +2863,23 @@ mod tests {
             call.tx_gas_used()
         );
 
-        // Dirty restores cancel the clear-minted credits, so the Direct create phase OOGs.
+        // Each Preserve recreation costs the full 245k creditable portion, so the churn loop
+        // exhausts gas and reverts before any churned credit can subsidize a Direct create.
         assert!(!call.is_success());
         assert_eq!(slots, 1);
         assert_eq!(balance, 0);
         Ok(())
     }
 
-    /// TIP-1060: Preserve clear+restore churn of a pre-existing slot nets zero credits.
+    /// TIP-1060: Preserve clear+restore churn mints one credit per clear.
     ///
-    /// Slot 0 starts non-zero. Each clear mints a credit, and each dirty restore must burn it so
-    /// repeated churn cannot grow the account's credit balance.
+    /// Slot 0 starts non-zero. TIP-1060 keys minting on the present -> new transition, so every
+    /// `nonzero -> 0` clear mints a credit regardless of the slot's original value. In Preserve
+    /// mode the matching `0 -> nonzero` recreation pays the 245k creditable portion as gas and does
+    /// not consume a credit, so three churn cycles accumulate three credits — each paid for in full,
+    /// so the balance growth is not a subsidy.
     #[test]
-    fn test_tip1060_preserve_churn_mints_zero_net_credits() -> eyre::Result<()> {
+    fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let contract = Address::repeat_byte(0x6c);
@@ -2470,11 +2916,17 @@ mod tests {
             caller,
         ))?;
         assert!(result.is_success(), "preserve churn tx should succeed");
+        assert_eq!(
+            result.tx_gas_used(),
+            1_029_138,
+            "three Preserve churn cycles pay the full 245k creditable portion per recreation"
+        );
 
         assert_eq!(
             storage_credit_balance(&evm, contract),
-            0,
-            "clear+restore of a pre-existing slot must net to zero minted credits"
+            3,
+            "each clear mints a credit and Preserve recreations pay 245k without consuming, so \
+             three churn cycles accumulate three credits"
         );
         Ok(())
     }
@@ -2556,7 +3008,7 @@ mod tests {
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
-            (CreditMode::Direct, 60_340u64, 1u64, 0u64),
+            (CreditMode::Direct, 45_340u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -2724,8 +3176,6 @@ mod tests {
         let cases = [(2u8, 1u64, 0u64), (1u8, 2u64, 1u64)];
 
         for (creates, starting_balance, expected_balance) in cases {
-            let key_pair = P256KeyPair::random();
-            let caller = key_pair.address;
             let contract = Address::repeat_byte(0x70 + creates);
 
             // Write 0x01 to `creates` fresh slots, then STOP.
@@ -2741,24 +3191,15 @@ mod tests {
             }
             bytecode.push(opcode::STOP);
 
-            let mut evm = create_funded_evm_t7(caller);
-            evm.ctx.db_mut().insert_account_info(
+            let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+                CreditMode::Refund,
                 contract,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytecode.into())),
-                    ..Default::default()
+                &bytecode,
+                |evm, contract| {
+                    seed_storage_credit_balance(evm, contract, starting_balance);
+                    Ok(())
                 },
-            );
-            seed_storage_credit_balance(&mut evm, contract, starting_balance);
-
-            let tx = TxBuilder::new()
-                .call(contract, &[])
-                .gas_limit(1_000_000)
-                .build();
-            let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            let result = evm.transact_commit(tx_env)?;
-            assert!(result.is_success(), "refund settlement tx should succeed");
+            )?;
 
             assert_eq!(
                 storage_credit_balance(&evm, contract),
@@ -2872,8 +3313,8 @@ mod tests {
         assert_eq!(storage_credit_balance(&evm, contract), 0);
         assert_eq!(
             result.tx_gas_used(),
-            310_868,
-            "one 230k deferred storage credit is applied"
+            295_868,
+            "one 245k deferred storage credit is applied"
         );
 
         Ok(())
@@ -2938,13 +3379,13 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            310_308,
+            295_308,
             "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(
             refund.tx_gas_used(),
-            52_962,
-            "Refund applies the deferred 230k settlement refund for comparison"
+            37_962,
+            "Refund applies the deferred 245k settlement refund for comparison"
         );
 
         Ok(())
@@ -2956,34 +3397,122 @@ mod tests {
     /// balance pinned at `u64::MAX` rather than overflowing.
     #[test]
     fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
         let contract = Address::repeat_byte(0x67);
 
         // Bytecode: SSTORE(0,0); STOP.
-        let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
+        let clear_bytecode = bytes!("600060005500");
 
-        let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
+        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+            CreditMode::Refund,
             contract,
-            AccountInfo {
-                code: Some(clear_bytecode),
-                ..Default::default()
+            &clear_bytecode,
+            |evm, contract| {
+                evm.ctx
+                    .db_mut()
+                    .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+                seed_storage_credit_balance(evm, contract, u64::MAX);
+                Ok(())
             },
-        );
-        evm.ctx
-            .db_mut()
-            .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
-        seed_storage_credit_balance(&mut evm, contract, u64::MAX);
+        )?;
+        assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
+
+        Ok(())
+    }
+
+    /// Expiring nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
+    #[test]
+    fn test_expiring_nonce_indexed_path_does_not_settle_storage_credits() -> eyre::Result<()> {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let timestamp = 1000u64;
+        let valid_before = timestamp + 30;
 
         let tx = TxBuilder::new()
-            .call(contract, &[])
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(valid_before))
             .gas_limit(500_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
-        assert!(result.is_success());
-        assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
+        let unindexed_tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let mut indexed_tx_env = unindexed_tx_env.clone();
+        indexed_tx_env
+            .tempo_tx_env
+            .as_mut()
+            .expect("expiring nonce tx must be AA")
+            .expiring_nonce_idx = Some(1);
+
+        let mut unindexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let unindexed_result = unindexed_evm.transact_commit(unindexed_tx_env)?;
+        assert!(
+            unindexed_result.is_success(),
+            "unindexed expiring nonce tx should succeed"
+        );
+
+        let mut indexed_evm = create_funded_evm_t7_with_timestamp(caller, timestamp);
+        let indexed_result = indexed_evm.transact_commit(indexed_tx_env)?;
+        assert!(
+            indexed_result.is_success(),
+            "indexed expiring nonce tx should succeed"
+        );
+
+        assert_eq!(
+            indexed_result.tx_gas_used(),
+            unindexed_result.tx_gas_used(),
+            "pointer restore must not create a TIP-1060 settlement discount"
+        );
+        assert_eq!(
+            storage_credit_balance(&indexed_evm, NONCE_PRECOMPILE_ADDRESS),
+            0,
+            "expiring nonce bookkeeping must not accrue storage credits"
+        );
+
+        Ok(())
+    }
+
+    /// 2D nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
+    #[test]
+    fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let nonce_key = U256::from(42_u64);
+
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(nonce_key)
+            .gas_limit(1_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let mut baseline_evm = create_funded_evm_t7(caller);
+        let baseline_result = baseline_evm.transact_commit(tx_env.clone())?;
+        assert!(
+            baseline_result.is_success(),
+            "baseline 2D nonce tx should succeed"
+        );
+
+        let mut credited_evm = create_funded_evm_t7(caller);
+        seed_storage_credit_balance(&mut credited_evm, NONCE_PRECOMPILE_ADDRESS, 1);
+        let credited_result = credited_evm.transact_commit(tx_env)?;
+        assert!(
+            credited_result.is_success(),
+            "preseeded-credit 2D nonce tx should succeed"
+        );
+
+        assert_eq!(
+            credited_result.tx_gas_used(),
+            baseline_result.tx_gas_used(),
+            "2D nonce bookkeeping must not consume nonce storage credits for a gas discount"
+        );
+        assert_eq!(
+            storage_credit_balance(&credited_evm, NONCE_PRECOMPILE_ADDRESS),
+            1,
+            "2D nonce bookkeeping must not consume pre-existing nonce storage credits"
+        );
 
         Ok(())
     }

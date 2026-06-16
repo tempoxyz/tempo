@@ -52,15 +52,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         }
     }
 
-    /// Enables or disables TIP-1060 storage-credit accounting for storage writes through this provider.
-    ///
-    /// This is intentionally provider-scoped so protocol-internal phases such as fee collection can
-    /// opt out without affecting user execution or other precompile calls.
-    pub fn with_tip1060_storage_credits(mut self, enabled: bool) -> Self {
-        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
-        self
-    }
-
     /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
         Self::new(
@@ -263,28 +254,21 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
-        let outcome = if self.tip1060_storage_credits_enabled {
+        if self.tip1060_storage_credits_enabled {
             sstore_storage_credits(self, address, &result)?
-        } else {
-            Default::default()
-        };
-
-        if !outcome.skip_gas {
-            // dynamic gas
-            self.deduct_gas(self.gas_params.sstore_dynamic_gas(
-                true,
-                &result.data,
-                result.is_cold,
-            ))?;
-
-            // Track state gas (cold SSTORE zero->non-zero only)
-            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
         }
+
+        // dynamic gas
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+
+        // Track state gas (cold SSTORE zero->non-zero only)
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
 
         // refund gas.
-        if !outcome.skip_refund {
-            self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
-        }
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
         Ok(())
     }
@@ -430,6 +414,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
         self.internals.checkpoint_revert(checkpoint)
+    }
+
+    #[inline]
+    fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
     }
 }
 
