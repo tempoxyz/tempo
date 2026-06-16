@@ -462,18 +462,24 @@ where
         self.values.delete()
     }
 
+    #[cold]
+    #[inline(never)]
     fn t_read(&self) -> Result<Set<T>> {
         Err(TempoPrecompileError::Fatal(
             "Set types don't support transient storage".into(),
         ))
     }
 
+    #[cold]
+    #[inline(never)]
     fn t_write(&mut self, _value: Set<T>) -> Result<()> {
         Err(TempoPrecompileError::Fatal(
             "Set types don't support transient storage".into(),
         ))
     }
 
+    #[cold]
+    #[inline(never)]
     fn t_delete(&mut self) -> Result<()> {
         Err(TempoPrecompileError::Fatal(
             "Set types don't support transient storage".into(),
