@@ -238,11 +238,11 @@ on:
       tracy-seconds:
         type: string
         required: false
-        default: "10"
+        default: "0"
       tracy-offset:
         type: string
         required: false
-        default: "30"
+        default: "0"
       otlp:
         type: string
         required: false
@@ -376,8 +376,8 @@ jobs:
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'Tracy' || inputs.profiling == 'Tracy Full' || inputs.profiling == 'Both') && 'full' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || 'off')) }}
       BENCH_TRACY_SAMPLING_HZ: ${{ inputs.tracy-sampling-hz || '18999' }}
-      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
-      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '30' }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '0' }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '0' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
