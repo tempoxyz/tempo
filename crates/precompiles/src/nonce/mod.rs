@@ -148,7 +148,43 @@ impl NonceManager {
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
+        self.check_and_mark_expiring_nonce_at_index(expiring_nonce_hash, valid_before, now, ptr)?;
+
+        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
+        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+            0
+        } else {
+            ptr + 1
+        };
+        self.expiring_nonce_ring_ptr.write(next)?;
+
+        Ok(())
+    }
+
+    /// Validates and records an expiring nonce at a caller-selected ring index.
+    ///
+    /// This preserves the current ring pointer, which lets payload validation place indexed
+    /// expiring nonces without temporary pointer writes that are immediately reverted.
+    pub fn check_and_mark_expiring_nonce_at_index(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        now: u64,
+        idx: u32,
+    ) -> Result<()> {
+        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
+            return Err(NonceError::invalid_expiring_nonce_expiry().into());
+        }
+
+        // 2. Replay check: reject if hash is already seen and not expired
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        if seen_expiry != 0 && seen_expiry > now {
+            return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        let idx = idx % EXPIRING_NONCE_SET_CAPACITY;
         let old_hash = self.expiring_nonce_ring[idx].read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
@@ -167,14 +203,6 @@ impl NonceManager {
         // 5. Insert new entry
         self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
-
-        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
-            0
-        } else {
-            ptr + 1
-        };
-        self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
     }
@@ -424,6 +452,26 @@ mod tests {
 
             let ptr = mgr.expiring_nonce_ring_ptr.read()?;
             assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_indexed_expiring_nonce_does_not_advance_pointer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.expiring_nonce_ring_ptr.write(17)?;
+
+            let tx_hash = B256::repeat_byte(0x99);
+            mgr.check_and_mark_expiring_nonce_at_index(tx_hash, now + 20, now, 23)?;
+
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 17);
+            assert_eq!(mgr.expiring_nonce_ring[23].read()?, tx_hash);
+            assert!(mgr.is_expiring_nonce_seen(tx_hash, now)?);
 
             Ok(())
         })
