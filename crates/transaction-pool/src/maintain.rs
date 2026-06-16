@@ -256,6 +256,18 @@ impl TempoPoolUpdates {
             || !self.key_authorization_witness_burns.is_empty()
     }
 
+    /// Returns true when the only scan-relevant invalidation is fee-payer balance changes.
+    pub fn has_only_fee_balance_invalidations(&self) -> bool {
+        !self.fee_balance_changes.is_empty()
+            && !self.has_keychain_subject_updates()
+            && self.key_authorization_target_changes.is_empty()
+            && self.validator_token_changes.is_empty()
+            && self.user_token_changes.is_empty()
+            && self.blacklist_additions.is_empty()
+            && self.whitelist_removals.is_empty()
+            && self.key_authorization_witness_burns.is_empty()
+    }
+
     /// Returns true if updates may invalidate keychain-signature transactions.
     pub fn has_keychain_subject_updates(&self) -> bool {
         !self.revoked_keys.is_empty()
@@ -1635,6 +1647,28 @@ mod tests {
                 Some(Address::random()),
             );
             assert!(updates.has_invalidation_events());
+        }
+
+        #[test]
+        fn fee_balance_only_guard_rejects_other_scan_invalidations() {
+            let mut updates = TempoPoolUpdates::new();
+            assert!(!updates.has_only_fee_balance_invalidations());
+
+            let fee_token = Address::random();
+            let fee_payer = Address::random();
+            updates
+                .fee_balance_changes
+                .entry(fee_token)
+                .or_default()
+                .insert(fee_payer);
+            assert!(updates.has_only_fee_balance_invalidations());
+
+            updates.spending_limit_spends.insert(
+                Address::random(),
+                Address::random(),
+                Some(fee_token),
+            );
+            assert!(!updates.has_only_fee_balance_invalidations());
         }
 
         #[test]

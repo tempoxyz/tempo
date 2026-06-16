@@ -130,7 +130,80 @@ where
         }
 
         let all_txs = self.all_transactions();
+        if updates.has_only_fee_balance_invalidations() {
+            return self.evict_fee_balance_invalidated_transactions_from(
+                &updates.fee_balance_changes,
+                all_txs.iter(),
+            );
+        }
+
         self.evict_invalidated_transactions_from(updates, all_txs.iter())
+    }
+
+    /// Evicts transactions whose fee payer can no longer cover the transaction fee.
+    ///
+    /// This is the common TIP-20 transfer maintenance path. It avoids the broader
+    /// invalidation scanner when no keychain, policy, user-token, or liquidity updates
+    /// are present.
+    fn evict_fee_balance_invalidated_transactions_from<'a>(
+        &self,
+        fee_balance_changes: &AddressMap<AddressSet>,
+        transactions: impl IntoIterator<
+            Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        >,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if fee_balance_changes.is_empty() {
+            return Vec::new();
+        }
+
+        let Some(mut state_provider) = self.client().latest().ok() else {
+            return Vec::new();
+        };
+
+        let spec = self.protocol_pool.validator().validator().active_hardfork();
+        let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
+        let mut to_remove = Vec::new();
+
+        for tx in transactions {
+            let fee_token = tx.transaction.effective_fee_token();
+            let Some(accounts) = fee_balance_changes.get(&fee_token) else {
+                continue;
+            };
+
+            let Ok(fee_payer) = tx.transaction.fee_payer() else {
+                continue;
+            };
+            if !accounts.contains(&fee_payer) {
+                continue;
+            }
+
+            let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    let Ok(balance) =
+                        state_provider.get_token_balance(fee_token, fee_payer, spec)
+                    else {
+                        continue;
+                    };
+                    *entry.insert(balance)
+                }
+            };
+
+            if balance < tx.transaction.fee_token_cost() {
+                to_remove.push(*tx.hash());
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Vec::new();
+        }
+
+        tracing::debug!(
+            target: "txpool",
+            total = to_remove.len(),
+            "Evicting fee-balance invalidated transactions"
+        );
+        self.remove_transactions(to_remove)
     }
 
     /// See [`Self::evict_invalidated_transactions`]; returns the removed transactions so
@@ -142,6 +215,13 @@ where
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if !updates.has_invalidation_events() {
             return Vec::new();
+        }
+
+        if updates.has_only_fee_balance_invalidations() {
+            return self.evict_fee_balance_invalidated_transactions_from(
+                &updates.fee_balance_changes,
+                transactions,
+            );
         }
 
         // Fetch state provider if any check needs on-chain reads:
