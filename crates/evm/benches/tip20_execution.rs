@@ -834,6 +834,8 @@ fn load_txgen_workload(path: &Path) -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
 fn workload() -> Workload {
     if let Ok(path) = std::env::var("TEMPO_TIP20_EXEC_TXS") {
         load_txgen_workload(Path::new(&path))
