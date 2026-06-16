@@ -74,6 +74,7 @@ impl<K, V: StorableType> Mapping<K, V> {
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
     /// Takes a reference to avoid cloning on cache hits.
+    #[inline(never)]
     pub fn at(&self, key: &K) -> &V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
@@ -90,6 +91,7 @@ impl<K, V: StorableType> Mapping<K, V> {
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
     /// Takes a reference to avoid cloning on cache hits.
+    #[inline(never)]
     pub fn at_mut(&mut self, key: &K) -> &mut V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
@@ -116,6 +118,7 @@ where
     /// Returns a reference to the cached handler for the given key.
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
+    #[inline(never)]
     fn index(&self, key: K) -> &Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert(&key, || {
@@ -129,6 +132,7 @@ where
     K: StorageKey + Hash + Eq + Clone,
 {
     /// Returns a mutable reference to the cached handler for the given key.
+    #[inline(never)]
     fn index_mut(&mut self, key: K) -> &mut Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert_mut(&key, || {
