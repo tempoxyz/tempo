@@ -285,6 +285,8 @@ impl HashedPostStateProvider for InMemoryStateProvider {
     }
 }
 
+#[cold]
+#[inline(never)]
 fn current_active_hardfork() -> TempoHardfork {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -293,12 +295,16 @@ fn current_active_hardfork() -> TempoHardfork {
     TempoChainSpec::mainnet().tempo_hardfork_at(now)
 }
 
+#[cold]
+#[inline(never)]
 fn latest_known_hardfork() -> TempoHardfork {
     *TempoHardfork::VARIANTS
         .last()
         .expect("TempoHardfork must define at least one variant")
 }
 
+#[cold]
+#[inline(never)]
 fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
     let current = current_active_hardfork();
     let latest = latest_known_hardfork();
