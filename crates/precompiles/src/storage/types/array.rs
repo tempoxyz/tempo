@@ -119,7 +119,8 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     }
 
     /// Computes the handler for a given index (unchecked).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn compute_handler(base_slot: U256, address: Address, index: usize) -> T::Handler {
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
         let (slot, layout_ctx) = if T::BYTES <= 16 {
