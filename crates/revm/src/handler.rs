@@ -800,6 +800,13 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
 
+    /// Validates the environment and initial gas for Tempo transactions.
+    #[inline]
+    fn validate(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
+        self.validate_env(evm)?;
+        self.validate_initial_tx_gas(evm)
+    }
+
     /// Overridden execution method that handles AA vs standard transactions.
     ///
     /// Dispatches based on transaction type:
