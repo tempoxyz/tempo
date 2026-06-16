@@ -186,6 +186,14 @@ where
         loop {
             let tx = self.inner.next()?;
 
+            if self.decreased_balances.is_empty() {
+                debug_assert!(
+                    tx.transaction.fee_balance_slot().is_some(),
+                    "pool transaction must have cached fee_balance_slot"
+                );
+                return Some(tx);
+            }
+
             let Some(key) = tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
