@@ -11,6 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::storage::StorageActions;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -51,20 +52,31 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Recorded storage actions.
+    pub(crate) actions: StorageActions,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
+        Self::new_with_actions(ctx, inspector, StorageActions::disabled())
+    }
 
-        Self::new_inner(Evm {
-            instruction: instructions::tempo_instructions(ctx.cfg.spec),
-            ctx,
-            inspector,
-            precompiles,
-            frame_stack: FrameStack::new(),
-        })
+    /// Create a new Tempo EVM with a buffer for recording storage actions.
+    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
+        let precompiles =
+            tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions.clone());
+
+        Self::new_inner(
+            Evm {
+                instruction: instructions::tempo_instructions(ctx.cfg.spec),
+                ctx,
+                inspector,
+                precompiles,
+                frame_stack: FrameStack::new(),
+            },
+            actions,
+        )
     }
 
     /// Inner helper function to create a new Tempo EVM with empty logs.
@@ -78,6 +90,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             PrecompilesMap,
             EthFrame<EthInterpreter>,
         >,
+        actions: StorageActions,
     ) -> Self {
         Self {
             inner,
@@ -87,6 +100,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            actions,
         }
     }
 
@@ -110,12 +124,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        TempoEvm::new_inner(self.inner.with_inspector(inspector))
+        let Self { inner, actions, .. } = self;
+        TempoEvm::new_inner(inner.with_inspector(inspector), actions)
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        Self::new_inner(self.inner.with_precompiles(precompiles))
+        let Self { inner, actions, .. } = self;
+        Self::new_inner(inner.with_precompiles(precompiles), actions)
     }
 
     /// Consumes self and returns the inner Inspector.

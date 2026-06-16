@@ -8,7 +8,10 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -23,6 +26,8 @@ pub struct EvmPrecompileStorageProvider<'a> {
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
+    /// Recorded storage actions.
+    actions: StorageActions,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -45,6 +50,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
+            actions: StorageActions::disabled(),
         }
     }
 
@@ -77,6 +83,22 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             false,
             cfg.gas_params.clone(),
         )
+    }
+
+    /// Sets the storage actions for this provider.
+    pub fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.actions = actions;
+        self
+    }
+
+    /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    pub fn take_actions(&self) -> Option<Vec<StorageAction>> {
+        self.actions.take()
+    }
+
+    /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    pub fn replace_actions(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
+        self.actions.replace(actions)
     }
 
     #[inline]
@@ -188,6 +210,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value,
             insufficient_gas_for_cold_load,
         )?;
+        self.actions
+            .record(StorageAction::Sstore(address, key, value));
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -258,6 +282,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value = val.present_value;
             is_cold = val.is_cold;
         };
+        self.actions
+            .record(StorageAction::Sload(address, key, value));
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
@@ -490,6 +516,52 @@ mod tests {
         fn deref_mut(&mut self) -> &mut Self::Target {
             &mut self.0
         }
+    }
+
+    #[test]
+    fn test_sstore_sload_actions_recording() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let addr = Address::random();
+
+        let mut provider = evm
+            .provider_max_gas()
+            .with_actions(StorageActions::enabled());
+
+        let (k1, v1) = (U256::from(1), U256::from(10));
+        let (k2, v2) = (U256::from(2), U256::from(20));
+        let v1_new = U256::from(11);
+
+        provider.sstore(addr, k1, v1)?;
+        provider.sstore(addr, k2, v2)?;
+        let _ = provider.sload(addr, k1)?;
+        provider.sstore(addr, k1, v1_new)?;
+        let _ = provider.sload(addr, k2)?;
+
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![
+                StorageAction::Sstore(addr, k1, v1),
+                StorageAction::Sstore(addr, k2, v2),
+                StorageAction::Sload(addr, k1, v1),
+                StorageAction::Sstore(addr, k1, v1_new),
+                StorageAction::Sload(addr, k2, v2),
+            ])
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_sload_actions_recording_disabled_by_default() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+        let addr = Address::random();
+        provider.sstore(addr, U256::from(1), U256::from(100))?;
+        let _ = provider.sload(addr, U256::from(1))?;
+
+        assert_eq!(provider.take_actions(), None);
+
+        Ok(())
     }
 
     #[test]
