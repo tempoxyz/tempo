@@ -275,6 +275,7 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
+    let benchmark_kind = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
@@ -326,6 +327,7 @@ def txgen-run-preset-pipeline [
         "-m" $"git-ref=($git_ref_label)"
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
+        "-m" $"benchmark_kind=($benchmark_kind)"
     ]
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
