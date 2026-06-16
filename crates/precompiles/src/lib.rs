@@ -360,7 +360,8 @@ pub(crate) fn charge_input_cost(
     storage: &mut StorageCtx,
     calldata: &[u8],
 ) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
+    let input_gas = input_cost(calldata.len());
+    if storage.deduct_gas(input_gas).is_err() {
         return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
     }
     None
