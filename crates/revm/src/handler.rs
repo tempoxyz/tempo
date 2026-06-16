@@ -1037,7 +1037,11 @@ where
                 };
 
                 nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .check_and_mark_expiring_nonce_at_time(
+                        replay_hash,
+                        valid_before,
+                        block_timestamp,
+                    )
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(

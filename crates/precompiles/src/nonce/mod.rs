@@ -133,7 +133,16 @@ impl NonceManager {
         valid_before: u64,
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
+        self.check_and_mark_expiring_nonce_at_time(expiring_nonce_hash, valid_before, now)
+    }
 
+    /// Validates and records an expiring nonce using a caller-provided block timestamp.
+    pub fn check_and_mark_expiring_nonce_at_time(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        now: u64,
+    ) -> Result<()> {
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
@@ -351,6 +360,22 @@ mod tests {
 
             // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expiring_nonce_uses_supplied_timestamp() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        storage.set_timestamp(U256::from(1));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let now = 1000u64;
+            let tx_hash = B256::repeat_byte(0x23);
+
+            mgr.check_and_mark_expiring_nonce_at_time(tx_hash, now + 20, now)?;
+            assert!(mgr.is_expiring_nonce_seen(tx_hash, now)?);
 
             Ok(())
         })
