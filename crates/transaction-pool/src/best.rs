@@ -160,6 +160,10 @@ where
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
         for (&address, account) in &result.result().state {
+            if account.storage.is_empty() {
+                continue;
+            }
+
             if !is_tip20_prefix(address) {
                 continue;
             }
