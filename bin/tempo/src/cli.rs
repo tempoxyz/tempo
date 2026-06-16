@@ -48,25 +48,12 @@ pub(crate) struct TempoArgs {
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
     /// DO NOT USE IN PRODUCTION.
-    #[arg(
-        long = "follow.nocertify",
-        requires = "follow",
-        default_value_t = false,
-        conflicts_with = "follow_experimental_certify"
-    )]
+    #[arg(long = "follow.nocertify", requires = "follow")]
     pub(crate) follow_nocertify: bool,
 
     /// DEPRECATED. Certification is now enabled by default in follow mode. Use
-    /// --follow.nocertify to disable.
-    #[arg(
-        long = "follow.experimental.certify",
-        requires = "follow",
-        hide = true,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        conflicts_with = "follow_nocertify"
-    )]
+    /// --follow.nocertify to disable. This argument is a no-op.
+    #[arg(long = "follow.experimental.certify", requires = "follow", hide = true)]
     pub(crate) follow_experimental_certify: Option<bool>,
 
     /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
@@ -104,8 +91,7 @@ pub(crate) struct TempoArgs {
 
 impl TempoArgs {
     pub(crate) fn is_following_uncertified(&self) -> bool {
-        self.follow.is_some()
-            && (self.follow_nocertify || self.follow_experimental_certify == Some(false))
+        self.follow.is_some() && self.follow_nocertify
     }
 
     /// Whether the consensus engine should be active.

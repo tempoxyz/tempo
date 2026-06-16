@@ -587,36 +587,6 @@ mod tests {
 
         assert!(!node_cmd.ext.is_following_uncertified());
         assert!(node_cmd.ext.has_consensus_engine(false));
-
-        let cli = TempoCli::try_parse_from([
-            "tempo",
-            "node",
-            "--follow",
-            "--follow.experimental.certify",
-        ])
-        .unwrap();
-
-        let Commands::Node(node_cmd) = cli.command else {
-            panic!("expected node command");
-        };
-
-        assert!(!node_cmd.ext.is_following_uncertified());
-        assert!(node_cmd.ext.has_consensus_engine(false));
-
-        let cli = TempoCli::try_parse_from([
-            "tempo",
-            "node",
-            "--follow",
-            "--follow.experimental.certify=true",
-        ])
-        .unwrap();
-
-        let Commands::Node(node_cmd) = cli.command else {
-            panic!("expected node command");
-        };
-
-        assert!(!node_cmd.ext.is_following_uncertified());
-        assert!(node_cmd.ext.has_consensus_engine(false));
     }
 
     #[test]
@@ -625,21 +595,6 @@ mod tests {
 
         let cli =
             TempoCli::try_parse_from(["tempo", "node", "--follow", "--follow.nocertify"]).unwrap();
-
-        let Commands::Node(node_cmd) = cli.command else {
-            panic!("expected node command");
-        };
-
-        assert!(node_cmd.ext.is_following_uncertified());
-        assert!(!node_cmd.ext.has_consensus_engine(false));
-
-        let cli = TempoCli::try_parse_from([
-            "tempo",
-            "node",
-            "--follow",
-            "--follow.experimental.certify=false",
-        ])
-        .unwrap();
 
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
