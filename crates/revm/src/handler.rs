@@ -800,6 +800,26 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
 
+    #[inline]
+    fn run_without_catch_error(
+        &mut self,
+        evm: &mut Self::Evm,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        let mut init_and_floor_gas = self.validate(evm)?;
+        let eip7702_refund = self.pre_execution(evm, &mut init_and_floor_gas)?;
+        let eip7702_regular_refund = eip7702_refund as i64;
+
+        let mut exec_result = self.execution(evm, &init_and_floor_gas)?;
+        let result_gas = self.post_execution(
+            evm,
+            &mut exec_result,
+            init_and_floor_gas,
+            eip7702_regular_refund,
+        )?;
+
+        self.execution_result(evm, exec_result, result_gas)
+    }
+
     /// Overridden execution method that handles AA vs standard transactions.
     ///
     /// Dispatches based on transaction type:
