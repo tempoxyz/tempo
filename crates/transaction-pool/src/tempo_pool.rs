@@ -860,13 +860,19 @@ where
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
+        let protocol_pending = self.protocol_pool.pool_size().pending;
+        let aa_2d_pool = self.aa_2d_pool.read();
+        let (aa_2d_pending, _) = aa_2d_pool.pending_and_queued_txn_count();
+        let right = aa_2d_pool.best_transactions_with_base_fee(attributes.basefee);
+        drop(aa_2d_pool);
+
+        if protocol_pending == 0 && aa_2d_pending > 0 {
+            return Box::new(right);
+        }
+
         let left = self
             .protocol_pool
             .best_transactions_with_attributes(attributes);
-        let right = self
-            .aa_2d_pool
-            .read()
-            .best_transactions_with_base_fee(attributes.basefee);
         Box::new(MergeBestTransactions::new(left, right, attributes.basefee))
     }
 
