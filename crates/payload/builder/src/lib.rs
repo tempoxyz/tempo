@@ -508,8 +508,6 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
-
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
@@ -531,6 +529,17 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let (pool_lower_bound, pool_upper_bound) = best_txs.size_hint();
+        let roots_capacity = roots_output_capacity(
+            pool_lower_bound,
+            pool_upper_bound,
+            non_shared_gas_limit,
+            system_txs.len()
+                + subblocks
+                    .iter()
+                    .map(|subblock| subblock.transactions.len())
+                    .sum::<usize>(),
+        );
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
@@ -548,6 +557,7 @@ where
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
+        let (roots_tx, roots_rx) = self.spawn_roots_task(roots_capacity);
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -1163,6 +1173,7 @@ where
     #[expect(clippy::type_complexity)]
     fn spawn_roots_task(
         &self,
+        transaction_capacity: usize,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
@@ -1172,9 +1183,9 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+            .spawn_blocking_named("builder-roots-task", move || {
+                let mut transactions = Vec::with_capacity(transaction_capacity);
+                let mut senders = Vec::with_capacity(transaction_capacity);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
@@ -1294,6 +1305,25 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+fn roots_output_capacity(
+    pool_lower_bound: usize,
+    pool_upper_bound: Option<usize>,
+    non_shared_gas_limit: u64,
+    tail_transactions: usize,
+) -> usize {
+    // A transaction below the intrinsic gas floor cannot be included, so this caps
+    // reservations from large pool snapshots to a block-sized upper bound.
+    const MIN_TRANSACTION_GAS: u64 = 21_000;
+
+    let max_pool_transactions_by_gas =
+        (non_shared_gas_limit / MIN_TRANSACTION_GAS).saturating_add(1) as usize;
+    let pool_capacity = pool_upper_bound
+        .unwrap_or(pool_lower_bound)
+        .min(max_pool_transactions_by_gas);
+
+    pool_capacity.saturating_add(tail_transactions)
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
