@@ -943,7 +943,9 @@ where
         let spec = cfg.spec();
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
-        let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+        let has_custom_nonce = !nonce_key.is_zero();
+        let is_expiring_nonce =
+            has_custom_nonce && nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
@@ -951,7 +953,7 @@ where
             tx.nonce(),
             cfg.is_eip3607_disabled(),
             // skip nonce check if 2D nonce or expiring nonce is used
-            cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
+            cfg.is_nonce_check_disabled() || has_custom_nonce,
         )?;
 
         // modify account nonce and touch the account.
@@ -961,7 +963,7 @@ where
         // This case would create a new account for caller.
         // We only check first call of the transaction because CREATE is only allowed
         // to appear as the first call in the batch (validated in `validate_calls`)
-        if !nonce_key.is_zero()
+        if has_custom_nonce
             && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
             && caller_account.nonce() == 0
         {
@@ -1069,7 +1071,7 @@ where
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
-        } else if !nonce_key.is_zero() {
+        } else if has_custom_nonce {
             // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
