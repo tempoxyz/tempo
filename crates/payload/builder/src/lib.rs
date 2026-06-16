@@ -895,15 +895,16 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
+        // Drop the state hook as soon as execution is complete so the sparse trie task can start
+        // finalizing while the builder merges its local bundle state.
         db.set_state_hook(None);
 
-        // Drop the BAL task sender to trigger finalization.
+        // Drop the BAL task sender to trigger finalization. When BAL is enabled, that task owns
+        // the sparse trie hook and dropping it is what signals trie finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+
+        // merge all transitions into bundle state before deriving the hashed post-state
+        db.merge_transitions(BundleRetention::Reverts);
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
