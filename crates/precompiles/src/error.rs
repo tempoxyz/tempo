@@ -166,6 +166,8 @@ impl TempoPrecompileError {
 
     /// Returns true if this error represents a system-level failure that must be propagated
     /// rather than swallowed, because state may be inconsistent.
+    #[cold]
+    #[inline(never)]
     pub fn is_system_error(&self) -> bool {
         match self {
             Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
