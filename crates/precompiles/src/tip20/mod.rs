@@ -1428,14 +1428,22 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
+        TIP20Event::Transfer(ITIP20::Transfer {
+            from,
+            to: self.virtual_addr.unwrap_or(self.target),
+            amount,
+        })
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr
-            .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
+            .map(|virtual_addr| TIP20Event::Transfer(ITIP20::Transfer {
+                from: virtual_addr,
+                to: self.target,
+                amount,
+            }))
     }
 }
 
