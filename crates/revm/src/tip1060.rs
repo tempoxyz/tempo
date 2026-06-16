@@ -46,7 +46,7 @@ pub fn apply_refund<DB: Database, I>(
         return Ok(());
     };
 
-    let mut refunds = 0;
+    let mut refunds = 0i64;
     for (key, word) in slots {
         let transient_state =
             TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
@@ -67,7 +67,7 @@ pub fn apply_refund<DB: Database, I>(
 
         // SSTORE the post-settlement balance back into persistent storage.
         balance -= settled;
-        refunds += settled;
+        refunds += settled as i64;
 
         let new_word = U256::from(balance);
         debug_assert_ne!(new_word, old_word);
@@ -76,7 +76,7 @@ pub fn apply_refund<DB: Database, I>(
     }
 
     // Refund storage credit value per settled credit.
-    gas.erase_cost(refunds.saturating_mul(STORAGE_CREDIT_VALUE));
+    gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));
 
     Ok(())
 }
