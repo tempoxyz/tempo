@@ -66,6 +66,160 @@ def tracy-build-config [features: string, tracy: string] {
     }
 }
 
+def profiling-build-config [features: string, tracy: string, perf: string] {
+    let tbc = (tracy-build-config $features $tracy)
+    let needs_frame_pointers = (perf-enabled $perf) and ($tbc.extra_rustflags | str contains "force-frame-pointers") == false
+    if $needs_frame_pointers {
+        $tbc | update extra_rustflags $"($tbc.extra_rustflags) -C force-frame-pointers=yes"
+    } else {
+        $tbc
+    }
+}
+
+def perf-enabled [perf: string] {
+    ($perf | str trim) != "" and ($perf | str downcase | str trim) not-in ["off" "false" "none"]
+}
+
+def perf-modes [perf: string] {
+    if not (perf-enabled $perf) { return [] }
+    let raw = (
+        $perf
+        | str downcase
+        | split row ","
+        | each { |m| $m | str trim }
+        | where { |m| $m != "" and $m not-in ["off" "false" "none"] }
+    )
+    if "all" in $raw {
+        ["stat" "record" "cache" "sched" "io" "syscalls"]
+    } else {
+        $raw
+    }
+}
+
+def validate-perf [perf: string] {
+    let valid = ["stat" "record" "cache" "sched" "io" "syscalls" "all" "off" "false" "none"]
+    let invalid = (perf-modes $perf | where { |m| $m not-in $valid })
+    if ($invalid | length) > 0 {
+        print $"Error: --perf must be a comma-separated subset of stat,record,cache,sched,io,syscalls,all \(got: ($invalid | str join ', ')\)"
+        exit 1
+    }
+}
+
+def perf-event-groups [modes: list<string>] {
+    mut groups = []
+    if "cache" in $modes {
+        $groups = ($groups | append "L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses,iTLB-loads,iTLB-load-misses")
+    }
+    if "sched" in $modes {
+        $groups = ($groups | append "sched:sched_switch,sched:sched_wakeup,context-switches,cpu-migrations")
+    }
+    if "io" in $modes {
+        $groups = ($groups | append "block:block_rq_issue,block:block_rq_complete")
+    }
+    if "syscalls" in $modes {
+        $groups = ($groups | append "syscalls:sys_enter_*")
+    }
+    $groups
+}
+
+def configure-perf-permissions [] {
+    if (^uname | str trim) == "Linux" {
+        try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
+    }
+}
+
+def start-perf-captures [
+    pids: list<int>,
+    label: string,
+    results_dir: string,
+    perf: string,
+    --seconds: int = 0,
+    --offset: int = 0,
+] {
+    let modes = (perf-modes $perf)
+    if ($modes | is-empty) { return [] }
+    if ((which perf | length) == 0) {
+        print "  Warning: perf not found in PATH; skipping perf capture"
+        return []
+    }
+    if ($pids | is-empty) {
+        print $"  Warning: no tempo PIDs found for perf capture ($label)"
+        return []
+    }
+    configure-perf-permissions
+    let pid_csv = ($pids | each { |pid| $pid | into string } | str join ",")
+    let duration = if $seconds > 0 { $seconds } else { 0 }
+    let wait_prefix = if $offset > 0 { $"sleep ($offset); " } else { "" }
+    let run_suffix = if $duration > 0 { $" -- sleep ($duration)" } else { "" }
+    mut captures = []
+
+    if "stat" in $modes {
+        let out = $"($results_dir)/perf-stat-($label).csv"
+        let cmd = $"($wait_prefix)perf stat -d -d -d -x, -o '($out)' -p ($pid_csv)($run_suffix)"
+        print $"  Starting perf stat for ($label): ($out)"
+        job spawn { sh -c $cmd }
+        $captures = ($captures | append { kind: "stat", label: $label, output: $out })
+    }
+
+    if "record" in $modes {
+        let data = $"($results_dir)/perf-record-($label).data"
+        let script = $"($results_dir)/perf-record-($label).script"
+        let cmd = $"($wait_prefix)perf record -F 99 -g --call-graph dwarf -o '($data)' -p ($pid_csv)($run_suffix); status=$?; if [ -f '($data)' ]; then perf script -i '($data)' > '($script)' 2>/dev/null || true; fi; exit $status"
+        print $"  Starting perf record for ($label): ($data)"
+        job spawn { sh -c $cmd }
+        $captures = ($captures | append { kind: "record", label: $label, output: $data, script: $script })
+    }
+
+    for group in (perf-event-groups $modes) {
+        let safe = ($group | str replace -a ":" "-" | str replace -a "*" "all" | str replace -a "," "_")
+        let data = $"($results_dir)/perf-events-($safe)-($label).data"
+        let script = $"($results_dir)/perf-events-($safe)-($label).script"
+        let cmd = $"($wait_prefix)perf record -e '($group)' -g -o '($data)' -p ($pid_csv)($run_suffix); status=$?; if [ -f '($data)' ]; then perf script -i '($data)' > '($script)' 2>/dev/null || true; fi; exit $status"
+        print $"  Starting perf events \($group\) for ($label): ($data)"
+        job spawn { sh -c $cmd }
+        $captures = ($captures | append { kind: "events", label: $label, output: $data, script: $script, events: $group })
+    }
+
+    $captures
+}
+
+def stop-perf-captures [] {
+    let perf_pids = (
+        ^bash -c "pgrep -f 'perf (stat|record).*bench-results/.*/perf-' || true"
+        | lines
+        | where { |pid| ($pid | str trim) != "" }
+        | each { |pid| $pid | into int }
+    )
+    if ($perf_pids | length) == 0 { return }
+    print $"  Stopping perf captures: ($perf_pids | str join ', ')"
+    for pid in $perf_pids {
+        kill -s 2 $pid
+    }
+    mut wait = 0
+    while $wait < 30 {
+        let remaining = (
+            ^bash -c "pgrep -f 'perf (stat|record).*bench-results/.*/perf-' || true"
+            | lines
+            | where { |pid| ($pid | str trim) != "" }
+        )
+        if ($remaining | length) == 0 { break }
+        sleep 1sec
+        $wait = $wait + 1
+    }
+    if $wait >= 30 {
+        print "  Warning: perf did not exit, sending SIGKILL"
+        let remaining = (
+            ^bash -c "pgrep -f 'perf (stat|record).*bench-results/.*/perf-' || true"
+            | lines
+            | where { |pid| ($pid | str trim) != "" }
+            | each { |pid| $pid | into int }
+        )
+        for pid in $remaining {
+            kill -s 9 $pid
+        }
+    }
+}
+
 def cargo-feature-args [features: string, no_default_features: bool] {
     let no_default_args = if $no_default_features { ["--no-default-features"] } else { [] }
     let feature_args = if $features == "" { [] } else { ["--features" $features] }
@@ -660,6 +814,9 @@ def run-bench-single [
     --tracy-seconds: int = 0
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
+    --perf: string = "off"
+    --perf-seconds: int = 0
+    --perf-offset: int = 0
 ] {
     print $"=== Starting run: ($run_label) ==="
 
@@ -704,6 +861,7 @@ def run-bench-single [
     sleep 2sec
     let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
+    start-perf-captures (find-tempo-pids) $run_label $results_dir $perf --seconds $perf_seconds --offset $perf_offset | ignore
 
     # Start tracy-capture after RPC is ready (node must be running for connection)
     # If tracy-offset > 0, delay the capture start in a background job so txgen isn't blocked
@@ -774,6 +932,7 @@ def run-bench-single [
             }
         }
     }
+    stop-perf-captures
 
     # Stop node
     print "  Stopping node..."
@@ -2361,6 +2520,9 @@ def "main bench" [
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
     --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
     --tracing-otlp: string = ""                     # OTLP endpoint for tracing (auto-derived from TEMPO_TELEMETRY_URL if not set)
+    --perf: string = "off"                          # Perf profiling: off, stat, record, cache, sched, io, syscalls, all
+    --perf-seconds: int = 0                         # Perf capture duration in seconds (0 = until benchmark phase ends)
+    --perf-offset: int = 0                          # Seconds to wait after node readiness before starting perf
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
     --gas-limit: string = ""                        # Block gas limit for genesis (raw number, e.g. 1000000000)
@@ -2420,6 +2582,7 @@ def "main bench" [
             exit 1
         }
     }
+    validate-perf $perf
 
     # Validate comparison mode flags
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
@@ -2513,11 +2676,11 @@ def "main bench" [
         }
 
         # Build binaries (apply tracy build config if needed)
-        let tbc = (tracy-build-config $features $tracy)
+        let tbc = (profiling-build-config $features $tracy $perf)
         let effective_features = $tbc.features
         let effective_extra_rustflags = $tbc.extra_rustflags
         # Force --no-cache when tracy is enabled (cached binaries lack tracy features)
-        let effective_no_cache = $no_cache or ($tracy != "off")
+        let effective_no_cache = $no_cache or ($tracy != "off") or (perf-enabled $perf)
 
         if $baseline == "local" or $feature == "local" {
             print "Building local binaries..."
@@ -2743,7 +2906,7 @@ def "main bench" [
         }
 
         # Setup kernel permissions for tracy full mode (CPU sampling)
-        if $tracy == "full" and (^uname | str trim) == "Linux" {
+        if ($tracy == "full" or (perf-enabled $perf)) and (^uname | str trim) == "Linux" {
             print "Configuring system for tracy CPU sampling..."
             # Allow non-root perf event access (required for CPU sampling)
             try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
@@ -2803,7 +2966,8 @@ def "main bench" [
                 --samply=$samply --samply-args $samply_args_list
                 --tracy $tracy --tracy-filter $tracy_filter
                 --tracy-seconds $tracy_seconds --tracy-offset $tracy_offset
-                --tracing-otlp $tracing_otlp)
+                --tracing-otlp $tracing_otlp
+                --perf $perf --perf-seconds $perf_seconds --perf-offset $perf_offset)
         }
 
         # Generate summary report
@@ -2862,7 +3026,8 @@ def "main bench" [
     }
 
     # Build tempo and xtask first
-    build-tempo ["tempo"] $profile $features
+    let single_tbc = (profiling-build-config $features $tracy $perf)
+    build-tempo --extra-rustflags $single_tbc.extra_rustflags ["tempo"] $profile $single_tbc.features
     build-tempo-xtask $profile
 
     # Start nodes in background (skip build since we already compiled)
@@ -2904,6 +3069,9 @@ def "main bench" [
         wait-for-rpc $url $rpc_timeout
     }
     print "All nodes ready!"
+    let single_results_dir = $"($BENCH_RESULTS_DIR)/(date now | format date "%Y%m%d-%H%M%S")"
+    mkdir $single_results_dir
+    start-perf-captures (find-tempo-pids) "single" $single_results_dir $perf --seconds $perf_seconds --offset $perf_offset | ignore
 
     print "Running txgen benchmark..."
     let submit_rpc_url = ($rpc_urls | str join ",")
@@ -2938,6 +3106,7 @@ def "main bench" [
 
     # Cleanup
     print "Cleaning up..."
+    stop-perf-captures
     main kill
 
     # Wait for samply to finish saving profiles

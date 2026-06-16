@@ -997,6 +997,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 and not (e2e-wait-for-peers $b_rpc 1 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $a_rpc 300) { $phase_exit = 1 }
     if $phase_exit == 0 and not (e2e-wait-for-chain-advance $b_rpc 300) { $phase_exit = 1 }
+    if $phase_exit == 0 {
+        start-perf-captures (find-tempo-pids) $phase $ctx.results_dir $ctx.perf --seconds $ctx.perf_seconds --offset $ctx.perf_offset | ignore
+    }
 
     let tracy_output = $"($ctx.results_dir)/tracy-profile-($phase).tracy"
     mut tracy_capture_started = false
@@ -1086,6 +1089,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $tracy_capture_started {
         stop-tracy-capture
     }
+    stop-perf-captures
     stop-e2e-processes-gracefully
     if $ctx.samply { wait-for-samply-profile }
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
@@ -1221,6 +1225,9 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
+    --perf: string = "off"                              # Perf profiling: off, stat, record, cache, sched, io, syscalls, all
+    --perf-seconds: int = 0                             # Perf capture duration in seconds (0 = until benchmark phase ends)
+    --perf-offset: int = 0                              # Seconds to wait after node readiness before starting perf
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
@@ -1267,6 +1274,7 @@ def "main e2e" [
         print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
         exit 1
     }
+    validate-perf $perf
     let hardfork_mode = $baseline_hardfork != "" or $feature_hardfork != ""
     if $hardfork_mode and ($baseline_hardfork == "" or $feature_hardfork == "") {
         print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
@@ -1447,11 +1455,11 @@ def "main e2e" [
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
-    let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
-    let feature_tbc = (tracy-build-config $feature_build_features $tracy)
+    let baseline_tbc = (profiling-build-config $baseline_build_features $tracy $perf)
+    let feature_tbc = (profiling-build-config $feature_build_features $tracy $perf)
     let regenesis_build_features = $global_build_features
-    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
-    let effective_no_cache = $no_cache or ($tracy != "off")
+    let regenesis_tbc = (profiling-build-config $regenesis_build_features $tracy $perf)
+    let effective_no_cache = $no_cache or ($tracy != "off") or (perf-enabled $perf)
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
@@ -1528,6 +1536,9 @@ def "main e2e" [
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
+        perf: $perf
+        perf_seconds: $perf_seconds
+        perf_offset: $perf_offset
         baseline_args: $baseline_args
         feature_args: $feature_args
         bench_args: $bench_args

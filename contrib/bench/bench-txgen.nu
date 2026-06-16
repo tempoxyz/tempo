@@ -58,6 +58,9 @@ def run-txgen-bench-single [
     --tracy-seconds: int = 0
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
+    --perf: string = "off"
+    --perf-seconds: int = 0
+    --perf-offset: int = 0
 ] {
     print $"=== Starting txgen run: ($run_label) ==="
 
@@ -97,6 +100,7 @@ def run-txgen-bench-single [
     sleep 2sec
     let rpc_timeout = if $bloat > 0 { 600 } else { 120 }
     wait-for-rpc "http://localhost:8545" $rpc_timeout
+    start-perf-captures (find-tempo-pids) $run_label $results_dir $perf --seconds $perf_seconds --offset $perf_offset | ignore
 
     let tracy_output = $"($results_dir)/tracy-profile-($run_label).tracy"
     let tracy_capture_started = if $tracy != "off" {
@@ -160,6 +164,7 @@ def run-txgen-bench-single [
             }
         }
     }
+    stop-perf-captures
 
     print "  Stopping node..."
     let pids = (find-tempo-pids)
@@ -232,6 +237,9 @@ def "main run" [
     --tracy-seconds: int = 30
     --tracy-offset: int = 120
     --tracing-otlp: string = ""
+    --perf: string = "off"                          # Perf profiling: off, stat, record, cache, sched, io, syscalls, all
+    --perf-seconds: int = 0                         # Perf capture duration in seconds (0 = until benchmark phase ends)
+    --perf-offset: int = 0                          # Seconds to wait after node readiness before starting perf
     --baseline-hardfork: string = ""
     --feature-hardfork: string = ""
     --gas-limit: string = ""
@@ -274,6 +282,7 @@ def "main run" [
     if $tracy != "off" and ((which tracy-capture | length) == 0) {
         error make { msg: "tracy-capture not found in PATH" }
     }
+    validate-perf $perf
 
     if ($baseline_hardfork != "" or $feature_hardfork != "") and ($baseline_hardfork == "" or $feature_hardfork == "") {
         error make { msg: "--baseline-hardfork and --feature-hardfork must both be provided" }
@@ -314,10 +323,10 @@ def "main run" [
         git worktree add $feature_wt $feature_sha
     }
 
-    let tbc = (tracy-build-config $features $tracy)
+    let tbc = (profiling-build-config $features $tracy $perf)
     let effective_features = $tbc.features
     let effective_extra_rustflags = $tbc.extra_rustflags
-    let effective_no_cache = $no_cache or ($tracy != "off")
+    let effective_no_cache = $no_cache or ($tracy != "off") or (perf-enabled $perf)
 
     if $baseline == "local" or $feature == "local" {
         print "Building local tempo binaries..."
@@ -509,7 +518,7 @@ def "main run" [
         docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
     }
 
-    if $tracy == "full" and (^uname | str trim) == "Linux" {
+    if ($tracy == "full" or (perf-enabled $perf)) and (^uname | str trim) == "Linux" {
         try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
         try { sudo mount -t tracefs tracefs /sys/kernel/tracing -o remount,mode=755 } catch { }
         try { sudo chmod -R a+r /sys/kernel/tracing } catch { }
@@ -573,6 +582,9 @@ def "main run" [
             --tracy-seconds $tracy_seconds
             --tracy-offset $tracy_offset
             --tracing-otlp $tracing_otlp
+            --perf $perf
+            --perf-seconds $perf_seconds
+            --perf-offset $perf_offset
             --platform $platform
             --scenario $resolved_scenario)
     }

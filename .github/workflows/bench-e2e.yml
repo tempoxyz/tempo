@@ -238,6 +238,18 @@ on:
         type: string
         required: false
         default: "120"
+      perf:
+        type: string
+        required: false
+        default: "off"
+      perf-seconds:
+        type: string
+        required: false
+        default: "0"
+      perf-offset:
+        type: string
+        required: false
+        default: "0"
       otlp:
         type: string
         required: false
@@ -372,6 +384,9 @@ jobs:
       BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
+      BENCH_PERF: ${{ inputs.perf || 'off' }}
+      BENCH_PERF_SECONDS: ${{ inputs.perf-seconds || '0' }}
+      BENCH_PERF_OFFSET: ${{ inputs.perf-offset || '0' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
@@ -793,6 +808,7 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ "$BENCH_PERF" != "off" ] && cmd+=(--perf "$BENCH_PERF" --perf-seconds "$BENCH_PERF_SECONDS" --perf-offset "$BENCH_PERF_OFFSET")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
           [ -n "$BENCH_BASELINE_FEATURES" ] && cmd+=(--baseline-features="$BENCH_BASELINE_FEATURES")
@@ -864,6 +880,7 @@ jobs:
           [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
           [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
+          [ "$BENCH_PERF" != "off" ] && derek_cmd+=(perf="$BENCH_PERF" perf-seconds="$BENCH_PERF_SECONDS" perf-offset="$BENCH_PERF_OFFSET")
           [ -n "$BENCH_BASELINE_FEATURES" ] && derek_cmd+=(baseline-features="$BENCH_BASELINE_FEATURES")
           [ -n "$BENCH_FEATURE_FEATURES" ] && derek_cmd+=(feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
