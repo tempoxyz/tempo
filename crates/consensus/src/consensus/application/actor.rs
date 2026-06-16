@@ -328,7 +328,7 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        let proposal_digest = {
+        let proposal_block = {
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
                 //
@@ -389,10 +389,9 @@ impl Inner<Init> {
                     proposal_result?
                 };
 
-                let digest = block.digest();
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.proposed(round, block).await {
+                    if !self.marshal.proposed(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
@@ -404,7 +403,7 @@ impl Inner<Init> {
                     context.sleep_until(proposal_return.return_at).await;
                 }
 
-                eyre::Ok(digest)
+                eyre::Ok(block)
             });
 
             tokio::select! {
@@ -421,6 +420,7 @@ impl Inner<Init> {
             }
         };
 
+        let proposal_digest = proposal_block.digest();
         info!(
             proposal.digest = %proposal_digest,
             "constructed proposal",
