@@ -200,6 +200,8 @@ impl RecoveryMode {
     }
 
     /// Returns the authorized claimer address for this mode.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn authority(self, receipt: &ClaimReceiptV1) -> Address {
         match self {
             Self::Originator => receipt.originator,
@@ -208,6 +210,8 @@ impl RecoveryMode {
     }
 
     /// Returns the address of the account who has effective ownership of the blocked funds.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn policy_subject(self, originator: Address, receiver: Address) -> Address {
         match self {
             Self::Originator => originator,
@@ -218,6 +222,8 @@ impl RecoveryMode {
     /// Returns whether a claim is a reroute under TIP-1028.
     /// Originator-authorized claims are always reroutes; non-originator recovery claims resume
     /// only when claiming to the receiver.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn is_reroute(self, to: Address, receiver: Address) -> bool {
         match self {
             Self::Originator => true,
@@ -226,6 +232,8 @@ impl RecoveryMode {
     }
 
     /// Returns the account charged for access-key spending limits, if any.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn spending_account(self, recovery_authority: Address) -> Option<Address> {
         match self {
             Self::Originator | Self::Receiver => Some(recovery_authority),
