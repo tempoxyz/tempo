@@ -182,6 +182,7 @@ impl TipFeeManager {
     }
 
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
+    #[inline(always)]
     fn reserve_fee_liquidity(
         &mut self,
         user_token: Address,
