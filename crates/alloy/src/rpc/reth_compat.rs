@@ -305,13 +305,13 @@ fn create_mock_primitive_signature(
             webauthn_data.extend_from_slice(client_json.as_bytes());
             let webauthn_data = Bytes::from(webauthn_data);
 
-            PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            PrimitiveSignature::WebAuthn(Box::new(WebAuthnSignature {
                 webauthn_data,
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
-            })
+            }))
         }
     }
 }

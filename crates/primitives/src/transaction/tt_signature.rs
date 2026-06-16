@@ -115,7 +115,7 @@ pub enum PrimitiveSignature {
     P256(P256SignatureWithPreHash),
 
     /// WebAuthn signature with variable-length authenticator data
-    WebAuthn(WebAuthnSignature),
+    WebAuthn(Box<WebAuthnSignature>),
 }
 
 impl PrimitiveSignature {
@@ -162,13 +162,13 @@ impl PrimitiveSignature {
                 if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
-                Ok(Self::WebAuthn(WebAuthnSignature {
+                Ok(Self::WebAuthn(Box::new(WebAuthnSignature {
                     r: B256::from_slice(&sig_data[len - 128..len - 96]),
                     s: B256::from_slice(&sig_data[len - 96..len - 64]),
                     pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
                     pub_key_y: B256::from_slice(&sig_data[len - 32..]),
                     webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
-                }))
+                })))
             }
 
             _ => Err("Unknown signature type identifier"),
