@@ -1152,8 +1152,8 @@ where
         );
         let execution_block_encoded = execution_block_encoder.encoded_block();
         self.executor
-            .spawn_blocking_named("builder-block-rlp-encode", move || {
-                drop(execution_block_encoder);
+            .spawn_blocking_named("builder-block-rlp", move || {
+                execution_block_encoder.encode_block();
             });
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
