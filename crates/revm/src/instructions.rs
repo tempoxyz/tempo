@@ -1,6 +1,7 @@
 use crate::{evm::TempoContext, tip1060};
 use alloy_evm::Database;
 use revm::{
+    bytecode::opcode::SSTORE,
     handler::instructions::EthInstructions,
     interpreter::{
         Instruction, InstructionContext, InstructionResult,
@@ -39,7 +40,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
         EthInstructions::new(
             {
                 let mut table = instruction_table::<EthInterpreter, TempoContext<DB>>();
-                table[0x55] = Instruction::new(tip1060::sstore);
+                table[SSTORE as usize] = Instruction::new(tip1060::sstore);
                 table
             },
             gas_table_spec(evm_spec),
