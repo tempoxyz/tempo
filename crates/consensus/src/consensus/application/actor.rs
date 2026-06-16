@@ -82,7 +82,11 @@ struct BuildProposalArgs<'a> {
 }
 
 struct ProposalReturn {
-    time: SystemTime,
+    /// Earliest time the built proposal may be returned to consensus.
+    ///
+    /// After the proposal is persisted locally, the actor sleeps until this time
+    /// so early builds still respect the proposal pacing budget.
+    return_at: SystemTime,
     block_size_estimate_bytes: usize,
 }
 
@@ -408,7 +412,7 @@ impl Inner<Init> {
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.time).await;
+                    context.sleep_until(proposal_return.return_at).await;
                 }
 
                 eyre::Ok(digest)
@@ -798,12 +802,12 @@ impl Inner<Init> {
             block_size_estimate_bytes,
             "sleeping before returning proposal"
         );
-        let proposal_return_time = context.current() + return_delay;
+        let return_at = context.current() + return_delay;
 
         Ok((
             proposal,
             Some(ProposalReturn {
-                time: proposal_return_time,
+                return_at,
                 block_size_estimate_bytes,
             }),
         ))
