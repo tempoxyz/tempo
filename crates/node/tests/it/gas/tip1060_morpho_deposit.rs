@@ -104,7 +104,7 @@ async fn test_tip1060_morpho_deposit_gas_snapshot(
     assert_eq!(provider.get_chain_id().await?, MAINNET_CHAIN_ID);
 
     let raw_tx = Bytes::from(hex::decode(RAW_TX.trim_start_matches("0x"))?);
-    setup.node.rpc.inject_tx(raw_tx.into()).await?;
+    setup.node.rpc.inject_tx(raw_tx).await?;
     setup.node.advance_block().await?;
 
     let receipt: Option<Value> = provider

@@ -438,20 +438,20 @@ fn genesis_account(account: &Value) -> eyre::Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("0x0");
     out.insert("balance".to_string(), Value::String(balance.to_string()));
-    if let Some(nonce) = account.get("nonce") {
-        if !nonce.is_null() {
-            out.insert("nonce".to_string(), Value::String(hex_quantity(nonce)?));
-        }
+    if let Some(nonce) = account.get("nonce")
+        && !nonce.is_null()
+    {
+        out.insert("nonce".to_string(), Value::String(hex_quantity(nonce)?));
     }
-    if let Some(code) = account.get("code").and_then(Value::as_str) {
-        if code != "0x" {
-            out.insert("code".to_string(), Value::String(code.to_string()));
-        }
+    if let Some(code) = account.get("code").and_then(Value::as_str)
+        && code != "0x"
+    {
+        out.insert("code".to_string(), Value::String(code.to_string()));
     }
-    if let Some(storage) = account.get("storage").and_then(Value::as_object) {
-        if !storage.is_empty() {
-            out.insert("storage".to_string(), Value::Object(storage.clone()));
-        }
+    if let Some(storage) = account.get("storage").and_then(Value::as_object)
+        && !storage.is_empty()
+    {
+        out.insert("storage".to_string(), Value::Object(storage.clone()));
     }
     Ok(Value::Object(out))
 }
