@@ -1,0 +1,53 @@
+---
+source: crates/node/tests/it/gas/tip20_channel_reserve.rs
+assertion_line: 418
+expression: gas
+---
+close_after_settlement_earn_credit:
+  gas: 62901
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+close_without_prior_settlement_earn_credit:
+  gas: 62901
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+open_channel_existing_reserve_balance:
+  gas: 294413
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+open_different_payer_after_credit:
+  gas: 544413
+  storage_credits: "payer: 0 -> 0; other: 0 -> 0"
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+open_first_channel_from_wallet:
+  gas: 791613
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+open_original_payer_after_cross_user:
+  gas: 294413
+  storage_credits: "payer: 0 -> 0; other: 0 -> 0"
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+open_same_payer_reuse_close_credit:
+  gas: 294413
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+request_close_existing_channel:
+  gas: 30111
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+settle_existing_channel_existing_payee_balance:
+  gas: 301619
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+settle_existing_channel_new_payee_balance:
+  gas: 312671
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+top_up_existing_channel:
+  gas: 46793
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"
+top_up_existing_channel_cancel_close_request:
+  gas: 48668
+  storage_credits: 0 -> 0
+  pooled_storage_credits: "Reserve TIP-1060: 0 -> 0"

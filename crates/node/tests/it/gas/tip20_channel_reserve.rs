@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use alloy::{
     primitives::{Address, B256, Bytes, U256, aliases::U96},
     providers::Provider,
@@ -6,16 +8,23 @@ use alloy::{
 };
 use alloy_network::ReceiptResponse;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::ITIP20ChannelReserve;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{ITIP20ChannelReserve, ITIP1060StorageCredits};
+use tempo_precompiles::{PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+use test_case::test_case;
 
-use super::helpers::{
-    GasSnapshot, Receipt, TempoTxSender, fixed_signer, print_gas_snapshot, test_signer,
-};
-use crate::utils::TestNodeBuilder;
+use super::helpers::{Receipt, TempoTxSender, fixed_signer, test_signer};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const DEPOSIT: u64 = 1_000_000;
 const FUNDING: u64 = 20_000_000;
+
+#[derive(Debug, serde::Serialize)]
+struct ChannelGasRow {
+    gas: u64,
+    storage_credits: String,
+    pooled_storage_credits: String,
+}
 
 struct ChannelEnv<P> {
     contract: ITIP20ChannelReserve::ITIP20ChannelReserveInstance<P>,
@@ -55,48 +64,19 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         self.open_gas_used
     }
 
-    async fn top_up(
-        &self,
-        gas: &mut GasSnapshot,
-        name: impl Into<String>,
-        sender: &mut TempoTxSender<P>,
-        amount: u64,
-    ) -> eyre::Result<Receipt> {
-        gas.call(
-            name,
-            sender,
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-            ITIP20ChannelReserve::topUpCall {
-                descriptor: self.descriptor.clone(),
-                additionalDeposit: U96::from(amount),
-            },
-        )
-        .await
+    async fn top_up(&self, sender: &mut TempoTxSender<P>, amount: u64) -> eyre::Result<Receipt> {
+        sender
+            .send_call(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: self.descriptor.clone(),
+                    additionalDeposit: U96::from(amount),
+                },
+            )
+            .await
     }
 
     async fn settle(
-        &self,
-        gas: &mut GasSnapshot,
-        name: impl Into<String>,
-        submitter: &mut TempoTxSender<P>,
-        payer: &PrivateKeySigner,
-        amount: u64,
-    ) -> eyre::Result<Receipt> {
-        let signature = self.voucher_signature(payer, amount).await?;
-        gas.call(
-            name,
-            submitter,
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-            ITIP20ChannelReserve::settleCall {
-                descriptor: self.descriptor.clone(),
-                cumulativeAmount: U96::from(amount),
-                signature,
-            },
-        )
-        .await
-    }
-
-    async fn settle_unrecorded(
         &self,
         submitter: &mut TempoTxSender<P>,
         payer: &PrivateKeySigner,
@@ -117,42 +97,33 @@ impl<P: Provider + Clone> ChannelEnv<P> {
 
     async fn close(
         &self,
-        gas: &mut GasSnapshot,
-        name: impl Into<String>,
         submitter: &mut TempoTxSender<P>,
         payer: &PrivateKeySigner,
         amount: u64,
     ) -> eyre::Result<Receipt> {
         let signature = self.voucher_signature(payer, amount).await?;
-        gas.call(
-            name,
-            submitter,
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-            ITIP20ChannelReserve::closeCall {
-                descriptor: self.descriptor.clone(),
-                cumulativeAmount: U96::from(amount),
-                captureAmount: U96::from(amount),
-                signature,
-            },
-        )
-        .await
+        submitter
+            .send_call(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor: self.descriptor.clone(),
+                    cumulativeAmount: U96::from(amount),
+                    captureAmount: U96::from(amount),
+                    signature,
+                },
+            )
+            .await
     }
 
-    async fn request_close(
-        &self,
-        gas: &mut GasSnapshot,
-        name: impl Into<String>,
-        sender: &mut TempoTxSender<P>,
-    ) -> eyre::Result<Receipt> {
-        gas.call(
-            name,
-            sender,
-            TIP20_CHANNEL_RESERVE_ADDRESS,
-            ITIP20ChannelReserve::requestCloseCall {
-                descriptor: self.descriptor.clone(),
-            },
-        )
-        .await
+    async fn request_close(&self, sender: &mut TempoTxSender<P>) -> eyre::Result<Receipt> {
+        sender
+            .send_call(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::requestCloseCall {
+                    descriptor: self.descriptor.clone(),
+                },
+            )
+            .await
     }
 
     async fn from_open_receipt(sender: &TempoTxSender<P>, sent: Receipt) -> eyre::Result<Self> {
@@ -207,109 +178,244 @@ impl<P: Provider + Clone> ChannelEnv<P> {
     }
 }
 
+async fn channel_credits<P: Provider + Clone>(
+    provider: P,
+    hardfork: TempoHardfork,
+    payer: Address,
+) -> eyre::Result<u64> {
+    if hardfork.is_t7() {
+        Ok(
+            ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider)
+                .storageCredits(payer)
+                .call()
+                .await?,
+        )
+    } else {
+        Ok(0)
+    }
+}
+
+async fn pooled_credits<P: Provider + Clone>(
+    provider: P,
+    hardfork: TempoHardfork,
+) -> eyre::Result<u64> {
+    if hardfork.is_t7() {
+        Ok(
+            ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, provider)
+                .balanceOf(TIP20_CHANNEL_RESERVE_ADDRESS)
+                .call()
+                .await?,
+        )
+    } else {
+        Ok(0)
+    }
+}
+
+#[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
+#[test_case(TempoHardfork::T7 ; "t7_with_tip1060_tip1066")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_channel_reserve_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip20_channel_reserve_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let mut funder = TempoTxSender::connect(http_url.clone(), test_signer(0)?).await?;
     let mut payer =
         TempoTxSender::connect_with_zero_nonce(http_url.clone(), fixed_signer(0x11)).await?;
-    let mut payee =
+    let mut other_payer =
         TempoTxSender::connect_with_zero_nonce(http_url.clone(), fixed_signer(0x12)).await?;
-    let mut operator = TempoTxSender::connect_with_zero_nonce(http_url, fixed_signer(0x13)).await?;
+    let mut payee =
+        TempoTxSender::connect_with_zero_nonce(http_url.clone(), fixed_signer(0x13)).await?;
+    let mut operator =
+        TempoTxSender::connect_with_zero_nonce(http_url.clone(), fixed_signer(0x14)).await?;
+    let operator_payee = fixed_signer(0x15);
 
     funder
         .fund_tip20(
             PATH_USD_ADDRESS,
-            [payer.address(), payee.address(), operator.address()],
+            [
+                payer.address(),
+                other_payer.address(),
+                payee.address(),
+                operator.address(),
+                operator_payee.address(),
+            ],
             U256::from(FUNDING),
         )
         .await?;
 
-    let mut gas = GasSnapshot::new();
+    let mut gas = BTreeMap::new();
+    let credit_provider = payer.provider.clone();
 
-    let first = ChannelEnv::open(&mut payer, payee.address(), 1).await?;
-    gas.record("open_new_channel_first_reserve_balance", first.gas_used());
+    macro_rules! record_tx {
+        ($name:literal, $payer:expr, $call:expr) => {{
+            let before = channel_credits(credit_provider.clone(), hardfork, $payer).await?;
+            let pooled_before = pooled_credits(credit_provider.clone(), hardfork).await?;
+            let receipt = $call.await?;
+            let after = channel_credits(credit_provider.clone(), hardfork, $payer).await?;
+            let pooled_after = pooled_credits(credit_provider.clone(), hardfork).await?;
+            gas.insert(
+                $name,
+                ChannelGasRow {
+                    gas: receipt.gas_used,
+                    storage_credits: format!("{before} -> {after}"),
+                    pooled_storage_credits: format!(
+                        "Reserve TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            receipt
+        }};
+    }
 
-    let second = ChannelEnv::open(&mut payer, payee.address(), 2).await?;
-    gas.record(
-        "open_new_channel_existing_reserve_balance",
-        second.gas_used(),
+    macro_rules! record_open {
+        ($name:literal, $payer:expr, $call:expr) => {{
+            let before = channel_credits(credit_provider.clone(), hardfork, $payer).await?;
+            let pooled_before = pooled_credits(credit_provider.clone(), hardfork).await?;
+            let channel = $call.await?;
+            let after = channel_credits(credit_provider.clone(), hardfork, $payer).await?;
+            let pooled_after = pooled_credits(credit_provider.clone(), hardfork).await?;
+            gas.insert(
+                $name,
+                ChannelGasRow {
+                    gas: channel.gas_used(),
+                    storage_credits: format!("{before} -> {after}"),
+                    pooled_storage_credits: format!(
+                        "Reserve TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            channel
+        }};
+    }
+
+    macro_rules! record_cross_open {
+        ($name:literal, $credit_payer:expr, $other:expr, $call:expr) => {{
+            let before = channel_credits(credit_provider.clone(), hardfork, $credit_payer).await?;
+            let other_before = channel_credits(credit_provider.clone(), hardfork, $other).await?;
+            let pooled_before = pooled_credits(credit_provider.clone(), hardfork).await?;
+            let channel = $call.await?;
+            let after = channel_credits(credit_provider.clone(), hardfork, $credit_payer).await?;
+            let other_after = channel_credits(credit_provider.clone(), hardfork, $other).await?;
+            let pooled_after = pooled_credits(credit_provider.clone(), hardfork).await?;
+            gas.insert(
+                $name,
+                ChannelGasRow {
+                    gas: channel.gas_used(),
+                    storage_credits: format!(
+                        "payer: {before} -> {after}; other: {other_before} -> {other_after}"
+                    ),
+                    pooled_storage_credits: format!(
+                        "Reserve TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            channel
+        }};
+    }
+
+    let payer_address = payer.address();
+    let other_payer_address = other_payer.address();
+
+    let _first = record_open!(
+        "open_first_channel_from_wallet",
+        payer_address,
+        ChannelEnv::open(&mut payer, payee.address(), 1)
     );
 
-    second
-        .top_up(&mut gas, "top_up_existing_channel", &mut payer, 250_000)
-        .await?;
+    let active = record_open!(
+        "open_channel_existing_reserve_balance",
+        payer_address,
+        ChannelEnv::open(&mut payer, payee.address(), 2)
+    );
 
-    second
-        .settle(
-            &mut gas,
-            "settle_existing_channel_existing_payee_balance",
-            &mut payee,
-            &payer.signer,
-            400_000,
-        )
-        .await?;
+    record_tx!(
+        "top_up_existing_channel",
+        payer_address,
+        active.top_up(&mut payer, 250_000)
+    );
 
-    let operator_payee = fixed_signer(0x14);
-    let operator_settle =
-        ChannelEnv::open_with_operator(&mut payer, operator_payee.address(), operator.address(), 3)
+    record_tx!(
+        "settle_existing_channel_existing_payee_balance",
+        payer_address,
+        active.settle(&mut payee, &payer.signer, 400_000)
+    );
+
+    let request_close_channel = ChannelEnv::open(&mut payer, payee.address(), 3).await?;
+    record_tx!(
+        "request_close_existing_channel",
+        payer_address,
+        request_close_channel.request_close(&mut payer)
+    );
+
+    record_tx!(
+        "top_up_existing_channel_cancel_close_request",
+        payer_address,
+        request_close_channel.top_up(&mut payer, 100_000)
+    );
+
+    let operator_channel =
+        ChannelEnv::open_with_operator(&mut payer, operator_payee.address(), operator.address(), 4)
             .await?;
-    operator_settle
-        .settle(
-            &mut gas,
-            "settle_existing_channel_new_payee_balance",
-            &mut operator,
-            &payer.signer,
-            300_000,
-        )
-        .await?;
+    record_tx!(
+        "settle_existing_channel_new_payee_balance",
+        payer_address,
+        operator_channel.settle(&mut operator, &payer.signer, 300_000)
+    );
 
-    let close_only = ChannelEnv::open(&mut payer, payee.address(), 4).await?;
-    close_only
-        .close(
-            &mut gas,
-            "close_existing_channel_no_prior_settlement",
-            &mut payee,
-            &payer.signer,
-            700_000,
-        )
-        .await?;
+    record_tx!(
+        "close_after_settlement_earn_credit",
+        payer_address,
+        active.close(&mut payee, &payer.signer, 700_000)
+    );
 
-    let close_after_settle = ChannelEnv::open(&mut payer, payee.address(), 5).await?;
-    close_after_settle
-        .settle_unrecorded(&mut payee, &payer.signer, 250_000)
-        .await?;
-    close_after_settle
-        .close(
-            &mut gas,
-            "close_existing_channel_after_settlement",
-            &mut payee,
-            &payer.signer,
-            650_000,
-        )
-        .await?;
+    let _reused = record_open!(
+        "open_same_payer_reuse_close_credit",
+        payer_address,
+        ChannelEnv::open(&mut payer, payee.address(), 5)
+    );
 
-    let request_close_channel = ChannelEnv::open(&mut payer, payee.address(), 6).await?;
-    request_close_channel
-        .request_close(&mut gas, "request_close_existing_channel", &mut payer)
-        .await?;
+    let close_only = ChannelEnv::open(&mut payer, payee.address(), 6).await?;
+    record_tx!(
+        "close_without_prior_settlement_earn_credit",
+        payer_address,
+        close_only.close(&mut payee, &payer.signer, 700_000)
+    );
 
-    request_close_channel
-        .top_up(
-            &mut gas,
-            "top_up_existing_channel_cancel_close_request",
-            &mut payer,
-            100_000,
-        )
-        .await?;
+    let _other_open = record_cross_open!(
+        "open_different_payer_after_credit",
+        payer_address,
+        other_payer_address,
+        ChannelEnv::open(&mut other_payer, payee.address(), 7)
+    );
 
-    print_gas_snapshot("TIP20ChannelReserve gas snapshot", &gas);
+    record_cross_open!(
+        "open_original_payer_after_cross_user",
+        payer_address,
+        other_payer_address,
+        ChannelEnv::open(&mut payer, payee.address(), 8)
+    );
 
-    insta::assert_yaml_snapshot!(gas);
+    eprintln!(
+        "\nTIP20ChannelReserve {} lifecycle gas snapshot:",
+        hardfork.name()
+    );
+    for (name, row) in &gas {
+        eprintln!(
+            "{name}: {} ({}, {})",
+            row.gas, row.storage_credits, row.pooled_storage_credits
+        );
+    }
+
+    let snapshot_name = format!(
+        "tip20_channel_reserve_lifecycle_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }
