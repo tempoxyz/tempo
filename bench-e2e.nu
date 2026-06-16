@@ -1246,7 +1246,7 @@ def "main e2e" [
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "full"                            # Tracy profiling: off, on, full
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
-    --tracy-sampling-hz: int = 999                      # Tracy CPU sampling frequency in Hz
+    --tracy-sampling-hz: int = 18999                      # Tracy CPU sampling frequency in Hz
     --tracy-seconds: int = 10                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 30                            # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
