@@ -113,7 +113,7 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
@@ -129,6 +129,17 @@ pub struct Call {
     /// Call input.
     #[cfg_attr(feature = "serde", serde(flatten, with = "serde_input"))]
     pub input: Bytes,
+}
+
+impl Clone for Call {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            to: self.to,
+            value: self.value,
+            input: self.input.clone(),
+        }
+    }
 }
 
 impl Call {
