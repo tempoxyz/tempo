@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::Deref};
+use std::{collections::BTreeMap, fmt::Display, ops::Deref};
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
@@ -15,11 +15,14 @@ use alloy::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::TxSignerSync;
 use reth_primitives_traits::transaction::TxHashRef;
-use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
+use serde_json::{Map, Value};
+use tempo_chainspec::{
+    constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE,
+};
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::Call};
 
-use crate::utils::TEST_MNEMONIC;
+use crate::utils::{TEST_MNEMONIC, make_genesis_at};
 
 pub(crate) const GAS_LIMIT: u64 = TEMPO_T1_TX_GAS_LIMIT_CAP;
 
@@ -320,4 +323,190 @@ fn hex_u64_field(receipt: &serde_json::Value, field: &str) -> eyre::Result<u64> 
 
 pub(crate) fn print_gas_snapshot(title: &str, gas: &GasSnapshot) {
     gas.print(title);
+}
+
+pub(crate) fn mainnet_prestate_genesis(
+    hardfork: TempoHardfork,
+    chain_id: u64,
+    timestamp: u64,
+    prestate_json: &str,
+) -> eyre::Result<String> {
+    Ok(serde_json::to_string(&mainnet_prestate_genesis_value(
+        hardfork,
+        chain_id,
+        timestamp,
+        prestate_json,
+    )?)?)
+}
+
+pub(crate) fn mainnet_prestate_genesis_value(
+    hardfork: TempoHardfork,
+    chain_id: u64,
+    timestamp: u64,
+    prestate_json: &str,
+) -> eyre::Result<Value> {
+    let mut genesis: Value = serde_json::from_str(&make_genesis_at(hardfork))?;
+    genesis["config"]["chainId"] = Value::from(chain_id);
+    genesis["timestamp"] = Value::String(format!("0x{timestamp:x}"));
+
+    let prestate: Value = serde_json::from_str(prestate_json)?;
+    let alloc = genesis["alloc"]
+        .as_object_mut()
+        .ok_or_else(|| eyre::eyre!("test genesis missing alloc"))?;
+    for (address, account) in prestate
+        .as_object()
+        .ok_or_else(|| eyre::eyre!("prestate fixture must be a JSON object"))?
+    {
+        alloc.insert(address.clone(), genesis_account(account)?);
+    }
+
+    Ok(genesis)
+}
+
+fn genesis_account(account: &Value) -> eyre::Result<Value> {
+    let mut out = Map::new();
+    let balance = account
+        .get("balance")
+        .and_then(Value::as_str)
+        .unwrap_or("0x0");
+    out.insert("balance".to_string(), Value::String(balance.to_string()));
+    if let Some(nonce) = account.get("nonce") {
+        if !nonce.is_null() {
+            out.insert("nonce".to_string(), Value::String(hex_quantity(nonce)?));
+        }
+    }
+    if let Some(code) = account.get("code").and_then(Value::as_str) {
+        if code != "0x" {
+            out.insert("code".to_string(), Value::String(code.to_string()));
+        }
+    }
+    if let Some(storage) = account.get("storage").and_then(Value::as_object) {
+        if !storage.is_empty() {
+            out.insert("storage".to_string(), Value::Object(storage.clone()));
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn hex_quantity(value: &Value) -> eyre::Result<String> {
+    if let Some(value) = value.as_u64() {
+        return Ok(format!("0x{value:x}"));
+    }
+    if let Some(value) = value.as_str() {
+        return Ok(value.to_string());
+    }
+    Err(eyre::eyre!("expected hex quantity or u64, got {value}"))
+}
+
+pub(crate) fn successful_raw_receipt_gas_used(
+    receipt: &Value,
+    expected_hash: B256,
+) -> eyre::Result<u64> {
+    let transaction_hash = receipt
+        .get("transactionHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre::eyre!("receipt missing transactionHash"))?;
+    let expected_hash = expected_hash.to_string();
+    eyre::ensure!(
+        transaction_hash.eq_ignore_ascii_case(&expected_hash),
+        "unexpected receipt transactionHash: got {transaction_hash}, expected {expected_hash}"
+    );
+
+    let status = receipt
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| eyre::eyre!("receipt missing status"))?;
+    eyre::ensure!(status == "0x1", "transaction failed: {receipt}");
+
+    hex_u64(
+        receipt
+            .get("gasUsed")
+            .ok_or_else(|| eyre::eyre!("receipt missing gasUsed"))?,
+    )
+}
+
+pub(crate) fn find_call_gas_used(
+    trace: &Value,
+    to: impl Display,
+    selector: &str,
+) -> eyre::Result<u64> {
+    let to = to.to_string();
+    find_call(trace, &to, selector)
+        .and_then(|call| call.get("gasUsed"))
+        .ok_or_else(|| eyre::eyre!("trace call not found: to={to} selector={selector}"))
+        .and_then(hex_u64)
+}
+
+pub(crate) fn ensure_call_trace_succeeded(trace: &Value) -> eyre::Result<()> {
+    if let Some(summary) = failed_call_summary(trace) {
+        eyre::bail!("call trace contains failed call: {summary}");
+    }
+    Ok(())
+}
+
+fn failed_call_summary(trace: &Value) -> Option<String> {
+    let error = trace.get("error").and_then(Value::as_str);
+    let revert_reason = trace.get("revertReason").and_then(Value::as_str);
+    if error.is_some() || revert_reason.is_some() {
+        let to = trace
+            .get("to")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        let selector = trace
+            .get("input")
+            .and_then(Value::as_str)
+            .and_then(|input| input.get(..10))
+            .unwrap_or("<missing>");
+        let gas_used = trace
+            .get("gasUsed")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        return Some(format!(
+            "to={to} selector={selector} gasUsed={gas_used} error={} revertReason={}",
+            error.unwrap_or("<none>"),
+            revert_reason.unwrap_or("<none>")
+        ));
+    }
+
+    trace
+        .get("calls")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(failed_call_summary)
+}
+
+fn find_call<'a>(trace: &'a Value, to: &str, selector: &str) -> Option<&'a Value> {
+    let matches = trace
+        .get("to")
+        .and_then(Value::as_str)
+        .is_some_and(|address| address.eq_ignore_ascii_case(to))
+        && trace
+            .get("input")
+            .and_then(Value::as_str)
+            .is_some_and(|input| selector_matches(input, selector));
+    if matches {
+        return Some(trace);
+    }
+    trace
+        .get("calls")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|call| find_call(call, to, selector))
+}
+
+fn selector_matches(input: &str, selector: &str) -> bool {
+    input
+        .get(..selector.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(selector))
+}
+
+pub(crate) fn hex_u64(value: &Value) -> eyre::Result<u64> {
+    let value = value
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("expected hex u64 string, got {value}"))?;
+    hex_u64_str(value)
+}
+
+pub(crate) fn hex_u64_str(value: &str) -> eyre::Result<u64> {
+    Ok(u64::from_str_radix(value.trim_start_matches("0x"), 16)?)
 }

@@ -1,0 +1,6 @@
+---
+source: crates/node/tests/it/gas/tip1060_bridge_direct_swap.rs
+expression: gas
+---
+bridge_direct_swap: 564571
+bridge_direct_swap_swap_exact_out: 564571
