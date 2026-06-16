@@ -64,7 +64,8 @@ pub struct ArrayHandler<T: StorableType, const N: usize> {
 
 impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     /// Creates a new handler for the array at the given base slot and address.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn new(base_slot: U256, address: Address) -> Self {
         Self {
             base_slot,
