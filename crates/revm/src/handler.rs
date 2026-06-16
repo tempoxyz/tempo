@@ -18,7 +18,7 @@ use revm::{
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, execution,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
         precompile_output_to_interpreter_result, validation,
     },
@@ -30,6 +30,8 @@ use revm::{
             get_tokens_in_calldata_istanbul,
         },
         interpreter::EthInterpreter,
+        interpreter_action::FrameInit,
+        SharedMemory,
     },
     precompile::PrecompileError,
 };
@@ -805,6 +807,26 @@ where
     /// Dispatches based on transaction type:
     /// - AA transactions (type 0x5): Use batch execution path with calls field
     /// - All other transactions: Use standard single-call execution
+    #[inline]
+    fn first_frame_input(
+        &mut self,
+        evm: &mut Self::Evm,
+        gas_limit: u64,
+        reservoir: u64,
+    ) -> Result<FrameInit, Self::Error> {
+        let ctx = evm.ctx_mut();
+        let mut memory = SharedMemory::new_with_buffer(ctx.local().shared_memory_buffer().clone());
+        memory.set_memory_limit(ctx.cfg().memory_limit());
+
+        let frame_input = execution::create_init_frame(ctx, gas_limit, reservoir)?;
+
+        Ok(FrameInit {
+            depth: 0,
+            memory,
+            frame_input,
+        })
+    }
+
     #[inline]
     fn execution(
         &mut self,
