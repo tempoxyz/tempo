@@ -667,6 +667,8 @@ impl TIP20ChannelReserve {
 /// Computes the EIP-712 domain separator.
 ///
 /// NOTE: This keccak is unmetered because it is not computed at tx runtime.
+#[cold]
+#[inline(never)]
 fn domain_separator_inner(chain_id: u64) -> B256 {
     keccak256(
         (
