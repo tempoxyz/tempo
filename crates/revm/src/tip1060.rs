@@ -167,7 +167,7 @@ pub(crate) fn sstore<DB: Database>(
             )?;
         }
 
-        // Storage-credit hook handles TIP-1060 bookkeeping/245k creditable gas only. Keep default
+        // Storage-credit hook only handles TIP-1060 bookkeeping + state gas. Keep default
         // gas/refunds for cold, update, and residual costs. T7 gas table ensures no double-charge.
         sstore_default_gas_accounting(context, owner, values)
     })
