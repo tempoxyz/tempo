@@ -2189,7 +2189,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     }
 
     // 6. Floor gas using revm helper
-    gas.floor_gas = gas_params.tx_floor_cost_with_tokens(total_tokens); // tokens * 10 + 21000
+    gas.floor_gas = gas_params.get(GasId::tx_floor_cost_per_token()) * total_tokens
+        + gas_params.get(GasId::tx_floor_cost_base_gas()); // tokens * 10 + 21000
 
     Ok(gas)
 }
