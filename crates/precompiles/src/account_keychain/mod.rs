@@ -204,6 +204,8 @@ impl AccountKeychain {
     ///
     /// This is used to access account-key rows like `spending_limits[key][token]` and
     /// `key_scopes[key]`. The hash combines account and key_id to avoid triple nesting.
+    #[cold]
+    #[inline(never)]
     pub fn spending_limit_key(account: Address, key_id: Address) -> B256 {
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
