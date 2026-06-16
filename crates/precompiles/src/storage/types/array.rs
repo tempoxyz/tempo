@@ -144,7 +144,9 @@ impl<T: StorableType, const N: usize> Index<usize> for ArrayHandler<T, N> {
     /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
     /// For gracefully checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < N, "index out of bounds: {index} >= {N}");
+        if index >= N {
+            array_index_out_of_bounds(index, N);
+        }
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache
             .get_or_insert(&index, || Self::compute_handler(base_slot, address, index))
@@ -157,11 +159,20 @@ impl<T: StorableType, const N: usize> IndexMut<usize> for ArrayHandler<T, N> {
     /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
     /// For gracefully checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        assert!(index < N, "index out of bounds: {index} >= {N}");
+        if index >= N {
+            array_index_out_of_bounds(index, N);
+        }
         let (base_slot, address) = (self.base_slot, self.address);
         self.cache
             .get_or_insert_mut(&index, || Self::compute_handler(base_slot, address, index))
     }
+}
+
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn array_index_out_of_bounds(index: usize, len: usize) -> ! {
+    panic!("index out of bounds: {index} >= {len}")
 }
 
 impl<T: StorableType, const N: usize> Handler<[T; N]> for ArrayHandler<T, N>
