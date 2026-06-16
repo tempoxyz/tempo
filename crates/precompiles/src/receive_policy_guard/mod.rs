@@ -150,6 +150,8 @@ impl ReceivePolicyGuard {
     }
 
     /// Allocates the next nonzero receipt nonce.
+    #[cold]
+    #[inline(never)]
     fn next_receipt_nonce(&mut self) -> Result<u64> {
         let nonce = self.nonce.read()?.max(1);
         self.nonce.write(
@@ -161,6 +163,8 @@ impl ReceivePolicyGuard {
     }
 
     /// Content hash over every receipt field. Any mutation yields a different empty slot.
+    #[cold]
+    #[inline(never)]
     fn receipt_key(&self, receipt: &IReceivePolicyGuard::ClaimReceiptV1) -> Result<B256> {
         self.storage.keccak256(receipt.abi_encode().as_ref())
     }
