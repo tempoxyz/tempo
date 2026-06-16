@@ -26,12 +26,15 @@ use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
 /// when the call still moves tokens.
 fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
-    input.first_chunk::<4>().is_some_and(|&s| {
-        matches!(
-            s,
-            ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR
-        ) || (!spec.is_t7() && s == ITIP20::distributeRewardCall::SELECTOR)
-    })
+    let Some(selector) = input.first_chunk::<4>() else {
+        return false;
+    };
+
+    match *selector {
+        ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR => true,
+        ITIP20::distributeRewardCall::SELECTOR => !spec.is_t7(),
+        _ => false,
+    }
 }
 
 /// Helper trait to abstract over different representations of Tempo transactions.
