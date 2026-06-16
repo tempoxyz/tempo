@@ -30,7 +30,14 @@ def port-to-node-index [port: int] {
 
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
-    if $loud { [] } else { ["--log.stdout.filter" "info"] }
+    if $loud {
+        []
+    } else {
+        [
+            "--log.stdout.filter" "info"
+            "--log.file.filter" "debug,h2=info,hyper=info,tower=info,tonic=info"
+        ]
+    }
 }
 
 def prepare-localnet-consensus-secret-fifo [node_dir: string] {
