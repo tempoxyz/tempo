@@ -844,7 +844,9 @@ where
         init_and_floor_gas: InitialAndFloorGas,
         eip7702_gas_refund: i64,
     ) -> Result<ResultGas, Self::Error> {
-        tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        if exec_result.instruction_result().is_ok() {
+            tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        }
         self.refund(evm, exec_result, eip7702_gas_refund);
 
         let result_gas = post_execution::build_result_gas(
