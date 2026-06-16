@@ -907,6 +907,8 @@ impl AuthRole {
 
 /// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
 /// or the policy doesn't exist.
+#[cold]
+#[inline(never)]
 pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
     if StorageCtx.spec().is_t2() {
         // T2+: typed TIP403 errors
