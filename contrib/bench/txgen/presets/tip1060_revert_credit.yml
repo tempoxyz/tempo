@@ -54,13 +54,16 @@ setup:
 
 templates:
   revert_credit:
-    type: eip1559
+    type: tempo
     from:
       pool: users
       select: random
     gas_limit: 12000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
       abi: TIP1060RevertParent
@@ -68,13 +71,16 @@ templates:
       args: []
 
   mass_redeem_100:
-    type: eip1559
+    type: tempo
     from:
       pool: users
       select: random
     gas_limit: 10000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
       abi: TIP1060MassRedeem
@@ -82,14 +88,35 @@ templates:
       args:
         - 100
 
+  mass_redeem_500:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 40000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+      abi: TIP1060MassRedeem
+      function: run
+      args:
+        - 500
+
   mass_redeem_1000:
-    type: eip1559
+    type: tempo
     from:
       pool: users
       select: random
     gas_limit: 80000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
     call:
       to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
       abi: TIP1060MassRedeem
@@ -97,27 +124,12 @@ templates:
       args:
         - 1000
 
-  mass_redeem_10000:
-    type: eip1559
-    from:
-      pool: users
-      select: random
-    gas_limit: 800000000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    call:
-      to: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
-      abi: TIP1060MassRedeem
-      function: run
-      args:
-        - 10000
-
 mix:
   - template: revert_credit
-    weight: 40
+    weight: 50
   - template: mass_redeem_100
-    weight: 30
-  - template: mass_redeem_1000
-    weight: 20
-  - template: mass_redeem_10000
+    weight: 35
+  - template: mass_redeem_500
     weight: 10
+  - template: mass_redeem_1000
+    weight: 5
