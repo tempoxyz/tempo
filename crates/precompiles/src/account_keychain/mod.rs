@@ -1379,7 +1379,7 @@ impl AccountKeychain {
     ) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
 
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1444,7 +1444,7 @@ impl AccountKeychain {
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
