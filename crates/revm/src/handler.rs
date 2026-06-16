@@ -878,7 +878,7 @@ where
             // recording the EIP-7702 auth refund.
             gas.record_refund(eip7702_refund);
         } else {
-            post_execution::refund(&evm.ctx.cfg.gas_params, gas, eip7702_refund);
+            post_execution::refund(spec.into(), gas, eip7702_refund);
         }
     }
 
