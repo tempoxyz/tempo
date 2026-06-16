@@ -392,7 +392,7 @@ where
                         head_or_finalized: HeadOrFinalized::Head,
                         height,
                         digest,
-                        fcu_response: Some(response),
+                        response: Some(response),
                         build_attributes: None,
                     },
                 )));
@@ -414,7 +414,7 @@ where
                         head_or_finalized: HeadOrFinalized::Head,
                         height,
                         digest,
-                        fcu_response: None,
+                        response: None,
                         build_attributes: Some((*attributes, response)),
                     },
                 )));
@@ -478,7 +478,7 @@ where
                     head_or_finalized: HeadOrFinalized::Finalized,
                     height,
                     digest,
-                    fcu_response: None,
+                    response: None,
                     build_attributes: None,
                 })));
         }
@@ -554,7 +554,7 @@ struct Canonicalize {
     digest: Digest,
     /// Acknowledges to the requester that the execution layer accepted the
     /// forkchoice update.
-    fcu_response: Option<oneshot::Sender<()>>,
+    response: Option<oneshot::Sender<()>>,
     /// Payload attributes to register a build job with the forkchoice
     /// update, paired with the subscriber awaiting the built payload.
     build_attributes: Option<(TempoPayloadAttributes, oneshot::Sender<TempoBuiltPayload>)>,
@@ -653,7 +653,7 @@ async fn run_canonicalize_task<TContext: Pacer>(
         head_or_finalized,
         height,
         digest,
-        fcu_response,
+        response,
         mut build_attributes,
     }: Canonicalize,
 ) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
@@ -697,7 +697,7 @@ async fn run_canonicalize_task<TContext: Pacer>(
     .await
     {
         Ok(payload_id) => {
-            if let Some(response) = fcu_response {
+            if let Some(response) = response {
                 let _ = response.send(());
             }
             let payload_job = match (payload_response, payload_id) {

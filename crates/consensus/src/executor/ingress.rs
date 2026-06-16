@@ -39,8 +39,8 @@ impl Mailbox {
     ///
     /// The built payload is delivered on the returned channel once the
     /// execution layer finishes constructing it. The receiver may be dropped
-    /// to signal that the payload is no longer wanted; the executor still
-    /// runs the build to completion and then discards the payload.
+    /// to signal that the payload is no longer wanted, whereupon the executor
+    /// will drop the payload job.
     ///
     /// Conversely, the executor dropping its sender means the build failed;
     /// the executor logs the cause.
