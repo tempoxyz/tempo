@@ -39,11 +39,12 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
+        let payload_transactions = &payload.block.body().transactions;
         let block = payload.block.clone();
-        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let mut transactions = Vec::with_capacity(payload_transactions.len());
         let mut expiring_nonce_idx = 0;
 
-        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+        for (idx, tx) in payload_transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
                 transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
