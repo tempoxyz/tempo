@@ -140,6 +140,7 @@ where
     type Precompiles = PrecompilesMap;
     type Frame = EthFrame<EthInterpreter>;
 
+    #[inline(always)]
     fn all(
         &self,
     ) -> (
@@ -151,6 +152,7 @@ where
         self.inner.all()
     }
 
+    #[inline(always)]
     fn all_mut(
         &mut self,
     ) -> (
