@@ -13,9 +13,67 @@ accounts:
 
 artifacts:
   ERC20: ../erc20.abi.json
+  FeeAMM: ../fee-amm.abi.json
+
+setup:
+  steps:
+    - id: mint_alpha_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_beta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000002"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_theta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000003"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
 
 templates:
-  tip20_transfer:
+  tip20_transfer_pathusd:
     type: tempo
     from:
       pool: users
@@ -36,7 +94,76 @@ templates:
             pool: users
             select: random
         - 1
+  tip20_transfer_alpha:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000001"
+    expiring_nonce: true
+    valid_for_secs: 5
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+  tip20_transfer_beta:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000002"
+    expiring_nonce: true
+    valid_for_secs: 5
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+  tip20_transfer_theta:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000003"
+    expiring_nonce: true
+    valid_for_secs: 5
+    call:
+      to:
+        choice: ${TXGEN_TIP20_TOKENS}
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
 
 mix:
-  - template: tip20_transfer
-    weight: 100
+  - template: tip20_transfer_pathusd
+    weight: 25
+  - template: tip20_transfer_alpha
+    weight: 25
+  - template: tip20_transfer_beta
+    weight: 25
+  - template: tip20_transfer_theta
+    weight: 25
