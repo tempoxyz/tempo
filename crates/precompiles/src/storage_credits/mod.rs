@@ -8,9 +8,10 @@ pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_cr
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
 };
 use alloy::primitives::{Address, U256};
+use std::collections::BTreeMap;
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -80,6 +81,23 @@ impl StorageCredits {
         u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
     }
 
+    /// Runs `f` and returns the signed change in `account`'s persistent credit balance.
+    pub fn track_credit_delta<T>(
+        &self,
+        account: Address,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<i128> {
+        if !StorageCtx.spec().is_t7() {
+            f()?;
+            return Ok(0);
+        }
+
+        let before = self.balance_of(account)?;
+        f()?;
+        let after = self.balance_of(account)?;
+        Ok(i128::from(after) - i128::from(before))
+    }
+
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
         self.credit_state_of(account).map(|state| state.mode)
     }
@@ -130,6 +148,78 @@ impl StorageCredits {
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
+    }
+
+    /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
+    /// from `credit_owner`'s balance, returning the signed persistent credit-balance delta.
+    ///
+    /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
+    /// before this returns so later storage writes cannot consume the remaining allowance.
+    pub fn with_budget<T>(
+        &mut self,
+        credit_owner: Address,
+        limit: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, i128)> {
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
+
+        if limit == 0 {
+            let before = self.balance_of(credit_owner)?;
+            let value = f()?;
+            let after = self.balance_of(credit_owner)?;
+            return Ok((value, i128::from(after) - i128::from(before)));
+        }
+
+        self.set_budget(credit_owner, limit)?;
+
+        let before = self.balance_of(credit_owner)?;
+        let result = f();
+        let after = self.balance_of(credit_owner)?;
+        let delta = i128::from(after) - i128::from(before);
+
+        let current_state = self.credit_state_of(credit_owner)?;
+        let state = TransientState {
+            budget: 0,
+            mode: CreditMode::Preserve,
+            pending_refunds: current_state.pending_refunds,
+        };
+        self.write_credit_state_of(credit_owner, state)?;
+
+        result.map(|value| (value, delta))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StorageCreditDeltas(BTreeMap<Address, u64>);
+
+impl StorageCreditDeltas {
+    pub fn new() -> Self {
+        Self(BTreeMap::default())
+    }
+
+    /// Adds `slots` reusable-storage credits earned by `user`.
+    ///
+    /// This intentionally records only a delta. The persisted counter is loaded once during
+    /// [`Self::flush`], outside the fill loop and only if the enclosing operation succeeds.
+    pub fn credit_slots(&mut self, user: Address, slots: u64) {
+        if slots == 0 {
+            return;
+        }
+
+        self.0
+            .entry(user)
+            .and_modify(|total| *total = total.saturating_add(slots))
+            .or_insert(slots);
+    }
+
+    pub fn flush(self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
+        for (user, slots) in self.0 {
+            apply(user, slots)?;
+        }
+
+        Ok(())
     }
 }
 

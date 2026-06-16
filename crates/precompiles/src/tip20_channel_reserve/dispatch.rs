@@ -1,12 +1,21 @@
 //! ABI dispatch for the [`TIP20ChannelReserve`] precompile.
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
-use crate::{Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void, view};
-use alloy::{primitives::Address, sol_types::SolInterface};
+use crate::{
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
+    view,
+};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
 };
+
+const T7_ADDED: &[[u8; 4]] = &[ITIP20ChannelReserve::storageCreditsCall::SELECTOR];
 
 impl Precompile for TIP20ChannelReserve {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -16,7 +25,7 @@ impl Precompile for TIP20ChannelReserve {
 
         dispatch_call(
             calldata,
-            &[],
+            &[SelectorSchedule::new(TempoHardfork::T7).with_added(T7_ADDED)],
             ITIP20ChannelReserveCalls::abi_decode,
             |call| match call {
                 ITIP20ChannelReserveCalls::CLOSE_GRACE_PERIOD(_) => {
@@ -60,6 +69,9 @@ impl Precompile for TIP20ChannelReserve {
                 }
                 ITIP20ChannelReserveCalls::domainSeparator(call) => {
                     view(call, |_| self.domain_separator())
+                }
+                ITIP20ChannelReserveCalls::storageCredits(call) => {
+                    view(call, |c| self.storage_credits(c.payer))
                 }
             },
         )
