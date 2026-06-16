@@ -63,6 +63,8 @@ pub struct Order {
 impl Order {
     /// Creates a new [`Order`] with `prev` and `next` initialized to 0.
     #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
     pub fn new(
         order_id: u128,
         maker: Address,
@@ -89,6 +91,8 @@ impl Order {
     }
 
     /// Creates a new bid order
+    #[cold]
+    #[inline(never)]
     pub fn new_bid(
         order_id: u128,
         maker: Address,
@@ -100,6 +104,8 @@ impl Order {
     }
 
     /// Creates a new ask order
+    #[cold]
+    #[inline(never)]
     pub fn new_ask(
         order_id: u128,
         maker: Address,
