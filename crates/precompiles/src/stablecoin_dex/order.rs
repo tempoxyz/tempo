@@ -280,6 +280,12 @@ impl Order {
         }
     }
 
+    /// Returns the storage-credit count of non-empty `Order` slots attributed to the maker.
+    ///
+    /// Regular tail orders do not occupy the final packed slot, so they are worth 1 less credit.
+    /// TIP-1064 uses maker-owned physical order-record attribution: if a later order appends behind
+    /// this one, `next` makes that final order-record slot nonzero, and the slot is credited to
+    /// this order's maker because it is stored under this order ID.
     pub fn storage_credits(&self) -> u64 {
         let mut slots = Self::SLOTS as u64;
         if !self.is_flip() && self.next() == 0 && self.flip_tick() == 0 {

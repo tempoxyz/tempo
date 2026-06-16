@@ -9,8 +9,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IStablecoinDEX::{self, IStablecoinDEXCalls};
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call,
-    mutate_preserving_storage_credits, mutate_void_preserving_storage_credits,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate, mutate_void,
     preserve_storage_credits,
     stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
     view,
@@ -29,18 +28,14 @@ impl Precompile for StablecoinDEX {
             &[SelectorSchedule::new(TempoHardfork::T7).with_added(T7_ADDED)],
             IStablecoinDEXCalls::abi_decode,
             |call| match call {
-                IStablecoinDEXCalls::place(call) => {
-                    mutate(call, msg_sender, self.address, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place(s, c.token, c.amount, c.isBid, c.tick)
-                    })
-                }
-                IStablecoinDEXCalls::placeFlip(call) => {
-                    mutate(call, msg_sender, self.address, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
-                    })
-                }
+                IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.place(s, c.token, c.amount, c.isBid, c.tick)
+                }),
+                IStablecoinDEXCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+                }),
                 IStablecoinDEXCalls::balanceOf(call) => {
                     view(call, |c| self.balance_of(c.user, c.token))
                 }
@@ -61,42 +56,30 @@ impl Precompile for StablecoinDEX {
                     view(call, |c| self.storage_credits(c.user))
                 }
                 IStablecoinDEXCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
-                IStablecoinDEXCalls::createPair(call) => {
-                    mutate(call, msg_sender, self.address, |_, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.create_pair(c.base)
-                    })
-                }
-                IStablecoinDEXCalls::withdraw(call) => {
-                    mutate_void(call, msg_sender, self.address, |s, c| {
-                        preserve_storage_credits(self.address)?;
-                        self.withdraw(s, c.token, c.amount)
-                    })
-                }
-                IStablecoinDEXCalls::cancel(call) => {
-                    mutate_void(call, msg_sender, self.address, |s, c| {
-                        self.cancel(s, c.orderId)
-                    })
-                }
+                IStablecoinDEXCalls::createPair(call) => mutate(call, msg_sender, |_, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.create_pair(c.base)
+                }),
+                IStablecoinDEXCalls::withdraw(call) => mutate_void(call, msg_sender, |s, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.withdraw(s, c.token, c.amount)
+                }),
+                IStablecoinDEXCalls::cancel(call) => mutate_void(call, msg_sender, |s, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.cancel(s, c.orderId)
+                }),
                 IStablecoinDEXCalls::cancelStaleOrder(call) => {
-                    mutate_void(call, msg_sender, self.address, |_, c| {
+                    mutate_void(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
                         self.cancel_stale_order(c.orderId)
                     })
                 }
-                IStablecoinDEXCalls::swapExactAmountIn(call) => {
-                    mutate(call, msg_sender, self.address, |s, c| {
-                        self.swap_exact_amount_in(
-                            s,
-                            c.tokenIn,
-                            c.tokenOut,
-                            c.amountIn,
-                            c.minAmountOut,
-                        )
-                    })
-                }
+                IStablecoinDEXCalls::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                }),
                 IStablecoinDEXCalls::swapExactAmountOut(call) => {
-                    mutate(call, msg_sender, self.address, |s, c| {
+                    mutate(call, msg_sender, |s, c| {
                         preserve_storage_credits(self.address)?;
                         self.swap_exact_amount_out(
                             s,
@@ -154,6 +137,7 @@ mod tests {
         primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -504,7 +488,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 

@@ -365,7 +365,7 @@ fn mutate_void<T: SolCall>(
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
 }
 
-/// Runs mutations with TIP-1060 storage creation mode set to Preserve by default.
+/// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
 fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
     if StorageCtx.spec().is_t7() {

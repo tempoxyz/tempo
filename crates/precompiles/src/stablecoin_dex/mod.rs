@@ -2054,6 +2054,102 @@ mod tests {
     }
 
     #[test]
+    fn test_dex_storage_credits_non_tail_cancel_credits_order_maker_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_token = base.address();
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(amount))
+                .with_mint(bob, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let alice_tail_credits = exchange.orders[alice_order_id].read()?.storage_credits();
+            let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
+
+            let alice_linked_order = exchange.orders[alice_order_id].read()?;
+            assert_eq!(alice_linked_order.next(), bob_order_id);
+            let alice_linked_credits = alice_linked_order.storage_credits();
+            assert_eq!(alice_linked_credits, alice_tail_credits + 1);
+
+            exchange.cancel(alice, alice_order_id)?;
+
+            assert_eq!(exchange.storage_credits(alice)?, alice_linked_credits);
+            assert_eq!(exchange.storage_credits(bob)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dex_storage_credits_non_tail_fill_credits_order_maker_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let taker = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(amount))
+                .with_mint(bob, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(taker, U256::from(amount))
+                .with_approval(taker, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let alice_order_id = exchange.place(alice, base_token, amount, false, tick)?;
+            let alice_tail_credits = exchange.orders[alice_order_id].read()?.storage_credits();
+            let bob_order_id = exchange.place(bob, base_token, amount, false, tick)?;
+
+            let alice_linked_order = exchange.orders[alice_order_id].read()?;
+            assert_eq!(alice_linked_order.next(), bob_order_id);
+            let alice_linked_credits = alice_linked_order.storage_credits();
+            assert_eq!(alice_linked_credits, alice_tail_credits + 1);
+
+            exchange.swap_exact_amount_in(taker, quote_token, base_token, amount, 0)?;
+
+            assert_eq!(exchange.storage_credits(alice)?, alice_linked_credits);
+            assert_eq!(exchange.storage_credits(bob)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_place_order_pair_auto_created() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
