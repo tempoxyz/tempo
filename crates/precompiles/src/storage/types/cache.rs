@@ -155,7 +155,7 @@ where
     #[inline]
     fn promote_to_map(linear: &mut LinearCache<K, H>) -> MapCache<K, H> {
         let mut map = MapCache::default();
-        map.reserve(THRESHOLD * 2);
+        map.reserve(linear.len().saturating_add(1));
         linear.drain_into_map(&mut map);
         map
     }
