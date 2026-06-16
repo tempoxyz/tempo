@@ -79,20 +79,21 @@ pub fn tempo_gas_params_with_amsterdam(
 /// set cost. The 245k creditable portion is charged (or covered by a credit) by
 /// the storage-credit hook in `sstore_storage_credits`.
 fn t7_gas_params() -> GasParams {
-    // T7 starts from the full TIP-1000 (T1) table so that every creation cost is
-    // inherited unchanged. TIP-1060 only touches the two SSTORE-creation entries
-    // overridden below; everything else (tx_create_cost, create, new_account_cost,
+    // T7 starts from the TIP-1000 (T1) table so that every creation cost is inherited unchanged.
+    // TIP-1060 only touches the SSTORE creation, clear, and restore-to-original-zero refund
+    // entries overridden below; everything else (tx_create_cost, create, new_account_cost,
     // code_deposit_cost, eip7702 costs, auth refund) is exactly as in `t1_gas_params`.
     let mut gas_params = t1_gas_params();
     gas_params.override_gas([
-        // SSTORE (zero -> non-zero): only the 5k residual; the 245k creditable
-        // portion is governed by the TIP-1060 storage-credit hook.
-        // (T1 charged the full SSTORE_CREATE_COST here.)
+        // SSTORE (zero -> non-zero): only the 5k residual; the 245k creditable portion is governed
+        // by the TIP-1060 storage-credit hook (T1 charged the full `SSTORE_CREATE_COST` here).
         (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
-        // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now
-        // handled by storage-credit minting, so the legacy clearing refund is
-        // removed. Restore-to-original refunds (sstore_set_refund /
-        // sstore_reset_refund) are preserved at their defaults.
+        // Restore (non-zero -> zero) refund must not exceed the T7 residual. Important with
+        // TIP-1060 because the refund cap is removed. Otherwise, 0→x→0 could be refund-positive.
+        (GasId::sstore_set_refund(), SSTORE_SET_COST),
+        // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now handled by storage
+        // credit minting, so the legacy clearing refund is removed. Restore-to-original-nonzero
+        // refunds (sstore_reset_refund) remain at their upstream reset refund.
         (GasId::sstore_clearing_slot_refund(), 0),
     ]);
     gas_params
@@ -203,6 +204,16 @@ mod tests {
             gas_params.get(GasId::sstore_set_without_load_cost()),
             5_000,
             "T7 SSTORE creation charges only the 5k residual"
+        );
+        assert!(
+            gas_params.get(GasId::sstore_set_without_load_cost())
+                >= gas_params.get(GasId::sstore_set_refund()),
+            "T7 restore-to-original-zero refund must not exceed the residual set charge"
+        );
+        assert_eq!(
+            gas_params.get(GasId::sstore_clearing_slot_refund()),
+            0,
+            "TIP-1060 removes the legacy SSTORE clearing refund"
         );
 
         // Other TIP-1000 creation costs are unchanged by TIP-1060.

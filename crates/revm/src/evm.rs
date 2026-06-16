@@ -2027,6 +2027,44 @@ mod tests {
         Bytecode::new_raw(bytecode.into())
     }
 
+    fn run_tx_on_tip1060_contract(
+        mode: CreditMode,
+        contract: Address,
+        bytecode: &[u8],
+    ) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+        run_tx_on_tip1060_contract_with_setup(mode, contract, bytecode, |_, _| Ok(()))
+    }
+
+    fn run_tx_on_tip1060_contract_with_setup(
+        mode: CreditMode,
+        contract: Address,
+        bytecode: &[u8],
+        setup: impl FnOnce(&mut TempoEvm<CacheDB<EmptyDB>, ()>, Address) -> eyre::Result<()>,
+    ) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let mut evm = create_funded_evm_t7(caller);
+
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(mode, bytecode)),
+                ..Default::default()
+            },
+        );
+        setup(&mut evm, contract)?;
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(2_000_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
+        assert!(result.is_success(), "test transaction should succeed");
+
+        Ok((result.tx_gas_used(), evm))
+    }
+
     fn mint_storage_credits_with_clears(
         evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
         key_pair: &P256KeyPair,
@@ -2340,51 +2378,32 @@ mod tests {
     /// creation refund at end-of-tx.
     #[test]
     fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
+        // PUSH1 0x00 PUSH1 0x00 SSTORE STOP: no-op write to an empty slot.
+        let noop_body = bytes!("600060005500");
+        let (noop_gas, _) =
+            run_tx_on_tip1060_contract(CreditMode::Refund, Address::repeat_byte(0x60), &noop_body)?;
+
         // PUSH1 0x01 PUSH1 0x00 SSTORE  PUSH1 0x00 PUSH1 0x00 SSTORE  STOP
         let create_clear_body = bytes!("6001600055600060005500");
 
         // (mode, gas used, final credit balance).
-        // The 0->1->0 clear restores slot 0 to its transaction-original value (0),
-        // so the 19,900 restore-to-original refund is preserved (TIP-1060 only
-        // zeroes SSTORE_CLEARS_SCHEDULE, not the restore refunds), lowering each
-        // mode's gas by 19,900 relative to the legacy no-refund accounting.
+        // The 0->1->0 clear restores slot 0 to its transaction-original value (0), so T7 refunds
+        // only the 5k residual set charge. The 245k credit depends on the TIP-1060 credit mode.
         let cases = [
-            (CreditMode::Refund, 271_068u64, 0u64),
-            (CreditMode::Preserve, 520_614u64, 1u64),
-            (CreditMode::Direct, 520_614u64, 1u64),
+            (CreditMode::Refund, 285_968u64, 0u64),
+            (CreditMode::Preserve, 535_514u64, 1u64),
+            (CreditMode::Direct, 535_514u64, 1u64),
         ];
 
-        for (mode, expected_gas, expected_balance) in cases {
-            let key_pair = P256KeyPair::random();
-            let caller = key_pair.address;
-            let contract = Address::repeat_byte(0x60);
+        for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
+            let contract = Address::repeat_byte(0x60 + case_id as u8);
+            let (gas_used, evm) = run_tx_on_tip1060_contract(mode, contract, &create_clear_body)?;
 
-            let mut evm = create_funded_evm_t7(caller);
-
-            evm.ctx.db_mut().insert_account_info(
-                contract,
-                AccountInfo {
-                    code: Some(bytecode_with_tip1060_mode(mode, &create_clear_body)),
-                    ..Default::default()
-                },
-            );
-
-            seed_storage_credit_balance(&mut evm, contract, 0);
-
-            let tx = TxBuilder::new()
-                .call(contract, &[])
-                .gas_limit(2_000_000)
-                .build();
-            let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-
-            let result = evm.transact_commit(tx_env)?;
             assert!(
-                result.is_success(),
-                "create+clear tx should succeed in {mode:?} mode"
+                gas_used >= noop_gas,
+                "0->x->0 storage churn must not reduce tx gas below no-op: noop={noop_gas}, create_clear={gas_used}"
             );
 
-            let gas_used = result.tx_gas_used();
             assert_eq!(
                 gas_used, expected_gas,
                 "TIP-1060 create+clear gas should be exact in {mode:?} mode"
@@ -2545,9 +2564,9 @@ mod tests {
                 new_value: 0,
                 expected_slot: 0,
                 credit_cases: no_initial_credits(expectations(
-                    (21_068, 0),
-                    (270_614, 1),
-                    (270_614, 1),
+                    (35_968, 0),
+                    (285_514, 1),
+                    (285_514, 1),
                 )),
             },
             TransitionClass {
@@ -3157,8 +3176,6 @@ mod tests {
         let cases = [(2u8, 1u64, 0u64), (1u8, 2u64, 1u64)];
 
         for (creates, starting_balance, expected_balance) in cases {
-            let key_pair = P256KeyPair::random();
-            let caller = key_pair.address;
             let contract = Address::repeat_byte(0x70 + creates);
 
             // Write 0x01 to `creates` fresh slots, then STOP.
@@ -3174,24 +3191,15 @@ mod tests {
             }
             bytecode.push(opcode::STOP);
 
-            let mut evm = create_funded_evm_t7(caller);
-            evm.ctx.db_mut().insert_account_info(
+            let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+                CreditMode::Refund,
                 contract,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytecode.into())),
-                    ..Default::default()
+                &bytecode,
+                |evm, contract| {
+                    seed_storage_credit_balance(evm, contract, starting_balance);
+                    Ok(())
                 },
-            );
-            seed_storage_credit_balance(&mut evm, contract, starting_balance);
-
-            let tx = TxBuilder::new()
-                .call(contract, &[])
-                .gas_limit(1_000_000)
-                .build();
-            let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            let result = evm.transact_commit(tx_env)?;
-            assert!(result.is_success(), "refund settlement tx should succeed");
+            )?;
 
             assert_eq!(
                 storage_credit_balance(&evm, contract),
@@ -3389,33 +3397,23 @@ mod tests {
     /// balance pinned at `u64::MAX` rather than overflowing.
     #[test]
     fn test_tip1060_sstore_clear_mint_saturates_at_u64_max() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
         let contract = Address::repeat_byte(0x67);
 
         // Bytecode: SSTORE(0,0); STOP.
-        let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
+        let clear_bytecode = bytes!("600060005500");
 
-        let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
+        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+            CreditMode::Refund,
             contract,
-            AccountInfo {
-                code: Some(clear_bytecode),
-                ..Default::default()
+            &clear_bytecode,
+            |evm, contract| {
+                evm.ctx
+                    .db_mut()
+                    .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+                seed_storage_credit_balance(evm, contract, u64::MAX);
+                Ok(())
             },
-        );
-        evm.ctx
-            .db_mut()
-            .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
-        seed_storage_credit_balance(&mut evm, contract, u64::MAX);
-
-        let tx = TxBuilder::new()
-            .call(contract, &[])
-            .gas_limit(500_000)
-            .build();
-        let signed_tx = key_pair.sign_tx(tx)?;
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, caller))?;
-        assert!(result.is_success());
+        )?;
         assert_eq!(storage_credit_balance(&evm, contract), u64::MAX);
 
         Ok(())
