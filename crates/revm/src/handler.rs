@@ -805,7 +805,7 @@ where
     /// Dispatches based on transaction type:
     /// - AA transactions (type 0x5): Use batch execution path with calls field
     /// - All other transactions: Use standard single-call execution
-    #[inline]
+    #[inline(always)]
     fn execution(
         &mut self,
         evm: &mut Self::Evm,
