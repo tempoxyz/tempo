@@ -558,6 +558,8 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
+        let wait_for_shared_trie_budget =
+            build_once_with_shared_trie && payload_build_budget.is_some();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
@@ -602,10 +604,7 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
+                if wait_for_shared_trie_budget && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
