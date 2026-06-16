@@ -106,7 +106,8 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     /// The handler is computed on first access and cached for subsequent accesses.
     ///
     /// Returns `None` if the index is out of bounds (>= N).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn at(&mut self, index: usize) -> Option<&T::Handler> {
         if index >= N {
             return None;
