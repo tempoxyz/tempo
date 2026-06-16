@@ -584,7 +584,6 @@ fn add_fee_manager_touches(
     fee_recipient: Address,
     fee_token: Address,
 ) {
-    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
     add_storage_touch(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
@@ -672,7 +671,8 @@ fn is_invalidated_buffered_transaction(
             .zip(invalid.transaction.aa_transaction_id())
             .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
     } else {
-        candidate.transaction.sender() == invalid.transaction.sender()
+        !candidate.transaction.is_aa_2d()
+            && candidate.transaction.sender() == invalid.transaction.sender()
     }
 }
 

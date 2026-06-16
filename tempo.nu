@@ -318,15 +318,29 @@ def read-bench-marker [datadir: string] {
 # Comparison mode helpers
 # ============================================================================
 
-# Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4" "T5" "T6" "T7"]
 const TEMPO_DISABLED_HARDFORK_TIME = 9223372036854775807
 
+def tempo-hardforks [] {
+    let forks = (
+        open crates/node/tests/assets/test-genesis.json
+        | get config
+        | columns
+        | where { |key| $key =~ '^t[0-9]+[a-z]?Time$' }
+        | each { |key| $key | str replace "Time" "" | str upcase }
+    )
+    if ($forks | is-empty) {
+        print "Error: failed to read Tempo hardforks from crates/node/tests/assets/test-genesis.json"
+        exit 1
+    }
+    $forks
+}
+
 def normalize-hardfork [fork: string] {
+    let hardforks = (tempo-hardforks)
     let fork_upper = ($fork | str upcase)
-    let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
+    let idx = ($hardforks | enumerate | where item == $fork_upper)
     if ($idx | length) == 0 {
-        print $"Error: unknown hardfork '($fork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+        print $"Error: unknown hardfork '($fork)'. Valid: ($hardforks | str join ', ')"
         exit 1
     }
     $fork_upper
@@ -334,11 +348,11 @@ def normalize-hardfork [fork: string] {
 
 def hardfork-index [fork: string] {
     let fork_upper = (normalize-hardfork $fork)
-    ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper | get 0.index)
+    (tempo-hardforks | enumerate | where item == $fork_upper | get 0.index)
 }
 
 def latest-tempo-hardfork [] {
-    $TEMPO_HARDFORKS | last
+    tempo-hardforks | last
 }
 
 def highest-hardfork [forks: list<string>] {
@@ -357,7 +371,7 @@ def highest-hardfork [forks: list<string>] {
 
 def hardfork-genesis-config-fields [fork: string] {
     let cutoff = (hardfork-index $fork)
-    $TEMPO_HARDFORKS | enumerate | each { |it|
+    tempo-hardforks | enumerate | each { |it|
         {
             fork: $it.item
             name: $"($it.item | str downcase)Time"
@@ -728,6 +742,7 @@ def run-bench-single [
             --git-ref $git_ref
             --build-profile $build_profile
             --benchmark-mode $benchmark_mode
+            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
@@ -2428,17 +2443,18 @@ def "main bench" [
         exit 1
     }
     # Validate hardfork names
+    let tempo_hardforks = (tempo-hardforks)
     if $baseline_hardfork != "" {
-        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($baseline_hardfork | str upcase) })
+        let valid = ($tempo_hardforks | any { |f| $f == ($baseline_hardfork | str upcase) })
         if not $valid {
-            print $"Error: unknown baseline hardfork '($baseline_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            print $"Error: unknown baseline hardfork '($baseline_hardfork)'. Valid: ($tempo_hardforks | str join ', ')"
             exit 1
         }
     }
     if $feature_hardfork != "" {
-        let valid = ($TEMPO_HARDFORKS | any { |f| $f == ($feature_hardfork | str upcase) })
+        let valid = ($tempo_hardforks | any { |f| $f == ($feature_hardfork | str upcase) })
         if not $valid {
-            print $"Error: unknown feature hardfork '($feature_hardfork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
+            print $"Error: unknown feature hardfork '($feature_hardfork)'. Valid: ($tempo_hardforks | str join ', ')"
             exit 1
         }
     }
@@ -2911,6 +2927,7 @@ def "main bench" [
             --git-ref $current_sha
             --build-profile $profile
             --benchmark-mode $mode
+            --bloat-token-count ($TIP20_TOKEN_IDS | length)
             --skip-funding=($bloat > 0))
         $result
     } catch { |e|
@@ -3323,7 +3340,8 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                         --accounts $accounts
                         --max-concurrent-requests 100
                         --build-profile "coverage"
-                        --benchmark-mode "coverage")
+                        --benchmark-mode "coverage"
+                        --bloat-token-count ($TIP20_TOKEN_IDS | length))
                     if not $bench_result.ok {
                         print "Bench finished (or interrupted)."
                     }
