@@ -117,6 +117,8 @@ impl<T: Eq + Hash + Clone> From<Vec<T>> for Set<T> {
     /// Creates a set from a vector, removing duplicates.
     ///
     /// Preserves the order of first occurrences.
+    #[cold]
+    #[inline(never)]
     fn from(vec: Vec<T>) -> Self {
         let (mut seen, mut deduped) = (HashSet::new(), Vec::new());
         for item in vec {
@@ -130,6 +132,8 @@ impl<T: Eq + Hash + Clone> From<Vec<T>> for Set<T> {
 
 impl<T: Eq + Hash + Clone> FromIterator<T> for Set<T> {
     /// Creates a set from an iterator, removing duplicates.
+    #[cold]
+    #[inline(never)]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let vec: Vec<T> = iter.into_iter().collect();
         Self::from(vec)
