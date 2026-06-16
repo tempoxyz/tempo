@@ -270,6 +270,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Devnet ; "devnet")]
 #[test_case(ForkSchedule::Testnet ; "testnet")]
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
+#[test_case(ForkSchedule::Hardfork(TempoHardfork::T7) ; "t7")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -293,7 +294,9 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    let expected_gas = if schedule.is_active(TempoHardfork::T6) {
+    let expected_gas = if matches!(schedule, ForkSchedule::Hardfork(TempoHardfork::T7)) {
+        555874
+    } else if schedule.is_active(TempoHardfork::T6) {
         547407
     } else if schedule.is_active(TempoHardfork::T3) {
         551540
