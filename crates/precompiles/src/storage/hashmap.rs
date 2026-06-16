@@ -41,11 +41,15 @@ struct Snapshot {
 
 impl HashMapStorageProvider {
     /// Creates a new provider with the given chain ID and default hardfork.
+    #[cold]
+    #[inline(never)]
     pub fn new(chain_id: u64) -> Self {
         Self::new_with_spec(chain_id, TempoHardfork::default())
     }
 
     /// Creates a new provider with the given chain ID and hardfork spec.
+    #[cold]
+    #[inline(never)]
     pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
         Self {
             internals: HashMap::new(),
@@ -73,12 +77,16 @@ impl HashMapStorageProvider {
     }
 
     /// Returns self with the hardfork spec overridden (builder pattern).
+    #[cold]
+    #[inline(never)]
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
         self
     }
 
     /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
+    #[cold]
+    #[inline(never)]
     pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
         self
@@ -102,6 +110,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.block_number
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
         account.code_hash = code.hash_slow();
@@ -109,6 +119,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn with_account_info(
         &mut self,
         address: Address,
@@ -119,6 +131,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn sstore(
         &mut self,
         address: Address,
@@ -130,6 +144,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn tstore(
         &mut self,
         address: Address,
@@ -140,11 +156,15 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.events.entry(address).or_default().push(event);
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         if self.fail_on_sload == Some((address, key)) {
             return Err(TempoPrecompileError::Fatal("injected sload failure".into()));
@@ -158,6 +178,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             .unwrap_or(U256::ZERO))
     }
 
+    #[cold]
+    #[inline(never)]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         Ok(self
             .transient
@@ -206,6 +228,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.is_static
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
@@ -219,6 +243,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint_commit(&mut self, checkpoint: JournalCheckpoint) {
         assert_eq!(
             checkpoint.journal_i,
@@ -228,6 +254,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.snapshots.pop();
     }
 
+    #[cold]
+    #[inline(never)]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         assert_eq!(
             checkpoint.journal_i,
