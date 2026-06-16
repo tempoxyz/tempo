@@ -1,7 +1,11 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -10,7 +14,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -27,14 +31,26 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+const PREWARM_CHUNK_SIZE: usize = 4;
+const PREWARM_BUFFER_LOW_WATERMARK: usize = 4;
+const PREWARM_BUFFER_WORKER_MULTIPLIER: usize = 2;
+const PREWARM_MESSAGE_DRAIN_LIMIT: usize = 8;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmState> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: Receiver<Option<BestTransaction>>,
+    transactions_rx: Receiver<BestTransactionsMessage>,
     commands_tx: Sender<BestTransactionsCommand>,
+    buffer: VecDeque<BestTransaction>,
+    buffer_high_watermark: usize,
+    refill_pending: bool,
+    done: bool,
     stop: Arc<AtomicBool>,
 }
 
@@ -55,6 +71,8 @@ impl BestTransactionsPrewarming {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let buffer_high_watermark =
+            executor.prewarming_pool().current_num_threads() * PREWARM_BUFFER_WORKER_MULTIPLIER;
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
@@ -66,6 +84,10 @@ impl BestTransactionsPrewarming {
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
+            buffer: VecDeque::new(),
+            buffer_high_watermark,
+            refill_pending: true,
+            done: false,
             stop,
         };
 
@@ -100,44 +122,61 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
+            let refill = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                          target: usize| {
+                let mut batch = Vec::with_capacity(target);
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                for _ in 0..target {
+                    let Some(tx) = ctx.best_txs.next() else {
+                        break;
+                    };
+                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                        let offset = ctx.next_expiring_nonce_offset;
+                        ctx.next_expiring_nonce_offset += 1;
+                        Some(offset)
+                    } else {
+                        None
+                    };
+                    batch.push((tx, expiring_nonce_offset));
+                }
+
+                if batch.is_empty() {
+                    let _ = ctx.transactions_tx.send(BestTransactionsMessage::Done);
                     return;
-                };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = ctx.next_expiring_nonce_offset;
-                    ctx.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                }
 
-                let prewarm = ctx.prewarm.clone();
-                let commands_tx = ctx.commands_tx.clone();
-                scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
-                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
-                });
+                let _ = ctx.transactions_tx.send(BestTransactionsMessage::Batch(
+                    batch.iter().map(|(tx, _)| tx.clone()).collect(),
+                ));
+
+                for chunk in batch.chunks(PREWARM_CHUNK_SIZE) {
+                    let prewarm = ctx.prewarm.clone();
+                    let commands_tx = ctx.commands_tx.clone();
+                    let chunk = chunk.to_vec();
+                    scope.spawn(move |_| {
+                        let count = chunk.len();
+                        for (tx, expiring_nonce_offset) in chunk {
+                            Self::prewarm_transaction(prewarm.clone(), tx, expiring_nonce_offset);
+                        }
+                        let _ = commands_tx.send(BestTransactionsCommand::Completed { count });
+                    });
+                }
             };
 
-            // Fill the initial batch of transactions to execute and prewarm.
-            //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+            let high_watermark = pool.current_num_threads() * PREWARM_BUFFER_WORKER_MULTIPLIER;
+            if high_watermark == 0 {
+                let _ = ctx.transactions_tx.send(BestTransactionsMessage::Done);
+            } else {
+                refill(&mut ctx, high_watermark);
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
-                    BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                    BestTransactionsCommand::Refill { target } => {
+                        refill(&mut ctx, target);
+                    }
+                    BestTransactionsCommand::Completed { count } => {
+                        refill(&mut ctx, count);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -147,11 +186,24 @@ impl BestTransactionsPrewarming {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
-                        for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
+                        for message in old_rx {
+                            match message {
+                                BestTransactionsMessage::Batch(batch) => {
+                                    let batch = batch
+                                        .into_iter()
+                                        .filter(|tx| {
+                                            !is_invalidated_buffered_transaction(&invalid.tx, tx)
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if !batch.is_empty() {
+                                        let _ = ctx
+                                            .transactions_tx
+                                            .send(BestTransactionsMessage::Batch(batch));
+                                    }
+                                }
+                                BestTransactionsMessage::Done => {
+                                    let _ = ctx.transactions_tx.send(BestTransactionsMessage::Done);
+                                }
                             }
                         }
                     }
@@ -170,7 +222,53 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_EVM_STATE.with(|state| {
+                *state.borrow_mut() = None;
+            });
+        });
+    }
+
+    fn request_refill(&mut self) {
+        if !self.done && !self.refill_pending && self.buffer.len() < PREWARM_BUFFER_LOW_WATERMARK {
+            let target = self.refill_target();
+            if target > 0 {
+                let _ = self
+                    .commands_tx
+                    .send(BestTransactionsCommand::Refill { target });
+                self.refill_pending = true;
+            }
+        }
+    }
+
+    fn refill_target(&self) -> usize {
+        self.buffer_high_watermark.saturating_sub(self.buffer.len())
+    }
+
+    fn receive_message(&mut self, message: BestTransactionsMessage) {
+        self.refill_pending = false;
+        match message {
+            BestTransactionsMessage::Batch(batch) => self.buffer.extend(batch),
+            BestTransactionsMessage::Done => self.done = true,
+        }
+    }
+
+    fn drain_ready_messages(&mut self) {
+        for _ in 0..PREWARM_MESSAGE_DRAIN_LIMIT {
+            let Ok(message) = self.transactions_rx.try_recv() else {
+                return;
+            };
+            self.receive_message(message);
+        }
+    }
+
+    fn recv_messages(&mut self) -> bool {
+        let Ok(message) = self.transactions_rx.recv() else {
+            return false;
+        };
+        self.receive_message(message);
+        self.drain_ready_messages();
+        true
     }
 
     fn prewarm_transaction<Provider>(
@@ -184,8 +282,11 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+        PREWARM_EVM_STATE.with_borrow_mut(|evm| {
+            if evm.is_none() {
+                *evm = prewarm.evm_for_ctx();
+            }
+            let Some(evm) = evm.as_mut() else {
                 return;
             };
 
@@ -263,13 +364,25 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+        self.drain_ready_messages();
+
+        if let Some(tx) = self.buffer.pop_front() {
+            self.request_refill();
             return Some(tx);
         }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+
+        self.request_refill();
+        while !self.done {
+            if !self.recv_messages() {
+                return None;
+            }
+            if let Some(tx) = self.buffer.pop_front() {
+                self.request_refill();
+                return Some(tx);
+            }
+        }
+
+        None
     }
 }
 
@@ -277,6 +390,8 @@ impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        self.buffer
+            .retain(|tx| !is_invalidated_buffered_transaction(transaction, tx));
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
                 tx: transaction.clone(),
@@ -301,7 +416,7 @@ impl BestTransactions for BestTransactionsPrewarming {
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
-    transactions_tx: Sender<Option<BestTransaction>>,
+    transactions_tx: Sender<BestTransactionsMessage>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
@@ -632,18 +747,29 @@ fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
 #[derive(Debug)]
 enum BestTransactionsCommand {
-    Advance,
+    Refill {
+        target: usize,
+    },
+    Completed {
+        count: usize,
+    },
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<BestTransaction>>,
-        new_tx: Sender<Option<BestTransaction>>,
+        old_rx: Receiver<BestTransactionsMessage>,
+        new_tx: Sender<BestTransactionsMessage>,
     },
     NoUpdates,
     SkipBlobs(bool),
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
-        drain_rx: Receiver<Option<BestTransaction>>,
+        drain_rx: Receiver<BestTransactionsMessage>,
     },
+}
+
+#[derive(Debug)]
+enum BestTransactionsMessage {
+    Batch(Vec<BestTransaction>),
+    Done,
 }
 
 /// Invalid transaction encountered during execution.
@@ -998,19 +1124,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_per_batch_refill() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
     }
 
     #[test]
