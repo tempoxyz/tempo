@@ -25,20 +25,25 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
-mod cli;
+pub mod cli;
 mod defaults;
 mod follow;
-mod init_state;
-mod p2p_proxy;
-mod regenesis;
+pub mod init_state;
+mod overrides;
+pub mod p2p_proxy;
+pub mod regenesis;
 mod snapshot_download;
 mod snapshot_manifest;
-mod tempo_cmd;
+pub mod tempo_cmd;
 mod utils;
 
-#[cfg(test)]
-pub(crate) use crate::cli::TempoRpcModuleValidator;
-pub(crate) use crate::cli::{TempoArgs, TempoCli};
+pub use crate::{
+    cli::{TempoArgs, TempoCli, TempoRpcModuleValidator},
+    overrides::{TempoNodeMapper, TempoOverrides},
+};
+pub use reth_cli_util as cli_util;
+pub use tempo_node;
+pub use tempo_node as node;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
@@ -59,9 +64,14 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
+pub use tempo_node::{
+    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
+    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
+    TempoPooledTransaction, TransactionOrigin,
+};
 use tempo_node::{
     TempoFullNode,
-    node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
@@ -81,6 +91,20 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
 
 /// Runs the Tempo node CLI.
 pub fn tempo_main() -> eyre::Result<()> {
+    tempo_main_with(TempoOverrides::default())
+}
+
+/// Runs the Tempo node CLI with programmatic startup overrides.
+///
+/// This is the embedding entrypoint for binaries that want the standard Tempo
+/// CLI behavior plus programmatic hooks for behavior that cannot be expressed
+/// through command-line arguments. [`tempo_main`] is equivalent to calling this
+/// function with [`TempoOverrides::default`].
+///
+/// Overrides are applied after CLI parsing and before the execution node is
+/// launched. See [`TempoOverrides`] for the currently supported hooks and an
+/// example that injects additional transaction pool validation.
+pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -400,7 +424,10 @@ pub fn tempo_main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(&args.node_args, validator_key))
+            .node(overrides.apply_tempo_node(TempoNode::new(
+                &args.node_args,
+                validator_key,
+            )))
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Enable discv5 peer discovery
                 builder
