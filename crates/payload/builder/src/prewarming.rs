@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    mem,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -26,7 +29,42 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+type PrewarmDb = StateProviderDatabase<StateProviderBox>;
+type PrewarmEvm = TempoEvm<PrewarmDb>;
+
+enum PrewarmWorkerState {
+    Db(PrewarmDb),
+    Evm(PrewarmEvm),
+    Unavailable,
+}
+
+impl PrewarmWorkerState {
+    fn db_mut(&mut self) -> Option<&mut PrewarmDb> {
+        match self {
+            Self::Db(db) => Some(db),
+            Self::Evm(evm) => Some(evm.db_mut()),
+            Self::Unavailable => None,
+        }
+    }
+
+    fn evm_mut(&mut self, evm_env: EvmEnvFor<TempoEvmConfig>) -> Option<&mut PrewarmEvm> {
+        if matches!(self, Self::Db(_)) {
+            let Self::Db(db) = mem::replace(self, Self::Unavailable) else {
+                unreachable!("checked worker state variant")
+            };
+            let mut evm_env = evm_env;
+            evm_env.cfg_env.disable_nonce_check = true;
+            evm_env.cfg_env.disable_balance_check = true;
+            *self = Self::Evm(TempoEvm::new(db, evm_env));
+        }
+
+        match self {
+            Self::Evm(evm) => Some(evm),
+            Self::Db(_) => unreachable!("db worker state was promoted"),
+            Self::Unavailable => None,
+        }
+    }
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -102,7 +140,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                pool.init::<PrewarmWorkerState>(|_| prewarm.worker_state_for_ctx());
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -185,13 +223,15 @@ impl BestTransactionsPrewarming {
         }
 
         WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
+            let worker_state =
+                worker.get_or_init::<PrewarmWorkerState>(|| prewarm.worker_state_for_ctx());
 
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
+                let Some(db) = worker_state.db_mut() else {
+                    return;
+                };
                 let touches = storage_touches_for_transaction(
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
@@ -202,7 +242,7 @@ impl BestTransactionsPrewarming {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm.db_mut()) {
+                    if let Err(err) = touch.warm(db) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -219,6 +259,9 @@ impl BestTransactionsPrewarming {
                     return;
                 }
 
+                let Some(evm) = worker_state.evm_mut(prewarm.evm_env.clone()) else {
+                    return;
+                };
                 let mut tx_env = tx.transaction.clone_tx_env();
                 if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
                     tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
@@ -322,7 +365,7 @@ impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn evm_for_ctx(&self) -> PrewarmEvmState {
+    fn worker_state_for_ctx(&self) -> PrewarmWorkerState {
         let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -332,7 +375,7 @@ where
                     parent_hash = ?self.parent_hash,
                     "failed to build state provider for transaction prewarming"
                 );
-                return None;
+                return PrewarmWorkerState::Unavailable;
             }
         };
 
@@ -344,11 +387,7 @@ where
         }
 
         let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
-        evm_env.cfg_env.disable_nonce_check = true;
-        evm_env.cfg_env.disable_balance_check = true;
-
-        Some(TempoEvm::new(state_provider, evm_env))
+        PrewarmWorkerState::Db(state_provider)
     }
 
     fn is_stopped(&self) -> bool {
