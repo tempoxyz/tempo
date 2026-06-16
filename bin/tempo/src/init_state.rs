@@ -103,10 +103,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let file = File::open(&self.state)
             .wrap_err_with(|| format!("failed to open {}", self.state.display()))?;
+        let total_file_bytes = file
+            .metadata()
+            .wrap_err_with(|| format!("failed to stat {}", self.state.display()))?
+            .len();
         let mut reader = BufReader::with_capacity(64 * 1024 * 1024, file);
 
         let mut total_entries = 0u64;
         let mut total_blocks = 0u64;
+        let mut bytes_read = 0u64;
 
         // Track addresses and their account data for hashing
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
@@ -166,6 +171,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e).wrap_err("failed to read block header"),
             }
+            bytes_read += header_buf.len() as u64;
 
             // Validate magic
             ensure!(
@@ -262,9 +268,18 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
                 total_entries += 1;
 
-                log_collection_progress(&address, i, pair_count, start, &mut last_log);
+                log_collection_progress(
+                    &address,
+                    i,
+                    pair_count,
+                    bytes_read + ((i + 1) * 64),
+                    total_file_bytes,
+                    start,
+                    &mut last_log,
+                );
             }
 
+            bytes_read += pair_count * 64;
             total_blocks += 1;
         }
 
@@ -616,17 +631,29 @@ fn log_collection_progress(
     address: &alloy_primitives::Address,
     index: u64,
     total: u64,
+    global_bytes_read: u64,
+    total_file_bytes: u64,
     start: Instant,
     last_log: &mut Instant,
 ) {
     if last_log.elapsed() >= Duration::from_secs(5) || index + 1 == total {
-        let pct = ((index + 1) as f64 / total as f64) * 100.0;
+        let block_pct = ((index + 1) as f64 / total as f64) * 100.0;
+        let global_pct = if total_file_bytes == 0 {
+            100.0
+        } else {
+            (global_bytes_read as f64 / total_file_bytes as f64) * 100.0
+        };
         let elapsed = start.elapsed();
         let pairs_per_sec = (index + 1) as f64 / elapsed.as_secs_f64();
         info!(
             target: "tempo::cli",
             %address,
-            progress = format_args!("{}/{} ({pct:.0}%)", index + 1, total),
+            block_progress = format_args!("{}/{} ({block_pct:.0}%)", index + 1, total),
+            global_progress = format_args!(
+                "{}/{} bytes ({global_pct:.2}%)",
+                global_bytes_read,
+                total_file_bytes
+            ),
             elapsed = ?elapsed,
             pairs_per_sec = pairs_per_sec as u64,
             "Collecting storage"
