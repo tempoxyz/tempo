@@ -560,10 +560,9 @@ impl TIP20ChannelReserve {
         }
 
         let current = self.channel_storage_credits[payer].read()?;
-        let updated = current.saturating_add(1);
-        if updated == current {
+        let Some(updated) = current.checked_add(1) else {
             return Ok(());
-        }
+        };
 
         if current == 0 {
             let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
