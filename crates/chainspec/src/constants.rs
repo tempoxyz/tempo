@@ -11,6 +11,7 @@ pub mod gas {
     const COLD_SLOAD: u64 = 2100;
     const WARM_SLOAD: u64 = 100;
     const WARM_SSTORE_RESET: u64 = 2900;
+    const T1_SSTORE_SET: u64 = 20_000;
 
     /// TIP-1000 storage creation component for a zero-to-nonzero SSTORE.
     pub const SSTORE_CREATE_COST: u64 = 250_000;
@@ -88,7 +89,7 @@ pub mod gas {
         TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
     /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero).
-    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET_COST;
+    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + T1_SSTORE_SET;
     /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
     pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
