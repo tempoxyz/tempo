@@ -170,6 +170,8 @@ crate::sol! {
 
 impl ValidatorConfigV2Error {
     /// Backwards-compatible alias for the Alloy-generated `empty_v_1_validator_set` constructor.
+    #[cold]
+    #[inline(never)]
     pub fn empty_v1_validator_set() -> Self {
         Self::empty_v_1_validator_set()
     }
