@@ -383,9 +383,15 @@ where
 fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
     let raw = storage.load(slot)?;
     if raw > U256::from(u32::MAX) {
-        return Err(TempoPrecompileError::under_overflow());
+        return Err(vec_length_overflow());
     }
     Ok(raw.to::<usize>())
+}
+
+#[cold]
+#[inline(never)]
+fn vec_length_overflow() -> TempoPrecompileError {
+    TempoPrecompileError::under_overflow()
 }
 
 /// Calculate the starting slot for dynamic array data.
