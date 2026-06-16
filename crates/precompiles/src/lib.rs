@@ -436,12 +436,13 @@ impl<'a> SelectorSchedule<'a> {
     /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
     #[inline]
     fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
-        if self.hardfork <= active {
+        let selectors = if self.hardfork <= active {
             self.dropped
         } else {
             self.added
-        }
-        .contains(&selector)
+        };
+
+        !selectors.is_empty() && selectors.contains(&selector)
     }
 }
 
