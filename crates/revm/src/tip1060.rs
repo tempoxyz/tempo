@@ -10,8 +10,10 @@ use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
     interpreter::{
-        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad, gas::GasTracker,
-        instructions::host::sstore_with_gas_accounting, interpreter::EthInterpreter,
+        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
+        gas::GasTracker,
+        instructions::host::{sstore_default_gas_accounting, sstore_with_gas_accounting},
+        interpreter::EthInterpreter,
     },
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
@@ -153,14 +155,20 @@ pub(crate) fn sstore<DB: Database>(
     context: InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
 ) -> Result<(), InstructionResult> {
     sstore_with_gas_accounting(context, |context, owner, values| {
-        let InstructionContext { interpreter, host } = context;
-        sstore_storage_credits(
-            &mut StorageCreditsContext {
-                context: host,
-                gas_tracker: interpreter.gas.tracker_mut(),
-            },
-            owner,
-            values,
-        )
+        {
+            let InstructionContext { interpreter, host } = context;
+            sstore_storage_credits(
+                &mut StorageCreditsContext {
+                    context: host,
+                    gas_tracker: interpreter.gas.tracker_mut(),
+                },
+                owner,
+                values,
+            )?;
+        }
+
+        // Storage-credit hook only handles TIP-1060 bookkeeping + state gas. Keep default
+        // gas/refunds for cold, update, and residual costs. T7 gas table ensures no double-charge.
+        sstore_default_gas_accounting(context, owner, values)
     })
 }
