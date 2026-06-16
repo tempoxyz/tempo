@@ -24,6 +24,7 @@ tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
+tempo-revm.workspace = true
 
 thiserror.workspace = true
 
@@ -49,6 +50,7 @@ reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
 
 alloy-serde.workspace = true
+alloy-evm.workspace = true
 alloy-eips.workspace = true
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
@@ -106,6 +108,7 @@ default = []
 bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
+	"alloy-evm/asm-keccak",
 	"alloy-primitives/asm-keccak",
 	"reth-node-core/asm-keccak",
 	"reth-node-ethereum/asm-keccak",

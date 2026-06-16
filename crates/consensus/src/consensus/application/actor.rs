@@ -524,18 +524,10 @@ impl Inner<Init> {
             }
         };
 
-        let fut = match self
+        let fut = self
             .execution_node
             .payload_builder_handle
-            .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
-            .await
-        {
-            Ok(fut) => fut,
-            Err(error) => {
-                warn!(%error, %payload_id, "failed resolving payload while cancelling build");
-                return;
-            }
-        };
+            .resolve_kind(payload_id, PayloadKind::WaitForPending);
         drop(fut);
     }
 
