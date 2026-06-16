@@ -10,7 +10,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType, StorageCtx},
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, map::AddressHashMap};
 use tempo_contracts::precompiles::{
     ITIP1060StorageCredits::Mode, TIP1060StorageCreditsError, TIP1060StorageCreditsEvent,
 };
@@ -221,14 +221,14 @@ impl TIP1060StorageCredits {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StorageCreditDeltas {
     enabled: bool,
-    deltas: Vec<(Address, u64)>,
+    deltas: AddressHashMap<u64>,
 }
 
 impl StorageCreditDeltas {
     pub fn new() -> Self {
         Self {
             enabled: StorageCtx.spec().is_t7(),
-            deltas: Vec::new(),
+            deltas: AddressHashMap::default(),
         }
     }
 
@@ -241,17 +241,14 @@ impl StorageCreditDeltas {
             return;
         }
 
-        self.deltas.push((user, slots));
+        self.deltas
+            .entry(user)
+            .and_modify(|total| *total = total.saturating_add(slots))
+            .or_insert(slots);
     }
 
-    pub fn flush(mut self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
-        self.deltas.sort_by_key(|(user, _)| *user);
-
-        for group in self.deltas.chunk_by(|a, b| a.0 == b.0) {
-            let user = group[0].0;
-            let slots = group
-                .iter()
-                .fold(0u64, |total, (_, slots)| total.saturating_add(*slots));
+    pub fn flush(self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
+        for (user, slots) in self.deltas {
             apply(user, slots)?;
         }
 
