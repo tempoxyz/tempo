@@ -780,6 +780,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — sender balance lower than transfer amount
+    #[inline]
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
@@ -805,6 +806,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `InsufficientAllowance` — caller allowance lower than transfer amount
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
+    #[inline]
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
@@ -830,6 +832,7 @@ impl TIP20Token {
     }
 
     /// Like [`Self::transfer_from`], but attaches a 32-byte memo.
+    #[inline]
     pub fn transfer_from_with_memo(
         &mut self,
         msg_sender: Address,
@@ -873,6 +876,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
+    #[inline]
     pub fn system_transfer_from(
         &mut self,
         caller: Address,
@@ -898,6 +902,7 @@ impl TIP20Token {
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
+    #[inline]
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
@@ -914,6 +919,7 @@ impl TIP20Token {
     }
 
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
+    #[inline]
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: Address,
@@ -994,10 +1000,12 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    #[inline]
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
 
+    #[inline]
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
         self.balances[account].write(amount)
     }
@@ -1014,6 +1022,7 @@ impl TIP20Token {
         self.total_supply.write(amount)
     }
 
+    #[inline]
     pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
             return Err(TIP20Error::contract_paused().into());
@@ -1030,6 +1039,7 @@ impl TIP20Token {
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
     /// Returns `None` when funds were blocked, and the caller should return immediately.
+    #[inline]
     fn validate_transfer(
         &mut self,
         spender: Option<Address>,
@@ -1098,6 +1108,7 @@ impl TIP20Token {
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+    #[inline]
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
@@ -1115,6 +1126,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
+    #[inline]
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
             return Err(TIP20Error::policy_forbids().into());
@@ -1139,6 +1151,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline]
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
@@ -1147,6 +1160,7 @@ impl TIP20Token {
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
+    #[inline]
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
