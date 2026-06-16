@@ -898,6 +898,8 @@ where
     stats
 }
 
+#[cold]
+#[inline(never)]
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
