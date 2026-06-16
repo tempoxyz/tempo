@@ -1,7 +1,7 @@
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver, Sender, TryRecvError},
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -263,8 +263,10 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        match self.transactions_rx.try_recv() {
+            Ok(tx) => return tx,
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {}
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
@@ -998,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_returns_queued_exhaustion_without_extra_advance() {
         let executor = TaskExecutor::test();
         let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
@@ -1007,10 +1009,10 @@ mod tests {
         wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
     }
 
     #[test]
