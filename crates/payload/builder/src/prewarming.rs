@@ -351,10 +351,12 @@ where
         Some(TempoEvm::new(state_provider, evm_env))
     }
 
+    #[inline]
     fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
+    #[inline]
     fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
@@ -368,6 +370,7 @@ enum StorageTouch {
 }
 
 impl StorageTouch {
+    #[inline]
     fn warm<DB: Database>(&self, db: &mut DB) -> Result<(), DB::Error> {
         match *self {
             Self::Account(address) => {
@@ -410,10 +413,12 @@ impl StorageTouch {
     }
 }
 
+#[inline]
 fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
     tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
 }
 
+#[inline]
 fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
     let mut has_call = false;
     for (kind, input) in calls {
@@ -425,6 +430,7 @@ fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Byte
     has_call
 }
 
+#[inline]
 fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
     let Some(token) = kind.to().copied() else {
         return false;
@@ -442,6 +448,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
     )
 }
 
+#[inline]
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
@@ -471,6 +478,7 @@ fn storage_touches_for_transaction(
     touches
 }
 
+#[inline]
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
@@ -482,6 +490,7 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
     add_tip20_reward_touches(touches, fee_token, fee_payer);
 }
 
+#[inline]
 fn add_tip20_call_touches(
     touches: &mut Vec<StorageTouch>,
     sender: Address,
@@ -546,6 +555,7 @@ fn add_tip20_call_touches(
     }
 }
 
+#[inline]
 fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_account_touch(touches, token);
     add_storage_touch(touches, token, tip20_slots::CURRENCY);
@@ -555,10 +565,12 @@ fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
+#[inline]
 fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
     add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
+#[inline]
 fn add_tip20_allowance_touch(
     touches: &mut Vec<StorageTouch>,
     token: Address,
@@ -572,6 +584,7 @@ fn add_tip20_allowance_touch(
     );
 }
 
+#[inline]
 fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(touches, token, base_slot);
@@ -579,6 +592,7 @@ fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, acc
     add_storage_touch(touches, token, base_slot + U256::from(2));
 }
 
+#[inline]
 fn add_fee_manager_touches(
     touches: &mut Vec<StorageTouch>,
     fee_recipient: Address,
@@ -596,6 +610,7 @@ fn add_fee_manager_touches(
     );
 }
 
+#[inline]
 fn add_expiring_nonce_touches(
     touches: &mut Vec<StorageTouch>,
     tx: &BestTransaction,
@@ -614,15 +629,18 @@ fn add_expiring_nonce_touches(
     );
 }
 
+#[inline]
 fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
     add_unique_touch(touches, StorageTouch::Account(address));
 }
 
+#[inline]
 fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
     add_account_touch(touches, address);
     add_unique_touch(touches, StorageTouch::Storage { address, slot });
 }
 
+#[inline]
 fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
     if !touches.contains(&touch) {
         touches.push(touch);
