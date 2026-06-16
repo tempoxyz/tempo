@@ -150,20 +150,25 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(user_token);
         }
 
-        // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+        // Check if the fee can be inferred from the TIP20 token being called.
+        if let Some((first_kind, first_input)) = tx.calls().next()
+            && let Some(to) = first_kind.to().copied()
+        {
+            let first_call_can_infer = is_tip20_fee_inference_call(spec, first_input);
             let can_infer_tip20 =
+                if !tx.is_aa() {
+                    first_call_can_infer
+                }
                 // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
+                else if fee_payer != tx.caller() || !first_call_can_infer {
                     false
                 }
                 // Otherwise, restricted to TIP-20 calls that move the called token.
                 else {
-                    tx.calls().all(|(kind, input)| {
+                    tx.calls().skip(1).all(|(kind, input)| {
                         kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
                     })
-                }
-            ;
+                };
 
             if can_infer_tip20 && self.is_valid_fee_token(spec, to)? {
                 return Ok(to);
