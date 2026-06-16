@@ -1533,6 +1533,17 @@ where
         Ok(())
     }
 
+    #[inline]
+    fn pre_execution(
+        &self,
+        evm: &mut Self::Evm,
+        init_and_floor_gas: &mut InitialAndFloorGas,
+    ) -> Result<u64, Self::Error> {
+        self.validate_against_state_and_deduct_caller(evm, init_and_floor_gas)?;
+        self.load_accounts(evm)?;
+        self.apply_eip7702_auth_list(evm, init_and_floor_gas)
+    }
+
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
