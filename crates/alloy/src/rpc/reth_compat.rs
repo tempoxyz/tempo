@@ -250,13 +250,13 @@ fn create_mock_primitive_signature(
         }
         SignatureType::P256 => {
             // Create a dummy P256 signature
-            PrimitiveSignature::P256(P256SignatureWithPreHash {
+            PrimitiveSignature::P256(Box::new(P256SignatureWithPreHash {
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
                 pre_hash: false,
-            })
+            }))
         }
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size

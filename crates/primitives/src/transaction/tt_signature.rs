@@ -112,7 +112,7 @@ pub enum PrimitiveSignature {
     Secp256k1(Signature),
 
     /// P256 signature with embedded public key (129 bytes)
-    P256(P256SignatureWithPreHash),
+    P256(Box<P256SignatureWithPreHash>),
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
@@ -149,13 +149,13 @@ impl PrimitiveSignature {
                 if sig_data.len() != P256_SIGNATURE_LENGTH {
                     return Err("Invalid P256 signature length");
                 }
-                Ok(Self::P256(P256SignatureWithPreHash {
+                Ok(Self::P256(Box::new(P256SignatureWithPreHash {
                     r: B256::from_slice(&sig_data[0..32]),
                     s: B256::from_slice(&sig_data[32..64]),
                     pub_key_x: B256::from_slice(&sig_data[64..96]),
                     pub_key_y: B256::from_slice(&sig_data[96..128]),
                     pre_hash: sig_data[128] != 0,
-                }))
+                })))
             }
             SIGNATURE_TYPE_WEBAUTHN => {
                 let len = sig_data.len();
