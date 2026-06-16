@@ -336,3 +336,86 @@ async fn test_tip1060_distribute_fees_does_not_mint_unbacked_tip20_credit() -> e
 
     Ok(())
 }
+
+/// A normal TIP-20 precompile storage clear should mint a persistent TIP-1060 credit for the token.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url);
+
+    let token = setup_test_token(provider.clone(), root_addr).await?;
+    let recipient = Address::repeat_byte(0xcc);
+    let amount = U256::from(1234u64);
+
+    // Seed recipient with non-zero balance so the transfer clears the sender's balance slot.
+    // Does not create a new recipient balance slot that could consume the credit.
+    let recipient_seed_receipt = token
+        .mint(recipient, U256::ONE)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(recipient_seed_receipt.status());
+    let sender_seed_receipt = token
+        .mint(root_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(sender_seed_receipt.status());
+
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credit_before = credits.balanceOf(*token.address()).call().await?;
+
+    let gas_price = 1_000_000_000_000u128;
+    let tx = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: (*token.address()).into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let sig = root.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+    let hash = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
+        .await?;
+    assert!(receipt.status());
+
+    assert_eq!(token.balanceOf(root_addr).call().await?, U256::ZERO);
+    assert_eq!(token.balanceOf(recipient).call().await?, amount + U256::ONE);
+    assert_eq!(
+        credits.balanceOf(*token.address()).call().await?,
+        credit_before + 1,
+        "clearing the sender TIP-20 precompile balance slot must persist one storage credit for the token"
+    );
+
+    Ok(())
+}
