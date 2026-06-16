@@ -606,8 +606,9 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    let idle_start = Instant::now();
                     std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    normal_transaction_fill_idle_elapsed += idle_start.elapsed();
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
