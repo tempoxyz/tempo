@@ -1149,18 +1149,13 @@ impl TIP20Token {
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
+        let Some(new_from_balance) = from_balance.checked_sub(amount) else {
             return Err(
                 TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
             );
-        }
+        };
 
         self.handle_rewards_on_transfer(from, to.target, amount)?;
-
-        // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1272,11 +1267,11 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
+        let Some(new_from_balance) = from_balance.checked_sub(amount) else {
             return Err(
                 TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
             );
-        }
+        };
 
         self.check_and_update_spending_limit(from, amount)?;
 
@@ -1294,15 +1289,6 @@ impl TIP20Token {
                     .map_err(|_| TempoPrecompileError::under_overflow())?,
             )?;
         }
-
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
 
         self.set_balance(from, new_from_balance)?;
 
