@@ -13490,6 +13490,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-programmatic-node"
+version = "1.8.2"
+dependencies = [
+ "tempo",
+]
+
+[[package]]
 name = "tempo-revm"
 version = "1.8.2"
 dependencies = [
