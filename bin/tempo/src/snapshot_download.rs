@@ -39,7 +39,7 @@ pub(crate) struct Args {
     consensus_datadir: Option<PathBuf>,
 }
 
-pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
+pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
     let datadir = matches
@@ -51,7 +51,6 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
     let manifest_url = matches.get_one::<String>("manifest_url").cloned();
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
 
-    let runner = CliRunner::try_default_runtime().wrap_err("failed to build obtain runtime")?;
     runner.block_on(async move {
         eprintln!("running execution layer download...");
 

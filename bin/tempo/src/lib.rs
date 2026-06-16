@@ -56,6 +56,7 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -167,7 +168,28 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     // `from_arg_matches` would map them to their original variants.
     match matches.subcommand() {
         Some(("snapshot-manifest", sub)) => return snapshot_manifest::run(sub),
-        Some(("download", sub)) => return snapshot_download::run(sub),
+        Some(("download", sub)) => {
+            let runner =
+                CliRunner::try_default_runtime().wrap_err("failed to build download runtime")?;
+            let mut cli = match TempoCli::from_arg_matches(&matches) {
+                Ok(cli) => cli,
+                Err(err) => err.exit(),
+            };
+
+            if let Some(chain_spec) = cli.command.chain_spec() {
+                cli.logs.log_file_directory = cli
+                    .logs
+                    .log_file_directory
+                    .join(chain_spec.chain().to_string());
+            }
+
+            let mut tracing_app = cli.configure();
+            tracing_app
+                .init_tracing(&runner)
+                .wrap_err("failed to initialize tracing")?;
+
+            return snapshot_download::run_with_runner(sub, runner);
+        }
         _ => {}
     }
 
@@ -565,9 +587,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 mod tests {
     use std::{sync::Once, time::Duration};
 
-    use clap::Parser;
+    use clap::{CommandFactory, FromArgMatches, Parser};
 
-    use super::{TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode};
+    use super::{
+        TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+    };
     use reth_ethereum::cli::Commands;
 
     fn init_defaults_once() {
@@ -581,6 +605,31 @@ mod tests {
             panic!("expected node command");
         };
         node_cmd.ext.follow
+    }
+
+    #[test]
+    fn wrapped_download_matches_parse_for_tracing() {
+        init_defaults_once();
+
+        let matches = TempoCli::command()
+            .mut_subcommand("download", |_| snapshot_download::Args::command())
+            .try_get_matches_from([
+                "tempo",
+                "download",
+                "--manifest-url",
+                "https://snap/manifest.json",
+                "--datadir",
+                "/d",
+                "--skip-consensus=false",
+                "--log.stdout.filter",
+                "debug",
+            ])
+            .unwrap();
+
+        let cli = TempoCli::from_arg_matches(&matches).unwrap();
+
+        assert!(matches!(cli.command, Commands::Download(_)));
+        assert_eq!(cli.logs.log_stdout_filter, "debug");
     }
 
     #[test]
