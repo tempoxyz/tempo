@@ -224,7 +224,7 @@ fn create_mock_tempo_sig(
         } else {
             KeychainSignature::new_v1(caller_addr, inner_sig)
         };
-        TempoSignature::Keychain(keychain_sig)
+        TempoSignature::Keychain(Box::new(keychain_sig))
     } else {
         TempoSignature::Primitive(inner_sig)
     }

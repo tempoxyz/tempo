@@ -541,7 +541,7 @@ pub enum TempoSignature {
     /// Format: key_id (20 bytes) + inner signature
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
     /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
-    Keychain(KeychainSignature),
+    Keychain(Box<KeychainSignature>),
 }
 
 impl TempoSignature {
@@ -580,12 +580,12 @@ impl TempoSignature {
             // This automatically prevents recursive keychain signatures at compile time
             let inner_signature = PrimitiveSignature::from_bytes(inner_sig_bytes)?;
 
-            return Ok(Self::Keychain(KeychainSignature {
+            return Ok(Self::Keychain(Box::new(KeychainSignature {
                 user_address,
                 signature: inner_signature,
                 version,
                 cached_key_id: OnceLock::new(),
-            }));
+            })));
         }
 
         // For all non-Keychain signatures, delegate to PrimitiveSignature
@@ -687,13 +687,7 @@ impl TempoSignature {
 
     /// Check if this is a V2 Keychain signature.
     pub fn is_v2_keychain(&self) -> bool {
-        matches!(
-            self,
-            Self::Keychain(KeychainSignature {
-                version: KeychainVersion::V2,
-                ..
-            })
-        )
+        matches!(self, Self::Keychain(k) if k.version == KeychainVersion::V2)
     }
 
     /// Validates keychain signature version compatibility with the current hardfork.

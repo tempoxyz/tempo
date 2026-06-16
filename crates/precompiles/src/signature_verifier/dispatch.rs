@@ -118,10 +118,10 @@ mod tests {
     ) -> eyre::Result<Vec<u8>> {
         let signing_hash = KeychainSignature::signing_hash(hash, account);
         let inner = key.sign_hash_sync(&signing_hash)?;
-        Ok(TempoSignature::Keychain(KeychainSignature::new(
+        Ok(TempoSignature::Keychain(Box::new(KeychainSignature::new(
             account,
             PrimitiveSignature::Secp256k1(inner),
-        ))
+        )))
         .to_bytes()
         .to_vec())
     }
