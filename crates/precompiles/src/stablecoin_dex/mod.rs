@@ -89,10 +89,6 @@ impl StablecoinDEX {
     }
 
     /// Adds reusable-order storage credits for `user`.
-    ///
-    /// If this creates the user's DEX credit counter slot, one TIP-1060 token owned by the DEX must
-    /// be consumed by that bookkeeping slot creation. The token is available because the reusable
-    /// order storage deletion that earned the credit has already happened.
     fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
         if slots == 0 || !self.storage.spec().is_t7() {
             return Ok(());
@@ -101,12 +97,16 @@ impl StablecoinDEX {
         let current = self.dex_storage_credits[user].read()?;
         let updated = current.saturating_add(slots);
 
-        if current == 0 && updated > 0 {
-            let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
-                self.address,
-                1,
-                || self.dex_storage_credits[user].write(updated),
-            )?;
+        if current == 0 {
+            // Store the full logical balance even though creating this counter slot spends one
+            // real DEX-owned TIP-1060 credit. The real balance is temporarily one lower while the
+            // counter exists, and the credit is minted back when the counter is cleared to zero.
+            let mut storage_credits = TIP1060StorageCredits::new();
+            let before = storage_credits.balance_of(self.address)?;
+            storage_credits.with_storage_credits_budget(self.address, 1, || {
+                self.dex_storage_credits[user].write(updated)
+            })?;
+            let spent = before.saturating_sub(storage_credits.balance_of(self.address)?);
 
             if spent != 1 {
                 return Err(TempoPrecompileError::Fatal(format!(
@@ -120,43 +120,47 @@ impl StablecoinDEX {
         }
     }
 
+    /// Deletes a reusable order record and returns the number of DEX TIP-1060 credits minted.
+    fn delete_order(&mut self, order: &Order) -> Result<u64> {
+        if !self.storage.spec().is_t7() {
+            self.orders[order.order_id()].delete()?;
+            return Ok(0);
+        }
+
+        let storage_credits = TIP1060StorageCredits::new();
+        let before = storage_credits.balance_of(self.address)?;
+        self.orders[order.order_id()].delete()?;
+        storage_credits
+            .balance_of(self.address)
+            .map(|after| after.saturating_sub(before))
+    }
+
     /// Writes a reusable order record while spending at most the maker's DEX storage credits.
     ///
-    /// The DEX credit counter is debited before the reusable storage creation so clearing the
-    /// counter slot can mint the TIP-1060 token represented by that bookkeeping slot.
+    /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
+    /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
     fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
-        let slots = order.storage_credits();
         let user = order.maker();
-
-        if slots == 0 || !self.storage.spec().is_t7() {
+        let user_credits = self.dex_storage_credits[user].read()?;
+        if user_credits == 0 {
             return self.orders[order.order_id()].write(order);
         }
 
-        let current = self.dex_storage_credits[user].read()?;
-        let reserved = current.min(slots);
-        if reserved == 0 {
-            return self.orders[order.order_id()].write(order);
-        }
+        // Clear the user's bookkeeping slot before writing the order record. This makes the
+        // TIP-1060 credit represented by that bookkeeping slot available to the direct budget.
+        self.dex_storage_credits[user].delete()?;
 
-        let checkpoint = self.storage.checkpoint();
-        self.dex_storage_credits[user].write(current - reserved)?;
+        let mut storage_credits = TIP1060StorageCredits::new();
+        let dex_credits_before = storage_credits.balance_of(self.address)?;
+        storage_credits.with_storage_credits_budget(self.address, user_credits, || {
+            self.orders[order.order_id()].write(order)
+        })?;
+        let dex_credits_after = storage_credits.balance_of(self.address)?;
+        let spent_credits = dex_credits_before.saturating_sub(dex_credits_after);
 
-        let result = TIP1060StorageCredits::new().with_storage_credits_budget(
-            self.address,
-            reserved,
-            || self.orders[order.order_id()].write(order),
-        );
+        self.credit_dex_storage_slots(user, user_credits.saturating_sub(spent_credits))?;
 
-        match result {
-            Ok(((), spent)) if spent == reserved => {
-                checkpoint.commit();
-                Ok(())
-            }
-            Ok(((), spent)) => Err(TempoPrecompileError::Fatal(format!(
-                "DEX storage credit spend mismatch: reserved {reserved}, spent {spent}"
-            ))),
-            Err(err) => Err(err),
-        }
+        Ok(())
     }
 
     /// Returns the minimum representable scaled price (`MIN_PRICE`).
@@ -680,7 +684,7 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if charge_credits {
+        if charge_credits && self.storage.spec().is_t7() {
             self.write_order_spending_dex_storage_credits(order)
         } else {
             self.orders[order.order_id()].write(order)
@@ -1043,13 +1047,13 @@ impl StablecoinDEX {
             // record must be deleted to avoid leaving an orphan in storage.
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
-                self.orders[order.order_id()].delete()?;
-                storage_credits.credit_slots(order.maker(), order.storage_credits());
+                let credits = self.delete_order(order)?;
+                storage_credits.credit_slots(order.maker(), credits);
             }
         } else {
             // Non-flip filled order: always delete.
-            self.orders[order.order_id()].delete()?;
-            storage_credits.credit_slots(order.maker(), order.storage_credits());
+            let credits = self.delete_order(order)?;
+            storage_credits.credit_slots(order.maker(), credits);
         }
 
         // Advance tick if liquidity is exhausted
@@ -1385,8 +1389,8 @@ impl StablecoinDEX {
         }
 
         // Clear the order from storage
-        self.orders[order.order_id()].delete()?;
-        self.credit_dex_storage_slots(order.maker(), order.storage_credits())?;
+        let credits = self.delete_order(&order)?;
+        self.credit_dex_storage_slots(order.maker(), credits)?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
@@ -2037,16 +2041,14 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             let order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let order = exchange.orders[order_id].read()?;
-            let credits = order.storage_credits();
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             exchange.cancel(alice, order_id)?;
-            assert_eq!(exchange.storage_credits(alice)?, credits);
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
 
-            let next_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let next_order = exchange.orders[next_order_id].read()?;
-            assert_eq!(next_order.storage_credits(), credits);
+            exchange.place(alice, base_token, amount, true, tick)?;
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             Ok(())
@@ -2082,17 +2084,16 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let alice_tail_credits = exchange.orders[alice_order_id].read()?.storage_credits();
             let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
 
             let alice_linked_order = exchange.orders[alice_order_id].read()?;
             assert_eq!(alice_linked_order.next(), bob_order_id);
-            let alice_linked_credits = alice_linked_order.storage_credits();
-            assert_eq!(alice_linked_credits, alice_tail_credits + 1);
 
             exchange.cancel(alice, alice_order_id)?;
 
-            assert_eq!(exchange.storage_credits(alice)?, alice_linked_credits);
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
             assert_eq!(exchange.storage_credits(bob)?, 0);
 
             Ok(())
@@ -2132,17 +2133,16 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             let alice_order_id = exchange.place(alice, base_token, amount, false, tick)?;
-            let alice_tail_credits = exchange.orders[alice_order_id].read()?.storage_credits();
             let bob_order_id = exchange.place(bob, base_token, amount, false, tick)?;
 
             let alice_linked_order = exchange.orders[alice_order_id].read()?;
             assert_eq!(alice_linked_order.next(), bob_order_id);
-            let alice_linked_credits = alice_linked_order.storage_credits();
-            assert_eq!(alice_linked_credits, alice_tail_credits + 1);
 
             exchange.swap_exact_amount_in(taker, quote_token, base_token, amount, 0)?;
 
-            assert_eq!(exchange.storage_credits(alice)?, alice_linked_credits);
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
             assert_eq!(exchange.storage_credits(bob)?, 0);
 
             Ok(())

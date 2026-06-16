@@ -4,10 +4,7 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::{
-    stablecoin_dex::{IStablecoinDEX, error::OrderError},
-    storage::StorableType,
-};
+use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
 use alloy::primitives::{Address, B256};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
@@ -278,20 +275,6 @@ impl Order {
             is_flip: true,        // Keep as flip order
             flip_tick: self.tick, // Old tick becomes new flip_tick
         }
-    }
-
-    /// Returns the storage-credit count of non-empty `Order` slots attributed to the maker.
-    ///
-    /// Regular tail orders do not occupy the final packed slot, so they are worth 1 less credit.
-    /// TIP-1064 uses maker-owned physical order-record attribution: if a later order appends behind
-    /// this one, `next` makes that final order-record slot nonzero, and the slot is credited to
-    /// this order's maker because it is stored under this order ID.
-    pub fn storage_credits(&self) -> u64 {
-        let mut slots = Self::SLOTS as u64;
-        if !self.is_flip() && self.next() == 0 && self.flip_tick() == 0 {
-            slots = slots.saturating_sub(1);
-        }
-        slots
     }
 }
 
