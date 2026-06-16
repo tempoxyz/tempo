@@ -964,10 +964,9 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
-        block: Arc::new(block),
-        block_access_list,
+        block: block.execution_block(),
+        block_access_list: block.block_access_list().cloned(),
         validator_set,
     };
     let validation_start = Instant::now();

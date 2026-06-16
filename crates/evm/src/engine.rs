@@ -5,8 +5,7 @@ use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
-use reth_primitives_traits::{SealedBlock, SignedTransaction};
-use std::sync::Arc;
+use reth_primitives_traits::{SealedOrRecoveredBlock, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
@@ -16,7 +15,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.block)
+        self.evm_env(payload.block.header())
     }
 
     fn context_for_payload<'a>(
@@ -61,7 +60,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
 /// clone block or transaction.
 #[derive(Clone)]
 struct RecoveredInBlock {
-    block: Arc<SealedBlock<Block>>,
+    block: SealedOrRecoveredBlock<Block>,
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
@@ -69,9 +68,13 @@ struct RecoveredInBlock {
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        (block, index, expiring_nonce_idx): (SealedOrRecoveredBlock<Block>, usize, Option<usize>),
     ) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
+        let sender = block
+            .recovered_block()
+            .and_then(|block| block.senders().get(index).copied())
+            .map(Ok)
+            .unwrap_or_else(|| block.body().transactions[index].try_recover())?;
         Ok(Self {
             block,
             index,
@@ -119,6 +122,8 @@ mod tests {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
+    use reth_primitives_traits::SealedBlock;
+    use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -194,7 +199,7 @@ mod tests {
         let block = create_test_block(vec![tx1, tx2, system_tx]);
 
         let payload = TempoExecutionData {
-            block,
+            block: block.into(),
             block_access_list: None,
             validator_set: None,
         };
@@ -226,7 +231,7 @@ mod tests {
         let validator_set = Some(vec![B256::repeat_byte(0x01), B256::repeat_byte(0x02)]);
 
         let payload = TempoExecutionData {
-            block,
+            block: block.into(),
             block_access_list: None,
             validator_set: validator_set.clone(),
         };
@@ -252,7 +257,7 @@ mod tests {
         let block = create_test_block(vec![system_tx]);
 
         let payload = TempoExecutionData {
-            block: block.clone(),
+            block: block.clone().into(),
             block_access_list: None,
             validator_set: None,
         };

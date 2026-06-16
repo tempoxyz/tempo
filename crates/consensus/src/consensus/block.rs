@@ -193,6 +193,11 @@ impl Block {
         self.execution_block.sealed_block()
     }
 
+    /// Returns the wrapped execution block handle.
+    pub(crate) fn execution_block(&self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
+        self.execution_block.clone()
+    }
+
     /// Returns the block access list of the wrapped block.
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]

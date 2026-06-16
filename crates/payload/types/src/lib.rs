@@ -117,9 +117,9 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
-        let (block, block_access_list) = self.into_execution_payload();
+        let (block, block_access_list, _) = self.into_consensus_execution_payload();
         TempoExecutionData {
-            block: Arc::new(block),
+            block,
             block_access_list,
             validator_set: None,
         }
@@ -154,7 +154,7 @@ impl BuiltPayload for TempoBuiltPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoExecutionData {
     /// The built block.
-    pub block: Arc<SealedBlock<Block>>,
+    pub block: SealedOrRecoveredBlock<Block>,
     /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
@@ -224,7 +224,7 @@ impl PayloadTypes for TempoPayloadTypes {
 
     fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
-            block: Arc::new(block),
+            block: block.into(),
             block_access_list: bal,
             validator_set: None,
         }
