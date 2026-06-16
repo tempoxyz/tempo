@@ -24,6 +24,9 @@ pub struct TempoBatchCallEnv {
     /// Signature bytes for Tempo transactions
     pub signature: TempoSignature,
 
+    /// Optional key authorization for provisioning access keys
+    pub key_authorization: Option<SignedKeyAuthorization>,
+
     /// validBefore timestamp
     pub valid_before: Option<u64>,
 
@@ -42,11 +45,10 @@ pub struct TempoBatchCallEnv {
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
 
-    /// Whether the transaction is a subblock transaction.
-    pub subblock_transaction: bool,
-
-    /// Optional key authorization for provisioning access keys
-    pub key_authorization: Option<SignedKeyAuthorization>,
+    /// Perf optimization for expiring nonce transactions.
+    ///
+    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    pub expiring_nonce_idx: Option<usize>,
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
@@ -59,10 +61,8 @@ pub struct TempoBatchCallEnv {
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
 
-    /// Perf optimization for expiring nonce transactions.
-    ///
-    /// Stores how many other expiring nonce transactions are there in the block before this one.
-    pub expiring_nonce_idx: Option<usize>,
+    /// Whether the transaction is a subblock transaction.
+    pub subblock_transaction: bool,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
