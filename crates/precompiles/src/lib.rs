@@ -81,6 +81,7 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
 
 /// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
 /// or a fixed system precompile.
+#[inline]
 pub fn is_precompile_address(addr: Address, spec: TempoHardfork) -> bool {
     addr.is_tip20()
         || SYSTEM_PRECOMPILES
