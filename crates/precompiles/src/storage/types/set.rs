@@ -243,7 +243,13 @@ fn checked_position(index: usize) -> Result<u32> {
     u32::try_from(index)
         .ok()
         .and_then(|i| i.checked_add(1))
-        .ok_or_else(TempoPrecompileError::under_overflow)
+        .ok_or_else(set_position_overflow)
+}
+
+#[cold]
+#[inline(never)]
+fn set_position_overflow() -> TempoPrecompileError {
+    TempoPrecompileError::under_overflow()
 }
 
 impl<T> SetHandler<T>
