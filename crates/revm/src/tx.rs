@@ -72,11 +72,11 @@ pub struct TempoTxEnv {
     #[deref_mut]
     pub inner: TxEnv,
 
+    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
+    pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+
     /// Optional fee token preference specified for the transaction.
     pub fee_token: Option<Address>,
-
-    /// Whether the transaction is a system transaction.
-    pub is_system_tx: bool,
 
     /// Sender-scoped transaction identifier used for replay-sensitive features.
     ///
@@ -90,8 +90,8 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
-    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
-    pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+    /// Whether the transaction is a system transaction.
+    pub is_system_tx: bool,
 }
 
 impl TempoTxEnv {
