@@ -876,7 +876,7 @@ where
             // recording the EIP-7702 auth refund.
             gas.record_refund(eip7702_refund);
         } else {
-            post_execution::refund(spec.into(), gas, eip7702_refund);
+            post_execution::refund(&evm.ctx.cfg.gas_params, gas, eip7702_refund);
         }
     }
 
@@ -1590,17 +1590,13 @@ where
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
-        let mut effective_gas_price = tx.effective_gas_price(basefee);
-        let gas_used = gas.used().saturating_sub(gas.reservoir());
-        if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
-            // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
-            // component remains payable.
-            // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
-            effective_gas_price =
-                tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
-        }
+        let effective_gas_price = tx.effective_gas_price(basefee);
+        let gas = exec_result.gas();
 
-        let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
+        let actual_spending = calc_gas_balance_spending(
+            gas.used().saturating_sub(gas.reservoir()),
+            effective_gas_price,
+        );
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),

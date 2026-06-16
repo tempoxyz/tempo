@@ -10,10 +10,8 @@ use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
     interpreter::{
-        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
-        gas::GasTracker,
-        instruction_context::{GasStateOutcome, GasStateTr},
-        interpreter::EthInterpreter,
+        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad, gas::GasTracker,
+        instructions::host::sstore_with_gas_accounting, interpreter::EthInterpreter,
     },
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
@@ -150,19 +148,11 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     }
 }
 
-/// Tempo SSTORE gas-state policy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct TIP1060StorageCreditsState;
-
-impl<DB> GasStateTr<EthInterpreter, TempoContext<DB>> for TIP1060StorageCreditsState
-where
-    DB: Database,
-{
-    fn sstore_gas_state(
-        context: &mut InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
-        owner: Address,
-        values: &StateLoad<SStoreResult>,
-    ) -> Result<GasStateOutcome, InstructionResult> {
+/// Tempo SSTORE instruction with TIP-1060 storage-credit accounting.
+pub(crate) fn sstore<DB: Database>(
+    context: InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
+) -> Result<(), InstructionResult> {
+    sstore_with_gas_accounting(context, |context, owner, values| {
         let InstructionContext { interpreter, host } = context;
         sstore_storage_credits(
             &mut StorageCreditsContext {
@@ -172,6 +162,5 @@ where
             owner,
             values,
         )
-        .map(|_| GasStateOutcome::default())
-    }
+    })
 }

@@ -1,10 +1,10 @@
-use crate::{evm::TempoContext, tip1060::TIP1060StorageCreditsState};
+use crate::{evm::TempoContext, tip1060};
 use alloy_evm::Database;
 use revm::{
     handler::instructions::EthInstructions,
     interpreter::{
         Instruction, InstructionContext, InstructionResult,
-        instructions::{gas_table_spec, instruction_table_with_gas_state},
+        instructions::{gas_table_spec, instruction_table},
         interpreter::EthInterpreter,
         push,
     },
@@ -37,11 +37,11 @@ pub(crate) fn tempo_instructions<DB: Database>(
     // +T7: Enable TIP-1060 sstore hook
     let mut instructions = if spec.is_t7() {
         EthInstructions::new(
-            instruction_table_with_gas_state::<
-                TIP1060StorageCreditsState,
-                EthInterpreter,
-                TempoContext<DB>,
-            >(),
+            {
+                let mut table = instruction_table::<EthInterpreter, TempoContext<DB>>();
+                table[0x55] = Instruction::new(tip1060::sstore);
+                table
+            },
             gas_table_spec(evm_spec),
             evm_spec,
         )
