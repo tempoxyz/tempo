@@ -603,6 +603,8 @@ impl TipFeeManager {
     }
 
     /// Set total supply of LP tokens for a pool
+    #[cold]
+    #[inline(never)]
     fn set_total_supply(&mut self, pool_id: B256, total_supply: U256) -> Result<()> {
         self.total_supply[pool_id].write(total_supply)
     }
@@ -613,6 +615,8 @@ impl TipFeeManager {
     }
 
     /// Set user's LP token balance
+    #[cold]
+    #[inline(never)]
     fn set_liquidity_balances(
         &mut self,
         pool_id: B256,
