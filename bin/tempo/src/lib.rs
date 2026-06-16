@@ -632,6 +632,26 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_follow_certification_flag_is_noop() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--follow",
+            "--follow.experimental.certify",
+        ])
+        .unwrap();
+
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(!node_cmd.ext.is_following_uncertified());
+        assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
     fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
