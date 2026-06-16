@@ -153,51 +153,71 @@ impl Order {
     }
 
     /// Returns the order ID.
+    #[cold]
+    #[inline(never)]
     pub fn order_id(&self) -> u128 {
         self.order_id
     }
 
     /// Returns the maker address.
+    #[cold]
+    #[inline(never)]
     pub fn maker(&self) -> Address {
         self.maker
     }
 
     /// Returns the orderbook key.
+    #[cold]
+    #[inline(never)]
     pub fn book_key(&self) -> B256 {
         self.book_key
     }
 
     /// Returns whether this is a bid order.
+    #[cold]
+    #[inline(never)]
     pub fn is_bid(&self) -> bool {
         self.is_bid
     }
 
     /// Returns the original amount.
+    #[cold]
+    #[inline(never)]
     pub fn amount(&self) -> u128 {
         self.amount
     }
 
     /// Returns the remaining amount.
+    #[cold]
+    #[inline(never)]
     pub fn remaining(&self) -> u128 {
         self.remaining
     }
 
     /// Returns a mutable reference to the remaining amount.
+    #[cold]
+    #[inline(never)]
     fn remaining_mut(&mut self) -> &mut u128 {
         &mut self.remaining
     }
 
     /// Returns the tick price.
+    #[cold]
+    #[inline(never)]
     pub fn tick(&self) -> i16 {
         self.tick
     }
 
     /// Returns true if this is an ask order (selling base token).
+    #[cold]
+    #[inline(never)]
     pub fn is_ask(&self) -> bool {
         !self.is_bid
     }
 
     /// Returns true if this is a flip order.
+    #[cold]
+    #[inline(never)]
     pub fn is_flip(&self) -> bool {
         self.is_flip
     }
@@ -206,31 +226,43 @@ impl Order {
     ///
     /// For non-flip orders, this is always 0.
     /// For flip orders, this can be any valid tick value including 0 (peg price).
+    #[cold]
+    #[inline(never)]
     pub fn flip_tick(&self) -> i16 {
         self.flip_tick
     }
 
     /// Returns the previous order ID in the doubly linked list (0 if head).
+    #[cold]
+    #[inline(never)]
     pub fn prev(&self) -> u128 {
         self.prev
     }
 
     /// Returns the next order ID in the doubly linked list (0 if tail).
+    #[cold]
+    #[inline(never)]
     pub fn next(&self) -> u128 {
         self.next
     }
 
     /// Sets the previous order ID in the doubly linked list.
+    #[cold]
+    #[inline(never)]
     pub fn set_prev(&mut self, prev_id: u128) {
         self.prev = prev_id;
     }
 
     /// Sets the next order ID in the doubly linked list.
+    #[cold]
+    #[inline(never)]
     pub fn set_next(&mut self, next_id: u128) {
         self.next = next_id;
     }
 
     /// Returns true if the order is completely filled (no remaining amount).
+    #[cold]
+    #[inline(never)]
     pub fn is_fully_filled(&self) -> bool {
         self.remaining == 0
     }
