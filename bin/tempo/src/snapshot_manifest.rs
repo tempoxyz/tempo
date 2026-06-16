@@ -37,11 +37,12 @@ type TempoExecutionProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNod
 pub(crate) struct TempoConsensusManifest {
     pub(crate) execution_finalized_height: u64,
     pub(crate) execution_finalized_digest: B256,
-    pub(crate) consensus_finalized_height: u64,
-    pub(crate) consensus_finalized_digest: B256,
-    pub(crate) finalization_certificate: Bytes,
-    pub(crate) consensus_start_block_height: Option<u64>,
-    pub(crate) consensus_end_block_height: Option<u64>,
+    pub(crate) tip_finalization_height: u64,
+    pub(crate) tip_finalization_digest: B256,
+    pub(crate) tip_finalization_certificate: Bytes,
+    pub(crate) anchor_finalization_height: u64,
+    pub(crate) anchor_finalization_digest: B256,
+    pub(crate) anchor_finalization_certificate: Bytes,
     pub(crate) consensus_block_partitions: [String; 2],
     pub(crate) consensus_archive: SingleArchive,
 }
@@ -49,7 +50,7 @@ pub(crate) struct TempoConsensusManifest {
 #[derive(Debug, Parser)]
 #[command(
     name = "snapshot-manifest",
-    about = "Generate snapshot archives and a manifest for the EL plus consensus floor certificate."
+    about = "Generate snapshot archives and a manifest for the EL plus consensus tip and anchor certificates."
 )]
 pub(crate) struct Args {
     #[command(flatten)]
@@ -153,18 +154,29 @@ impl Args {
         )
         .wrap_err("failed to package consensus prunable storage")?;
 
-        let digest = consensus_state.latest_finalization.proposal.payload;
+        let tip_digest = consensus_state.tip_finalization.proposal.payload;
+        let anchor_digest = consensus_state.anchor_finalization.proposal.payload;
         let consensus_manifest = TempoConsensusManifest {
             execution_finalized_height: execution_finalized_num_hash.number,
             execution_finalized_digest: execution_finalized_num_hash.hash,
-            consensus_finalized_height: consensus_state.consensus_finalization_height,
-            consensus_finalized_digest: digest.0,
-            finalization_certificate: consensus_state.latest_finalization.encode().into(),
-            consensus_start_block_height: consensus_state.consensus_start_block_height,
-            consensus_end_block_height: consensus_state.consensus_end_block_height,
+            tip_finalization_height: consensus_state.tip_finalization_height,
+            tip_finalization_digest: tip_digest.0,
+            tip_finalization_certificate: consensus_state.tip_finalization.encode().into(),
+            anchor_finalization_height: consensus_state.anchor_finalization_height,
+            anchor_finalization_digest: anchor_digest.0,
+            anchor_finalization_certificate: consensus_state.anchor_finalization.encode().into(),
             consensus_block_partitions: consensus_state.consensus_blocks_partitions.clone(),
             consensus_archive,
         };
+
+        if consensus_manifest.anchor_finalization_height < execution_finalized_num_hash.number {
+            eprintln!(
+                "warning: consensus anchor finalization `{}` is below execution finalized `{}`; \
+                snapshot consumers may need to recover consensus state across the execution \
+                finalized boundary",
+                consensus_manifest.anchor_finalization_height, execution_finalized_num_hash.number,
+            );
+        }
 
         let manifest_height = manifest.block;
         ensure!(
@@ -191,8 +203,10 @@ impl Args {
             .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
 
         eprintln!(
-            "embedded finalization for height `{}`; execution finalized=`{}`; execution snapshot=`{manifest_height}`",
-            consensus_manifest.consensus_finalized_height, execution_finalized_num_hash.number,
+            "embedded consensus tip finalization `{}` and anchor finalization `{}`; execution finalized=`{}`; execution snapshot=`{manifest_height}`",
+            consensus_manifest.tip_finalization_height,
+            consensus_manifest.anchor_finalization_height,
+            execution_finalized_num_hash.number,
         );
         Ok(())
     }
@@ -225,13 +239,13 @@ fn resolve_chainspec(
 fn prepare_snapshot_consensus_archive(
     consensus_dir: &Path,
     execution_finalized_height: u64,
-) -> eyre::Result<tempo_consensus::State> {
+) -> eyre::Result<tempo_consensus::storage::snapshot::State> {
     let source_runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
     let source_runner = commonware_runtime::tokio::Runner::new(source_runtime_config);
     let state = source_runner.start(|context| async move {
-        tempo_consensus::prepare(&context, execution_finalized_height).await
+        tempo_consensus::storage::snapshot::prepare(&context, execution_finalized_height).await
     })?;
 
     Ok(state)
@@ -396,11 +410,12 @@ mod tests {
         let manifest = TempoConsensusManifest {
             execution_finalized_height: 40,
             execution_finalized_digest: B256::with_last_byte(0x28),
-            consensus_finalized_height: 42,
-            consensus_finalized_digest: B256::with_last_byte(0x2a),
-            finalization_certificate: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
-            consensus_start_block_height: Some(41),
-            consensus_end_block_height: Some(42),
+            tip_finalization_height: 42,
+            tip_finalization_digest: B256::with_last_byte(0x2a),
+            tip_finalization_certificate: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
+            anchor_finalization_height: 41,
+            anchor_finalization_digest: B256::with_last_byte(0x29),
+            anchor_finalization_certificate: Bytes::from(vec![0x03, 0x04, 0x05]),
             consensus_block_partitions: [
                 "engine-finalized-blocks-prunable-key".to_string(),
                 "engine-finalized-blocks-prunable-value".to_string(),
@@ -417,14 +432,18 @@ mod tests {
         let value = serde_json::to_value(manifest).unwrap();
 
         assert_eq!(value["execution_finalized_height"], 40);
-        assert_eq!(value["consensus_finalized_height"], 42);
+        assert_eq!(value["tip_finalization_height"], 42);
         assert_eq!(
-            value["consensus_finalized_digest"],
+            value["tip_finalization_digest"],
             "0x000000000000000000000000000000000000000000000000000000000000002a"
         );
-        assert_eq!(value["finalization_certificate"], "0x000102ff");
-        assert_eq!(value["consensus_start_block_height"], 41);
-        assert_eq!(value["consensus_end_block_height"], 42);
+        assert_eq!(value["tip_finalization_certificate"], "0x000102ff");
+        assert_eq!(value["anchor_finalization_height"], 41);
+        assert_eq!(
+            value["anchor_finalization_digest"],
+            "0x0000000000000000000000000000000000000000000000000000000000000029"
+        );
+        assert_eq!(value["anchor_finalization_certificate"], "0x030405");
         assert_eq!(
             value["consensus_block_partitions"][0],
             "engine-finalized-blocks-prunable-key"

@@ -401,8 +401,11 @@ fn write_bootstrap_finalization(
             .wrap_err_with(|| format!("failed to create dir: {}", parent.display()))?;
     }
 
-    fs::write(&path, consensus_manifest.finalization_certificate.as_ref())
-        .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
+    fs::write(
+        &path,
+        consensus_manifest.anchor_finalization_certificate.as_ref(),
+    )
+    .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
 
     info!(path = %path.display(), "persisted bootstrap finalization");
     Ok(())
@@ -462,11 +465,12 @@ mod tests {
             "consensus": {
                 "execution_finalized_height": 40,
                 "execution_finalized_digest": "0x0000000000000000000000000000000000000000000000000000000000000028",
-                "consensus_finalization_height": 42,
-                "consensus_finalization_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
-                "finalization_certificate": "0xaabbcc",
-                "consensus_start_block_height": 41,
-                "consensus_end_block_height": 42,
+                "tip_finalization_height": 42,
+                "tip_finalization_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
+                "tip_finalization_certificate": "0xaabbcc",
+                "anchor_finalization_height": 41,
+                "anchor_finalization_digest": "0x0000000000000000000000000000000000000000000000000000000000000029",
+                "anchor_finalization_certificate": "0xddeeff",
                 "consensus_block_partitions": [
                     "engine-finalized-blocks-prunable-key",
                     "engine-finalized-blocks-prunable-value"
@@ -485,14 +489,23 @@ mod tests {
             futures::executor::block_on(load_consensus_manifest(None, Some(path))).unwrap();
 
         assert_eq!(manifest.manifest.execution_finalized_height, 40);
-        assert_eq!(manifest.manifest.consensus_finalized_height, 42);
+        assert_eq!(manifest.manifest.tip_finalization_height, 42);
         assert_eq!(
-            manifest.manifest.consensus_finalized_digest,
+            manifest.manifest.tip_finalization_digest,
             B256::with_last_byte(0x2a)
         );
         assert_eq!(
-            manifest.manifest.finalization_certificate,
+            manifest.manifest.tip_finalization_certificate,
             Bytes::from(vec![0xaa, 0xbb, 0xcc])
+        );
+        assert_eq!(manifest.manifest.anchor_finalization_height, 41);
+        assert_eq!(
+            manifest.manifest.anchor_finalization_digest,
+            B256::with_last_byte(0x29)
+        );
+        assert_eq!(
+            manifest.manifest.anchor_finalization_certificate,
+            Bytes::from(vec![0xdd, 0xee, 0xff])
         );
         match manifest.archive_source {
             ConsensusArchiveSource::Path(archive_path) => {

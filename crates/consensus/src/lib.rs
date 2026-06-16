@@ -15,7 +15,7 @@ pub mod follow;
 pub mod metrics;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
-pub(crate) mod storage;
+pub mod storage;
 pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
@@ -40,7 +40,6 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PositiveDuration};
-pub use storage::{State, find_last_finalized_marker, prepare};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
