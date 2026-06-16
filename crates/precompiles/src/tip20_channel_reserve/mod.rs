@@ -603,21 +603,19 @@ impl TIP20ChannelReserve {
         let checkpoint = self.storage.checkpoint();
         self.channel_storage_credits[payer].write(current - 1)?;
 
-        let result =
+        let ((), spent) =
             TIP1060StorageCredits::new().with_storage_credits_budget(self.address, 1, || {
                 self.channel_states[channel_id].write(state)
-            });
+            })?;
 
-        match result {
-            Ok(((), 1)) => {
-                checkpoint.commit();
-                Ok(())
-            }
-            Ok(((), spent)) => Err(TempoPrecompileError::Fatal(format!(
+        if spent != 1 {
+            return Err(TempoPrecompileError::Fatal(format!(
                 "channel storage credit spend mismatch: reserved 1, spent {spent}"
-            ))),
-            Err(err) => Err(err),
+            )));
         }
+
+        checkpoint.commit();
+        Ok(())
     }
 
     /// Returns the current block timestamp as `u64`.
