@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt::Display, ops::Deref};
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, Bytes, U256, keccak256},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -15,7 +15,7 @@ use alloy::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::TxSignerSync;
 use reth_primitives_traits::transaction::TxHashRef;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tempo_chainspec::{
     constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE,
 };
@@ -325,20 +325,6 @@ pub(crate) fn print_gas_snapshot(title: &str, gas: &GasSnapshot) {
     gas.print(title);
 }
 
-pub(crate) fn mainnet_prestate_genesis(
-    hardfork: TempoHardfork,
-    chain_id: u64,
-    timestamp: u64,
-    prestate_json: &str,
-) -> eyre::Result<String> {
-    Ok(serde_json::to_string(&mainnet_prestate_genesis_value(
-        hardfork,
-        chain_id,
-        timestamp,
-        prestate_json,
-    )?)?)
-}
-
 pub(crate) fn mainnet_prestate_genesis_value(
     hardfork: TempoHardfork,
     chain_id: u64,
@@ -361,6 +347,88 @@ pub(crate) fn mainnet_prestate_genesis_value(
     }
 
     Ok(genesis)
+}
+
+pub(crate) fn upsert_storage(
+    alloc: &mut Map<String, Value>,
+    address: Address,
+    slot: B256,
+    value: U256,
+) -> eyre::Result<()> {
+    let account = alloc
+        .entry(address_key(address))
+        .or_insert_with(|| json!({ "balance": "0x0", "storage": {} }));
+    let account = account
+        .as_object_mut()
+        .ok_or_else(|| eyre::eyre!("alloc account must be object"))?;
+    let storage = account
+        .entry("storage")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| eyre::eyre!("alloc account storage must be object"))?;
+    storage.insert(slot_key(slot), word_value(value));
+    Ok(())
+}
+
+pub(crate) fn upsert_balance(
+    alloc: &mut Map<String, Value>,
+    address: Address,
+    balance: &str,
+) -> eyre::Result<()> {
+    let account = alloc
+        .entry(address_key(address))
+        .or_insert_with(|| json!({ "balance": "0x0" }));
+    let account = account
+        .as_object_mut()
+        .ok_or_else(|| eyre::eyre!("alloc account must be object"))?;
+    account.insert("balance".to_string(), Value::String(balance.to_string()));
+    Ok(())
+}
+
+pub(crate) fn tip20_balance_slot(owner: Address) -> B256 {
+    mapping_slot_address(owner, B256::from(U256::from(9)))
+}
+
+pub(crate) fn tip20_allowance_slot(owner: Address, spender: Address) -> B256 {
+    mapping_slot_address(
+        spender,
+        mapping_slot_address(owner, B256::from(U256::from(10))),
+    )
+}
+
+pub(crate) fn mapping_slot_bytes32(key: B256, slot: B256) -> B256 {
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(key.as_slice());
+    buf[32..].copy_from_slice(slot.as_slice());
+    keccak256(buf)
+}
+
+pub(crate) fn mapping_slot_address(key: Address, slot: B256) -> B256 {
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(key.as_slice());
+    buf[32..].copy_from_slice(slot.as_slice());
+    keccak256(buf)
+}
+
+pub(crate) fn b256_from_hex(value: &str) -> eyre::Result<B256> {
+    let bytes = alloy::hex::decode(value.trim_start_matches("0x"))?;
+    eyre::ensure!(bytes.len() == 32, "expected 32-byte hex value");
+    Ok(B256::from_slice(&bytes))
+}
+
+pub(crate) fn address_key(address: Address) -> String {
+    address.to_string().to_ascii_lowercase()
+}
+
+pub(crate) fn slot_key(slot: B256) -> String {
+    format!("0x{}", alloy::hex::encode(slot.as_slice()))
+}
+
+pub(crate) fn word_value(value: U256) -> Value {
+    Value::String(format!(
+        "0x{}",
+        alloy::hex::encode(value.to_be_bytes::<32>())
+    ))
 }
 
 fn genesis_account(account: &Value) -> eyre::Result<Value> {

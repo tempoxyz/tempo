@@ -1,0 +1,13 @@
+---
+source: crates/node/tests/it/gas/tip1060_layerzero_bridge.rs
+expression: gas
+---
+layerzero_bridge: 674431
+layerzero_bridge_bridge_token_approve: 6974
+layerzero_bridge_endpoint_send: 252002
+layerzero_bridge_layerzero_send: 266943
+layerzero_bridge_messaging_channel_send: 205016
+layerzero_bridge_pathusd_approve: 6974
+layerzero_bridge_stargate_send: 607991
+layerzero_bridge_wrapper_approve: 7597
+layerzero_bridge_wrapper_wrap: 40895

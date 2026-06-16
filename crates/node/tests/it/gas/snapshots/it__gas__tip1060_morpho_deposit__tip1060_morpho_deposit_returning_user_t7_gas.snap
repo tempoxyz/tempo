@@ -1,0 +1,9 @@
+---
+source: crates/node/tests/it/gas/tip1060_morpho_deposit.rs
+expression: gas
+---
+morpho_deposit: 642797
+morpho_deposit_morpho_supply: 69202
+morpho_deposit_nested_vault_deposit: 194538
+morpho_deposit_pathusd_approve: 6974
+morpho_deposit_primary_vault_deposit: 635931

@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = []
+solc_version = "0.8.30"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+
+[fmt]
+line_length = 100
+sort_imports = true
+bracket_spacing = true
+number_underscore = "thousands"

@@ -9,8 +9,10 @@ use serde_json::{Map, Value, json};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use super::helpers::{
-    GasSnapshot, ensure_call_trace_succeeded, find_call_gas_used, hex_u64,
-    mainnet_prestate_genesis_value, print_gas_snapshot,
+    GasSnapshot, address_key, b256_from_hex, ensure_call_trace_succeeded, find_call_gas_used,
+    hex_u64, mainnet_prestate_genesis_value, mapping_slot_address, mapping_slot_bytes32,
+    print_gas_snapshot, slot_key, tip20_allowance_slot, tip20_balance_slot, upsert_balance,
+    upsert_storage, word_value,
 };
 use crate::utils::TestNodeBuilder;
 
@@ -41,12 +43,38 @@ const IS_AUTHORIZED_SELECTOR: &str = "0x55a1179e";
 const UNWRAP_SELECTOR: &str = "0x39f47693";
 const WRAP_SELECTOR: &str = "0x62355638";
 
+#[derive(Clone, Copy)]
+enum UserState {
+    New,
+    Returning,
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1060_minimal_direct_swap_t7_gas_snapshot() -> eyre::Result<()> {
+    test_tip1060_minimal_direct_swap_gas_snapshot(
+        UserState::New,
+        "tip1060_minimal_direct_swap_t7_gas",
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_minimal_direct_swap_returning_user_t7_gas_snapshot() -> eyre::Result<()> {
+    test_tip1060_minimal_direct_swap_gas_snapshot(
+        UserState::Returning,
+        "tip1060_minimal_direct_swap_returning_user_t7_gas",
+    )
+    .await
+}
+
+async fn test_tip1060_minimal_direct_swap_gas_snapshot(
+    user_state: UserState,
+    snapshot_name: &'static str,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .with_genesis(mainnet_replay_genesis()?)
+        .with_genesis(mainnet_replay_genesis(user_state)?)
         .build_http_only()
         .await?;
     let provider = ProviderBuilder::new().connect_http(setup.http_url);
@@ -106,14 +134,22 @@ async fn test_tip1060_minimal_direct_swap_t7_gas_snapshot() -> eyre::Result<()> 
         find_call_gas_used(&trace, TOKEN_AUTHORITY_ADDRESS, WRAP_SELECTOR)?,
     );
 
-    print_gas_snapshot("TIP-1060 minimal direct swap gas snapshot (T7)", &gas);
+    print_gas_snapshot(
+        match user_state {
+            UserState::New => "TIP-1060 minimal direct swap gas snapshot (T7, new user)",
+            UserState::Returning => {
+                "TIP-1060 minimal direct swap gas snapshot (T7, returning user)"
+            }
+        },
+        &gas,
+    );
 
-    insta::assert_yaml_snapshot!("tip1060_minimal_direct_swap_t7_gas", gas);
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }
 
-fn mainnet_replay_genesis() -> eyre::Result<String> {
+fn mainnet_replay_genesis(user_state: UserState) -> eyre::Result<String> {
     let mut genesis = mainnet_prestate_genesis_value(
         TempoHardfork::T7,
         MAINNET_CHAIN_ID,
@@ -124,6 +160,7 @@ fn mainnet_replay_genesis() -> eyre::Result<String> {
         .as_object_mut()
         .ok_or_else(|| eyre::eyre!("test genesis missing alloc"))?;
     install_minimal_direct_swap(alloc)?;
+    apply_user_state(alloc, user_state)?;
 
     Ok(serde_json::to_string(&genesis)?)
 }
@@ -140,11 +177,11 @@ fn install_minimal_direct_swap(alloc: &mut Map<String, Value>) -> eyre::Result<(
     let role_member_slot = mapping_slot_address(MINIMAL_DIRECT_SWAP_ADDRESS, role_data_slot);
 
     let pathusd_user_allowance_slot =
-        allowance_slot(SMART_ACCOUNT_ADDRESS, MINIMAL_DIRECT_SWAP_ADDRESS);
+        tip20_allowance_slot(SMART_ACCOUNT_ADDRESS, MINIMAL_DIRECT_SWAP_ADDRESS);
     let pathusd_authority_allowance_slot =
-        allowance_slot(MINIMAL_DIRECT_SWAP_ADDRESS, TOKEN_AUTHORITY_ADDRESS);
+        tip20_allowance_slot(MINIMAL_DIRECT_SWAP_ADDRESS, TOKEN_AUTHORITY_ADDRESS);
     let reserve_authority_allowance_slot =
-        allowance_slot(MINIMAL_DIRECT_SWAP_ADDRESS, TOKEN_AUTHORITY_ADDRESS);
+        tip20_allowance_slot(MINIMAL_DIRECT_SWAP_ADDRESS, TOKEN_AUTHORITY_ADDRESS);
 
     let mut minimal_storage = Map::new();
     minimal_storage.insert(slot_key(route_supported_slot), word_value(U256::ONE));
@@ -185,77 +222,20 @@ fn install_minimal_direct_swap(alloc: &mut Map<String, Value>) -> eyre::Result<(
     Ok(())
 }
 
-fn upsert_storage(
-    alloc: &mut Map<String, Value>,
-    address: Address,
-    slot: B256,
-    value: U256,
-) -> eyre::Result<()> {
-    let account = alloc
-        .entry(address_key(address))
-        .or_insert_with(|| json!({ "balance": "0x0", "storage": {} }));
-    let account = account
-        .as_object_mut()
-        .ok_or_else(|| eyre::eyre!("alloc account must be object"))?;
-    let storage = account
-        .entry("storage")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| eyre::eyre!("alloc account storage must be object"))?;
-    storage.insert(slot_key(slot), word_value(value));
+fn apply_user_state(alloc: &mut Map<String, Value>, user_state: UserState) -> eyre::Result<()> {
+    let returning_value = match user_state {
+        UserState::New => U256::ZERO,
+        UserState::Returning => U256::ONE,
+    };
+
+    for (token, owner) in [
+        (PATHUSD_ADDRESS, MINIMAL_DIRECT_SWAP_ADDRESS),
+        (PATHUSD_ADDRESS, TOKEN_AUTHORITY_ADDRESS),
+        (RESERVE_LEDGER_ADDRESS, MINIMAL_DIRECT_SWAP_ADDRESS),
+        (DLUSD_ADDRESS, SMART_ACCOUNT_ADDRESS),
+    ] {
+        upsert_storage(alloc, token, tip20_balance_slot(owner), returning_value)?;
+    }
+
     Ok(())
-}
-
-fn upsert_balance(
-    alloc: &mut Map<String, Value>,
-    address: Address,
-    balance: &str,
-) -> eyre::Result<()> {
-    let account = alloc
-        .entry(address_key(address))
-        .or_insert_with(|| json!({ "balance": "0x0" }));
-    let account = account
-        .as_object_mut()
-        .ok_or_else(|| eyre::eyre!("alloc account must be object"))?;
-    account.insert("balance".to_string(), Value::String(balance.to_string()));
-    Ok(())
-}
-
-fn allowance_slot(owner: Address, spender: Address) -> B256 {
-    mapping_slot_address(
-        spender,
-        mapping_slot_address(owner, B256::from(U256::from(10))),
-    )
-}
-
-fn mapping_slot_bytes32(key: B256, slot: B256) -> B256 {
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(key.as_slice());
-    buf[32..].copy_from_slice(slot.as_slice());
-    keccak256(buf)
-}
-
-fn mapping_slot_address(key: Address, slot: B256) -> B256 {
-    let mut buf = [0u8; 64];
-    buf[12..32].copy_from_slice(key.as_slice());
-    buf[32..].copy_from_slice(slot.as_slice());
-    keccak256(buf)
-}
-
-fn b256_from_hex(value: &str) -> eyre::Result<B256> {
-    let bytes = hex::decode(value.trim_start_matches("0x"))?;
-    eyre::ensure!(bytes.len() == 32, "expected 32-byte hex value");
-    Ok(B256::from_slice(&bytes))
-}
-
-fn address_key(address: Address) -> String {
-    address.to_string().to_ascii_lowercase()
-}
-
-fn slot_key(slot: B256) -> String {
-    format!("0x{}", hex::encode(slot.as_slice()))
-}
-
-fn word_value(value: U256) -> Value {
-    Value::String(format!("0x{}", hex::encode(value.to_be_bytes::<32>())))
 }

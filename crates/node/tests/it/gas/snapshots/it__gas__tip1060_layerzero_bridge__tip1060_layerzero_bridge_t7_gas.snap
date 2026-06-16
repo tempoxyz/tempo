@@ -2,12 +2,12 @@
 source: crates/node/tests/it/gas/tip1060_layerzero_bridge.rs
 expression: gas
 ---
-layerzero_bridge: 1370731
+layerzero_bridge: 2325331
 layerzero_bridge_bridge_token_approve: 254174
-layerzero_bridge_endpoint_send: 252002
-layerzero_bridge_layerzero_send: 266943
+layerzero_bridge_endpoint_send: 499202
+layerzero_bridge_layerzero_send: 514143
 layerzero_bridge_messaging_channel_send: 205016
 layerzero_bridge_pathusd_approve: 254174
-layerzero_bridge_stargate_send: 607991
+layerzero_bridge_stargate_send: 1102391
 layerzero_bridge_wrapper_approve: 254797
-layerzero_bridge_wrapper_wrap: 40895
+layerzero_bridge_wrapper_wrap: 535295
