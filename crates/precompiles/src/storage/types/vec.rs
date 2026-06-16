@@ -233,14 +233,16 @@ where
     }
 
     /// Returns the length of the vector.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn len(&self) -> Result<usize> {
         let slot = Slot::<U256>::new(self.len_slot, self.address);
         load_checked_len(&slot, self.len_slot)
     }
 
     /// Returns whether the vector is empty.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
@@ -269,6 +271,8 @@ where
     /// - If the SLOAD to read the length fails, returns an error.
     /// - If the index is OOB, returns `Ok(None)`.
     /// - Otherwise, returns `Ok(Some(&T::Handler))`.
+    #[cold]
+    #[inline(never)]
     pub fn at(&self, index: usize) -> Result<Option<&T::Handler>> {
         if index >= self.len()? {
             return Ok(None);
