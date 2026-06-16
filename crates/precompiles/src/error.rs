@@ -140,6 +140,8 @@ pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
     /// Returns this error's ABI selector. For those variants which can't be encoded as a selector, it returns `FixedBytes<4>::ZERO`.
+    #[cold]
+    #[inline(never)]
     pub fn selector(&self) -> FixedBytes<4> {
         match self {
             Self::StablecoinDEX(e) => e.selector(),
