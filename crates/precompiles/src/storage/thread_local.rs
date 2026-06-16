@@ -118,6 +118,8 @@ impl StorageCtx {
     }
 
     /// Returns the chain ID.
+    #[cold]
+    #[inline(never)]
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
     }
@@ -128,11 +130,15 @@ impl StorageCtx {
     }
 
     /// Returns the current block beneficiary (coinbase).
+    #[cold]
+    #[inline(never)]
     pub fn beneficiary(&self) -> Address {
         Self::with_storage(|s| s.beneficiary())
     }
 
     /// Returns the current block number.
+    #[cold]
+    #[inline(never)]
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
     }
