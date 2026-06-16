@@ -77,6 +77,10 @@ use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(all(not(target_env = "msvc"), unix))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: &[u8] = b"narenas:1,dirty_decay_ms:-1,muzzy_decay_ms:-1\0";
+
 const CHAIN_ID: u64 = 1337;
 const TXGEN_MNEMONIC: &str = "test test test test test test test test test test test junk";
 const DEFAULT_ACCOUNT_COUNT: usize = 1_024;
