@@ -141,6 +141,7 @@ pub struct PolicyData {
 
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
+    #[inline]
     fn policy_type(&self) -> Result<PolicyType> {
         let is_t2 = StorageCtx.spec().is_t2();
 
@@ -155,23 +156,27 @@ impl PolicyData {
     }
 
     /// Returns `true` if the policy type is a simple policy (WHITELIST or BLACKLIST).
+    #[inline]
     fn is_simple(&self) -> bool {
         self.policy_type == PolicyType::WHITELIST as u8
             || self.policy_type == PolicyType::BLACKLIST as u8
     }
 
     /// Returns `true` if the policy data indicates a compound policy
+    #[inline]
     pub fn is_compound(&self) -> bool {
         self.policy_type == PolicyType::COMPOUND as u8
     }
 
     /// Returns `true` if the policy data is the default (uninitialized) value.
+    #[inline]
     fn is_default(&self) -> bool {
         self.policy_type == 0 && self.admin == Address::ZERO
     }
 }
 
 impl ReceivePolicyConfig {
+    #[inline]
     fn sender_policy_data(&self) -> PolicyData {
         PolicyData {
             policy_type: self.sender_policy_type,
@@ -179,6 +184,7 @@ impl ReceivePolicyConfig {
         }
     }
 
+    #[inline]
     fn token_filter_data(&self) -> PolicyData {
         PolicyData {
             policy_type: self.token_filter_type,
@@ -186,12 +192,14 @@ impl ReceivePolicyConfig {
         }
     }
 
+    #[inline]
     fn sender_policy_type(&self) -> Result<PolicyType> {
         self.sender_policy_type
             .try_into()
             .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
     }
 
+    #[inline]
     fn token_filter_type(&self) -> Result<PolicyType> {
         self.token_filter_type
             .try_into()
@@ -312,6 +320,7 @@ impl TIP403Registry {
 
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
     /// reason, or `None` if authorized.
+    #[inline]
     pub fn validate_receive_policy(
         &self,
         token: Address,
@@ -325,6 +334,7 @@ impl TIP403Registry {
 
     /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
     /// blocking reason and recovery address.
+    #[inline]
     pub(crate) fn check_receive_policy(
         &self,
         token: Address,
@@ -359,6 +369,7 @@ impl TIP403Registry {
 
     /// Returns the recovery authority encoded by `mode` for `account`.
     /// Originator and receiver modes return sentinel addresses; third-party mode reads storage.
+    #[inline]
     fn receive_policy_recovery(&self, account: Address, mode: RecoveryMode) -> Result<Address> {
         match mode {
             RecoveryMode::Originator => Ok(RECOVERY_ORIGINATOR),
@@ -769,6 +780,7 @@ impl TIP403Registry {
     /// Authorization for simple (non-compound) policies only.
     ///
     /// **WARNING:** skips compound check - caller must guarantee policy is simple.
+    #[inline]
     fn is_authorized_simple(
         &self,
         policy_id: u64,
@@ -786,6 +798,7 @@ impl TIP403Registry {
     }
 
     /// Authorization check for simple (non-compound) policies.
+    #[inline]
     fn is_authorized_simple_inner(
         &self,
         policy_id: u64,
