@@ -844,7 +844,9 @@ where
         init_and_floor_gas: InitialAndFloorGas,
         eip7702_gas_refund: i64,
     ) -> Result<ResultGas, Self::Error> {
-        tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        if exec_result.instruction_result().is_ok() {
+            tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        }
         self.refund(evm, exec_result, eip7702_gas_refund);
 
         let result_gas = post_execution::build_result_gas(
@@ -876,7 +878,7 @@ where
             // recording the EIP-7702 auth refund.
             gas.record_refund(eip7702_refund);
         } else {
-            post_execution::refund(&evm.ctx.cfg.gas_params, gas, eip7702_refund);
+            post_execution::refund(spec.into(), gas, eip7702_refund);
         }
     }
 
