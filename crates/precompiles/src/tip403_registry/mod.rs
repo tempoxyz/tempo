@@ -929,6 +929,8 @@ impl PolicyTypeExt for PolicyType {
     ///
     /// Pre-T2: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
     /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
+    #[cold]
+    #[inline(never)]
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
             Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
