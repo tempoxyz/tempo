@@ -10,6 +10,7 @@ use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
+use tracing::info;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
@@ -52,7 +53,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
 
     runner.block_on(async move {
-        eprintln!("running execution layer download...");
+        info!("running execution layer download...");
 
         let start = Instant::now();
         args.inner
@@ -60,13 +61,13 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             .await
             .wrap_err("execution layer download failed")?;
 
-        eprintln!(
+        info!(
             "execution layer download finished in {}",
             display_duration(start.elapsed())
         );
 
         if args.skip_consensus {
-            eprintln!("--skip-consensus set. skipping consensus layer");
+            info!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
@@ -131,7 +132,7 @@ fn write_bootstrap_finalization(
     fs::write(&path, consensus_manifest.finalization.as_ref())
         .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
 
-    eprintln!("persisted bootstrap finalization: {}", path.display());
+    info!(path = %path.display(), "persisted bootstrap finalization");
     Ok(())
 }
 
