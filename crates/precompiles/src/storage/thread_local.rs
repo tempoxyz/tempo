@@ -253,6 +253,8 @@ impl StorageCtx {
     /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    #[cold]
+    #[inline(never)]
     pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
