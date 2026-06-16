@@ -1,7 +1,7 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::Address;
-use alloy_sol_types::{SolCall, SolType};
+use alloy_sol_types::SolCall;
 
 /// Decimal precision for all TIP-20 tokens.
 pub const DECIMALS: u8 = 6;
@@ -205,23 +205,32 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
-                return false;
-            };
+        let Some(selector) = input.first_chunk::<4>() else {
+            return false;
+        };
 
-            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
+        match input.len() {
+            // burn(uint256)
+            36 => selector == &ITIP20::burnCall::SELECTOR,
+            // transfer(address,uint256), approve(address,uint256), mint(address,uint256),
+            // burnWithMemo(uint256,bytes32)
+            68 => {
+                selector == &ITIP20::transferCall::SELECTOR
+                    || selector == &ITIP20::approveCall::SELECTOR
+                    || selector == &ITIP20::mintCall::SELECTOR
+                    || selector == &ITIP20::burnWithMemoCall::SELECTOR
+            }
+            // transferWithMemo(address,uint256,bytes32), transferFrom(address,address,uint256),
+            // mintWithMemo(address,uint256,bytes32)
+            100 => {
+                selector == &ITIP20::transferWithMemoCall::SELECTOR
+                    || selector == &ITIP20::transferFromCall::SELECTOR
+                    || selector == &ITIP20::mintWithMemoCall::SELECTOR
+            }
+            // transferFromWithMemo(address,address,uint256,bytes32)
+            132 => selector == &ITIP20::transferFromWithMemoCall::SELECTOR,
+            _ => false,
         }
-
-        is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::approveCall>(input)
-            || is_call::<ITIP20::mintCall>(input)
-            || is_call::<ITIP20::mintWithMemoCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
     }
 
     /// Returns addresses whose balance slots are accessed by this call.
