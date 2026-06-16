@@ -55,14 +55,14 @@ fn get_env(key: &str) -> eyre::Result<String> {
 /// the actual implementation lives in `tempo_ext::run()`. We capture all
 /// trailing arguments and re-dispatch.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ExtArgs {
+pub struct ExtArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
     args: Vec<String>,
 }
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
-pub(crate) enum TempoSubcommand {
+pub enum TempoSubcommand {
     /// Consensus-related commands.
     #[command(subcommand)]
     Consensus(ConsensusSubcommand),
@@ -139,7 +139,7 @@ impl ExtendedCommand for TempoSubcommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum ConsensusSubcommand {
+pub enum ConsensusSubcommand {
     /// Add a new validator to the validator config contract.
     AddValidator(AddValidator),
     /// Shows the verification key for an ed25519 signing key.
@@ -260,7 +260,7 @@ async fn read_validator_from_contract(
 
 /// Shared validator identity arguments used across add/rotate/sign commands.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorIdentityArgs {
+pub struct ValidatorIdentityArgs {
     /// The validator's Ethereum address
     #[arg(long, value_name = "ETHEREUM_ADDRESS")]
     validator_address: Address,
@@ -293,7 +293,7 @@ impl ValidatorIdentityArgs {
 /// Either a pre-computed signature or a signing key to compute it from.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false, args = ["signature", "signing_key"])]
-pub(crate) struct ValidatorSignatureArgs {
+pub struct ValidatorSignatureArgs {
     /// A pre-computed ed25519 signature over the validator identity.
     #[arg(long, value_name = "SIGNATURE")]
     signature: Option<Bytes>,
@@ -323,7 +323,7 @@ impl ValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SigningKeyArgs {
+pub struct SigningKeyArgs {
     /// Passphrase source for decrypting `--signing-key`.
     ///
     /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
@@ -350,7 +350,7 @@ impl SigningKeyArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct WalletArgs {
+pub struct WalletArgs {
     /// Path to the file holding the validator's Ethereum private key.
     #[arg(long, value_name = "FILE", help_heading = "Wallet options - raw")]
     wallet_key: Option<PathBuf>,
@@ -435,7 +435,7 @@ impl WalletArgs {
 
 /// Shared arguments for commands that update the validator config contract.
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorTransactionArgs {
+pub struct ValidatorTransactionArgs {
     #[command(flatten)]
     wallet: WalletArgs,
 
@@ -517,7 +517,7 @@ impl ValidatorTransactionArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct AddValidator {
+pub struct AddValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
@@ -565,7 +565,7 @@ impl AddValidator {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct TransferValidatorOwnership {
+pub struct TransferValidatorOwnership {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -603,7 +603,7 @@ impl TransferValidatorOwnership {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct RotateValidator {
+pub struct RotateValidator {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     #[command(flatten)]
@@ -649,7 +649,7 @@ impl RotateValidator {
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, args = ["signing_key"])]
-pub(crate) struct CreateAddValidatorSignatureArgs {
+pub struct CreateAddValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// The fee recipient address
@@ -693,7 +693,7 @@ impl CreateAddValidatorSignatureArgs {
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, args = ["signing_key"])]
-pub(crate) struct CreateRotateValidatorSignatureArgs {
+pub struct CreateRotateValidatorSignatureArgs {
     #[command(flatten)]
     identity: ValidatorIdentityArgs,
     /// RPC used to fetch the chain id
@@ -733,7 +733,7 @@ impl CreateRotateValidatorSignatureArgs {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SetValidatorIpAddress {
+pub struct SetValidatorIpAddress {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -770,7 +770,7 @@ impl SetValidatorIpAddress {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct DeactivateValidator {
+pub struct DeactivateValidator {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -795,7 +795,7 @@ impl DeactivateValidator {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct SetValidatorFeeRecipient {
+pub struct SetValidatorFeeRecipient {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -823,7 +823,7 @@ impl SetValidatorFeeRecipient {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct GenerateSigningKey {
+pub struct GenerateSigningKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
@@ -940,7 +940,7 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct EncryptSigningKey {
+pub struct EncryptSigningKey {
     /// Existing plaintext ed25519 signing key file.
     #[arg(long, short, value_name = "FILE")]
     input: PathBuf,
@@ -1005,7 +1005,7 @@ impl EncryptSigningKey {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct ShowVerificationKey {
+pub struct ShowVerificationKey {
     /// Signing key to show the verification key for.
     #[arg(long, short, value_name = "FILE")]
     private_key: PathBuf,
@@ -1033,7 +1033,7 @@ impl ShowVerificationKey {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct ValidatorInfo {
+pub struct ValidatorInfo {
     /// Validator ethereum address, ed25519 public key, or index
     #[arg()]
     id: ValidatorId,
@@ -1200,7 +1200,7 @@ struct InfoOutput {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct Info {
+pub struct Info {
     /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
