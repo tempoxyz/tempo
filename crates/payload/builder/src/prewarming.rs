@@ -14,6 +14,7 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -196,6 +197,7 @@ impl BestTransactionsPrewarming {
                     &tx,
                     prewarm.evm_env.block_env.beneficiary,
                     expiring_nonce_offset,
+                    prewarm.evm_env.cfg_env.spec,
                 );
 
                 for touch in &touches {
@@ -446,6 +448,7 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
     expiring_nonce_offset: Option<usize>,
+    spec: TempoHardfork,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
@@ -457,12 +460,12 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    add_tip20_fee_touches(&mut touches, fee_token, fee_payer, spec);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+            add_tip20_call_touches(&mut touches, sender, kind, input, spec);
         }
     }
 
@@ -471,12 +474,17 @@ fn storage_touches_for_transaction(
     touches
 }
 
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
+fn add_tip20_fee_touches(
+    touches: &mut Vec<StorageTouch>,
+    fee_token: Address,
+    fee_payer: Address,
+    spec: TempoHardfork,
+) {
     if !fee_token.is_tip20() {
         return;
     }
 
-    add_tip20_common_touches(touches, fee_token);
+    add_tip20_common_touches(touches, fee_token, spec);
     add_tip20_balance_touch(touches, fee_token, fee_payer);
     add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
     add_tip20_reward_touches(touches, fee_token, fee_payer);
@@ -487,6 +495,7 @@ fn add_tip20_call_touches(
     sender: Address,
     kind: TxKind,
     input: &[u8],
+    spec: TempoHardfork,
 ) {
     let Some(token) = kind.to().copied() else {
         return;
@@ -495,7 +504,7 @@ fn add_tip20_call_touches(
         return;
     }
 
-    add_tip20_common_touches(touches, token);
+    add_tip20_common_touches(touches, token, spec);
     let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
         return;
     };
@@ -546,13 +555,19 @@ fn add_tip20_call_touches(
     }
 }
 
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
+fn add_tip20_common_touches(
+    touches: &mut Vec<StorageTouch>,
+    token: Address,
+    spec: TempoHardfork,
+) {
     add_account_touch(touches, token);
     add_storage_touch(touches, token, tip20_slots::CURRENCY);
     add_storage_touch(touches, token, tip20_slots::PAUSED);
     add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
+    if !spec.is_t8() {
+        add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
+        add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
+    }
 }
 
 fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
@@ -893,7 +908,7 @@ mod tests {
         let token = DEFAULT_FEE_TOKEN;
         let mut touches = Vec::new();
 
-        add_tip20_fee_touches(&mut touches, token, sender);
+        add_tip20_fee_touches(&mut touches, token, sender, TempoHardfork::T7);
         add_tip20_call_touches(
             &mut touches,
             sender,
@@ -903,6 +918,7 @@ mod tests {
                 amount: U256::from(1),
             }
             .abi_encode(),
+            TempoHardfork::T7,
         );
 
         for (index, touch) in touches.iter().enumerate() {
@@ -920,6 +936,65 @@ mod tests {
         assert!(touches.contains(&StorageTouch::Storage {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
+        }));
+    }
+
+    #[test]
+    fn tip20_touch_collection_skips_reward_globals_on_t8() {
+        let sender = Address::random();
+        let recipient = Address::random();
+        let token = DEFAULT_FEE_TOKEN;
+        let input = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(1),
+        }
+        .abi_encode();
+
+        let mut t7_touches = Vec::new();
+        add_tip20_call_touches(
+            &mut t7_touches,
+            sender,
+            TxKind::Call(token),
+            &input,
+            TempoHardfork::T7,
+        );
+
+        let mut t8_touches = Vec::new();
+        add_tip20_call_touches(
+            &mut t8_touches,
+            sender,
+            TxKind::Call(token),
+            &input,
+            TempoHardfork::T8,
+        );
+
+        assert!(t7_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+        }));
+        assert!(t7_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: tip20_slots::OPTED_IN_SUPPLY,
+        }));
+        assert!(!t8_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+        }));
+        assert!(!t8_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: tip20_slots::OPTED_IN_SUPPLY,
+        }));
+        assert!(t8_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: tip20_slots::TRANSFER_POLICY_ID,
+        }));
+        assert!(t8_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: sender.mapping_slot(tip20_slots::USER_REWARD_INFO),
+        }));
+        assert!(t8_touches.contains(&StorageTouch::Storage {
+            address: token,
+            slot: recipient.mapping_slot(tip20_slots::USER_REWARD_INFO),
         }));
     }
 
