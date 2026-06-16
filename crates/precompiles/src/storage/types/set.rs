@@ -403,6 +403,8 @@ where
     /// Reads all elements from storage as a `Set<T>`.
     ///
     /// The returned `Set` preserves storage order: `set[i] == handler.at(i)`.
+    #[cold]
+    #[inline(never)]
     fn read(&self) -> Result<Set<T>> {
         let len = self.len()?;
         let mut vec = Vec::new();
@@ -417,6 +419,8 @@ where
     /// Replaces the entire set with new contents.
     ///
     /// The input Set is deduplicated by the `From<Vec<T>>` conversion.
+    #[cold]
+    #[inline(never)]
     fn write(&mut self, value: Set<T>) -> Result<()> {
         let old_len = self.values.len()?;
         let new_len = value.0.len();
@@ -449,6 +453,8 @@ where
     /// Deletes all elements from the set.
     ///
     /// Clears both the values array and all position entries.
+    #[cold]
+    #[inline(never)]
     fn delete(&mut self) -> Result<()> {
         let len = self.len()?;
 
