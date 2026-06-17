@@ -20,7 +20,7 @@ use test_case::test_case;
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
 
-const USER_COUNT: usize = 8;
+const USER_COUNT: usize = 10;
 
 #[derive(Debug, serde::Serialize)]
 struct DexGasRow {
@@ -369,6 +369,29 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         5,
         exchange(8).swapExactAmountIn(base_addr, quote_addr, fill, 0),
         "full flip bid exact-in swap failed"
+    );
+
+    send_tx!(
+        exchange(9).place(base_addr, fill, true, -90),
+        "setup predecessor bid for tail cancel failed"
+    );
+    let tail_cancel_order = exchange(10).nextOrderId().call().await?;
+    send_tx!(
+        exchange(10).place(base_addr, fill, true, -90),
+        "setup tail bid cancel failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "cancel_tail_bid_credits_predecessor_next",
+        10,
+        9,
+        exchange(10).cancel(tail_cancel_order),
+        "tail bid cancel failed"
+    );
+    record_tx_with_credits!(
+        "place_bid_reuse_predecessor_next_credit",
+        9,
+        exchange(9).place(base_addr, fill, true, -100),
+        "place bid reusing predecessor next credit failed"
     );
 
     eprintln!(

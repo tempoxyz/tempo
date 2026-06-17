@@ -6,6 +6,10 @@ cancel_bid_earn_credits:
   gas: 304741
   storage_credits: "user1: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
+cancel_tail_bid_credits_predecessor_next:
+  gas: 294241
+  storage_credits: "user10: 0 -> 0; user9: 0 -> 0"
+  pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 create_pair:
   gas: 1293099
   storage_credits: n/a
@@ -25,6 +29,10 @@ place_bid_cross_user_after_fill_credits:
 place_bid_reuse_cancel_credits:
   gas: 2075413
   storage_credits: "user1: 0 -> 0"
+  pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
+place_bid_reuse_predecessor_next_credit:
+  gas: 1851169
+  storage_credits: "user9: 0 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 0"
 place_bid_reuse_swap_credits:
   gas: 1828213

@@ -1,11 +1,16 @@
 ---
 source: crates/node/tests/it/gas/stablecoin_dex.rs
+assertion_line: 412
 expression: gas
 ---
 cancel_bid_earn_credits:
   gas: 361184
   storage_credits: "user1: 0 -> 5"
   pooled_storage_credits: "DEX TIP-1060: 0 -> 7"
+cancel_tail_bid_credits_predecessor_next:
+  gas: 340884
+  storage_credits: "user10: 0 -> 5; user9: 0 -> 0"
+  pooled_storage_credits: "DEX TIP-1060: 22 -> 27"
 create_pair:
   gas: 1297180
   storage_credits: n/a
@@ -26,6 +31,10 @@ place_bid_reuse_cancel_credits:
   gas: 868756
   storage_credits: "user1: 5 -> 0"
   pooled_storage_credits: "DEX TIP-1060: 7 -> 3"
+place_bid_reuse_predecessor_next_credit:
+  gas: 1857550
+  storage_credits: "user9: 0 -> 0"
+  pooled_storage_credits: "DEX TIP-1060: 27 -> 27"
 place_bid_reuse_swap_credits:
   gas: 621456
   storage_credits: "user3: 5 -> 0"

@@ -83,6 +83,23 @@ impl TIP1060StorageCredits {
         u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
     }
 
+    /// Runs `f` and returns the signed change in `account`'s persistent credit balance.
+    pub fn track_credit_delta<T>(
+        &self,
+        account: Address,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<i128> {
+        if !StorageCtx.spec().is_t7() {
+            f()?;
+            return Ok(0);
+        }
+
+        let before = self.balance_of(account)?;
+        f()?;
+        let after = self.balance_of(account)?;
+        Ok(i128::from(after) - i128::from(before))
+    }
+
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
         self.credit_state_of(account).map(|state| state.mode)
     }
@@ -145,23 +162,32 @@ impl TIP1060StorageCredits {
     }
 
     /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
-    /// from `credit_owner`'s balance, returning how many credits were actually consumed.
+    /// from `credit_owner`'s balance, returning the signed persistent credit-balance delta.
     ///
     /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
     /// before this returns so later storage writes cannot consume the remaining allowance.
-    pub fn with_storage_credits_budget<T>(
+    pub fn with_budget<T>(
         &mut self,
         credit_owner: Address,
         limit: u64,
         f: impl FnOnce() -> Result<T>,
-    ) -> Result<(T, u64)> {
+    ) -> Result<(T, i128)> {
         if limit == 0 {
-            return f().map(|value| (value, 0));
+            if !StorageCtx.spec().is_t7() {
+                return f().map(|value| (value, 0));
+            }
+
+            let before = self.balance_of(credit_owner)?;
+            let value = f()?;
+            let after = self.balance_of(credit_owner)?;
+            return Ok((value, i128::from(after) - i128::from(before)));
         }
 
         self.set_budget(credit_owner, limit)?;
 
+        let before = self.balance_of(credit_owner)?;
         let result = f();
+        let after = self.balance_of(credit_owner)?;
         let current_state = self.credit_state_of(credit_owner)?;
         let spent = limit.saturating_sub(current_state.budget.min(limit));
 
@@ -179,7 +205,8 @@ impl TIP1060StorageCredits {
             ))?;
         }
 
-        result.map(|value| (value, spent))
+        let delta = i128::from(after) - i128::from(before);
+        result.map(|value| (value, delta))
     }
 }
 
