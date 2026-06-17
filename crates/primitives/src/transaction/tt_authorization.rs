@@ -108,6 +108,8 @@ impl TempoSignedAuthorization {
     }
 
     /// Outputs the length of the authorization's fields, without a RLP header.
+    #[cold]
+    #[inline(never)]
     fn fields_len(&self) -> usize {
         self.inner.chain_id.length()
             + self.inner.address.length()
@@ -144,6 +146,8 @@ impl Decodable for TempoSignedAuthorization {
 }
 
 impl Encodable for TempoSignedAuthorization {
+    #[cold]
+    #[inline(never)]
     fn encode(&self, buf: &mut dyn BufMut) {
         Header {
             list: true,
@@ -156,6 +160,8 @@ impl Encodable for TempoSignedAuthorization {
         self.signature.encode(buf);
     }
 
+    #[cold]
+    #[inline(never)]
     fn length(&self) -> usize {
         let len = self.fields_len();
         len + length_of_length(len)
