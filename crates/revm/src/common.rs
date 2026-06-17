@@ -404,7 +404,9 @@ where
     }
 
     fn with_actions(mut self, actions: StorageActions) -> Self {
-        self.actions = Some(actions);
+        if actions.is_enabled() {
+            self.actions = Some(actions);
+        }
         self
     }
 }
