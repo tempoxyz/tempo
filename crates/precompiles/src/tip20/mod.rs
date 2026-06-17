@@ -1165,6 +1165,13 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+        let from_balance = self.get_balance(from)?;
+        if amount > from_balance {
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
+            );
+        }
+
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
