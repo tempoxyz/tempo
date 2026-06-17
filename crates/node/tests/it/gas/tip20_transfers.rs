@@ -686,3 +686,32 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_burn_t5_gas_snapshot() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T5))
+        .build_http_only()
+        .await?;
+    let sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    let token = ITIP20::new(PATH_USD_ADDRESS, sender.provider.clone());
+
+    let mut gas = GasSnapshot::new();
+    let receipt = token
+        .burn(U256::from(100u64))
+        .from(sender.address())
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    gas.record("t5_burn", receipt.gas_used);
+
+    print_gas_snapshot("TIP20 T5 burn gas snapshot", &gas);
+    insta::assert_yaml_snapshot!(gas);
+
+    Ok(())
+}
