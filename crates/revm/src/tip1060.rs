@@ -48,12 +48,14 @@ pub fn apply_refund<DB: Database, I>(
 
     let mut refunds = 0i64;
     for (key, word) in slots {
-        let transient_state =
-            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
-        let pending = transient_state.pending_refunds;
+        let pending = word.as_limbs()[3];
         if pending == 0 {
             continue;
         }
+
+        let transient_state =
+            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
+        debug_assert_eq!(transient_state.pending_refunds, pending);
 
         // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
         let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
