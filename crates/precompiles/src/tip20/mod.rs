@@ -1401,6 +1401,7 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
+    #[inline(never)]
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
