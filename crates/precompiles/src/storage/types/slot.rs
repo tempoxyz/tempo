@@ -136,6 +136,20 @@ impl<T> StorageOps for Slot<T> {
     }
 }
 
+impl Slot<U256> {
+    /// Increments this slot by `delta`.
+    #[inline]
+    pub fn sinc(&mut self, delta: U256) -> Result<()> {
+        <Self as StorageOps>::sinc(self, self.slot, delta)
+    }
+
+    /// Decrements this slot by `delta`.
+    #[inline]
+    pub fn sdec(&mut self, delta: U256) -> Result<()> {
+        <Self as StorageOps>::sdec(self, self.slot, delta)
+    }
+}
+
 /// Wrapper that routes storage operations through transient storage (TLOAD/TSTORE).
 ///
 /// Created via `Slot::transient()` and used by `t_read()`, `t_write()`, `t_delete()`.
@@ -340,6 +354,23 @@ mod tests {
         let raw = storage.sload(address, slot_num)?;
         assert_eq!(raw, test_value);
         Ok(())
+    }
+
+    #[test]
+    fn test_u256_slot_sinc_sdec() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut slot = Slot::<U256>::new(U256::from(7), address);
+
+            slot.sinc(U256::from(10))?;
+            assert_eq!(slot.read()?, U256::from(10));
+
+            slot.sdec(U256::from(3))?;
+            assert_eq!(slot.read()?, U256::from(7));
+
+            Ok(())
+        })
     }
 
     #[test]

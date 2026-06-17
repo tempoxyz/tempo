@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, StorageOps},
+    storage::{Handler, Mapping},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -275,9 +275,7 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees.at_mut(&validator).at_mut(&token);
-        let slot = collected_fees.slot();
-        collected_fees.sinc(slot, amount)?;
+        self.collected_fees[validator][token].sinc(amount)?;
 
         Ok(())
     }

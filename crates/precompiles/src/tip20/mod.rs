@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping, StorageOps},
+    storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -999,9 +999,7 @@ impl TIP20Token {
     }
 
     fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        let balance = self.balances.at_mut(&account);
-        let slot = balance.slot();
-        balance.sinc(slot, amount).map_err(|err| {
+        self.balances[account].sinc(amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
             } else {
@@ -1011,14 +1009,14 @@ impl TIP20Token {
     }
 
     fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        let balance = self.balances.at_mut(&account);
-        let slot = balance.slot();
-        balance.sdec(slot, amount).map_err(|err| match err {
-            TempoPrecompileError::StorageDeltaUnderflow(current) => {
-                TIP20Error::insufficient_balance(current, amount, self.address).into()
-            }
-            err => err,
-        })
+        self.balances[account]
+            .sdec(amount)
+            .map_err(|err| match err {
+                TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                    TIP20Error::insufficient_balance(current, amount, self.address).into()
+                }
+                err => err,
+            })
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
