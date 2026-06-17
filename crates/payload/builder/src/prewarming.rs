@@ -129,8 +129,17 @@ impl BestTransactionsPrewarming {
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            // We schedule up to 2x the number of threads to make sure that workers are never idle,
+            // but do not speculatively advance past a known bounded snapshot.
+            let max_initial_advances = pool.current_num_threads() * 2;
+            let initial_advances = ctx
+                .best_txs
+                .size_hint()
+                .1
+                .map_or(max_initial_advances, |upper| {
+                    upper.min(max_initial_advances)
+                });
+            for _ in 0..initial_advances {
                 advance(&mut ctx);
             }
 
@@ -742,6 +751,10 @@ mod tests {
             }
             tx
         }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (self.txs.len(), Some(self.txs.len()))
+        }
     }
 
     impl BestTransactions for TestBestTransactions {
@@ -998,19 +1011,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
-        let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+    fn empty_bounded_source_skips_eager_startup_advances() {
         let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
+        let mut prewarming = prewarming(Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
-
-        assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(log.lock().unwrap().empty_polls, 0);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
+
+        assert!(prewarming.next().is_none());
+        wait_until(|| log.lock().unwrap().empty_polls == 2);
     }
 
     #[test]
