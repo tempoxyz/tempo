@@ -16,6 +16,7 @@ pub mod exec;
 pub mod gas_params;
 pub mod handler;
 mod instructions;
+pub mod tip1060;
 mod tx;
 
 pub use block::TempoBlockEnv;
