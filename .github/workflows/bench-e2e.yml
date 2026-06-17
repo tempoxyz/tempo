@@ -589,6 +589,8 @@ jobs:
 
       - name: Install tracy-capture
         if: env.BENCH_TRACY != 'off'
+        env:
+          TRACY_VERSION: 0.13.1
         run: |
           if command -v tracy-capture &>/dev/null; then
             command -v tracy-capture
@@ -597,7 +599,7 @@ jobs:
 
           for attempt in 1 2 3; do
             rm -rf /tmp/tracy /tmp/tracy-capture-build
-            git clone --depth 1 https://github.com/wolfpld/tracy /tmp/tracy
+            git clone --depth 1 --branch "v${TRACY_VERSION}" https://github.com/wolfpld/tracy /tmp/tracy
             if cmake -S /tmp/tracy/capture -B /tmp/tracy-capture-build -DCMAKE_BUILD_TYPE=Release; then
               break
             fi
