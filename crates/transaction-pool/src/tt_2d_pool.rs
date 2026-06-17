@@ -648,6 +648,7 @@ impl AA2dPool {
         } else {
             self.expiring_nonce_txs
                 .values()
+                .filter(|tx| tx_can_pay_base_fee(tx, base_fee))
                 .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
                 .collect()
         };
@@ -2157,6 +2158,10 @@ impl BestAA2dTransactions {
 }
 
 fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
+    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
+}
+
+fn tx_can_pay_base_fee(tx: &AA2dStoredTransaction, base_fee: u64) -> bool {
     tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
 }
 
