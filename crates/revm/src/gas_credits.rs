@@ -76,7 +76,9 @@ pub fn apply_refund<DB: Database, I>(
     }
 
     // Refund storage credit value per settled credit.
-    gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    if refunds != 0 {
+        gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    }
 
     Ok(())
 }
