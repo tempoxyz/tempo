@@ -288,6 +288,15 @@ pub trait FromWord: sealed::OnlyPrimitives {
     fn from_word(word: U256) -> Result<Self>
     where
         Self: Sized;
+
+    /// Decode this type from a word that has already been masked to the type's storage width.
+    #[inline]
+    fn from_packed_word(word: U256) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Self::from_word(word)
+    }
 }
 
 /// Blanket implementation of `Storable` for all `Packable` types.

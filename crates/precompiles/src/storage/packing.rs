@@ -102,7 +102,7 @@ pub fn extract_from_word<T: FromWord + StorableType>(
     let mask = create_element_mask(bytes);
 
     // Extract and right-align the value
-    T::from_word((slot_value >> shift_bits) & mask)
+    T::from_packed_word((slot_value >> shift_bits) & mask)
 }
 
 /// Insert a packed value into a storage slot at a given byte offset.

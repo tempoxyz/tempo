@@ -86,6 +86,11 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     fn from_word(word: U256) -> crate::error::Result<Self> {
                         word.try_into().map_err(|_| crate::error::TempoPrecompileError::under_overflow())
                     }
+
+                    #[inline]
+                    fn from_packed_word(word: U256) -> crate::error::Result<Self> {
+                        Ok(word.to::<Self>())
+                    }
                 }
             }
         }
@@ -103,6 +108,11 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                         if word > ::alloy::primitives::U256::from(::alloy::primitives::aliases::#ty::MAX) {
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
+                        Ok(word.to::<Self>())
+                    }
+
+                    #[inline]
+                    fn from_packed_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         Ok(word.to::<Self>())
                     }
                 }
@@ -124,6 +134,11 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                             .map_err(|_| crate::error::TempoPrecompileError::under_overflow())?;
                         Ok(unsigned as Self)
                     }
+
+                    #[inline]
+                    fn from_packed_word(word: U256) -> crate::error::Result<Self> {
+                        Ok(word.to::<#unsigned_type>() as Self)
+                    }
                 }
             }
         }
@@ -143,6 +158,12 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
                         // Extract low bytes as unsigned, then interpret as signed
+                        let unsigned_val = word.to::<::alloy::primitives::aliases::#unsigned_type>();
+                        Ok(Self::from_raw(unsigned_val))
+                    }
+
+                    #[inline]
+                    fn from_packed_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         let unsigned_val = word.to::<::alloy::primitives::aliases::#unsigned_type>();
                         Ok(Self::from_raw(unsigned_val))
                     }
