@@ -717,6 +717,7 @@ impl Inner<Init> {
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed)
             .saturating_sub(validator_marshal_persist);
+        let proposal_return_time = context.current() + return_delay;
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
@@ -728,7 +729,6 @@ impl Inner<Init> {
             consensus_block_size_bytes,
             "sleeping before returning proposal"
         );
-        let proposal_return_time = context.current() + return_delay;
 
         Ok((
             proposal,
