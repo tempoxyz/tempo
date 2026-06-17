@@ -12,6 +12,8 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
+pub(crate) const VERIFIED_USD_FEE_TOKEN_CACHE_LIMIT: usize = 16;
+
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
@@ -38,6 +40,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Fee tokens whose TIP-20 currency was already verified as USD in this EVM.
+    pub(crate) verified_usd_fee_tokens: Vec<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +88,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            verified_usd_fee_tokens: Vec::new(),
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,

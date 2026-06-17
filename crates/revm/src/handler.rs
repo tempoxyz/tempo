@@ -67,7 +67,7 @@ use crate::{
     TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
-    evm::TempoContext,
+    evm::{TempoContext, VERIFIED_USD_FEE_TOKEN_CACHE_LIMIT},
     tip1060,
 };
 
@@ -961,10 +961,12 @@ where
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
-        let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
+        let fee_token = evm
+            .inner
+            .ctx
+            .journaled_state
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
@@ -978,9 +980,20 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+        let verified_usd_fee_tokens = &mut evm.verified_usd_fee_tokens;
+        if (!tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction())
+            && !verified_usd_fee_tokens.contains(&fee_token)
+        {
+            evm.inner
+                .ctx
+                .journaled_state
+                .ensure_tip20_usd(cfg.spec, fee_token)?;
+            if verified_usd_fee_tokens.len() < VERIFIED_USD_FEE_TOKEN_CACHE_LIMIT {
+                verified_usd_fee_tokens.push(fee_token);
+            }
         }
+
+        let journal = &mut evm.inner.ctx.journaled_state;
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
