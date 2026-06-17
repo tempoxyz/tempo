@@ -100,7 +100,12 @@ impl StorageCredits {
     }
 
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
+        let mode = if credit_budget > 0 {
+            CreditMode::Direct
+        } else {
+            CreditMode::Preserve
+        };
+        self.write_mode_with_budget(msg_sender, mode, credit_budget)
     }
 
     fn write_mode_with_budget(
@@ -166,5 +171,58 @@ impl From<CreditMode> for Mode {
             CreditMode::Preserve => Self::Preserve,
             CreditMode::Direct => Self::Direct,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+
+    #[test]
+    fn test_set_mode_budget_semantics() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x11);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+
+            assert_eq!(credits.mode_of(account)?, CreditMode::Refund);
+            assert_eq!(credits.budget_of(account)?, 0);
+
+            credits.set_mode(account, Mode::Direct)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
+            assert_eq!(credits.budget_of(account)?, u64::MAX);
+
+            credits.set_mode(account, Mode::Preserve)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Preserve);
+            assert_eq!(credits.budget_of(account)?, 0);
+
+            credits.set_mode(account, Mode::Refund)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Refund);
+            assert_eq!(credits.budget_of(account)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_budget_zero_selects_preserve_immediately() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x12);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+
+            credits.set_budget(account, 2)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
+            assert_eq!(credits.budget_of(account)?, 2);
+
+            credits.set_budget(account, 0)?;
+            assert_eq!(credits.mode_of(account)?, CreditMode::Preserve);
+            assert_eq!(credits.budget_of(account)?, 0);
+
+            Ok(())
+        })
     }
 }

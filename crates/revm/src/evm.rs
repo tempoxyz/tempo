@@ -226,7 +226,7 @@ mod tests {
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
-    use alloy_sol_types::{SolCall, SolError, SolEvent};
+    use alloy_sol_types::{SolCall, SolError};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
         ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
@@ -2391,8 +2391,8 @@ mod tests {
         // only the 5k residual set charge. The 245k credit depends on the TIP-1060 credit mode.
         let cases = [
             (CreditMode::Refund, 285_968u64, 0u64),
-            (CreditMode::Preserve, 535_514u64, 1u64),
-            (CreditMode::Direct, 535_514u64, 1u64),
+            (CreditMode::Preserve, 534_133u64, 1u64),
+            (CreditMode::Direct, 534_133u64, 1u64),
         ];
 
         for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
@@ -2482,7 +2482,7 @@ mod tests {
             ]
         }
 
-        const SET_MODE_GAS: u64 = 4_546;
+        const SET_MODE_GAS: u64 = 3_165;
 
         fn same_storage_accounting(refund_gas: u64, expected_credits: u64) -> [ModeExpectation; 3] {
             expectations(
@@ -2565,8 +2565,8 @@ mod tests {
                 expected_slot: 0,
                 credit_cases: no_initial_credits(expectations(
                     (35_968, 0),
-                    (285_514, 1),
-                    (285_514, 1),
+                    (284_133, 1),
+                    (284_133, 1),
                 )),
             },
             TransitionClass {
@@ -2603,7 +2603,7 @@ mod tests {
                         expectations: expectations(
                             (37_962, 0),
                             (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
-                            (45_308, 0),
+                            (43_927, 0),
                         ),
                     },
                     CreditCase {
@@ -2612,7 +2612,7 @@ mod tests {
                         expectations: expectations(
                             (37_962, 1),
                             (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
-                            (45_308, 1),
+                            (43_927, 1),
                         ),
                     },
                 ],
@@ -2913,7 +2913,7 @@ mod tests {
         assert!(result.is_success(), "preserve churn tx should succeed");
         assert_eq!(
             result.tx_gas_used(),
-            1_029_138,
+            1_027_757,
             "three Preserve churn cycles pay the full 245k creditable portion per recreation"
         );
 
@@ -3002,8 +3002,8 @@ mod tests {
         // (mode, tx2 gas, balance after tx1/tx2).
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
-            (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
-            (CreditMode::Direct, 45_340u64, 1u64, 0u64),
+            (CreditMode::Preserve, 286_159u64, 1u64, 1u64),
+            (CreditMode::Direct, 43_959u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -3143,6 +3143,122 @@ mod tests {
             budgeted_result.tx_gas_used() > unlimited_result.tx_gas_used(),
             "the budgeted second create should pay full creation gas after switching to Preserve"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip1060_reverted_scopes_unwind_credit_accounting() -> eyre::Result<()> {
+        struct RevertedCase {
+            name: &'static str,
+            callee: Address,
+            bytecode: Bytecode,
+            initial_slot: U256,
+            initial_credits: u64,
+            expected_slot: U256,
+            expected_credits: u64,
+        }
+
+        fn caller_ignoring_reverted_callee(callee: Address) -> Bytecode {
+            let mut bytecode = bytes!("60006000600060006000").to_vec();
+            bytecode.push(opcode::PUSH20);
+            bytecode.extend_from_slice(callee.as_slice());
+            bytecode.extend_from_slice(&bytes!("620f4240f15000"));
+            Bytecode::new_raw(bytecode.into())
+        }
+
+        let mut direct_create_revert = Vec::new();
+        append_tip1060_set_mode_call(&mut direct_create_revert, CreditMode::Direct);
+        direct_create_revert.extend_from_slice(&bytes!("600160005560006000fd"));
+
+        let cases = [
+            RevertedCase {
+                name: "clear mint",
+                callee: Address::repeat_byte(0x89),
+                // SSTORE(0, 0); REVERT(0, 0)
+                bytecode: Bytecode::new_raw(bytes!("600060005560006000fd")),
+                initial_slot: U256::ONE,
+                initial_credits: 0,
+                expected_slot: U256::ONE,
+                expected_credits: 0,
+            },
+            RevertedCase {
+                name: "Refund pending creation",
+                callee: Address::repeat_byte(0x8a),
+                // SSTORE(0, 1); REVERT(0, 0)
+                bytecode: Bytecode::new_raw(bytes!("600160005560006000fd")),
+                initial_slot: U256::ZERO,
+                initial_credits: 1,
+                expected_slot: U256::ZERO,
+                expected_credits: 1,
+            },
+            RevertedCase {
+                name: "Direct debit",
+                callee: Address::repeat_byte(0x8b),
+                bytecode: Bytecode::new_raw(direct_create_revert.into()),
+                initial_slot: U256::ZERO,
+                initial_credits: 1,
+                expected_slot: U256::ZERO,
+                expected_credits: 1,
+            },
+        ];
+
+        for case in cases {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let caller_contract = Address::repeat_byte(case.callee[0] ^ 0xff);
+            let mut evm = create_funded_evm_t7(caller);
+
+            evm.ctx.db_mut().insert_account_info(
+                caller_contract,
+                AccountInfo {
+                    code: Some(caller_ignoring_reverted_callee(case.callee)),
+                    ..Default::default()
+                },
+            );
+            evm.ctx.db_mut().insert_account_info(
+                case.callee,
+                AccountInfo {
+                    code: Some(case.bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+            if !case.initial_slot.is_zero() {
+                evm.ctx.db_mut().insert_account_storage(
+                    case.callee,
+                    U256::ZERO,
+                    case.initial_slot,
+                )?;
+            }
+            seed_storage_credit_balance(&mut evm, case.callee, case.initial_credits);
+
+            let tx = TxBuilder::new()
+                .call(caller_contract, &[])
+                .gas_limit(2_000_000)
+                .build();
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+                &key_pair.sign_tx(tx)?,
+                caller,
+            ))?;
+            assert!(
+                result.is_success(),
+                "top-level caller should ignore the reverted {} subcall",
+                case.name
+            );
+
+            assert_eq!(
+                evm.ctx.db().storage_ref(case.callee, U256::ZERO)?,
+                case.expected_slot,
+                "reverted {} storage write must unwind",
+                case.name
+            );
+            assert_eq!(
+                storage_credit_balance(&evm, case.callee),
+                case.expected_credits,
+                "reverted {} credit accounting must unwind",
+                case.name
+            );
+        }
 
         Ok(())
     }
@@ -3360,7 +3476,7 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            295_308,
+            293_927,
             "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(

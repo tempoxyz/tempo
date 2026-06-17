@@ -158,9 +158,10 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     Ok(())
 }
 
-/// A normal TIP-20 precompile storage clear should mint a persistent TIP-1060 credit for the token.
+/// A normal TIP-20 precompile storage clear should mint a TIP-1060 credit for the token, and a
+/// later storage creation by the same token should redeem that account-local credit in Refund mode.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -> eyre::Result<()> {
+async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -232,10 +233,38 @@ async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -
 
     assert_eq!(token.balanceOf(root_addr).call().await?, U256::ZERO);
     assert_eq!(token.balanceOf(recipient).call().await?, amount + U256::ONE);
+    let credit_after_clear = credits.balanceOf(*token.address()).call().await?;
     assert_eq!(
-        credits.balanceOf(*token.address()).call().await?,
+        credit_after_clear,
         credit_before + 1,
         "clearing the sender TIP-20 precompile balance slot must persist one storage credit for the token"
+    );
+    assert_eq!(
+        credits.modeOf(*token.address()).call().await?,
+        IStorageCredits::Mode::Refund,
+        "storage creation mode is transient and defaults to Refund in a fresh call"
+    );
+    assert_eq!(
+        credits.budgetOf(*token.address()).call().await?,
+        0,
+        "Direct budget is transient and defaults to zero in a fresh call"
+    );
+
+    let fresh_recipient = Address::repeat_byte(0xdd);
+    let mint_receipt = token
+        .mint(fresh_recipient, U256::ONE)
+        .nonce(provider.get_transaction_count(root_addr).await?)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    assert_eq!(token.balanceOf(fresh_recipient).call().await?, U256::ONE);
+    assert_eq!(
+        credits.balanceOf(*token.address()).call().await?,
+        credit_before,
+        "a later Refund-mode balance-slot creation by the same token must redeem the minted credit"
     );
 
     Ok(())

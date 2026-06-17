@@ -46,6 +46,8 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
+    use alloy::sol_types::SolCall;
+    use tempo_contracts::precompiles::{IStorageCredits, StorageCreditsError};
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
@@ -61,6 +63,89 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_storage_credits_set_budget_zero_selects_preserve() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x11);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut storage_credits_precompile = StorageCredits::new();
+
+            let set_budget = IStorageCredits::setBudgetCall { creditBudget: 7 };
+            let output = storage_credits_precompile.call(&set_budget.abi_encode(), caller)?;
+            assert!(!output.is_revert());
+
+            let mode = storage_credits_precompile.call(
+                &IStorageCredits::modeOfCall { account: caller }.abi_encode(),
+                caller,
+            )?;
+            assert_eq!(
+                IStorageCredits::modeOfCall::abi_decode_returns(&mode.bytes)?,
+                IStorageCredits::Mode::Direct
+            );
+
+            let budget = storage_credits_precompile.call(
+                &IStorageCredits::budgetOfCall { account: caller }.abi_encode(),
+                caller,
+            )?;
+            assert_eq!(
+                IStorageCredits::budgetOfCall::abi_decode_returns(&budget.bytes)?,
+                7
+            );
+
+            let zero_budget = IStorageCredits::setBudgetCall { creditBudget: 0 };
+            let output = storage_credits_precompile.call(&zero_budget.abi_encode(), caller)?;
+            assert!(!output.is_revert());
+
+            let mode = storage_credits_precompile.call(
+                &IStorageCredits::modeOfCall { account: caller }.abi_encode(),
+                caller,
+            )?;
+            assert_eq!(
+                IStorageCredits::modeOfCall::abi_decode_returns(&mode.bytes)?,
+                IStorageCredits::Mode::Preserve,
+                "setBudget(0) must immediately select Preserve mode"
+            );
+
+            let budget = storage_credits_precompile.call(
+                &IStorageCredits::budgetOfCall { account: caller }.abi_encode(),
+                caller,
+            )?;
+            assert_eq!(
+                IStorageCredits::budgetOfCall::abi_decode_returns(&budget.bytes)?,
+                0
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_storage_credits_set_mode_rejects_reserved_mode() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x33);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut storage_credits_precompile = StorageCredits::new();
+            let mut calldata = IStorageCredits::setModeCall {
+                newMode: IStorageCredits::Mode::Refund,
+            }
+            .abi_encode();
+            *calldata
+                .last_mut()
+                .expect("setMode ABI calldata must contain the enum word") = 3;
+
+            let output = storage_credits_precompile.call(&calldata, caller)?;
+            assert!(output.is_revert());
+            assert_eq!(
+                &output.bytes[..4],
+                StorageCreditsError::invalid_mode().selector().as_slice()
+            );
+
             Ok(())
         })
     }

@@ -133,11 +133,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     if values.is_new_zero() {
         // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
-        if matches!(transient_state.mode, CreditMode::Direct) && transient_state.budget != u64::MAX
-        {
-            transient_state.budget += 1;
-            store_credit_state(backend, account_slot, transient_state)?;
-        }
         was_changed = true;
     } else {
         // 0→x: storage creation.
