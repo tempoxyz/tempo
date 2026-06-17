@@ -1,14 +1,15 @@
 use alloy::{
-    primitives::{Address, FixedBytes, U256},
+    primitives::{Address, B256, FixedBytes, U256},
     providers::Provider,
     sol_types::SolEvent,
 };
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
-    IAddressRegistry, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS,
+    IAccountKeychain, IAddressRegistry, ITIP20, ITIP403Registry, ITIPFeeAMM,
+    TIP_FEE_MANAGER_ADDRESS, account_keychain::IAccountKeychain::authorizeAdminKeyCall,
 };
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
 };
 use tempo_primitives::TempoAddressExt;
@@ -682,6 +683,44 @@ async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
     gas.record("t0_transfer_with_memo", receipt.gas_used);
 
     print_gas_snapshot("TIP20 T0 transferWithMemo gas snapshot", &gas);
+    insta::assert_yaml_snapshot!(gas);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_account_keychain_authorize_admin_key_t4_gas_snapshot() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T4))
+        .build_http_only()
+        .await?;
+    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    sender.sync_nonce().await?;
+
+    let receipt = TempoCalls::new()
+        .gas_limit(10_000_000)
+        .fee_token(None)
+        .push(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            authorizeAdminKeyCall {
+                keyId: fixed_signer(0x42).address(),
+                signatureType: IAccountKeychain::SignatureType::P256,
+                witness: B256::repeat_byte(0x59),
+            },
+        )
+        .send_allow_revert(&mut sender)
+        .await?;
+    assert!(
+        !receipt.status,
+        "authorizeAdminKey must remain gated off before T6"
+    );
+
+    let mut gas = GasSnapshot::new();
+    gas.record("t4_authorize_admin_key_pre_t6_revert", receipt.gas_used);
+
+    print_gas_snapshot("Account keychain T4 authorizeAdminKey gas snapshot", &gas);
     insta::assert_yaml_snapshot!(gas);
 
     Ok(())

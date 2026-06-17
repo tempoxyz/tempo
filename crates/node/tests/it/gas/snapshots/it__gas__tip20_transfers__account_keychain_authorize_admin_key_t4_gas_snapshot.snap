@@ -1,0 +1,5 @@
+---
+source: crates/node/tests/it/gas/tip20_transfers.rs
+expression: gas
+---
+t4_authorize_admin_key_pre_t6_revert: 272108

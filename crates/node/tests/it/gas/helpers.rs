@@ -189,9 +189,11 @@ pub(crate) struct TempoCalls {
     expect_existing_nonce: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct Receipt {
     pub(crate) tx_hash: B256,
     pub(crate) gas_used: u64,
+    pub(crate) status: bool,
 }
 
 impl TempoCalls {
@@ -266,6 +268,19 @@ impl TempoCalls {
         self,
         sender: &mut TempoTxSender<P>,
     ) -> eyre::Result<Receipt> {
+        let receipt = self.send_raw(sender).await?;
+        eyre::ensure!(receipt.status, "tempo calls reverted: {receipt:?}");
+        Ok(receipt)
+    }
+
+    pub(crate) async fn send_allow_revert<P: Provider>(
+        self,
+        sender: &mut TempoTxSender<P>,
+    ) -> eyre::Result<Receipt> {
+        self.send_raw(sender).await
+    }
+
+    async fn send_raw<P: Provider>(self, sender: &mut TempoTxSender<P>) -> eyre::Result<Receipt> {
         let call_count = self.calls.len();
         eyre::ensure!(call_count > 0, "cannot send TempoCalls with zero calls");
         if self.expect_existing_nonce {
@@ -300,10 +315,13 @@ impl TempoCalls {
                 let status = receipt["status"]
                     .as_str()
                     .ok_or_else(|| eyre::eyre!("tempo calls receipt missing status field"))?;
-                eyre::ensure!(status == "0x1", "tempo calls reverted: {receipt}");
                 let gas_used = hex_u64_field(&receipt, "gasUsed")?;
                 sender.nonce += 1;
-                return Ok(Receipt { tx_hash, gas_used });
+                return Ok(Receipt {
+                    tx_hash,
+                    gas_used,
+                    status: status == "0x1",
+                });
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
