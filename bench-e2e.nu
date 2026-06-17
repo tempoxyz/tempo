@@ -483,6 +483,10 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         [$"--preserve-env=($telemetry_env_names | str join ',')"]
     } else { [] }
     let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
+    let capability_args = [
+        "-p" "AmbientCapabilities=CAP_SYS_NICE"
+        "-p" "CapabilityBoundingSet=CAP_SYS_NICE"
+    ]
     [
         "sudo"
         ...$preserve_env_args
@@ -494,6 +498,7 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--unit" $unit
         ...$telemetry_env
         ...$memory_args
+        ...$capability_args
         "bash"
         "-lc"
         $script
