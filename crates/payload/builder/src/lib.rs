@@ -1278,6 +1278,10 @@ pub fn is_more_subblocks(
     best_payload: Option<&TempoBuiltPayload>,
     subblocks: &[RecoveredSubBlock],
 ) -> bool {
+    if subblocks.is_empty() {
+        return false;
+    }
+
     let Some(best_payload) = best_payload else {
         return false;
     };
