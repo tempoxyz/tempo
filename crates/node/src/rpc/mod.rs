@@ -425,7 +425,7 @@ where
                 tx_env,
                 fee_payer,
                 evm_env.cfg_env.spec,
-                StorageActions::disabled(),
+                &StorageActions::disabled(),
             )
             .map_err(ProviderError::other)?;
         let fee_token_balance = db

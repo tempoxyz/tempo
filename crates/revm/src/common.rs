@@ -127,7 +127,7 @@ pub trait TempoStateAccess<M = ()> {
         tx: impl TempoTx,
         fee_payer: Address,
         spec: TempoHardfork,
-        actions: StorageActions,
+        actions: &StorageActions,
     ) -> TempoResult<Address>
     where
         Self: Sized,
@@ -192,7 +192,7 @@ pub trait TempoStateAccess<M = ()> {
             {
                 return Ok(call.tokenIn);
             } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions)?
+                && self.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
             {
                 return Ok(call.tokenIn);
             }
@@ -580,7 +580,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(token, fee_token);
         Ok(())
@@ -608,7 +608,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(result_token, token);
         Ok(())
@@ -629,7 +629,7 @@ mod tests {
             TempoTxEnv::default(),
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(result_token, user_token);
         Ok(())
@@ -656,7 +656,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -679,7 +679,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
@@ -717,7 +717,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
 
@@ -745,7 +745,7 @@ mod tests {
             tx,
             caller,
             TempoHardfork::Genesis,
-            StorageActions::disabled(),
+            &StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
 
