@@ -678,6 +678,7 @@ impl AA2dPool {
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
             base_fee,
+            base_fee_u128: u128::from(base_fee),
         }
     }
 
@@ -2000,6 +2001,8 @@ pub(crate) struct BestAA2dTransactions {
     last_priority: Option<Priority<u64>>,
     /// Base fee used to filter and prioritize this block-building snapshot.
     base_fee: u64,
+    /// Base fee widened once for affordability checks against transaction fee caps.
+    base_fee_u128: u128,
 }
 
 impl BestAA2dTransactions {
@@ -2087,7 +2090,7 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
-                    if process && can_pay_base_fee(&tx, self.base_fee) {
+                    if process && can_pay_base_fee(&tx, self.base_fee_u128) {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
@@ -2130,7 +2133,7 @@ impl BestAA2dTransactions {
                     if self.invalid.contains(&id.seq_id) {
                         continue;
                     }
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                    if !can_pay_base_fee(&best, self.base_fee_u128) {
                         self.invalid.insert(id.seq_id);
                         continue;
                     }
@@ -2142,7 +2145,7 @@ impl BestAA2dTransactions {
                     best
                 }
                 PoppedAA2dTransaction::Expiring(best) => {
-                    if !can_pay_base_fee(&best, self.base_fee) {
+                    if !can_pay_base_fee(&best, self.base_fee_u128) {
                         continue;
                     }
                     best
@@ -2156,8 +2159,8 @@ impl BestAA2dTransactions {
     }
 }
 
-fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
-    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
+fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u128) -> bool {
+    tx.transaction.transaction.max_fee_per_gas() >= base_fee
 }
 
 impl Iterator for BestAA2dTransactions {
