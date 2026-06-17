@@ -130,7 +130,13 @@ impl BestTransactionsPrewarming {
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            let initial_lookahead = pool.current_num_threads() * 2;
+            let initial_lookahead = ctx
+                .best_txs
+                .size_hint()
+                .1
+                .map_or(initial_lookahead, |upper| upper.min(initial_lookahead));
+            for _ in 0..initial_lookahead {
                 advance(&mut ctx);
             }
 
