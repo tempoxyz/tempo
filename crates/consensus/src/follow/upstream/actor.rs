@@ -147,6 +147,7 @@ where
         }
     }
 
+    #[instrument(skip_all)]
     fn reconnect_or_resubscribe(&mut self) {
         if self.pending_connect.is_some() || self.pending_stream.is_some() {
             return;
@@ -164,13 +165,15 @@ where
         if client.is_connected() {
             self.pending_stream.replace(subscribe(client));
         } else {
-            warn_span!("connection")
-                .in_scope(|| warn!(url = self.url, "upstream client disconnected, reconnecting",));
+            warn!(url = self.url, "upstream client disconnected, reconnecting");
             self.connection.take();
             self.pending_connect.replace(connect(self.url, 1));
         }
     }
 
+    /// Drains the waiters by fetching the finalizations they are waiting for.
+    ///
+    /// Only executes if a client is present and connected.
     fn drain_waiters(&mut self) {
         if self.pending_connect.is_some()
             || self.pending_stream.is_some()
