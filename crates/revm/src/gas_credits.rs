@@ -5,7 +5,7 @@ use crate::{
     evm::{TempoContext, TempoEvm},
 };
 use alloy_evm::Database;
-use alloy_primitives::{Address, Log, LogData, U256};
+use alloy_primitives::{Address, U256};
 use revm::{
     context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
@@ -138,15 +138,6 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.context.tstore(address, key, value);
-    }
-
-    #[inline]
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
-        self.context.log(Log {
-            address,
-            data: event,
-        });
-        Ok(())
     }
 }
 

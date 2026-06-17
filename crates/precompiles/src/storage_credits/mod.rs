@@ -11,9 +11,7 @@ use crate::{
     storage::{Handler, LayoutCtx, StorableType},
 };
 use alloy::primitives::{Address, U256};
-use tempo_contracts::precompiles::{
-    IStorageCredits::Mode, StorageCreditsError, StorageCreditsEvent,
-};
+use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
 #[repr(u8)]
@@ -98,13 +96,11 @@ impl StorageCredits {
             0
         };
 
-        self.write_mode_with_budget(msg_sender, mode, budget)?;
-        self.emit_event(StorageCreditsEvent::mode_updated(msg_sender, mode.into()))
+        self.write_mode_with_budget(msg_sender, mode, budget)
     }
 
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)?;
-        self.emit_event(StorageCreditsEvent::mode_updated(msg_sender, Mode::Direct))
+        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
     }
 
     fn write_mode_with_budget(

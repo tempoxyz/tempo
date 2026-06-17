@@ -10,13 +10,13 @@
 
 use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
-use alloy::primitives::{Address, IntoLogData, LogData, U256};
+use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
     interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, StorageCreditsEvent};
+use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
 
 /// Error mapping required by storage credit accounting.
 pub trait StorageCreditsErr: Sized {
@@ -75,19 +75,6 @@ pub trait StorageCreditsBackend {
 
     /// TSTORE `address[key] = value`.
     fn tstore(&mut self, address: Address, key: U256, value: U256);
-
-    /// Emits `event` from `address`.
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error>;
-}
-
-#[inline]
-fn emit_mode_updated<B: StorageCreditsBackend>(
-    backend: &mut B,
-    account: Address,
-    new_mode: CreditMode,
-) -> Result<(), B::Error> {
-    let event = StorageCreditsEvent::mode_updated(account, new_mode.into());
-    backend.emit_event(STORAGE_CREDITS_ADDRESS, event.into_log_data())
 }
 
 #[inline]
@@ -164,7 +151,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     if transient_state.budget == 0 {
                         // When budget is exhausted, switch to `Preserve` mode.
                         transient_state.mode = CreditMode::Preserve;
-                        emit_mode_updated(backend, owner, CreditMode::Preserve)?;
                     }
                     store_credit_state(backend, account_slot, transient_state)?;
                 }
@@ -175,7 +161,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                     // When budget is exhausted, switch to `Preserve` mode.
                     transient_state.mode = CreditMode::Preserve;
                     store_credit_state(backend, account_slot, transient_state)?;
-                    emit_mode_updated(backend, owner, CreditMode::Preserve)?;
                 }
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }

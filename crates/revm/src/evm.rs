@@ -3124,19 +3124,6 @@ mod tests {
             "budget 1 must consume exactly one of the two available credits"
         );
 
-        let budgeted_mode_updates = budgeted_result
-            .logs()
-            .iter()
-            .filter(|log| log.address == STORAGE_CREDITS_ADDRESS)
-            .map(IStorageCredits::ModeUpdated::decode_log)
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(budgeted_mode_updates.len(), 2);
-        // First event selects Direct; second event is the budget-exhausted Preserve switch.
-        assert_eq!(budgeted_mode_updates[0].account, budgeted_contract);
-        assert_eq!(budgeted_mode_updates[0].newMode, Mode::Direct);
-        assert_eq!(budgeted_mode_updates[1].account, budgeted_contract);
-        assert_eq!(budgeted_mode_updates[1].newMode, Mode::Preserve);
-
         let unlimited_tx = TxBuilder::new()
             .call(unlimited_contract, &[])
             .nonce(1)

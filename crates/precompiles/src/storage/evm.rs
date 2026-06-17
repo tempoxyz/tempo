@@ -140,11 +140,6 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
     }
-
-    #[inline]
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
-        PrecompileStorageProvider::emit_event(self, address, event)
-    }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {

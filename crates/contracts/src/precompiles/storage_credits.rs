@@ -1,6 +1,4 @@
-pub use IStorageCredits::{
-    IStorageCreditsErrors as StorageCreditsError, IStorageCreditsEvents as StorageCreditsEvent,
-};
+pub use IStorageCredits::IStorageCreditsErrors as StorageCreditsError;
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -14,8 +12,6 @@ crate::sol! {
 
         error InvalidMode();
         error OnlyDirectCall();
-
-        event ModeUpdated(address indexed account, Mode newMode);
 
         function balanceOf(address account) external view returns (uint64);
         function modeOf(address account) external view returns (Mode);
