@@ -18,6 +18,7 @@ const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
+const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
@@ -982,9 +983,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_args = (dedup-args $b_base_args $extra_args)
 
     if $ctx.tracy != "off" {
-        print $"  Tracy mode: ($ctx.tracy), sampling hz: ($ctx.tracy_sampling_hz)"
+        print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
     }
-    let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) " } else { "" }
+    let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
@@ -1017,7 +1018,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
         let capture_path = ($env.PATH | str join (char esep))
-        let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($ctx.tracy_sampling_hz) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
+        let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
             print $"  Tracy-capture will start in ($ctx.tracy_offset)s($limit_msg)..."
             $tracy_capture_job = (job spawn {
@@ -1256,9 +1257,8 @@ def "main e2e" [
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
-    --tracy: string = "full"                            # Tracy profiling: off, on, full
+    --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
-    --tracy-sampling-hz: int = 18999                      # Tracy CPU sampling frequency in Hz
     --tracy-seconds: int = 0                            # Tracy capture duration limit in seconds; 0 captures until stopped
     --tracy-offset: int = 0                             # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
@@ -1286,12 +1286,8 @@ def "main e2e" [
 ] {
     let preset_path = (txgen-preset-path $preset)
     txgen-validate-bench-args $bench_args
-    if $tracy not-in ["off" "on" "full"] {
-        print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
-        exit 1
-    }
-    if $tracy_sampling_hz <= 0 {
-        print "Error: --tracy-sampling-hz must be a positive integer"
+    if $tracy not-in ["off" "tracy"] {
+        print $"Error: --tracy must be one of: off, tracy \(got '($tracy)'\)"
         exit 1
     }
     if $run_pairs <= 0 {
@@ -1570,7 +1566,6 @@ def "main e2e" [
         samply_args: $samply_args_list
         tracy: $tracy
         tracy_filter: $tracy_filter
-        tracy_sampling_hz: $tracy_sampling_hz
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
