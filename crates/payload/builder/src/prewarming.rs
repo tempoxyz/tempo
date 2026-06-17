@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
@@ -16,7 +16,8 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
@@ -464,11 +465,77 @@ fn storage_touches_for_transaction(
         for (kind, input) in tx.transaction.inner().calls() {
             add_tip20_call_touches(&mut touches, sender, kind, input);
         }
+        add_keychain_call_scope_touches(&mut touches, tx);
     }
 
     add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
 
     touches
+}
+
+fn add_keychain_call_scope_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+    let Some(subject) = tx.transaction.keychain_subject() else {
+        return;
+    };
+    if subject.key_id.is_zero() {
+        return;
+    }
+
+    let key_hash = AccountKeychain::spending_limit_key(subject.account, subject.key_id);
+    let keychain = AccountKeychain::new();
+    let key_scope = &keychain.key_scopes[key_hash];
+    add_storage_touch(
+        touches,
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        key_scope.is_scoped.slot(),
+    );
+
+    for (kind, input) in tx.transaction.inner().calls() {
+        let TxKind::Call(target) = kind else {
+            continue;
+        };
+
+        add_storage_touch(
+            touches,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            target.mapping_slot(key_scope.targets.base_slot() + U256::ONE),
+        );
+
+        let target_scope = &key_scope.target_scopes[target];
+        let selectors_base_slot = target_scope.selectors.base_slot();
+        add_storage_touch(touches, ACCOUNT_KEYCHAIN_ADDRESS, selectors_base_slot);
+
+        if input.len() < 4 {
+            continue;
+        }
+
+        let selector =
+            FixedBytes::<4>::from(<[u8; 4]>::try_from(&input[..4]).expect("len checked"));
+        add_storage_touch(
+            touches,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            selector.mapping_slot(selectors_base_slot + U256::ONE),
+        );
+
+        let recipients_base_slot = target_scope.selector_scopes[selector].recipients.base_slot();
+        add_storage_touch(touches, ACCOUNT_KEYCHAIN_ADDRESS, recipients_base_slot);
+
+        if input.len() < 36 {
+            continue;
+        }
+
+        let recipient_word = &input[4..36];
+        if recipient_word[..12].iter().any(|byte| *byte != 0) {
+            continue;
+        }
+
+        let recipient = Address::from_slice(&recipient_word[12..]);
+        add_storage_touch(
+            touches,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            recipient.mapping_slot(recipients_base_slot + U256::ONE),
+        );
+    }
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
