@@ -10,7 +10,8 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType, StorageCtx},
 };
-use alloy::primitives::{Address, U256, map::AddressHashMap};
+use alloy::primitives::{Address, U256};
+use std::collections::BTreeMap;
 use tempo_contracts::precompiles::{
     ITIP1060StorageCredits::Mode, TIP1060StorageCreditsError, TIP1060StorageCreditsEvent,
 };
@@ -185,14 +186,14 @@ impl TIP1060StorageCredits {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StorageCreditDeltas {
     enabled: bool,
-    deltas: AddressHashMap<u64>,
+    deltas: BTreeMap<Address, u64>,
 }
 
 impl StorageCreditDeltas {
     pub fn new() -> Self {
         Self {
             enabled: StorageCtx.spec().is_t7(),
-            deltas: AddressHashMap::default(),
+            deltas: BTreeMap::default(),
         }
     }
 
