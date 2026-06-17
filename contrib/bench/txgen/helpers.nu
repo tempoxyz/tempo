@@ -313,6 +313,7 @@ def txgen-run-preset-pipeline [
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
+        "-m" $"preset=($preset_path | path basename | str replace --regex '\\.yml$' '')"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
         "-m" $"accounts=($accounts)"
