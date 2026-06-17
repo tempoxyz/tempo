@@ -386,6 +386,7 @@ struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     actions: Option<StorageActions>,
+    record_actions: bool,
     _marker: PhantomData<M>,
 }
 
@@ -399,11 +400,13 @@ where
             state,
             spec,
             actions: None,
+            record_actions: false,
             _marker: PhantomData,
         }
     }
 
     fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.record_actions = actions.is_enabled();
         self.actions = Some(actions);
         self
     }
@@ -442,7 +445,7 @@ where
             .sload(address, key)
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
-        if let Some(actions) = &self.actions {
+        if self.record_actions && let Some(actions) = &self.actions {
             actions.record(StorageAction::Sload(address, key, value));
         }
 
