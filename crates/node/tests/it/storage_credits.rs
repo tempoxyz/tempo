@@ -15,7 +15,7 @@ use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IStorageCredits, ITIP20,
     account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
+        IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit,
     },
     authorizeKeyCall,
 };
@@ -23,20 +23,23 @@ use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
+        calc_gas_balance_spending,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     },
 };
 
-/// Regression for the TIP-1060 fee-collection path reported in PR review.
+/// Demonstrates the TIP-1060 gap in successful access-key fee refund accounting.
 ///
 /// This exercises the full node/RPC path rather than seeding mocked EVM state:
-/// - authorize an access key with a fee-token limit equal to the tx max fee,
-/// - submit a failing keychain AA transaction so fee precharge clears the limit slot,
-/// - let post-execution reimbursement restore the unused limit,
-/// - assert the keychain did not retain a storage credit from fee bookkeeping.
+/// - authorize an access key with fee-token limit equal to max fee plus transfer amount,
+/// - submit a successful keychain AA transaction that transfers that amount,
+/// - fee precharge leaves exactly the transfer amount in the limit row,
+/// - the TIP-20 transfer clears the row under normal TIP-1060 accounting,
+/// - post-tx reimbursement recreates the row after refund settlement with TIP-1060 disabled.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> eyre::Result<()> {
+async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_with_credit_retained()
+-> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -49,7 +52,10 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
 
     let gas_limit = 500_000u64;
     let gas_price = 1_000_000_000_000u128;
-    let max_fee = U256::from(gas_limit);
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let transfer_amount = U256::from(1_234u64);
+    let spending_limit = max_fee + transfer_amount;
+    let recipient = Address::repeat_byte(0xcc);
 
     let authorize = authorizeKeyCall {
         keyId: access_key.address(),
@@ -59,7 +65,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
             enforceLimits: true,
             limits: vec![TokenLimit {
                 token: DEFAULT_FEE_TOKEN,
-                amount: max_fee,
+                amount: spending_limit,
                 period: 0,
             }],
             allowAnyCalls: true,
@@ -96,7 +102,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         .await?
         .remaining;
     let credit_before = credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?;
-    assert_eq!(remaining_before, max_fee);
+    assert_eq!(remaining_before, spending_limit);
 
     let tx = TempoTransaction {
         chain_id: provider.get_chain_id().await?,
@@ -105,10 +111,11 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         max_fee_per_gas: gas_price,
         gas_limit,
         calls: vec![Call {
-            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
-            input: revokeKeyCall {
-                keyId: Address::repeat_byte(0xee),
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: transfer_amount,
             }
             .abi_encode()
             .into(),
@@ -135,8 +142,8 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
     assert!(
-        !receipt.status(),
-        "the access-key AA transaction must commit the user-call failure path"
+        receipt.status(),
+        "the access-key AA transaction must succeed so the user-call limit clear commits"
     );
 
     let remaining_after = keychain
@@ -145,14 +152,20 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         .await?
         .remaining;
     let credit_after = credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?;
+    let fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, &provider);
 
     assert!(
-        !remaining_after.is_zero() && remaining_after < max_fee,
+        remaining_after > U256::ZERO,
         "post-tx fee refund must restore the keychain spending-limit slot"
     );
     assert_eq!(
-        credit_after, credit_before,
-        "fee precharge/reimbursement bookkeeping must not change keychain storage credits"
+        credit_after,
+        credit_before + 1,
+        "successful spend clears the keychain limit under normal accounting, but post-tx refund recreates it with TIP-1060 disabled"
+    );
+    assert_eq!(
+        fee_token.balanceOf(recipient).call().await?,
+        transfer_amount
     );
 
     Ok(())
