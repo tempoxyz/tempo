@@ -386,6 +386,7 @@ struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     actions: Option<StorageActions>,
+    last_sload: Option<(Address, U256, U256)>,
     _marker: PhantomData<M>,
 }
 
@@ -399,6 +400,7 @@ where
             state,
             spec,
             actions: None,
+            last_sload: None,
             _marker: PhantomData,
         }
     }
@@ -433,6 +435,16 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
+        if let Some((cached_address, cached_key, cached_value)) = self.last_sload.as_ref()
+            && *cached_address == address
+            && *cached_key == key
+        {
+            if let Some(actions) = &self.actions {
+                actions.record(StorageAction::Sload(address, key, *cached_value));
+            }
+            return Ok(*cached_value);
+        }
+
         let _ = self
             .state
             .basic(address)
@@ -446,6 +458,7 @@ where
             actions.record(StorageAction::Sload(address, key, value));
         }
 
+        self.last_sload = Some((address, key, value));
         Ok(value)
     }
 
