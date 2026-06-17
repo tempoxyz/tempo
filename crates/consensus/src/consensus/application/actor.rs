@@ -80,12 +80,6 @@ struct ProposalReturn {
     block_size_bytes: usize,
 }
 
-struct VerifyResult {
-    result: bool,
-    block: Option<Block>,
-    parent: Option<Block>,
-}
-
 impl<TContext, TState> Actor<TContext, TState> {
     pub(super) fn mailbox(&self) -> &Mailbox {
         &self.inner.my_mailbox
@@ -929,6 +923,22 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
+}
+
+struct VerifyResult {
+    /// Whether consensus should accept the verified proposal.
+    ///
+    /// This is the value sent through `Verify::response`: `true` accepts the
+    /// proposal, `false` rejects it.
+    result: bool,
+    /// The proposed block when it was not moved into the verified marshal state.
+    ///
+    /// Keeping it here lets `handle_verify` drop it after sending the response.
+    block: Option<Block>,
+    /// The parent block fetched to verify the proposal.
+    ///
+    /// Keeping it here lets `handle_verify` drop it after sending the response.
+    parent: Option<Block>,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
