@@ -54,6 +54,15 @@ impl MergeBestTransactions {
                 (tx, priority)
             });
         }
+
+        if matches!(
+            self.next_protocol_pool.as_ref().map(|(_, priority)| priority),
+            Some(Priority::Value(u64::MAX))
+        ) {
+            let (item, priority) = self.next_protocol_pool.take()?;
+            return Some((item, priority));
+        }
+
         if self.next_aa_2d_pool.is_none() {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
         }
@@ -437,6 +446,18 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash())); // equal priority, left preferred
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_d.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_max_protocol_priority_wins() {
+        let saturated_priority = u128::from(u64::MAX) + 1;
+        let tx_a = protocol_tx(0, saturated_priority);
+        let tx_b = aa_2d_tx(0, saturated_priority);
+        let mut merged = merged_best_transactions(vec![tx_a.clone()], vec![tx_b.clone()]);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
         assert!(merged.next().is_none());
     }
 
