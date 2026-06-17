@@ -28,6 +28,116 @@ use tempo_primitives::{
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     },
 };
+use url::Url;
+
+struct FeeTokenSpendCaseResult {
+    gas_used: u64,
+    expected_refund: U256,
+    fee_payer_balance_after: U256,
+    credit_before: u64,
+    credit_after: u64,
+}
+
+async fn run_successful_fee_token_spend_case<P>(
+    root_provider: P,
+    http_url: Url,
+    recipient: Address,
+    transfer_amount: U256,
+    gas_limit: u64,
+    gas_price: u128,
+) -> eyre::Result<FeeTokenSpendCaseResult>
+where
+    P: Provider + Clone,
+{
+    let fee_payer = PrivateKeySigner::random();
+    let fee_payer_addr = fee_payer.address();
+    let fee_payer_provider = ProviderBuilder::new()
+        .wallet(fee_payer.clone())
+        .connect_http(http_url);
+
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let initial_fee_payer_balance = max_fee + transfer_amount;
+    let fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, root_provider.clone());
+
+    let recipient_balance_before = fee_token.balanceOf(recipient).call().await?;
+    assert!(
+        recipient_balance_before > U256::ZERO,
+        "recipient must start nonzero so the transfer does not create its balance slot"
+    );
+
+    let fee_payer_seed_receipt = fee_token
+        .transfer(fee_payer_addr, initial_fee_payer_balance)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(fee_payer_seed_receipt.status());
+    assert_eq!(
+        fee_token.balanceOf(fee_payer_addr).call().await?,
+        initial_fee_payer_balance
+    );
+
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
+    let credit_before = credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?;
+
+    let tx = TempoTransaction {
+        chain_id: fee_payer_provider.get_chain_id().await?,
+        nonce: fee_payer_provider
+            .get_transaction_count(fee_payer_addr)
+            .await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let sig = fee_payer.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+
+    let tx_hash = fee_payer_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let receipt = root_provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .await?;
+    assert!(
+        receipt.status(),
+        "the primitive fee-token transaction must succeed so the user-call balance clear commits"
+    );
+    assert_eq!(receipt.fee_token, Some(DEFAULT_FEE_TOKEN));
+
+    let spent_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
+    let expected_refund = max_fee - spent_fee;
+
+    assert_eq!(
+        fee_token.balanceOf(recipient).call().await?,
+        recipient_balance_before + transfer_amount
+    );
+
+    Ok(FeeTokenSpendCaseResult {
+        gas_used: receipt.gas_used,
+        expected_refund,
+        fee_payer_balance_after: fee_token.balanceOf(fee_payer_addr).call().await?,
+        credit_before,
+        credit_after: credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
+    })
+}
 
 /// Regression for the TIP-1060 fee-collection path reported in PR review.
 ///
@@ -301,15 +411,14 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_witho
     Ok(())
 }
 
-/// Regression for fee-token refund accounting when reimbursement recreates the payer balance slot.
+/// Regression for fee-token refund accounting when reimbursement may recreate the payer balance slot.
 ///
 /// The fee payer starts with exactly max fee plus transfer amount in DEFAULT_FEE_TOKEN. Fee
 /// precharge leaves exactly the transfer amount, the successful user TIP-20 transfer clears the
-/// payer's balance slot under normal accounting, and post-tx reimbursement recreates that slot with
-/// TIP-1060 accounting disabled. The final live balance slot must not leave a retained storage
-/// credit for the token.
+/// payer's balance slot under normal accounting, and pending credit finalization depends on whether
+/// post-tx reimbursement recreates that slot.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_without_credit_retained()
+async fn test_tip1060_successful_fee_token_spend_finalizes_credit_by_refund_outcome()
 -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -319,17 +428,9 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_wi
         .wallet(root.clone())
         .connect_http(setup.http_url.clone());
 
-    let fee_payer = PrivateKeySigner::random();
-    let fee_payer_addr = fee_payer.address();
-    let fee_payer_provider = ProviderBuilder::new()
-        .wallet(fee_payer.clone())
-        .connect_http(setup.http_url);
-
-    let gas_limit = 500_000u64;
+    let refund_gas_limit = 500_000u64;
     let gas_price = 1_000_000_000_000u128;
-    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
     let transfer_amount = U256::from(1_234u64);
-    let initial_fee_payer_balance = max_fee + transfer_amount;
     let recipient = Address::repeat_byte(0xdd);
 
     let fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, root_provider.clone());
@@ -340,83 +441,52 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_wi
         .get_receipt()
         .await?;
     assert!(recipient_seed_receipt.status());
-    let fee_payer_seed_receipt = fee_token
-        .transfer(fee_payer_addr, initial_fee_payer_balance)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(fee_payer_seed_receipt.status());
-    assert_eq!(
-        fee_token.balanceOf(fee_payer_addr).call().await?,
-        initial_fee_payer_balance
-    );
 
-    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
-    let credit_before = credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?;
-
-    let tx = TempoTransaction {
-        chain_id: fee_payer_provider.get_chain_id().await?,
-        nonce: fee_payer_provider
-            .get_transaction_count(fee_payer_addr)
-            .await?,
-        max_priority_fee_per_gas: gas_price,
-        max_fee_per_gas: gas_price,
-        gas_limit,
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: ITIP20::transferCall {
-                to: recipient,
-                amount: transfer_amount,
-            }
-            .abi_encode()
-            .into(),
-        }],
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        ..Default::default()
-    };
-    let sig = fee_payer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
-
-    let tx_hash = fee_payer_provider
-        .send_raw_transaction(&envelope.encoded_2718())
-        .await?
-        .watch()
-        .await?;
-    let receipt = root_provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
-        .await?;
+    let with_refund = run_successful_fee_token_spend_case(
+        root_provider.clone(),
+        setup.http_url.clone(),
+        recipient,
+        transfer_amount,
+        refund_gas_limit,
+        gas_price,
+    )
+    .await?;
     assert!(
-        receipt.status(),
-        "the primitive fee-token transaction must succeed so the user-call balance clear commits"
-    );
-    assert_eq!(receipt.fee_token, Some(DEFAULT_FEE_TOKEN));
-
-    let spent_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    let expected_refund = max_fee - spent_fee;
-    assert!(
-        expected_refund > U256::ZERO,
+        with_refund.expected_refund > U256::ZERO,
         "gas limit must leave a non-zero fee refund to recreate the payer balance slot"
     );
-
     assert_eq!(
-        fee_token.balanceOf(fee_payer_addr).call().await?,
-        expected_refund,
+        with_refund.fee_payer_balance_after, with_refund.expected_refund,
         "post-tx fee refund must recreate the fee payer's DEFAULT_FEE_TOKEN balance slot"
     );
     assert_eq!(
-        fee_token.balanceOf(recipient).call().await?,
-        transfer_amount + U256::ONE
+        with_refund.credit_after, with_refund.credit_before,
+        "successful spend clears the fee payer balance, but post-tx refund restoration leaves the final slot live so no storage credit may remain"
+    );
+
+    let without_refund = run_successful_fee_token_spend_case(
+        root_provider,
+        setup.http_url,
+        recipient,
+        transfer_amount,
+        with_refund.gas_used,
+        gas_price,
+    )
+    .await?;
+    assert_eq!(
+        without_refund.expected_refund,
+        U256::ZERO,
+        "using the prior receipt gas as gas_limit should leave no fee refund"
     );
     assert_eq!(
-        credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
-        credit_before,
-        "successful spend clears the fee payer balance, but post-tx refund restoration leaves the final slot live so no storage credit may remain"
+        without_refund.fee_payer_balance_after,
+        U256::ZERO,
+        "without a post-tx fee refund, the fee payer's balance slot must remain cleared"
+    );
+    assert_eq!(
+        without_refund.credit_after,
+        without_refund.credit_before + 1,
+        "when the fee payer balance slot remains zero at finalization, the pending clear must mint one storage credit"
     );
 
     Ok(())
