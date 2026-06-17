@@ -277,7 +277,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
-            sstore_storage_credits(self, address, &result)?
+            sstore_storage_credits(self, address, Some(key), &result)?
         }
 
         // dynamic gas

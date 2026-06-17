@@ -89,7 +89,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     );
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
-    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
 
     let remaining_before = keychain
         .getRemainingLimitWithPeriod(root_addr, access_key.address(), DEFAULT_FEE_TOKEN)
@@ -159,16 +159,17 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     Ok(())
 }
 
-/// Demonstrates the TIP-1060 gap in successful access-key fee refund accounting.
+/// Regression for successful access-key fee refund accounting.
 ///
 /// This exercises the full node/RPC path rather than seeding mocked EVM state:
 /// - authorize an access key with fee-token limit equal to max fee plus transfer amount,
 /// - submit a successful keychain AA transaction that transfers that amount,
 /// - fee precharge leaves exactly the transfer amount in the limit row,
 /// - the TIP-20 transfer clears the row under normal TIP-1060 accounting,
-/// - post-tx reimbursement recreates the row after refund settlement with TIP-1060 disabled.
+/// - post-tx reimbursement recreates the row with TIP-1060 disabled,
+/// - assert the cleared row does not retain a storage credit when the final row is live.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_with_credit_retained()
+async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_without_credit_retained()
 -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -289,9 +290,8 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_with_
         "post-tx fee refund must restore the keychain spending-limit slot"
     );
     assert_eq!(
-        credit_after,
-        credit_before + 1,
-        "successful spend clears the keychain limit under normal accounting, but post-tx refund recreates it with TIP-1060 disabled"
+        credit_after, credit_before,
+        "successful spend clears the keychain limit, but post-tx refund restoration leaves the final slot live so no storage credit may remain"
     );
     assert_eq!(
         fee_token.balanceOf(recipient).call().await?,
@@ -301,14 +301,15 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_with_
     Ok(())
 }
 
-/// Demonstrates the TIP-1060 gap when a fee-token refund recreates the fee payer's balance slot.
+/// Regression for fee-token refund accounting when reimbursement recreates the payer balance slot.
 ///
 /// The fee payer starts with exactly max fee plus transfer amount in DEFAULT_FEE_TOKEN. Fee
 /// precharge leaves exactly the transfer amount, the successful user TIP-20 transfer clears the
 /// payer's balance slot under normal accounting, and post-tx reimbursement recreates that slot with
-/// TIP-1060 accounting disabled.
+/// TIP-1060 accounting disabled. The final live balance slot must not leave a retained storage
+/// credit for the token.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_with_credit_retained()
+async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_without_credit_retained()
 -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -414,8 +415,8 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_wi
     );
     assert_eq!(
         credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
-        credit_before + 1,
-        "successful spend clears the fee payer balance under normal accounting, but post-tx refund recreates it with TIP-1060 disabled"
+        credit_before,
+        "successful spend clears the fee payer balance, but post-tx refund restoration leaves the final slot live so no storage credit may remain"
     );
 
     Ok(())

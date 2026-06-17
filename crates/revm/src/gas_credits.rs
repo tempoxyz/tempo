@@ -41,22 +41,22 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // This is safe cause refunds are applied in post-execution.
+    // Reinsert them afterwards because post-tx fee reimbursement finalizes pending credits.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
 
     let mut refunds = 0i64;
-    for (key, word) in slots {
+    for (key, word) in slots.iter() {
         let transient_state =
-            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
+            TransientState::try_from(*word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let pending = transient_state.pending_refunds;
         if pending == 0 {
             continue;
         }
 
         // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
-        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
+        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, *key)?.data;
         let mut balance =
             u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let settled = pending.min(balance);
@@ -72,8 +72,12 @@ pub fn apply_refund<DB: Database, I>(
         let new_word = U256::from(balance);
         debug_assert_ne!(new_word, old_word);
 
-        journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+        journal.sstore(STORAGE_CREDITS_ADDRESS, *key, new_word)?;
     }
+
+    journal
+        .transient_storage
+        .insert(STORAGE_CREDITS_ADDRESS, slots);
 
     // Refund storage credit value per settled credit.
     gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));
@@ -154,6 +158,7 @@ pub(crate) fn sstore<DB: Database>(
                     gas_tracker: interpreter.gas.tracker_mut(),
                 },
                 owner,
+                None,
                 values,
             )?;
         }

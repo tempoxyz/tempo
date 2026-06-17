@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
-    ECRECOVER_GAS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -52,6 +52,7 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
+    storage_credits::StorageCredits,
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -1219,6 +1220,7 @@ where
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
         // are collected, so fee-limit validation uses the inline authorization payload instead.
         let mut loaded_tx_access_key = None;
+        let mut keychain_fee_key = None;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1328,6 +1330,7 @@ where
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
+                keychain_fee_key = Some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1599,7 +1602,7 @@ where
                     block,
                     cfg,
                     tx,
-                    actions,
+                    actions.clone(),
                     || {
                         let mut keychain = AccountKeychain::new();
                         keychain
@@ -1618,7 +1621,45 @@ where
                             })
                     },
                 )?;
+                keychain_fee_key = Some(key_auth.key_id);
             }
+        }
+
+        if cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
+            let fee_token_balance_slot =
+                TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            let keychain_fee_limit_slot = if fee_payer == tx.caller {
+                keychain_fee_key.map(|key_id| {
+                    let keychain = AccountKeychain::new();
+                    let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+                    keychain.spending_limits[limit_key][fee_token]
+                        .remaining
+                        .slot()
+                })
+            } else {
+                None
+            };
+
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions,
+                || {
+                    let mut credits = StorageCredits::new();
+                    credits.watch_pending_credit_slot(fee_token, fee_token_balance_slot)?;
+
+                    if let Some(slot) = keychain_fee_limit_slot {
+                        credits.watch_pending_credit_slot(ACCOUNT_KEYCHAIN_ADDRESS, slot)?;
+                    }
+
+                    Ok::<_, TempoPrecompileError>(())
+                },
+            )
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+            evm.pending_keychain_fee_limit_slot = keychain_fee_limit_slot;
         }
 
         Ok(())
@@ -1669,16 +1710,20 @@ where
             &context.cfg,
             tx,
             actions,
-            || {
+            || -> Result<U256, Self::Error> {
                 let mut fee_manager = TipFeeManager::new();
+                let mut credited = U256::ZERO;
+                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                let fee_token = evm
+                    .fee_token
+                    .expect("set in `validate_against_state_and_deduct_caller`");
+                let fee_token_balance_slot =
+                    TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+                let keychain_fee_limit_slot = evm.pending_keychain_fee_limit_slot;
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                    let fee_token = evm
-                        .fee_token
-                        .expect("set in `validate_against_state_and_deduct_caller`");
                     // Call collectFeePostTx (handles both refund and fee queuing)
-                    fee_manager
+                    credited = fee_manager
                         .collect_fee_post_tx(
                             fee_payer,
                             actual_spending,
@@ -1686,10 +1731,23 @@ where
                             fee_token,
                             beneficiary,
                         )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
-                } else {
-                    Ok(U256::ZERO)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
                 }
+
+                if context.cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
+                    let mut credits = StorageCredits::new();
+                    credits
+                        .finalize_pending_credit(fee_token, fee_token_balance_slot)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+
+                    if let Some(slot) = keychain_fee_limit_slot {
+                        credits
+                            .finalize_pending_credit(ACCOUNT_KEYCHAIN_ADDRESS, slot)
+                            .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    }
+                }
+
+                Ok(credited)
             },
         )?;
 
@@ -1720,6 +1778,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.pending_keychain_fee_limit_slot = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

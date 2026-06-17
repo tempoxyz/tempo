@@ -39,6 +39,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Keychain spending-limit slot watched for pending fee-restorable storage credit finalization.
+    pub(crate) pending_keychain_fee_limit_slot: Option<U256>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -97,6 +99,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            pending_keychain_fee_limit_slot: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -143,6 +146,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
+        self.pending_keychain_fee_limit_slot = None;
         self.key_expiry = None;
     }
 }

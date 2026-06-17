@@ -93,6 +93,7 @@ fn store_credit_state<B: StorageCreditsBackend>(
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
+    key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
@@ -127,9 +128,26 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut was_changed = false;
     if values.is_new_zero() {
-        // x→0: storage deletion always mints a new credit.
-        credit = credit.saturating_add(1);
-        was_changed = true;
+        let is_pending_clear = key.is_some_and(|key| {
+            backend.tload(
+                STORAGE_CREDITS_ADDRESS,
+                StorageCredits::pending_slot(owner, key),
+            ) == U256::ONE
+        });
+
+        if is_pending_clear {
+            let mut transient_state: TransientState = backend
+                .tload(STORAGE_CREDITS_ADDRESS, account_slot)
+                .try_into()
+                .map_err(|_| B::Error::fatal_external())?;
+            // Fee bookkeeping watches one restorable slot per owner.
+            transient_state.pending_credits = 1;
+            store_credit_state(backend, account_slot, transient_state)?;
+        } else {
+            // x→0: storage deletion always mints a new credit.
+            credit = credit.saturating_add(1);
+            was_changed = true;
+        }
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
@@ -183,4 +201,179 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::interpreter::gas::GasTracker;
+    use std::collections::HashMap;
+
+    struct TestBackend {
+        gas_params: GasParams,
+        gas_tracker: GasTracker,
+        storage: HashMap<(Address, U256), U256>,
+        transient: HashMap<(Address, U256), U256>,
+    }
+
+    impl TestBackend {
+        fn new() -> Self {
+            Self {
+                gas_params: GasParams::default(),
+                gas_tracker: GasTracker::new(10_000_000, 10_000_000, 0),
+                storage: HashMap::new(),
+                transient: HashMap::new(),
+            }
+        }
+
+        fn persistent_credit(&self, owner: Address) -> U256 {
+            self.storage
+                .get(&(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(owner)))
+                .copied()
+                .unwrap_or(U256::ZERO)
+        }
+
+        fn transient_state(&self, owner: Address) -> TransientState {
+            self.transient
+                .get(&(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(owner)))
+                .copied()
+                .unwrap_or_default()
+                .try_into()
+                .unwrap()
+        }
+    }
+
+    impl StorageCreditsBackend for TestBackend {
+        type Error = InstructionResult;
+
+        fn gas_params(&self) -> &GasParams {
+            &self.gas_params
+        }
+
+        fn gas_tracker(&mut self) -> &mut GasTracker {
+            &mut self.gas_tracker
+        }
+
+        fn sload(
+            &mut self,
+            address: Address,
+            key: U256,
+            _skip_cold_load: bool,
+        ) -> Result<StateLoad<U256>, Self::Error> {
+            Ok(StateLoad::new(
+                self.storage
+                    .get(&(address, key))
+                    .copied()
+                    .unwrap_or(U256::ZERO),
+                false,
+            ))
+        }
+
+        fn sstore(
+            &mut self,
+            address: Address,
+            key: U256,
+            value: U256,
+            _skip_cold_load: bool,
+        ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+            let present_value = self
+                .storage
+                .insert((address, key), value)
+                .unwrap_or(U256::ZERO);
+            Ok(StateLoad::new(
+                SStoreResult {
+                    original_value: present_value,
+                    present_value,
+                    new_value: value,
+                },
+                false,
+            ))
+        }
+
+        fn tload(&mut self, address: Address, key: U256) -> U256 {
+            self.transient
+                .get(&(address, key))
+                .copied()
+                .unwrap_or(U256::ZERO)
+        }
+
+        fn tstore(&mut self, address: Address, key: U256, value: U256) {
+            self.transient.insert((address, key), value);
+        }
+    }
+
+    fn sstore_result(present_value: U256, new_value: U256) -> StateLoad<SStoreResult> {
+        StateLoad::new(
+            SStoreResult {
+                original_value: present_value,
+                present_value,
+                new_value,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn pending_clear_is_not_spendable_before_finalization() {
+        let owner = Address::repeat_byte(0x11);
+        let watched_slot = U256::from(0x22);
+        let mut backend = TestBackend::new();
+
+        backend.tstore(
+            STORAGE_CREDITS_ADDRESS,
+            StorageCredits::pending_slot(owner, watched_slot),
+            U256::ONE,
+        );
+        sstore_storage_credits(
+            &mut backend,
+            owner,
+            Some(watched_slot),
+            &sstore_result(U256::ONE, U256::ZERO),
+        )
+        .unwrap();
+
+        let mut state = backend.transient_state(owner);
+        assert_eq!(state.pending_credits, 1);
+        assert_eq!(backend.persistent_credit(owner), U256::ZERO);
+
+        state.mode = CreditMode::Direct;
+        state.budget = u64::MAX;
+        backend.tstore(
+            STORAGE_CREDITS_ADDRESS,
+            StorageCredits::slot(owner),
+            state.into(),
+        );
+        let gas_before = backend.gas_tracker.remaining();
+
+        sstore_storage_credits(
+            &mut backend,
+            owner,
+            Some(U256::from(0x33)),
+            &sstore_result(U256::ZERO, U256::ONE),
+        )
+        .unwrap();
+
+        let state = backend.transient_state(owner);
+        assert_eq!(state.pending_credits, 1);
+        assert_eq!(state.budget, u64::MAX);
+        assert_eq!(backend.persistent_credit(owner), U256::ZERO);
+        assert!(backend.gas_tracker.remaining() < gas_before);
+    }
+
+    #[test]
+    fn unregistered_zero_key_clear_mints_persistent_credit() {
+        let owner = Address::repeat_byte(0x44);
+        let mut backend = TestBackend::new();
+
+        sstore_storage_credits(
+            &mut backend,
+            owner,
+            Some(U256::ZERO),
+            &sstore_result(U256::ONE, U256::ZERO),
+        )
+        .unwrap();
+
+        assert_eq!(backend.transient_state(owner).pending_credits, 0);
+        assert_eq!(backend.persistent_credit(owner), U256::ONE);
+    }
 }
