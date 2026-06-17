@@ -36,6 +36,7 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    exhausted: bool,
 }
 
 impl BestTransactionsPrewarming {
@@ -67,6 +68,7 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop,
+            exhausted: false,
         };
 
         let prewarm_executor = executor.clone();
@@ -263,13 +265,31 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        if self.exhausted {
+            return None;
         }
+
+        match self.transactions_rx.try_recv() {
+            Ok(Some(tx)) => return Some(tx),
+            Ok(None) => {
+                self.exhausted = true;
+                return None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => return None,
+        }
+
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+
+        match self.transactions_rx.recv().ok()? {
+            Some(tx) => Some(tx),
+            None => {
+                self.exhausted = true;
+                None
+            }
+        }
     }
 }
 
@@ -277,6 +297,7 @@ impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        self.exhausted = false;
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
                 tx: transaction.clone(),
@@ -998,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_exhaustion_is_reused_after_eager_advances() {
         let executor = TaskExecutor::test();
         let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
@@ -1007,10 +1028,12 @@ mod tests {
         wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
     }
 
     #[test]
