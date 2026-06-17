@@ -905,14 +905,9 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state_rx = trie_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
-        } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
-        };
+            .map(|handle| handle.take_hashed_state_rx());
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
@@ -952,6 +947,14 @@ where
             (Some(bal), Some(bal_hash))
         } else {
             (None, None)
+        };
+
+        let hashed_state = if let Some(hashed_state_rx) = hashed_state_rx {
+            hashed_state_rx
+                .recv()
+                .unwrap_or_else(|_| finish_provider.hashed_post_state(&db.bundle_state))
+        } else {
+            finish_provider.hashed_post_state(&db.bundle_state)
         };
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
