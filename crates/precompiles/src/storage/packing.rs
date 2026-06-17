@@ -97,12 +97,16 @@ pub fn extract_from_word<T: FromWord + StorableType>(
         )));
     }
 
-    // Calculate how many bits to shift right to align the value
-    let shift_bits = offset * 8;
     let mask = create_element_mask(bytes);
 
     // Extract and right-align the value
-    T::from_word((slot_value >> shift_bits) & mask)
+    let packed = if offset == 0 {
+        slot_value & mask
+    } else {
+        // Calculate how many bits to shift right to align the value
+        (slot_value >> (offset * 8)) & mask
+    };
+    T::from_word(packed)
 }
 
 /// Insert a packed value into a storage slot at a given byte offset.
