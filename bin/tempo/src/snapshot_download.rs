@@ -14,7 +14,9 @@ use tempo_telemetry_util::display_duration;
 use tracing::info;
 use url::Url;
 
-use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
+use crate::snapshot_manifest::{
+    CONSENSUS_ARCHIVE_ROOT, TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -316,7 +318,9 @@ fn consensus_archive_storage_partitions(bytes: &[u8]) -> eyre::Result<BTreeSet<S
             .wrap_err("failed reading consensus archive entry path")?
             .to_string_lossy()
             .to_string();
-        partitions.insert(consensus_archive_partition(&entry_path, entry_type)?);
+        if let Some((partition, _)) = consensus_archive_entry(&entry_path, entry_type)? {
+            partitions.insert(partition);
+        }
     }
     Ok(partitions)
 }
@@ -336,9 +340,12 @@ fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()>
             .wrap_err("failed reading consensus archive entry path")?
             .to_string_lossy()
             .to_string();
-        consensus_archive_partition(&entry_path, entry_type)?;
+        let Some((_, output_relative)) = consensus_archive_entry(&entry_path, entry_type)? else {
+            continue;
+        };
+        let output_relative = output_relative.to_string_lossy().to_string();
         if entry_type.is_dir() {
-            let output_path = safe_output_path(target_dir, &entry_path)?;
+            let output_path = safe_output_path(target_dir, &output_relative)?;
             fs::create_dir_all(&output_path)
                 .wrap_err_with(|| format!("failed to create {}", output_path.display()))?;
             continue;
@@ -349,7 +356,7 @@ fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()>
             "consensus archive contains a non-file entry",
         );
 
-        let output_path = safe_output_path(target_dir, &entry_path)?;
+        let output_path = safe_output_path(target_dir, &output_relative)?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
@@ -361,18 +368,41 @@ fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()>
     Ok(())
 }
 
-fn consensus_archive_partition(relative: &str, entry_type: tar::EntryType) -> eyre::Result<String> {
+fn consensus_archive_entry(
+    relative: &str,
+    entry_type: tar::EntryType,
+) -> eyre::Result<Option<(String, PathBuf)>> {
     let path = safe_relative_path(relative)?;
     let mut components = path.components();
-    let Some(Component::Normal(partition)) = components.next() else {
+    let Some(Component::Normal(root)) = components.next() else {
         bail!("consensus archive entry path must not be empty");
+    };
+    ensure!(
+        root == std::ffi::OsStr::new(CONSENSUS_ARCHIVE_ROOT),
+        "consensus archive entry must be under `{CONSENSUS_ARCHIVE_ROOT}`: {relative}",
+    );
+    let Some(Component::Normal(partition)) = components.next() else {
+        ensure!(
+            entry_type.is_dir(),
+            "consensus archive root entry must be a directory: {relative}",
+        );
+        return Ok(None);
     };
     let partition = partition.to_string_lossy().to_string();
     ensure!(
         tempo_consensus::storage::snapshot::is_snapshot_storage_partition(&partition),
         "consensus archive contains unexpected storage partition: {partition}",
     );
-    if components.next().is_none() {
+    let mut output_relative = PathBuf::from(&partition);
+    let mut is_partition_root = true;
+    for component in components {
+        is_partition_root = false;
+        let Component::Normal(component) = component else {
+            bail!("invalid consensus archive entry path: {relative}");
+        };
+        output_relative.push(component);
+    }
+    if is_partition_root {
         ensure!(
             entry_type.is_dir(),
             "consensus archive partition entry must be a directory: {relative}",
@@ -382,7 +412,7 @@ fn consensus_archive_partition(relative: &str, entry_type: tar::EntryType) -> ey
         entry_type.is_dir() || entry_type.is_file(),
         "consensus archive contains a non-file entry",
     );
-    Ok(partition)
+    Ok(Some((partition, output_relative)))
 }
 
 fn safe_output_path(root: &Path, relative: &str) -> eyre::Result<PathBuf> {
@@ -509,7 +539,7 @@ mod tests {
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
         let mut builder = tar::Builder::new(encoder);
         builder
-            .append_dir_all(partition_name, source.path().join(partition_name))
+            .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source.path())
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
@@ -534,7 +564,7 @@ mod tests {
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
         let mut builder = tar::Builder::new(encoder);
         builder
-            .append_dir_all("unexpected-partition", &partition)
+            .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source.path())
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();

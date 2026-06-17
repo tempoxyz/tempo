@@ -2,13 +2,14 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
     time::Instant,
 };
 
 use alloy_primitives::B256;
 use clap::{ArgMatches, FromArgMatches, Parser};
 use commonware_runtime::Runner as _;
-use eyre::{Context as _, OptionExt, bail, ensure};
+use eyre::{Context as _, OptionExt, ensure};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
     manifest::{SingleArchive, SnapshotManifest},
@@ -22,13 +23,13 @@ use reth_provider::{
     providers::{BlockchainProvider, ReadOnlyConfig},
 };
 use serde::{Deserialize, Serialize};
-use tar::HeaderMode;
 use tempfile::TempDir;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
 use tempo_node::node::TempoNode;
 use tempo_telemetry_util::display_duration;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
+pub(crate) const CONSENSUS_ARCHIVE_ROOT: &str = "consensus";
 const CONSENSUS_ARCHIVE_FILE: &str = "consensus.tar.zst";
 
 type TempoExecutionProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
@@ -144,15 +145,13 @@ impl Args {
             package_consensus_archive(output_dir, &prepared_consensus.archive_dir)
                 .wrap_err("failed to package consensus storage")?;
 
-        let tip_digest = consensus_state.tip_finalization.proposal.payload;
-        let anchor_digest = consensus_state.anchor_finalization.proposal.payload;
         let consensus_manifest = TempoConsensusManifest {
             execution_finalized_height: execution_finalized_num_hash.number,
             execution_finalized_digest: execution_finalized_num_hash.hash,
             tip_finalization_height: consensus_state.tip_finalization_height,
-            tip_finalization_digest: tip_digest.0,
+            tip_finalization_digest: consensus_state.tip_finalization_digest.0,
             anchor_finalization_height: consensus_state.anchor_finalization_height,
-            anchor_finalization_digest: anchor_digest.0,
+            anchor_finalization_digest: consensus_state.anchor_finalization_digest.0,
             consensus_archive,
         };
 
@@ -227,31 +226,39 @@ fn prepare_snapshot_consensus_archive(
     consensus_dir: &Path,
     execution_finalized_height: u64,
 ) -> eyre::Result<PreparedConsensusSnapshot> {
+    let archive_dir = tempfile::tempdir().wrap_err("failed to create consensus snapshot dir")?;
+    let archive_storage_dir = archive_dir.path().to_path_buf();
+    let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
+
+    let writer_thread = thread::spawn(move || -> eyre::Result<()> {
+        let output_runtime_config = commonware_runtime::tokio::Config::default()
+            .with_storage_directory(archive_storage_dir);
+        let output_runner = commonware_runtime::tokio::Runner::new(output_runtime_config);
+        output_runner.start(|context| async move {
+            tempo_consensus::storage::snapshot::write_archive(&context, archive_entries_rx).await
+        })
+    });
+
     let source_runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
     let source_runner = commonware_runtime::tokio::Runner::new(source_runtime_config);
-    let prepared = source_runner.start(|context| async move {
-        tempo_consensus::storage::snapshot::prepare(&context, execution_finalized_height).await
-    })?;
-
-    let archive_dir = tempfile::tempdir().wrap_err("failed to create consensus snapshot dir")?;
-    let finalizations_runtime_config =
-        commonware_runtime::tokio::Config::default().with_storage_directory(archive_dir.path());
-    let finalizations_runner = commonware_runtime::tokio::Runner::new(finalizations_runtime_config);
-    finalizations_runner.start(|context| async move {
-        tempo_consensus::storage::snapshot::write_finalizations_archive(
+    let state = source_runner.start(|context| async move {
+        tempo_consensus::storage::snapshot::prepare(
             &context,
-            prepared.finalization_archive_entries,
+            execution_finalized_height,
+            archive_entries_tx,
         )
         .await
-    })?;
-    copy_prunable_partitions(consensus_dir, archive_dir.path())?;
+    });
 
-    Ok(PreparedConsensusSnapshot {
-        state: prepared.state,
-        archive_dir,
-    })
+    let writer_result = writer_thread
+        .join()
+        .map_err(|_| eyre::eyre!("snapshot consensus archive writer panicked"))?;
+    let state = state?;
+    writer_result?;
+
+    Ok(PreparedConsensusSnapshot { state, archive_dir })
 }
 
 struct PreparedConsensusSnapshot {
@@ -264,6 +271,7 @@ fn package_consensus_archive(
     archive_dir: &TempDir,
 ) -> eyre::Result<SingleArchive> {
     let archive_path = output_dir.join(CONSENSUS_ARCHIVE_FILE);
+    let decompressed_size = directory_file_size(archive_dir.path())?;
     write_zstd_tar_archive(&archive_path, archive_dir.path())?;
     let size = fs::metadata(&archive_path)
         .wrap_err_with(|| format!("failed to stat {}", archive_path.display()))?
@@ -272,69 +280,38 @@ fn package_consensus_archive(
     Ok(SingleArchive {
         file: CONSENSUS_ARCHIVE_FILE.to_string(),
         size,
-        decompressed_size: 0,
+        decompressed_size,
         blake3: Some(hash_file_blake3(&archive_path)?),
         output_files: Vec::new(),
     })
 }
 
-fn copy_prunable_partitions(consensus_dir: &Path, archive_dir: &Path) -> eyre::Result<()> {
-    for entry in sorted_dir_entries(consensus_dir)? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !tempo_consensus::storage::snapshot::is_prunable_finalized_blocks_partition(&name) {
-            continue;
-        }
-        copy_path(&entry.path(), &archive_dir.join(&name))?;
-    }
-    Ok(())
-}
-
-fn copy_path(source: &Path, target: &Path) -> eyre::Result<()> {
-    let metadata = fs::symlink_metadata(source)
-        .wrap_err_with(|| format!("failed to stat {}", source.display()))?;
-    ensure!(
-        !metadata.file_type().is_symlink(),
-        "consensus partition contains symlink: {}",
-        source.display(),
-    );
-
-    if metadata.is_dir() {
-        fs::create_dir_all(target)
-            .wrap_err_with(|| format!("failed to create {}", target.display()))?;
-        for entry in sorted_dir_entries(source)? {
-            copy_path(&entry.path(), &target.join(entry.file_name()))?;
-        }
-        return Ok(());
-    }
-
+fn directory_file_size(path: &Path) -> eyre::Result<u64> {
+    let metadata =
+        fs::metadata(path).wrap_err_with(|| format!("failed to stat {}", path.display()))?;
     if metadata.is_file() {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
-        }
-        fs::copy(source, target).wrap_err_with(|| {
-            format!(
-                "failed to copy consensus partition file {} to {}",
-                source.display(),
-                target.display(),
+        return Ok(metadata.len());
+    }
+
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+
+    let mut size = 0_u64;
+    for entry in fs::read_dir(path)
+        .wrap_err_with(|| format!("failed to read directory {}", path.display()))?
+    {
+        let entry = entry
+            .wrap_err_with(|| format!("failed to read directory entry in {}", path.display()))?;
+        let entry_size = directory_file_size(&entry.path())?;
+        size = size.checked_add(entry_size).ok_or_else(|| {
+            eyre::eyre!(
+                "consensus archive plain-output size exceeds u64::MAX under {}",
+                path.display()
             )
         })?;
-        return Ok(());
     }
-
-    bail!(
-        "unsupported consensus partition entry: {}",
-        source.display()
-    )
-}
-
-fn sorted_dir_entries(dir: &Path) -> eyre::Result<Vec<fs::DirEntry>> {
-    let mut entries = fs::read_dir(dir)
-        .wrap_err_with(|| format!("failed to read directory {}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .wrap_err_with(|| format!("failed to read directory entry in {}", dir.display()))?;
-    entries.sort_by_key(fs::DirEntry::file_name);
-    Ok(entries)
+    Ok(size)
 }
 
 fn write_zstd_tar_archive(path: &Path, source_dir: &Path) -> eyre::Result<()> {
@@ -343,47 +320,14 @@ fn write_zstd_tar_archive(path: &Path, source_dir: &Path) -> eyre::Result<()> {
     let mut encoder = zstd::Encoder::new(file, 0)?;
     encoder.include_checksum(true)?;
     let mut builder = tar::Builder::new(encoder);
-    builder.mode(HeaderMode::Deterministic);
-    builder.follow_symlinks(false);
-
-    for entry in sorted_dir_entries(source_dir)? {
-        let source_path = entry.path();
-        let archive_path = PathBuf::from(entry.file_name());
-        let metadata = fs::symlink_metadata(&source_path)
-            .wrap_err_with(|| format!("failed to stat {}", source_path.display()))?;
-        ensure!(
-            !metadata.file_type().is_symlink(),
-            "consensus archive source contains symlink: {}",
-            source_path.display(),
-        );
-
-        if metadata.is_dir() {
-            builder
-                .append_dir_all(&archive_path, &source_path)
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to append consensus directory {} from {}",
-                        archive_path.display(),
-                        source_path.display(),
-                    )
-                })?;
-        } else if metadata.is_file() {
-            builder
-                .append_path_with_name(&source_path, &archive_path)
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to append consensus file {} from {}",
-                        archive_path.display(),
-                        source_path.display(),
-                    )
-                })?;
-        } else {
-            bail!(
-                "unsupported consensus archive source entry: {}",
-                source_path.display(),
-            );
-        }
-    }
+    builder
+        .append_dir_all(CONSENSUS_ARCHIVE_ROOT, source_dir)
+        .wrap_err_with(|| {
+            format!(
+                "failed to append consensus archive from {}",
+                source_dir.display()
+            )
+        })?;
 
     builder.finish()?;
     let encoder = builder.into_inner()?;
@@ -522,7 +466,28 @@ mod tests {
             .collect::<Vec<_>>();
         paths.sort();
 
-        assert!(paths.contains(&"partition-key/nested/00".to_string()));
-        assert!(paths.contains(&"partition-value/00".to_string()));
+        assert!(paths.contains(&"consensus/partition-key/nested/00".to_string()));
+        assert!(paths.contains(&"consensus/partition-value/00".to_string()));
+    }
+
+    #[test]
+    fn package_consensus_archive_sets_plain_output_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("partition").join("nested")).unwrap();
+        fs::write(dir.path().join("partition").join("00"), b"abc").unwrap();
+        fs::write(
+            dir.path().join("partition").join("nested").join("01"),
+            b"defg",
+        )
+        .unwrap();
+
+        let archive = package_consensus_archive(output.path(), &dir).unwrap();
+
+        assert_eq!(archive.decompressed_size, 7);
+        assert_eq!(archive.file, "consensus.tar.zst");
+        assert!(archive.size > 0);
+        assert!(archive.blake3.is_some());
+        assert!(archive.output_files.is_empty());
     }
 }

@@ -1,11 +1,14 @@
-use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
+use commonware_consensus::{
+    Heightable as _,
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+};
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::{Archive as _, Identifier, immutable};
 use eyre::{WrapErr as _, eyre};
 
 use crate::{
-    consensus::Digest,
+    consensus::{Digest, block::Block},
     storage::{
         BUFFER_POOL_CAPACITY, BUFFER_POOL_PAGE_SIZE, init_finalizations_archive,
         init_prunable_finalized_blocks_archive,
@@ -21,37 +24,38 @@ pub struct State {
     pub execution_finalized_height: u64,
     /// Highest finalization certificate height known to consensus storage.
     pub tip_finalization_height: u64,
-    /// Highest finalization certificate known to consensus storage.
-    pub tip_finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    /// Block digest carried by the highest finalization certificate known to
+    /// consensus storage.
+    pub tip_finalization_digest: Digest,
     /// Anchor finalization certificate height used to bootstrap consensus.
     pub anchor_finalization_height: u64,
-    /// Anchor finalization certificate used to bootstrap consensus.
-    pub anchor_finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    /// Block digest carried by the anchor finalization certificate.
+    pub anchor_finalization_digest: Digest,
 }
 
-/// Finalization archive entry to copy into the snapshot archive.
-pub struct FinalizationArchiveEntry {
-    pub height: u64,
-    pub finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+/// Consensus archive entry to copy into the snapshot archive.
+pub struct ArchiveEntry(ArchiveEntryKind);
+
+enum ArchiveEntryKind {
+    Finalization {
+        height: u64,
+        finalization: FinalizationCertificate,
+    },
+    Block(Block),
 }
 
-/// Prepared consensus snapshot state plus finalization entries to materialize.
-pub struct Prepared {
-    pub state: State,
-    pub finalization_archive_entries: Vec<FinalizationArchiveEntry>,
-}
-
-/// Prepares consensus finalized-block storage for snapshot packaging.
+/// Prepares consensus storage state for snapshot packaging.
 ///
-/// The prunable archive is left on disk for bundling. The returned state
-/// records both the latest consensus finalization certificate and an anchor
-/// certificate. When the anchor is above execution finalized, selection proves
-/// the prunable archive contains a contiguous path from execution finalized to
-/// the anchor.
+/// Finalization certificates and finalized blocks are streamed to the supplied
+/// archive writer. The returned state records both the latest consensus
+/// finalization point and the anchor point. When the anchor is above execution
+/// finalized, selection proves the source prunable archive contains a
+/// contiguous path from execution finalized to the anchor.
 pub async fn prepare<TContext>(
     context: &TContext,
     execution_finalized_height: u64,
-) -> eyre::Result<Prepared>
+    archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
+) -> eyre::Result<State>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
@@ -70,22 +74,22 @@ where
         find_anchor_and_tip_finalizations(&finalizations, &prunable, execution_finalized_height)
             .await?;
 
-    let finalization_archive_entries = collect_finalization_archive_entries(
+    stream_finalization_archive_entries(
         &finalizations,
         selected.anchor_height,
         selected.tip_height,
+        &archive_entries,
     )
     .await?;
 
-    Ok(Prepared {
-        state: State {
-            execution_finalized_height,
-            tip_finalization_height: selected.tip_height,
-            tip_finalization: selected.tip_finalization,
-            anchor_finalization_height: selected.anchor_height,
-            anchor_finalization: selected.anchor_finalization,
-        },
-        finalization_archive_entries,
+    stream_block_archive_entries(&prunable, execution_finalized_height, &archive_entries).await?;
+
+    Ok(State {
+        execution_finalized_height,
+        tip_finalization_height: selected.tip_height,
+        tip_finalization_digest: selected.tip_digest,
+        anchor_finalization_height: selected.anchor_height,
+        anchor_finalization_digest: selected.anchor_digest,
     })
 }
 
@@ -106,55 +110,76 @@ fn partition_prefix(archive_name: &str) -> String {
     format!("{}-{archive_name}-", crate::PARTITION_PREFIX)
 }
 
-/// Materialize finalization entries into a fresh finalizations-by-height archive.
-pub async fn write_finalizations_archive<TContext>(
+/// Materialize consensus archive entries into fresh storage archives.
+pub async fn write_archive<TContext>(
     context: &TContext,
-    entries: Vec<FinalizationArchiveEntry>,
+    mut entries: tokio::sync::mpsc::Receiver<ArchiveEntry>,
 ) -> eyre::Result<()>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut finalizations =
-        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
+        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
             .await
             .wrap_err("failed to open snapshot finalizations-by-height archive")?;
-
-    for entry in entries {
-        let key = entry.finalization.proposal.payload;
-        finalizations
-            .put(entry.height, key, entry.finalization)
+    let mut blocks =
+        init_prunable_finalized_blocks_archive(context, crate::PARTITION_PREFIX, page_cache)
             .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed writing snapshot finalization certificate at height `{}`",
-                    entry.height,
-                )
-            })?;
+            .wrap_err("failed to open snapshot prunable finalized blocks archive")?;
+
+    while let Some(entry) = entries.recv().await {
+        match entry.0 {
+            ArchiveEntryKind::Finalization {
+                height,
+                finalization,
+            } => {
+                let key = finalization.proposal.payload;
+                finalizations
+                    .put(height, key, finalization)
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed writing snapshot finalization certificate at height `{height}`",
+                        )
+                    })?;
+            }
+            ArchiveEntryKind::Block(block) => {
+                let height = block.height().get();
+                let key = block.digest();
+                blocks.put(height, key, block).await.wrap_err_with(|| {
+                    format!("failed writing snapshot finalized block at height `{height}`")
+                })?;
+            }
+        }
     }
 
     finalizations
         .sync()
         .await
-        .wrap_err("failed syncing snapshot finalizations-by-height archive")
+        .wrap_err("failed syncing snapshot finalizations-by-height archive")?;
+    blocks
+        .sync()
+        .await
+        .wrap_err("failed syncing snapshot prunable finalized blocks archive")
 }
 
 struct AnchorAndTipFinalizations {
     tip_height: u64,
-    tip_finalization: FinalizationCertificate,
+    tip_digest: Digest,
     anchor_height: u64,
-    anchor_finalization: FinalizationCertificate,
+    anchor_digest: Digest,
 }
 
-async fn collect_finalization_archive_entries<TContext>(
+async fn stream_finalization_archive_entries<TContext>(
     finalizations: &FinalizationsArchive<TContext>,
     anchor_height: u64,
     tip_height: u64,
-) -> eyre::Result<Vec<FinalizationArchiveEntry>>
+    archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
+) -> eyre::Result<()>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
-    let mut entries = Vec::new();
     let mut height = anchor_height;
 
     loop {
@@ -165,10 +190,18 @@ where
                 format!("failed reading finalization certificate at height `{height}`")
             })?
         {
-            entries.push(FinalizationArchiveEntry {
-                height,
-                finalization,
-            });
+            archive_entries
+                .send(ArchiveEntry(ArchiveEntryKind::Finalization {
+                    height,
+                    finalization,
+                }))
+                .await
+                .map_err(|_| {
+                    eyre!(
+                        "snapshot finalizations archive writer closed while sending certificate \
+                        at height `{height}`"
+                    )
+                })?;
         }
 
         if height == tip_height {
@@ -180,7 +213,43 @@ where
             .ok_or_else(|| eyre!("tip finalization height cannot exceed u64::MAX"))?;
     }
 
-    Ok(entries)
+    Ok(())
+}
+
+async fn stream_block_archive_entries<TContext>(
+    prunable: &super::hybrid::Prunable<TContext>,
+    execution_finalized_height: u64,
+    archive_entries: &tokio::sync::mpsc::Sender<ArchiveEntry>,
+) -> eyre::Result<()>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    let Some(first_height) = execution_finalized_height.checked_add(1) else {
+        return Ok(());
+    };
+    for (start, end) in prunable.ranges_from(first_height) {
+        for height in start.max(first_height)..=end {
+            if let Some(block) = prunable
+                .get(Identifier::Index(height))
+                .await
+                .wrap_err_with(|| {
+                    format!("failed reading prunable finalized block at height `{height}`")
+                })?
+            {
+                archive_entries
+                    .send(ArchiveEntry(ArchiveEntryKind::Block(block)))
+                    .await
+                    .map_err(|_| {
+                        eyre!(
+                            "snapshot prunable archive writer closed while sending block at \
+                            height `{height}`"
+                        )
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn find_anchor_and_tip_finalizations<TContext>(
@@ -207,8 +276,9 @@ where
             )
         })?;
 
+    let tip_digest = tip_finalization.proposal.payload;
     let mut candidate_height = tip_height;
-    let mut candidate_finalization = tip_finalization.clone();
+    let mut candidate_digest = tip_digest;
 
     // Try to find a path from `candidate_height` to `execution_finalized_height`.
     // If there are no holes, then the anchor is the candidate.
@@ -222,9 +292,9 @@ where
         if candidate_height <= execution_finalized_height {
             return Ok(AnchorAndTipFinalizations {
                 tip_height,
-                tip_finalization,
+                tip_digest,
                 anchor_height: candidate_height,
-                anchor_finalization: candidate_finalization,
+                anchor_digest: candidate_digest,
             });
         }
 
@@ -234,13 +304,13 @@ where
         else {
             return Ok(AnchorAndTipFinalizations {
                 tip_height,
-                tip_finalization,
+                tip_digest,
                 anchor_height: candidate_height,
-                anchor_finalization: candidate_finalization,
+                anchor_digest: candidate_digest,
             });
         };
 
-        let Some((next_height, next_finalization)) =
+        let Some((next_height, next_digest)) =
             find_nearest_finalization_below(finalizations, hole).await?
         else {
             return Err(eyre!(
@@ -252,7 +322,7 @@ where
         };
 
         candidate_height = next_height;
-        candidate_finalization = next_finalization;
+        candidate_digest = next_digest;
     }
 }
 
@@ -288,7 +358,7 @@ where
 async fn find_nearest_finalization_below<TContext>(
     finalizations: &FinalizationsArchive<TContext>,
     mut height: u64,
-) -> eyre::Result<Option<(u64, FinalizationCertificate)>>
+) -> eyre::Result<Option<(u64, Digest)>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
@@ -304,7 +374,7 @@ where
                 format!("failed reading finalization certificate at height `{height}`")
             })?
         {
-            return Ok(Some((height, finalization)));
+            return Ok(Some((height, finalization.proposal.payload)));
         }
     }
 }
