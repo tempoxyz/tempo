@@ -140,24 +140,19 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             .map_err(|_| B::Error::fatal_external())?;
 
         match transient_state.mode {
-            CreditMode::Direct => {
-                if credit > 0 && transient_state.budget > 0 {
-                    // If able to spend credits, use one to cover the 245k creditable portion.
-                    credit -= 1;
-                    was_changed = true;
+            CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
+                // Use one to cover the 245k creditable portion.
+                credit -= 1;
+                was_changed = true;
 
-                    // An unlimited budget is never decremented.
-                    if transient_state.budget != u64::MAX {
-                        transient_state.budget -= 1;
-                        store_credit_state(backend, account_slot, transient_state)?;
-                    }
-                } else {
-                    // If unable to spend credits, charge the 245k creditable portion as gas.
-                    backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                // An unlimited budget is never decremented.
+                if transient_state.budget != u64::MAX {
+                    transient_state.budget -= 1;
+                    store_credit_state(backend, account_slot, transient_state)?;
                 }
             }
-            CreditMode::Preserve => {
-                // Always charge the 245k creditable portion as gas without consuming credits.
+            CreditMode::Direct | CreditMode::Preserve => {
+                // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Refund => {
