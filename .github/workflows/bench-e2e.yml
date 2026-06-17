@@ -473,6 +473,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
+          clean: false
 
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'
