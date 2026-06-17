@@ -2,13 +2,13 @@
 
 use crate::{
     Precompile, charge_input_cost, dispatch_call, mutate_void,
-    tip1060_storage_credits::TIP1060StorageCredits, view,
+    tip1060_storage_credits::StorageCredits, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::ITIP1060StorageCredits::ITIP1060StorageCreditsCalls;
+use tempo_contracts::precompiles::IStorageCredits::IStorageCreditsCalls;
 
-impl Precompile for TIP1060StorageCredits {
+impl Precompile for StorageCredits {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -17,23 +17,19 @@ impl Precompile for TIP1060StorageCredits {
         dispatch_call(
             calldata,
             &[],
-            ITIP1060StorageCreditsCalls::abi_decode,
+            IStorageCreditsCalls::abi_decode,
             |call| match call {
-                ITIP1060StorageCreditsCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c.account))
-                }
-                ITIP1060StorageCreditsCalls::modeOf(call) => {
+                IStorageCreditsCalls::balanceOf(call) => view(call, |c| self.balance_of(c.account)),
+                IStorageCreditsCalls::modeOf(call) => {
                     view(call, |c| self.mode_of(c.account).map(Into::into))
                 }
-                ITIP1060StorageCreditsCalls::budgetOf(call) => {
-                    view(call, |c| self.budget_of(c.account))
-                }
-                ITIP1060StorageCreditsCalls::setMode(call) => {
+                IStorageCreditsCalls::budgetOf(call) => view(call, |c| self.budget_of(c.account)),
+                IStorageCreditsCalls::setMode(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
                         self.set_mode(sender, c.newMode)
                     })
                 }
-                ITIP1060StorageCreditsCalls::setBudget(call) => {
+                IStorageCreditsCalls::setBudget(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
                         self.set_budget(sender, c.credits)
                     })
@@ -55,13 +51,13 @@ mod tests {
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut storage_credits_precompile = TIP1060StorageCredits::new();
+            let mut storage_credits_precompile = StorageCredits::new();
 
             let unsupported = check_selector_coverage(
                 &mut storage_credits_precompile,
-                ITIP1060StorageCreditsCalls::SELECTORS,
-                "ITIP1060StorageCredits",
-                ITIP1060StorageCreditsCalls::name_by_selector,
+                IStorageCreditsCalls::SELECTORS,
+                "IStorageCredits",
+                IStorageCreditsCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

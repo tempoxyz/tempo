@@ -23,10 +23,10 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
+    storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
-    tip1060_storage_credits::{StorageCreditDeltas, TIP1060StorageCredits},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -101,7 +101,7 @@ impl StablecoinDEX {
             // Store the full logical balance even though creating this counter slot spends one
             // real DEX-owned TIP-1060 credit. The real balance is temporarily one lower while the
             // counter exists, and the credit is minted back when the counter is cleared to zero.
-            let mut storage_credits = TIP1060StorageCredits::new();
+            let mut storage_credits = StorageCredits::new();
             let (_, delta) = storage_credits.with_budget(self.address, 1, || {
                 self.dex_storage_credits[user].write(updated)
             })?;
@@ -120,7 +120,7 @@ impl StablecoinDEX {
 
     /// Deletes a reusable order record and returns the number of DEX TIP-1060 credits minted.
     fn delete_order(&mut self, order: &Order) -> Result<u64> {
-        TIP1060StorageCredits::new()
+        StorageCredits::new()
             .track_credit_delta(self.address, || self.orders[order.order_id()].delete())
             .map(|delta| delta.max(0) as u64)
     }
@@ -140,7 +140,7 @@ impl StablecoinDEX {
         // TIP-1060 credit represented by that bookkeeping slot available to the direct budget.
         self.dex_storage_credits[user].delete()?;
 
-        let mut storage_credits = TIP1060StorageCredits::new();
+        let mut storage_credits = StorageCredits::new();
         let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
             self.orders[order.order_id()].write(order)
         })?;
@@ -1314,7 +1314,7 @@ impl StablecoinDEX {
         // Update linked list
         if order.prev() != 0 {
             let predecessor_id = order.prev();
-            let delta = TIP1060StorageCredits::new().track_credit_delta(self.address, || {
+            let delta = StorageCredits::new().track_credit_delta(self.address, || {
                 self.orders[predecessor_id].next.write(order.next())
             })?;
             if delta > 0 {

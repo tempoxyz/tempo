@@ -8,9 +8,9 @@ use alloy::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinDEX,
+    IRolesAuth, IStablecoinDEX, IStorageCredits,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, ITIP1060StorageCredits,
+    ITIP20Factory,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -141,9 +141,8 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
 
     let exchange =
         |index: usize| IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, providers[index].clone());
-    let tip1060_credits = |index: usize| {
-        ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, providers[index].clone())
-    };
+    let tip1060_credits =
+        |index: usize| IStorageCredits::new(STORAGE_CREDITS_ADDRESS, providers[index].clone());
     let mut gas = BTreeMap::new();
 
     macro_rules! credits {

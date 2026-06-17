@@ -11,7 +11,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+    storage_credits::{StorageCreditsBackend, sstore_storage_credits},
 };
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
@@ -161,11 +161,6 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.transient.insert((address, key), value);
-    }
-
-    #[inline]
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
-        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 
