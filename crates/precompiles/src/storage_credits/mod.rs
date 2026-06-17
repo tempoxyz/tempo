@@ -100,12 +100,7 @@ impl StorageCredits {
     }
 
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        let mode = if credit_budget > 0 {
-            CreditMode::Direct
-        } else {
-            CreditMode::Preserve
-        };
-        self.write_mode_with_budget(msg_sender, mode, credit_budget)
+        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
     }
 
     fn write_mode_with_budget(
@@ -207,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_budget_zero_selects_preserve_immediately() -> eyre::Result<()> {
+    fn test_set_budget_zero_stays_direct_with_zero_budget() -> eyre::Result<()> {
         let account = Address::repeat_byte(0x12);
         let mut storage = HashMapStorageProvider::new(1);
 
@@ -219,7 +214,7 @@ mod tests {
             assert_eq!(credits.budget_of(account)?, 2);
 
             credits.set_budget(account, 0)?;
-            assert_eq!(credits.mode_of(account)?, CreditMode::Preserve);
+            assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
             assert_eq!(credits.budget_of(account)?, 0);
 
             Ok(())

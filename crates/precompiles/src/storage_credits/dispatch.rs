@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_credits_set_budget_zero_selects_preserve() -> eyre::Result<()> {
+    fn test_storage_credits_set_budget_zero_stays_direct() -> eyre::Result<()> {
         let caller = Address::repeat_byte(0x11);
         let mut storage = HashMapStorageProvider::new(1);
 
@@ -107,8 +107,8 @@ mod tests {
             )?;
             assert_eq!(
                 IStorageCredits::modeOfCall::abi_decode_returns(&mode.bytes)?,
-                IStorageCredits::Mode::Preserve,
-                "setBudget(0) must immediately select Preserve mode"
+                IStorageCredits::Mode::Direct,
+                "setBudget(0) keeps Direct selected with a zero spend budget"
             );
 
             let budget = storage_credits_precompile.call(

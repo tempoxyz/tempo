@@ -139,29 +139,21 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         // This hook manages the 245k creditable gas, independent of the original value.
         // revm's SSTORE function adds the 5k residual for clean writes (`original == present == 0`).
         match transient_state.mode {
-            CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
-                // Consume one credit to cover the 245k creditable portion.
-                credit -= 1;
-                was_changed = true;
-
-                // An unlimited budget is never decremented.
-                if transient_state.budget != u64::MAX {
-                    transient_state.budget -= 1;
-                    if transient_state.budget == 0 {
-                        // When budget is exhausted, switch to `Preserve` mode.
-                        transient_state.mode = CreditMode::Preserve;
-                    }
-                    store_credit_state(backend, account_slot, transient_state)?;
-                }
-            }
             CreditMode::Direct => {
-                // If no credit available, charge the 245k creditable portion as gas.
-                if transient_state.budget == 0 {
-                    // When budget is exhausted, switch to `Preserve` mode.
-                    transient_state.mode = CreditMode::Preserve;
-                    store_credit_state(backend, account_slot, transient_state)?;
+                if credit > 0 && transient_state.budget > 0 {
+                    // If credits + budget, consume a credit to cover the 245k creditable portion.
+                    credit -= 1;
+                    was_changed = true;
+
+                    // An unlimited budget is never decremented.
+                    if transient_state.budget != u64::MAX {
+                        transient_state.budget -= 1;
+                        store_credit_state(backend, account_slot, transient_state)?;
+                    }
+                } else {
+                    // If no credit or budget available, charge the 245k creditable portion as gas.
+                    backend.charge_gas(STORAGE_CREDIT_VALUE)?;
                 }
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Preserve => {
                 // Always charge the 245k creditable portion as gas without consuming credits.
