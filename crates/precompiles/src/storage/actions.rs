@@ -43,6 +43,11 @@ impl StorageActions {
         self.actions.borrow_mut().clear();
     }
 
+    /// Returns true if actions recording is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.get()
+    }
+
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
