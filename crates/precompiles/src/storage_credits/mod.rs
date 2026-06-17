@@ -100,7 +100,12 @@ impl StorageCredits {
     }
 
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
+        let mode = if credit_budget > 0 {
+            CreditMode::Direct
+        } else {
+            CreditMode::Preserve
+        };
+        self.write_mode_with_budget(msg_sender, mode, credit_budget)
     }
 
     fn write_mode_with_budget(
