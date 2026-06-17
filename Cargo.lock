@@ -13348,7 +13348,6 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-sol-types",
  "crossbeam-channel",
  "metrics",
  "reth-basic-payload-builder",
