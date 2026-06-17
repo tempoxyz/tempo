@@ -8,7 +8,7 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{CreditMode, StorageCredits, TransientState};
+use super::{ACCOUNT_SPACE, CreditMode, POST_TX_SPACE, StorageCredits, TransientState};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
@@ -88,32 +88,31 @@ fn store_credit_state<B: StorageCreditsBackend>(
 }
 
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
-///
-/// Returns whether to skip normal dynamic/state gas and/or refund accounting.
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
     caller_state_load: &StateLoad<SStoreResult>,
-) -> Result<(), B::Error> {
+) -> Result<bool, B::Error> {
+    let mut minted_credit = false;
     let values = &caller_state_load.data;
 
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
     // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
     if values.is_present_zero() == values.is_new_zero() {
-        return Ok(());
+        return Ok(minted_credit);
     }
 
     // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
     // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
     if owner == STORAGE_CREDITS_ADDRESS {
-        return Ok(());
+        return Ok(minted_credit);
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    let account_slot = StorageCredits::slot(owner);
+    let account_slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =
@@ -129,7 +128,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     if values.is_new_zero() {
         // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
-        was_changed = true;
+        (was_changed, minted_credit) = (true, true);
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
@@ -185,6 +184,48 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         if result.new_values_changes_present() && result.is_original_eq_present() {
             backend.charge_gas(backend.gas_params().sstore_reset_without_cold_load_cost())?;
         };
+    }
+
+    Ok(minted_credit)
+}
+
+/// Tracks same-transaction refunds deferred by post-tx-fee-refund-restorable storage clears.
+///
+/// TIP-1060 clears mint a persistent credit immediately, but fee-refund-restorable slots defer that
+/// credit from same-tx refund settlement until the slot is restored or post-tx reimbursement
+pub fn update_deferred_refund_status<B: StorageCreditsBackend>(
+    backend: &mut B,
+    owner: Address,
+    key: U256,
+    values: &SStoreResult,
+    minted_credit: bool,
+) -> Result<(), B::Error> {
+    if owner == STORAGE_CREDITS_ADDRESS || values.is_present_zero() == values.is_new_zero() {
+        return Ok(());
+    }
+
+    let candidate_key = StorageCredits::slot(POST_TX_SPACE, owner);
+    let candidate = backend.tload(STORAGE_CREDITS_ADDRESS, candidate_key);
+
+    // Only the registered fee-refund-restorable slot can defer or release a refund.
+    if candidate != key {
+        return Ok(());
+    }
+
+    let account_slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
+    let mut transient_state: TransientState = backend
+        .tload(STORAGE_CREDITS_ADDRESS, account_slot)
+        .try_into()
+        .map_err(|_| B::Error::fatal_external())?;
+
+    if values.is_new_zero() {
+        if minted_credit && !transient_state.deferred_refund {
+            transient_state.deferred_refund = true;
+            store_credit_state(backend, account_slot, transient_state)?;
+        }
+    } else if transient_state.deferred_refund {
+        transient_state.deferred_refund = false;
+        store_credit_state(backend, account_slot, transient_state)?;
     }
 
     Ok(())
