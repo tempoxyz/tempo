@@ -171,6 +171,126 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_recreates_limit_with_
     Ok(())
 }
 
+/// Demonstrates the TIP-1060 gap when a fee-token refund recreates the fee payer's balance slot.
+///
+/// The fee payer starts with exactly max fee plus transfer amount in DEFAULT_FEE_TOKEN. Fee
+/// precharge leaves exactly the transfer amount, the successful user TIP-20 transfer clears the
+/// payer's balance slot under normal accounting, and post-tx reimbursement recreates that slot with
+/// TIP-1060 accounting disabled.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_with_credit_retained()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url.clone());
+
+    let fee_payer = PrivateKeySigner::random();
+    let fee_payer_addr = fee_payer.address();
+    let fee_payer_provider = ProviderBuilder::new()
+        .wallet(fee_payer.clone())
+        .connect_http(setup.http_url);
+
+    let gas_limit = 500_000u64;
+    let gas_price = 1_000_000_000_000u128;
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let transfer_amount = U256::from(1_234u64);
+    let initial_fee_payer_balance = max_fee + transfer_amount;
+    let recipient = Address::repeat_byte(0xdd);
+
+    let fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, root_provider.clone());
+    let recipient_seed_receipt = fee_token
+        .transfer(recipient, U256::ONE)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(recipient_seed_receipt.status());
+    let fee_payer_seed_receipt = fee_token
+        .transfer(fee_payer_addr, initial_fee_payer_balance)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(fee_payer_seed_receipt.status());
+    assert_eq!(
+        fee_token.balanceOf(fee_payer_addr).call().await?,
+        initial_fee_payer_balance
+    );
+
+    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
+    let credit_before = credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?;
+
+    let tx = TempoTransaction {
+        chain_id: fee_payer_provider.get_chain_id().await?,
+        nonce: fee_payer_provider
+            .get_transaction_count(fee_payer_addr)
+            .await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let sig = fee_payer.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+
+    let tx_hash = fee_payer_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let receipt = root_provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .await?;
+    assert!(
+        receipt.status(),
+        "the primitive fee-token transaction must succeed so the user-call balance clear commits"
+    );
+    assert_eq!(receipt.fee_token, Some(DEFAULT_FEE_TOKEN));
+
+    let spent_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
+    let expected_refund = max_fee - spent_fee;
+    assert!(
+        expected_refund > U256::ZERO,
+        "gas limit must leave a non-zero fee refund to recreate the payer balance slot"
+    );
+
+    assert_eq!(
+        fee_token.balanceOf(fee_payer_addr).call().await?,
+        expected_refund,
+        "post-tx fee refund must recreate the fee payer's DEFAULT_FEE_TOKEN balance slot"
+    );
+    assert_eq!(
+        fee_token.balanceOf(recipient).call().await?,
+        transfer_amount + U256::ONE
+    );
+    assert_eq!(
+        credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
+        credit_before + 1,
+        "successful spend clears the fee payer balance under normal accounting, but post-tx refund recreates it with TIP-1060 disabled"
+    );
+
+    Ok(())
+}
+
 /// A normal TIP-20 precompile storage clear should mint a persistent TIP-1060 credit for the token.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -> eyre::Result<()> {
