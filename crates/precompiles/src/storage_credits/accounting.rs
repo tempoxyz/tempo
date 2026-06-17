@@ -82,9 +82,8 @@ fn store_credit_state<B: StorageCreditsBackend>(
     backend: &mut B,
     key: U256,
     state: TransientState,
-) -> Result<(), B::Error> {
+) {
     backend.tstore(STORAGE_CREDITS_ADDRESS, key, state.into());
-    Ok(())
 }
 
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
@@ -148,7 +147,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 // An unlimited budget is never decremented.
                 if transient_state.budget != u64::MAX {
                     transient_state.budget -= 1;
-                    store_credit_state(backend, account_slot, transient_state)?;
+                    store_credit_state(backend, account_slot, transient_state);
                 }
             }
             CreditMode::Direct | CreditMode::Preserve => {
@@ -160,7 +159,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 // creation, settled at end-of-transaction.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
-                store_credit_state(backend, account_slot, transient_state)?;
+                store_credit_state(backend, account_slot, transient_state);
             }
         }
     }
