@@ -10,9 +10,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
-};
+use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
@@ -31,7 +29,6 @@ use tempo_precompiles::{
     nonce::NonceManager,
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
-    tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -437,47 +434,22 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Warms the global keccak cache with storage slot hashes that will be accessed
+    /// Warms the global BLAKE3 cache with storage slot hashes that will be accessed
     /// during payment execution after pool validation.
     ///
-    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
-    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
-    /// which is unknown at validation time.
-    pub fn precalculate_keccak_slots(&self) {
+    /// Raw-address maps like `balances`, `user_reward_info`, and `receive_policies`
+    /// do not require hash precomputation. Fee-path slots like
+    /// `expiring_nonce_seen[hash]` are already cached from validation.
+    pub fn precalculate_blake3_slots(&self) {
         if !self.is_payment {
             return;
         }
 
         let sender = self.sender();
-        let fee_payer = self.fee_payer().unwrap_or(sender);
-        let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
 
-        // For payment transactions, warm sender + recipient balance and allowance slots.
-        if fee_payer != sender {
-            sender.mapping_slot(tip20_slots::BALANCES);
-        }
+        // Allowance slots for transferFrom variants: allowances[from][sender].
         for (_kind, input) in self.inner().calls() {
             if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
-                for addr in call.balance_addresses().into_iter().flatten() {
-                    if addr != fee_payer {
-                        addr.mapping_slot(tip20_slots::BALANCES);
-                    }
-                }
-                for addr in call.reward_addresses(sender).into_iter().flatten() {
-                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
-                        continue;
-                    }
-                    addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
-                }
-                if let Some(slot) = call
-                    .to()
-                    .map(|addr| addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
-                {
-                    let _ = keccak256(slot.to_be_bytes::<32>());
-                }
-
-                // Allowance slots for transferFrom variants: allowances[from][sender]
                 let from = match &call {
                     ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
                     ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),

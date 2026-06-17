@@ -38,7 +38,7 @@ reth-metrics.workspace = true
 revm.workspace = true
 
 alloy-consensus.workspace = true
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["blake3-cache-global"] }
 alloy-eips.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true

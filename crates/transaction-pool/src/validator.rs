@@ -647,8 +647,8 @@ where
                 let _ = transaction.transaction().expiring_nonce_slot();
                 let _ = transaction.transaction().nonce_key_slot();
 
-                // Warm the global keccak cache with storage slot hashes for this transaction.
-                transaction.transaction().precalculate_keccak_slots();
+                // Warm the global BLAKE3 cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_blake3_slots();
 
                 TransactionValidationOutcome::Valid {
                     balance,

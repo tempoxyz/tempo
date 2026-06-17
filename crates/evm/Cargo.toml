@@ -51,7 +51,11 @@ tracing.workspace = true
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
-alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }
+alloy-primitives = { workspace = true, features = [
+    "asm-keccak",
+    "blake3-cache-global",
+    "keccak-cache-global",
+] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-sol-types.workspace = true

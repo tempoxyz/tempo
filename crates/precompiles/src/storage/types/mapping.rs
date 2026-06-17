@@ -255,13 +255,14 @@ mod tests {
     use super::*;
     use crate::storage::StorageKey;
     use alloy::primitives::{Address, B256};
+    use alloy_primitives::blake3_256;
 
     fn hashed_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
         let key = key.as_ref();
         let mut buf = [0u8; 64];
         buf[32 - key.len()..32].copy_from_slice(key);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-        let mut hash = *blake3::hash(&buf).as_bytes();
+        let mut hash = blake3_256(buf).0;
         hash[0] = domains::HASHED_NAMESPACE;
         U256::from_be_bytes(hash)
     }
@@ -278,7 +279,7 @@ mod tests {
         // Slot in big-endian
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
-        let mut hash = *blake3::hash(&buf).as_bytes();
+        let mut hash = blake3_256(buf).0;
         hash[0] = domains::HASHED_NAMESPACE;
         let expected = U256::from_be_bytes(hash);
         let computed = key.mapping_slot(base_slot);

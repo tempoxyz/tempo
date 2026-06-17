@@ -26,6 +26,7 @@ use crate::{
     storage::{StorageOps, domains, packing},
 };
 use alloy::primitives::{Address, U256};
+use alloy_primitives::blake3_256;
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -362,7 +363,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        let mut output = *blake3::hash(&buf).as_bytes();
+        let mut output = blake3_256(buf).0;
         output[0] = domains::HASHED_NAMESPACE;
 
         U256::from_be_bytes(output)
