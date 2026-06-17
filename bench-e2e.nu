@@ -107,26 +107,6 @@ def removed-node-args-label [removed: list<string>] {
     }
 }
 
-def grant-sys-nice-capability [binaries: list<string>] {
-    for bin in ($binaries | where { |b| $b != "" } | uniq) {
-        let setcap_result = (sudo setcap cap_sys_nice+ep $bin | complete)
-        if $setcap_result.stdout != "" { print $setcap_result.stdout }
-        if $setcap_result.stderr != "" { print $setcap_result.stderr }
-        if $setcap_result.exit_code != 0 {
-            error make { msg: $"failed to grant cap_sys_nice to ($bin)" }
-        }
-
-        let getcap_result = (getcap $bin | complete)
-        if $getcap_result.stdout != "" {
-            print $getcap_result.stdout
-        }
-        if $getcap_result.stderr != "" { print $getcap_result.stderr }
-        if $getcap_result.exit_code != 0 or not ($getcap_result.stdout | str contains "cap_sys_nice=ep") {
-            error make { msg: $"failed to verify cap_sys_nice on ($bin)" }
-        }
-    }
-}
-
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
     if $result.stdout != "" { print $result.stdout }
@@ -1538,7 +1518,6 @@ def "main e2e" [
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
     let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
-    grant-sys-nice-capability [$baseline_tempo $feature_tempo $regenesis_tempo]
     let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
     let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"

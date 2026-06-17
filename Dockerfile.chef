@@ -1,4 +1,4 @@
-FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS chef
+FROM rust:1.96-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS chef
 
 RUN cargo install cargo-chef --version 0.1.77 --locked \
  && cargo install sccache --version 0.14.0 --locked

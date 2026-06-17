@@ -18,7 +18,7 @@ use revm::{
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, post_execution,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
         precompile_output_to_interpreter_result, validation,
     },
@@ -33,6 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
+use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -48,7 +49,8 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
@@ -67,6 +69,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
+    tip1060,
 };
 
 /// Additional gas for P256 signature verification
@@ -366,7 +369,12 @@ fn calculate_key_authorization_gas(
             num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
-        let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+        let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
+        if spec.is_t7() {
+            // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
+            // intrinsic-only, we must also add the creditable portion here.
+            sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
+        }
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
         if has_t5_witness {
@@ -430,6 +438,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.block,
             &ctx.cfg,
             &ctx.tx,
+            StorageActions::disabled(),
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
@@ -497,8 +506,13 @@ where
         };
 
         // It's fine to set reservoir to 0 because this won't create any state.
-        let (validation, gas_used) =
-            StorageCtx::enter_ctx_with_gas_limit(evm.ctx_mut(), *remaining_gas, reservoir, || {
+        let actions = evm.actions.clone();
+        let (validation, gas_used) = StorageCtx::enter_ctx_with_gas_limit(
+            evm.ctx_mut(),
+            *remaining_gas,
+            reservoir,
+            actions,
+            || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
                     keychain.validate_call_scope_for_transaction(
@@ -509,7 +523,8 @@ where
                     )?;
                 }
                 Ok::<(), TempoPrecompileError>(())
-            });
+            },
+        );
 
         match validation {
             Ok(()) => {
@@ -828,6 +843,53 @@ where
         }
     }
 
+    /// Applies Tempo-specific post-execution accounting before the standard gas refund flow.
+    #[inline]
+    fn post_execution(
+        &self,
+        evm: &mut Self::Evm,
+        exec_result: &mut FrameResult,
+        init_and_floor_gas: InitialAndFloorGas,
+        eip7702_gas_refund: i64,
+    ) -> Result<ResultGas, Self::Error> {
+        if exec_result.instruction_result().is_ok() {
+            tip1060::apply_refund(evm, exec_result.gas_mut())?;
+        }
+        self.refund(evm, exec_result, eip7702_gas_refund);
+
+        let result_gas = post_execution::build_result_gas(
+            exec_result.instruction_result().is_halt(),
+            exec_result.gas(),
+            init_and_floor_gas,
+        );
+
+        self.eip7623_check_gas_floor(evm, exec_result, init_and_floor_gas);
+        self.reimburse_caller(evm, exec_result)?;
+        self.reward_beneficiary(evm, exec_result)?;
+
+        Ok(result_gas)
+    }
+
+    /// Applies gas refunds, dropping the EIP-3529 one-fifth refund cap on T7+.
+    ///
+    /// TIP-1060 removes the standard EVM refund cap: the `Refund`-mode
+    /// storage-credit settlement refund and the preserved baseline SSTORE
+    /// refunds are credited to the transaction's gas refund counter in full,
+    /// regardless of the transaction's gas used. Pre-T7 keeps the standard
+    /// capped behavior (`Gas::set_final_refund`).
+    #[inline]
+    fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
+        let spec = evm.ctx.cfg.spec;
+        let gas = exec_result.gas_mut();
+        if spec.is_t7() {
+            // No cap: leave the accumulated refund counter untouched after
+            // recording the EIP-7702 auth refund.
+            gas.record_refund(eip7702_refund);
+        } else {
+            post_execution::refund(spec.into(), gas, eip7702_refund);
+        }
+    }
+
     /// Take logs from the Journal if outcome is Halt Or Revert.
     #[inline]
     fn execution_result(
@@ -904,6 +966,7 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let actions = evm.actions.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -911,7 +974,7 @@ where
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
+            .get_fee_token(tx, fee_payer, cfg.spec, actions.clone())
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -925,7 +988,7 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+            journal.ensure_tip20_usd(cfg.spec, fee_token, actions.clone())?;
         }
 
         // Load the fee payer balance
@@ -1015,28 +1078,35 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                || {
+                    let mut nonce_manager = NonceManager::new();
 
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
+                    {
+                        let ptr = nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .read()
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+                        let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+
+                        nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .write(next)
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                        Some(ptr)
+                    } else {
+                        None
+                    };
 
                     nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
-                } else {
-                    None
-                };
-
-                nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
@@ -1060,27 +1130,62 @@ where
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
+                    if let Some(prev_ptr) = prev_ptr {
+                        nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .write(prev_ptr)
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    }
 
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-            })?;
+                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                },
+            )?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions.clone(),
+                || {
+                    let mut nonce_manager = NonceManager::new();
 
-                if !cfg.is_nonce_check_disabled() {
-                    let tx_nonce = tx.nonce();
-                    let state = nonce_manager
-                        .get_nonce(getNonceCall {
-                            account: tx.caller(),
-                            nonceKey: nonce_key,
-                        })
+                    if !cfg.is_nonce_check_disabled() {
+                        let tx_nonce = tx.nonce();
+                        let state = nonce_manager
+                            .get_nonce(getNonceCall {
+                                account: tx.caller(),
+                                nonceKey: nonce_key,
+                            })
+                            .map_err(|err| match err {
+                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                err => TempoInvalidTransaction::NonceManagerError(err.to_string())
+                                    .into(),
+                            })?;
+
+                        match tx_nonce.cmp(&state) {
+                            Ordering::Greater => {
+                                return Err(InvalidTransaction::NonceTooHigh {
+                                    tx: tx_nonce,
+                                    state,
+                                }
+                                .into());
+                            }
+                            Ordering::Less => {
+                                return Err(InvalidTransaction::NonceTooLow {
+                                    tx: tx_nonce,
+                                    state,
+                                }
+                                .into());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Always increment nonce for AA transactions with non-zero nonce keys.
+                    nonce_manager
+                        .increment_nonce(tx.caller(), nonce_key)
                         .map_err(|err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                             err => {
@@ -1088,35 +1193,9 @@ where
                             }
                         })?;
 
-                    match tx_nonce.cmp(&state) {
-                        Ordering::Greater => {
-                            return Err(InvalidTransaction::NonceTooHigh {
-                                tx: tx_nonce,
-                                state,
-                            }
-                            .into());
-                        }
-                        Ordering::Less => {
-                            return Err(InvalidTransaction::NonceTooLow {
-                                tx: tx_nonce,
-                                state,
-                            }
-                            .into());
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Always increment nonce for AA transactions with non-zero nonce keys.
-                nonce_manager
-                    .increment_nonce(tx.caller(), nonce_key)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-            })?;
+                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                },
+            )?;
         } else {
             // Protocol nonce (nonce_key == 0)
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
@@ -1205,6 +1284,7 @@ where
                     block,
                     cfg,
                     tx,
+                    actions.clone(),
                     |mut keychain: AccountKeychain| {
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
@@ -1296,15 +1376,22 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
-                    fee_payer,
-                    fee_token,
-                    gas_balance_spending,
-                    block.beneficiary(),
-                    skip_liquidity_check,
-                )
-            });
+            let result = StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                &block,
+                cfg,
+                tx,
+                actions.clone(),
+                || {
+                    TipFeeManager::new().collect_fee_pre_tx(
+                        fee_payer,
+                        fee_token,
+                        gas_balance_spending,
+                        block.beneficiary(),
+                        skip_liquidity_check,
+                    )
+                },
+            );
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1398,7 +1485,9 @@ where
                 amsterdam_eip8037_enabled,
                 false,
                 gas_params,
-            );
+            )
+            .with_actions(actions.clone());
+            provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
             let out_of_gas = StorageCtx::enter(&mut provider, || {
@@ -1505,12 +1594,14 @@ where
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
             if same_tx_key_authorization_use {
-                StorageCtx::enter_precompile(
+                StorageCtx::enter_evm_without_tip1060_accounting(
                     journal,
                     block,
                     cfg,
                     tx,
-                    |mut keychain: AccountKeychain| {
+                    actions,
+                    || {
+                        let mut keychain = AccountKeychain::new();
                         keychain
                             .set_transaction_key(key_auth.key_id)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
@@ -1536,8 +1627,9 @@ where
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
+        let actions = evm.actions.clone();
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
@@ -1571,28 +1663,35 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
+        let credited = StorageCtx::enter_evm_without_tip1060_accounting(
+            &mut *journal,
+            block,
+            &context.cfg,
+            tx,
+            actions,
+            || {
+                let mut fee_manager = TipFeeManager::new();
 
-            if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
-                // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_manager
-                    .collect_fee_post_tx(
-                        fee_payer,
-                        actual_spending,
-                        refund_amount,
-                        fee_token,
-                        beneficiary,
-                    )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
-            } else {
-                Ok(U256::ZERO)
-            }
-        })?;
+                if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                    let fee_token = evm
+                        .fee_token
+                        .expect("set in `validate_against_state_and_deduct_caller`");
+                    // Call collectFeePostTx (handles both refund and fee queuing)
+                    fee_manager
+                        .collect_fee_post_tx(
+                            fee_payer,
+                            actual_spending,
+                            refund_amount,
+                            fee_token,
+                            beneficiary,
+                        )
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                } else {
+                    Ok(U256::ZERO)
+                }
+            },
+        )?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
@@ -2564,13 +2663,14 @@ mod tests {
             tx_env.inner.gas_priority_fee = Some(1_000_000_000);
         });
 
-        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
-            TIP20Setup::create("Euro", "EUR", admin)
-                .currency("EUR")
-                .apply()
-                .map(|token| token.address())
-        })
-        .expect("EUR token setup succeeds");
+        let fee_token =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                TIP20Setup::create("Euro", "EUR", admin)
+                    .currency("EUR")
+                    .apply()
+                    .map(|token| token.address())
+            })
+            .expect("EUR token setup succeeds");
 
         test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
@@ -2600,16 +2700,17 @@ mod tests {
             tx_env.inner.gas_priority_fee = Some(1_000_000_000);
         });
 
-        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
-            let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
-                .with_issuer(admin)
-                .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
-                .with_mint(fee_payer, fee)
-                .apply()?;
-            token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
-            Ok::<_, TempoPrecompileError>(token.address())
-        })
-        .expect("paused USD token setup succeeds");
+        let fee_token =
+            StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
+                let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+                    .with_mint(fee_payer, fee)
+                    .apply()?;
+                token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
+                Ok::<_, TempoPrecompileError>(token.address())
+            })
+            .expect("paused USD token setup succeeds");
 
         test.evm.inner.ctx.tx.fee_token = Some(fee_token);
 
@@ -2726,9 +2827,12 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                tempo_precompiles::storage::StorageActions::disabled(),
+            )?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
@@ -2743,17 +2847,23 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx
-                .journaled_state
-                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            let fee_token = ctx.journaled_state.get_fee_token(
+                &ctx.tx,
+                user,
+                ctx.cfg.spec,
+                tempo_precompiles::storage::StorageActions::disabled(),
+            )?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            user,
+            ctx.cfg.spec,
+            tempo_precompiles::storage::StorageActions::disabled(),
+        )?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
@@ -3509,6 +3619,37 @@ mod tests {
     }
 
     #[test]
+    fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
+        use tempo_chainspec::constants::gas::SSTORE_CREATE_COST;
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
+
+        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T7);
+        let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+        let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
+        let scope_extra_gas = call_scope_extra_gas(&key_auth.authorization);
+        let (regular_gas, state_gas) =
+            calculate_key_authorization_gas(&key_auth, &gas_params, TempoHardfork::T7);
+        let helper_sstore_regular = regular_gas - sig_gas - sload - 2_000 - scope_extra_gas;
+
+        assert_eq!(
+            gas_params.get(GasId::sstore_set_without_load_cost()),
+            SSTORE_CREATE_COST - STORAGE_CREDIT_VALUE,
+            "T7 gas table should expose only the SSTORE residual"
+        );
+        assert_eq!(
+            helper_sstore_regular, SSTORE_CREATE_COST,
+            "key authorization intrinsic gas must include the TIP-1060 creditable portion"
+        );
+        assert_eq!(state_gas, 0, "T7 without TIP-1016 has no state gas split");
+    }
+
+    #[test]
     fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
         use tempo_primitives::transaction::{
             CallScope, KeyAuthorization, SelectorRule, SignatureType,
@@ -3882,7 +4023,7 @@ mod tests {
             *cfg_override = cfg;
         });
 
-        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
+        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut keychain = AccountKeychain::new();
 
             keychain.initialize().expect("keychain initialized");
@@ -4004,7 +4145,7 @@ mod tests {
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
         let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
 
-        StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+        StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
             let mut keychain = AccountKeychain::new();
 
             keychain.initialize().expect("keychain initialized");
@@ -4112,6 +4253,58 @@ mod tests {
             }
             other => panic!("expected custom error, got: {other:?}"),
         }
+    }
+
+    /// TIP-1060: T7 removes the EIP-3529 one-fifth refund cap; pre-T7 keeps it.
+    #[test]
+    fn test_refund_cap_removed_on_t7() {
+        use revm::{
+            Context, Journal,
+            context::CfgEnv,
+            database::{CacheDB, EmptyDB},
+            handler::FrameResult,
+            interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
+        };
+
+        // Refund (50k) deliberately exceeds one fifth of the gas used (100k / 5 = 20k).
+        const SPENT: u64 = 100_000;
+        const REFUND: i64 = 50_000;
+        const CAPPED: i64 = (SPENT / 5) as i64;
+
+        let refunded_for_spec = |spec: TempoHardfork| -> i64 {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.spec = spec;
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv::default())
+                .with_new_journal(Journal::new(CacheDB::new(EmptyDB::default())));
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+            let mut gas = Gas::new(SPENT);
+            gas.set_spent(SPENT);
+            gas.record_refund(REFUND);
+            let mut frame_result = FrameResult::Call(CallOutcome::new(
+                InterpreterResult::new(InstructionResult::Stop, Bytes::new(), gas),
+                0..0,
+            ));
+
+            handler.refund(&mut evm, &mut frame_result, 0);
+            frame_result.gas().refunded()
+        };
+
+        assert_eq!(
+            refunded_for_spec(TempoHardfork::T6),
+            CAPPED,
+            "pre-T7 must cap the refund at one fifth of gas used"
+        );
+        assert_eq!(
+            refunded_for_spec(TempoHardfork::T7),
+            REFUND,
+            "T7 must credit the full refund, with no EIP-3529 cap"
+        );
     }
 
     #[test]
@@ -4904,7 +5097,7 @@ mod tests {
 
             let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut kc = AccountKeychain::new();
                 kc.initialize().unwrap();
                 kc.set_transaction_key(Address::ZERO).unwrap();
@@ -5098,7 +5291,7 @@ mod tests {
                 "T5 witness authorization should pass: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     !keychain
@@ -5180,7 +5373,7 @@ mod tests {
                 "root-signed admin key authorization should not require account, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     keychain
@@ -5291,7 +5484,7 @@ mod tests {
                 "admin access key authorization should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5305,7 +5498,7 @@ mod tests {
                 "admin access key should authorize a different admin key, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 assert!(
                     keychain
@@ -5401,7 +5594,7 @@ mod tests {
                 "admin-signed key authorization should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::WebAuthn, None)
@@ -5448,7 +5641,7 @@ mod tests {
                 "account-bound authorization should pass Alice stateless validation, got: {alice_env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(alice, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5461,7 +5654,7 @@ mod tests {
                 alice_result.is_ok(),
                 "account-bound admin-signed non-admin authorization should pass for Alice, got: {alice_result:?}"
             );
-            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 let key = keychain
                     .get_key(getKeyCall {
@@ -5529,7 +5722,7 @@ mod tests {
                 "admin delegation should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, fee * U256::from(2))
@@ -5577,7 +5770,7 @@ mod tests {
                 "admin delegation should pass stateless validation, got: {env_result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain
                     .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
@@ -5591,7 +5784,7 @@ mod tests {
                 "admin delegation should pass, got: {result:?}"
             );
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 let keychain = AccountKeychain::new();
                 let transaction_key = keychain
                     .get_transaction_key(getTransactionKeyCall {}, user)
@@ -5715,7 +5908,7 @@ mod tests {
             evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
             evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, fee * U256::from(2))
@@ -5771,7 +5964,7 @@ mod tests {
             evm.inner.ctx.tx.inner.gas_price = 0;
             evm.inner.ctx.tx.inner.gas_priority_fee = Some(0);
 
-            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
                 TIP20Setup::path_usd(user)
                     .with_issuer(user)
                     .with_mint(user, stale_fee * U256::from(2))

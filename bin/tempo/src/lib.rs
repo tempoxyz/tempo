@@ -25,20 +25,25 @@ use tracy_client as _;
 #[cfg(feature = "otlp")]
 use opentelemetry_otlp as _;
 
-mod cli;
+pub mod cli;
 mod defaults;
 mod follow;
-mod init_state;
-mod p2p_proxy;
-mod regenesis;
+pub mod init_state;
+mod overrides;
+pub mod p2p_proxy;
+pub mod regenesis;
 mod snapshot_download;
 mod snapshot_manifest;
-mod tempo_cmd;
+pub mod tempo_cmd;
 mod utils;
 
-#[cfg(test)]
-pub(crate) use crate::cli::TempoRpcModuleValidator;
-pub(crate) use crate::cli::{TempoArgs, TempoCli};
+pub use crate::{
+    cli::{TempoArgs, TempoCli, TempoRpcModuleValidator},
+    overrides::{TempoNodeMapper, TempoOverrides},
+};
+pub use reth_cli_util as cli_util;
+pub use tempo_node;
+pub use tempo_node as node;
 
 use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
@@ -51,6 +56,7 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -59,9 +65,14 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_faucet::faucet::{TempoFaucetExt, TempoFaucetExtApiServer};
+pub use tempo_node::{
+    AccountInfoReader, InvalidPoolTransactionError, PoolTransaction, PoolTransactionError,
+    StatefulValidationFn, StatelessValidationFn, TempoNode, TempoNodeArgs,
+    TempoPayloadBuilderBuilder, TempoPoolBuilder, TempoPoolTransactionError,
+    TempoPooledTransaction, TransactionOrigin,
+};
 use tempo_node::{
     TempoFullNode,
-    node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
@@ -81,6 +92,20 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) {
 
 /// Runs the Tempo node CLI.
 pub fn tempo_main() -> eyre::Result<()> {
+    tempo_main_with(TempoOverrides::default())
+}
+
+/// Runs the Tempo node CLI with programmatic startup overrides.
+///
+/// This is the embedding entrypoint for binaries that want the standard Tempo
+/// CLI behavior plus programmatic hooks for behavior that cannot be expressed
+/// through command-line arguments. [`tempo_main`] is equivalent to calling this
+/// function with [`TempoOverrides::default`].
+///
+/// Overrides are applied after CLI parsing and before the execution node is
+/// launched. See [`TempoOverrides`] for the currently supported hooks and an
+/// example that injects additional transaction pool validation.
+pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     install_crypto_provider();
 
     reth_cli_util::sigsegv_handler::install();
@@ -143,7 +168,28 @@ pub fn tempo_main() -> eyre::Result<()> {
     // `from_arg_matches` would map them to their original variants.
     match matches.subcommand() {
         Some(("snapshot-manifest", sub)) => return snapshot_manifest::run(sub),
-        Some(("download", sub)) => return snapshot_download::run(sub),
+        Some(("download", sub)) => {
+            let runner =
+                CliRunner::try_default_runtime().wrap_err("failed to build download runtime")?;
+            let mut cli = match TempoCli::from_arg_matches(&matches) {
+                Ok(cli) => cli,
+                Err(err) => err.exit(),
+            };
+
+            if let Some(chain_spec) = cli.command.chain_spec() {
+                cli.logs.log_file_directory = cli
+                    .logs
+                    .log_file_directory
+                    .join(chain_spec.chain().to_string());
+            }
+
+            let mut tracing_app = cli.configure();
+            tracing_app
+                .init_tracing(&runner)
+                .wrap_err("failed to initialize tracing")?;
+
+            return snapshot_download::run_with_runner(sub, runner);
+        }
         _ => {}
     }
 
@@ -400,7 +446,10 @@ pub fn tempo_main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(&args.node_args, validator_key))
+            .node(overrides.apply_tempo_node(TempoNode::new(
+                &args.node_args,
+                validator_key,
+            )))
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Enable discv5 peer discovery
                 builder
@@ -538,9 +587,11 @@ pub fn tempo_main() -> eyre::Result<()> {
 mod tests {
     use std::{sync::Once, time::Duration};
 
-    use clap::Parser;
+    use clap::{CommandFactory, FromArgMatches, Parser};
 
-    use super::{TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode};
+    use super::{
+        TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+    };
     use reth_ethereum::cli::Commands;
 
     fn init_defaults_once() {
@@ -554,6 +605,31 @@ mod tests {
             panic!("expected node command");
         };
         node_cmd.ext.follow
+    }
+
+    #[test]
+    fn wrapped_download_matches_parse_for_tracing() {
+        init_defaults_once();
+
+        let matches = TempoCli::command()
+            .mut_subcommand("download", |_| snapshot_download::Args::command())
+            .try_get_matches_from([
+                "tempo",
+                "download",
+                "--manifest-url",
+                "https://snap/manifest.json",
+                "--datadir",
+                "/d",
+                "--skip-consensus=false",
+                "--log.stdout.filter",
+                "debug",
+            ])
+            .unwrap();
+
+        let cli = TempoCli::from_arg_matches(&matches).unwrap();
+
+        assert!(matches!(cli.command, Commands::Download(_)));
+        assert_eq!(cli.logs.log_stdout_filter, "debug");
     }
 
     #[test]
@@ -574,6 +650,54 @@ mod tests {
             parse_follow(&["tempo", "node", "--dev", "--follow", "ws://upstream:8546"]),
             Some(FollowMode::Url("ws://upstream:8546".to_string()))
         );
+    }
+
+    #[test]
+    fn follow_certification_defaults() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--follow"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(!node_cmd.ext.is_following_uncertified());
+        assert!(node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn follow_certification_disable() {
+        init_defaults_once();
+
+        let cli =
+            TempoCli::try_parse_from(["tempo", "node", "--follow", "--follow.nocertify"]).unwrap();
+
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(node_cmd.ext.is_following_uncertified());
+        assert!(!node_cmd.ext.has_consensus_engine(false));
+    }
+
+    #[test]
+    fn deprecated_follow_certification_flag_is_noop() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--follow",
+            "--follow.experimental.certify",
+        ])
+        .unwrap();
+
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        assert!(!node_cmd.ext.is_following_uncertified());
+        assert!(node_cmd.ext.has_consensus_engine(false));
     }
 
     #[test]
