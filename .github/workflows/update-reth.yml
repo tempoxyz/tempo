@@ -115,7 +115,7 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           set +e
-          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          OUTPUT=$(amp "$@" --stream-json 2>&1)
           AMP_EXIT=$?
           set -e
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
