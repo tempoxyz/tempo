@@ -134,6 +134,32 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self::new_inner(inner.with_precompiles(precompiles), actions)
     }
 
+    /// Consumes self and returns a new EVM using the given storage action recorder.
+    pub fn with_actions(self, actions: StorageActions) -> Self {
+        let precompiles =
+            tempo_precompiles::tempo_precompiles_with_actions(&self.inner.ctx.cfg, actions.clone());
+        let Self {
+            inner,
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            ..
+        } = self;
+        Self {
+            inner: inner.with_precompiles(precompiles),
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            actions,
+        }
+    }
+
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
