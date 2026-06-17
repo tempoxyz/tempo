@@ -36,7 +36,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -1358,7 +1358,7 @@ enum BuilderTx {
 impl BuilderTx {
     fn into_parts(self) -> (TempoTxEnvelope, Address) {
         match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
+            Self::Pooled(tx) => (tx.transaction.inner().tx().clone(), tx.transaction.sender()),
             Self::Owned(tx) => tx.into_parts(),
         }
     }
