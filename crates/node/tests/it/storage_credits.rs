@@ -13,7 +13,7 @@ use alloy_eips::Encodable2718;
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, ITIP20, ITIP1060StorageCredits,
+    DEFAULT_FEE_TOKEN, IStorageCredits, ITIP20,
     account_keychain::IAccountKeychain::{
         IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
     },
@@ -88,7 +88,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     );
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
-    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
 
     let remaining_before = keychain
         .getRemainingLimitWithPeriod(root_addr, access_key.address(), DEFAULT_FEE_TOKEN)
@@ -191,7 +191,7 @@ async fn test_tip1060_tip20_precompile_clear_mints_persistent_storage_credit() -
         .await?;
     assert!(sender_seed_receipt.status());
 
-    let credits = ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
     let credit_before = credits.balanceOf(*token.address()).call().await?;
 
     let gas_price = 1_000_000_000_000u128;

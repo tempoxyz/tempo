@@ -1,6 +1,6 @@
 use crate::{
     error::TempoPrecompileError, storage::PrecompileStorageProvider,
-    tip1060_storage_credits::sstore_storage_credits,
+    storage_credits::sstore_storage_credits,
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -92,7 +92,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
+impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     type Error = TempoPrecompileError;
 
     #[inline]

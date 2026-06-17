@@ -1,9 +1,9 @@
 //! Storage credits precompile (TIP-1060).
 
+pub mod accounting;
 pub mod dispatch;
-pub mod gas_state;
 
-pub use gas_state::{StorageCreditsBackend, StorageCreditsError, sstore_storage_credits};
+pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
 
 use crate::{
     STORAGE_CREDITS_ADDRESS,
@@ -12,7 +12,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
-    ITIP1060StorageCredits::Mode, TIP1060StorageCreditsError, TIP1060StorageCreditsEvent,
+    IStorageCredits::Mode, StorageCreditsError, StorageCreditsEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -71,9 +71,9 @@ impl From<TransientState> for U256 {
 /// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
 /// transient state at the same account-derived slot.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
-pub struct TIP1060StorageCredits {}
+pub struct StorageCredits {}
 
-impl TIP1060StorageCredits {
+impl StorageCredits {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -99,18 +99,12 @@ impl TIP1060StorageCredits {
         };
 
         self.write_mode_with_budget(msg_sender, mode, budget)?;
-        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
-            msg_sender,
-            mode.into(),
-        ))
+        self.emit_event(StorageCreditsEvent::mode_updated(msg_sender, mode.into()))
     }
 
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
         self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)?;
-        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(
-            msg_sender,
-            Mode::Direct,
-        ))
+        self.emit_event(StorageCreditsEvent::mode_updated(msg_sender, Mode::Direct))
     }
 
     fn write_mode_with_budget(
@@ -151,7 +145,7 @@ impl TryFrom<u8> for CreditMode {
             0 => Ok(Self::Refund),
             1 => Ok(Self::Preserve),
             2 => Ok(Self::Direct),
-            _ => Err(TIP1060StorageCreditsError::invalid_mode().into()),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
         }
     }
 }
@@ -164,7 +158,7 @@ impl TryFrom<Mode> for CreditMode {
             Mode::Refund => Ok(Self::Refund),
             Mode::Preserve => Ok(Self::Preserve),
             Mode::Direct => Ok(Self::Direct),
-            _ => Err(TIP1060StorageCreditsError::invalid_mode().into()),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
         }
     }
 }

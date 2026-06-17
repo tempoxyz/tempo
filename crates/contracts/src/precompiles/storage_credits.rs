@@ -1,12 +1,11 @@
-pub use ITIP1060StorageCredits::{
-    ITIP1060StorageCreditsErrors as TIP1060StorageCreditsError,
-    ITIP1060StorageCreditsEvents as TIP1060StorageCreditsEvent,
+pub use IStorageCredits::{
+    IStorageCreditsErrors as StorageCreditsError, IStorageCreditsEvents as StorageCreditsEvent,
 };
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface ITIP1060StorageCredits {
+    interface IStorageCredits {
         enum Mode {
             Refund,
             Preserve,

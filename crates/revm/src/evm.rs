@@ -247,15 +247,15 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
+    use tempo_contracts::precompiles::IStorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage_credits::{CreditMode, StorageCredits},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip1060_storage_credits::{CreditMode, TIP1060StorageCredits},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -1955,7 +1955,7 @@ mod tests {
         evm.ctx
             .db_mut()
             .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
-        let slot = TIP1060StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(owner);
         evm.ctx
             .db_mut()
             .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, U256::from(balance))
@@ -1963,7 +1963,7 @@ mod tests {
     }
 
     fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
-        let slot = TIP1060StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(owner);
         evm.ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
@@ -2010,7 +2010,7 @@ mod tests {
 
     /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
     fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
-        let input_bytes = ITIP1060StorageCredits::setModeCall {
+        let input_bytes = IStorageCredits::setModeCall {
             newMode: tip1060_abi_mode(mode),
         }
         .abi_encode();
@@ -2136,7 +2136,7 @@ mod tests {
 
     #[test]
     fn test_tip1060_storage_credits_delegatecall_rejected() -> eyre::Result<()> {
-        let calldata = ITIP1060StorageCredits::setModeCall {
+        let calldata = IStorageCredits::setModeCall {
             newMode: Mode::Direct,
         }
         .abi_encode();
@@ -2279,7 +2279,7 @@ mod tests {
         // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
         seed_storage_credit_balance(&mut evm, STORAGE_CREDITS_ADDRESS, 1);
 
-        let calldata = ITIP1060StorageCredits::setModeCall {
+        let calldata = IStorageCredits::setModeCall {
             newMode: Mode::Preserve,
         }
         .abi_encode();
@@ -2769,9 +2769,7 @@ mod tests {
             state::AccountInfo,
         };
         use tempo_chainspec::hardfork::TempoHardfork;
-        use tempo_precompiles::{
-            STORAGE_CREDITS_ADDRESS, tip1060_storage_credits::TIP1060StorageCredits,
-        };
+        use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
 
         use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
 
@@ -2844,10 +2842,7 @@ mod tests {
         let balance = evm
             .ctx
             .db_mut()
-            .storage(
-                STORAGE_CREDITS_ADDRESS,
-                TIP1060StorageCredits::slot(contract),
-            )?
+            .storage(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(contract))?
             .as_limbs()[0];
         let slots = evm
             .ctx
@@ -3088,8 +3083,7 @@ mod tests {
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input =
-            ITIP1060StorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        let set_budget_input = IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 
@@ -3134,7 +3128,7 @@ mod tests {
             .logs()
             .iter()
             .filter(|log| log.address == STORAGE_CREDITS_ADDRESS)
-            .map(ITIP1060StorageCredits::ModeUpdated::decode_log)
+            .map(IStorageCredits::ModeUpdated::decode_log)
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(budgeted_mode_updates.len(), 2);
         // First event selects Direct; second event is the budget-exhausted Preserve switch.

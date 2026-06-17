@@ -8,7 +8,7 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{CreditMode, TIP1060StorageCredits, TransientState};
+use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, IntoLogData, LogData, U256};
 use revm::{
@@ -16,15 +16,15 @@ use revm::{
     interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, TIP1060StorageCreditsEvent};
+use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, StorageCreditsEvent};
 
 /// Error mapping required by storage credit accounting.
-pub trait StorageCreditsError: Sized {
+pub trait StorageCreditsErr: Sized {
     fn out_of_gas() -> Self;
     fn fatal_external() -> Self;
 }
 
-impl StorageCreditsError for InstructionResult {
+impl StorageCreditsErr for InstructionResult {
     fn out_of_gas() -> Self {
         Self::OutOfGas
     }
@@ -36,7 +36,7 @@ impl StorageCreditsError for InstructionResult {
 
 /// Minimal journal/gas operations required by storage credit accounting.
 pub trait StorageCreditsBackend {
-    type Error: StorageCreditsError;
+    type Error: StorageCreditsErr;
 
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
@@ -86,7 +86,7 @@ fn emit_mode_updated<B: StorageCreditsBackend>(
     account: Address,
     new_mode: CreditMode,
 ) -> Result<(), B::Error> {
-    let event = TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into());
+    let event = StorageCreditsEvent::mode_updated(account, new_mode.into());
     backend.emit_event(STORAGE_CREDITS_ADDRESS, event.into_log_data())
 }
 
@@ -126,7 +126,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    let account_slot = TIP1060StorageCredits::slot(owner);
+    let account_slot = StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =

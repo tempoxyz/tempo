@@ -20,7 +20,7 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
-    tip1060_storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
+    storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
 /// Applies storage-credit settlement at the end of a transaction.
