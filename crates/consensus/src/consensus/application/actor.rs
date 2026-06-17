@@ -932,12 +932,8 @@ struct VerifyResult {
     /// proposal, `false` rejects it.
     result: bool,
     /// The proposed block when it was not moved into the verified marshal state.
-    ///
-    /// Keeping it here lets `handle_verify` drop it after sending the response.
     block: Option<Block>,
     /// The parent block fetched to verify the proposal.
-    ///
-    /// Keeping it here lets `handle_verify` drop it after sending the response.
     parent: Option<Block>,
 }
 
