@@ -1180,6 +1180,9 @@ impl TIP20Token {
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
+        //
+        // We can't just use `decrement_balance` in both pre- and post-T8 codepaths, because `decrement_balance`
+        // charges gas for balance SLOAD that we already do above for pre-T8.
         if let Some(from_balance) = from_balance {
             // pre-T8 path
             let new_from_balance = from_balance
