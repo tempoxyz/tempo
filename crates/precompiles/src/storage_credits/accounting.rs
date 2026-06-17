@@ -124,21 +124,25 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut credit =
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
+    let mut transient_state: TransientState = backend
+        .tload(STORAGE_CREDITS_ADDRESS, account_slot)
+        .try_into()
+        .map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
     if values.is_new_zero() {
         // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
+        if matches!(transient_state.mode, CreditMode::Direct) && transient_state.budget != u64::MAX
+        {
+            transient_state.budget += 1;
+            store_credit_state(backend, account_slot, transient_state)?;
+        }
         was_changed = true;
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
         // revm's SSTORE function adds the 5k residual for clean writes (`original == present == 0`).
-        let mut transient_state: TransientState = backend
-            .tload(STORAGE_CREDITS_ADDRESS, account_slot)
-            .try_into()
-            .map_err(|_| B::Error::fatal_external())?;
-
         match transient_state.mode {
             CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
                 // Consume one credit to cover the 245k creditable portion.
