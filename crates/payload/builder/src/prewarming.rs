@@ -457,6 +457,7 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
+    add_account_touch(&mut touches, sender);
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
