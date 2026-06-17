@@ -80,6 +80,8 @@ impl TempoSignedAuthorization {
     /// # Note
     ///
     /// Implementers should check that the authority has no code.
+    #[cold]
+    #[inline(never)]
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
@@ -87,6 +89,8 @@ impl TempoSignedAuthorization {
 
     /// Recover the authority and transform the signed authorization into a
     /// [`RecoveredAuthorization`].
+    #[cold]
+    #[inline(never)]
     pub fn into_recovered(self) -> RecoveredAuthorization {
         let authority_result = self.recover_authority();
         let authority =
@@ -215,6 +219,8 @@ impl RecoveredTempoAuthorization {
     /// Creates a new authorization and immediately recovers the authority.
     ///
     /// Unlike `new()`, this eagerly recovers the authority upfront and caches it.
+    #[cold]
+    #[inline(never)]
     pub fn recover(signed: TempoSignedAuthorization) -> Self {
         let authority = signed
             .recover_authority()
@@ -250,6 +256,8 @@ impl RecoveredTempoAuthorization {
     /// Returns the recovered authority status.
     ///
     /// Recovers the authority on first access and caches the result.
+    #[cold]
+    #[inline(never)]
     pub fn authority_status(&self) -> &RecoveredAuthority {
         #[allow(clippy::useless_conversion)]
         self.authority.get_or_init(|| {
@@ -261,6 +269,8 @@ impl RecoveredTempoAuthorization {
     }
 
     /// Converts into a standard `RecoveredAuthorization`, dropping the signature.
+    #[cold]
+    #[inline(never)]
     pub fn into_recovered_authorization(self) -> RecoveredAuthorization {
         let authority = self.authority_status().clone();
         RecoveredAuthorization::new_unchecked(self.signed.strip_signature(), authority)
