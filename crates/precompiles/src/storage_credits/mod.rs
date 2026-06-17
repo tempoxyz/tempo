@@ -197,17 +197,11 @@ impl StorageCredits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct StorageCreditDeltas {
-    enabled: bool,
-    deltas: BTreeMap<Address, u64>,
-}
+pub struct StorageCreditDeltas(BTreeMap<Address, u64>);
 
 impl StorageCreditDeltas {
     pub fn new() -> Self {
-        Self {
-            enabled: StorageCtx.spec().is_t7(),
-            deltas: BTreeMap::default(),
-        }
+        Self(BTreeMap::default())
     }
 
     /// Adds `slots` reusable-storage credits earned by `user`.
@@ -215,18 +209,18 @@ impl StorageCreditDeltas {
     /// This intentionally records only a delta. The persisted counter is loaded once during
     /// [`Self::flush`], outside the fill loop and only if the enclosing DEX operation succeeds.
     pub fn credit_slots(&mut self, user: Address, slots: u64) {
-        if slots == 0 || !self.enabled {
+        if slots == 0 {
             return;
         }
 
-        self.deltas
+        self.0
             .entry(user)
             .and_modify(|total| *total = total.saturating_add(slots))
             .or_insert(slots);
     }
 
     pub fn flush(self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
-        for (user, slots) in self.deltas {
+        for (user, slots) in self.0 {
             apply(user, slots)?;
         }
 
