@@ -116,6 +116,8 @@ impl TempoSignedAuthorization {
     }
 
     /// Calculates a heuristic for the in-memory size of this authorization
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         size_of::<Self>()
     }

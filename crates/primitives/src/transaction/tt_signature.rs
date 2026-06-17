@@ -239,6 +239,8 @@ impl PrimitiveSignature {
     }
 
     /// Get the in-memory size of the signature
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + match self {
@@ -638,6 +640,8 @@ impl TempoSignature {
     }
 
     /// Get the in-memory size of the signature
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.size(),

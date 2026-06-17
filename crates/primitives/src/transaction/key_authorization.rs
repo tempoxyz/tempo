@@ -386,6 +386,8 @@ impl KeyAuthorization {
     }
 
     /// Calculates a heuristic for the in-memory size of the key authorization
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + self
@@ -467,6 +469,8 @@ impl SignedKeyAuthorization {
     }
 
     /// Calculates a heuristic for the in-memory size of the signed key authorization
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         self.authorization.size() + self.signature.size()
     }
