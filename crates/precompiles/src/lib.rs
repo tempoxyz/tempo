@@ -241,7 +241,7 @@ macro_rules! tempo_precompile {
                     $input.reservoir,
                 ));
             }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
+            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new_with_actions(
                 $input.internals,
                 $input.gas,
                 $input.reservoir,
@@ -249,8 +249,8 @@ macro_rules! tempo_precompile {
                 amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
-            )
-            .with_actions(actions.clone());
+                actions.clone(),
+            );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })

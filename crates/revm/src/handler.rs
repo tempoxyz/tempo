@@ -1477,7 +1477,7 @@ where
             };
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
-            let mut provider = EvmPrecompileStorageProvider::new(
+            let mut provider = EvmPrecompileStorageProvider::new_with_actions(
                 internals,
                 gas_limit,
                 0,
@@ -1485,8 +1485,8 @@ where
                 amsterdam_eip8037_enabled,
                 false,
                 gas_params,
-            )
-            .with_actions(actions.clone());
+                actions.clone(),
+            );
             provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.

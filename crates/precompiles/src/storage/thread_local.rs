@@ -348,7 +348,7 @@ impl<'evm> StorageCtx {
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
         let mut provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
+            EvmPrecompileStorageProvider::new_max_gas_with_actions(internals, cfg, actions);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
@@ -372,7 +372,7 @@ impl<'evm> StorageCtx {
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
         let mut provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
+            EvmPrecompileStorageProvider::new_max_gas_with_actions(internals, cfg, actions);
         provider.set_tip1060_storage_credits(false);
 
         Self::enter(&mut provider, f)
@@ -402,9 +402,9 @@ impl<'evm> StorageCtx {
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
-        let mut provider =
-            EvmPrecompileStorageProvider::new_with_gas_limit(internals, cfg, gas_limit, reservoir)
-                .with_actions(actions);
+        let mut provider = EvmPrecompileStorageProvider::new_with_gas_limit_and_actions(
+            internals, cfg, gas_limit, reservoir, actions,
+        );
         let result = Self::enter(&mut provider, f);
         let gas_used = provider.gas_used();
         (result, gas_used)

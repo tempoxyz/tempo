@@ -42,6 +42,29 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
+        Self::new_with_actions(
+            internals,
+            gas_limit,
+            reservoir,
+            spec,
+            amsterdam_eip8037_enabled,
+            is_static,
+            gas_params,
+            StorageActions::disabled(),
+        )
+    }
+
+    /// Creates a new storage provider with the given storage actions.
+    pub fn new_with_actions(
+        internals: EvmInternals<'a>,
+        gas_limit: u64,
+        reservoir: u64,
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+        is_static: bool,
+        gas_params: GasParams,
+        actions: StorageActions,
+    ) -> Self {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
@@ -52,13 +75,22 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             tip1060_storage_credits_enabled: spec.is_t7(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
-            actions: StorageActions::disabled(),
+            actions,
         }
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
-        Self::new(
+        Self::new_max_gas_with_actions(internals, cfg, StorageActions::disabled())
+    }
+
+    /// Creates a new max-gas provider with the given storage actions.
+    pub fn new_max_gas_with_actions(
+        internals: EvmInternals<'a>,
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+    ) -> Self {
+        Self::new_with_actions(
             internals,
             u64::MAX,
             0,
@@ -66,6 +98,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
+            actions,
         )
     }
 
@@ -76,7 +109,24 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         gas_limit: u64,
         reservoir: u64,
     ) -> Self {
-        Self::new(
+        Self::new_with_gas_limit_and_actions(
+            internals,
+            cfg,
+            gas_limit,
+            reservoir,
+            StorageActions::disabled(),
+        )
+    }
+
+    /// Creates a new metered provider with the given storage actions.
+    pub fn new_with_gas_limit_and_actions(
+        internals: EvmInternals<'a>,
+        cfg: &CfgEnv<TempoHardfork>,
+        gas_limit: u64,
+        reservoir: u64,
+        actions: StorageActions,
+    ) -> Self {
+        Self::new_with_actions(
             internals,
             gas_limit,
             reservoir,
@@ -84,6 +134,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
+            actions,
         )
     }
 
