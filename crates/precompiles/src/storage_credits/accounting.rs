@@ -90,6 +90,7 @@ fn store_credit_state<B: StorageCreditsBackend>(
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
 ///
 /// Returns whether to skip normal dynamic/state gas and/or refund accounting.
+#[inline]
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
