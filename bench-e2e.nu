@@ -17,6 +17,7 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000"
+const E2E_NODE_EXPORTER_PORT = 9201
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
@@ -629,6 +630,50 @@ def stop-tracy-capture [] {
     }
 }
 
+def stop-node-exporter [] {
+    let exporter_pids = (ps | where name =~ "node_exporter" | get pid)
+    for pid in $exporter_pids {
+        kill -s 2 $pid
+    }
+    mut wait_exporter = 0
+    while $wait_exporter < 30 {
+        if (ps | where name =~ "node_exporter" | length) == 0 { break }
+        sleep 500ms
+        $wait_exporter = $wait_exporter + 1
+    }
+    if $wait_exporter >= 30 {
+        print "  Warning: node_exporter did not exit, sending SIGKILL"
+        for pid in (ps | where name =~ "node_exporter" | get pid) {
+            kill -s 9 $pid
+        }
+    }
+}
+
+def start-node-exporter [] {
+    if ((which node_exporter | length) == 0) {
+        print "Error: node_exporter not found. Install prometheus-node-exporter and ensure node_exporter is in PATH."
+        exit 1
+    }
+
+    stop-node-exporter
+    print $"Starting node_exporter on 127.0.0.1:($E2E_NODE_EXPORTER_PORT)..."
+    let exporter_cmd = [
+        "node_exporter"
+        "--web.listen-address" $"127.0.0.1:($E2E_NODE_EXPORTER_PORT)"
+        "--collector.disable-defaults"
+        "--collector.diskstats"
+        "--collector.meminfo"
+        "--collector.pressure"
+        "--collector.schedstat"
+    ]
+    job spawn {
+        run-external ($exporter_cmd | first) ...($exporter_cmd | skip 1)
+        | lines
+        | each { |line| print $"[node-exporter] ($line)" }
+    }
+    sleep 500ms
+}
+
 def wait-for-samply-profile [] {
     print "  Waiting for samply to finish saving profile..."
     mut wait = 0
@@ -663,6 +708,7 @@ def cleanup-local-e2e-processes [] {
     stop-local-e2e-systemd-scopes
     stop-e2e-processes-gracefully
     stop-tracy-capture
+    stop-node-exporter
 }
 
 def rpc-block-number [url: string] {
@@ -927,6 +973,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     if ("report.json" | path exists) { rm report.json }
     let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
+    start-node-exporter
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
@@ -1011,7 +1058,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics" $"host:http://127.0.0.1:($E2E_NODE_EXPORTER_PORT)/metrics"]
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
@@ -1067,6 +1114,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         stop-tracy-capture
     }
     stop-e2e-processes-gracefully
+    stop-node-exporter
     if $ctx.samply { wait-for-samply-profile }
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
     if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
