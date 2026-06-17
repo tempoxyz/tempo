@@ -1126,6 +1126,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $tracy_capture_started {
+        print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
+    }
+    stop-e2e-processes-gracefully
+    if $tracy_capture_started {
         stop-tracy-capture
         if $tracy_capture_job > 0 {
             wait-for-tracy-capture-exit $tracy_capture_job $phase
@@ -1140,7 +1144,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
             }
         }
     }
-    stop-e2e-processes-gracefully
     if $ctx.samply { wait-for-samply-profile }
     chown-to-current-user $ctx.results_dir
     chown-to-current-user $a_log_dir
