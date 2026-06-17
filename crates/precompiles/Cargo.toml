@@ -23,7 +23,7 @@ tempo-primitives.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }
-alloy-primitives = { workspace = true, features = ["map-foldhash"] }
+alloy-primitives = { workspace = true, features = ["map-foldhash", "blake3-cache"] }
 revm.workspace = true
 
 commonware-cryptography.workspace = true

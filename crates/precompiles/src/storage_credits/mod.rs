@@ -10,12 +10,15 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType},
 };
-use alloy::primitives::{Address, B256, U256, b256, keccak256};
+use alloy::primitives::{Address, B256, U256, b256};
+use alloy_primitives::blake3_256_cached;
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
+// BLAKE3-256("tip1060/pending"), used as a domain separator for fee-restorable
+// transient marker slots.
 const PENDING_SLOT_NAMESPACE: B256 =
-    b256!("0x717645693e3410451934f75ab9e25a4bfe75ccddcb377d95400f6f995d59b83e");
+    b256!("0xac1d9537b78cbe8d65f758e0a101991d20f3fd80e99fbfa57645681b4de7eb68");
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
@@ -79,7 +82,7 @@ impl From<TransientState> for U256 {
 ///
 /// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
 /// transient state at the same account-derived slot. Fee-restorable pending credit watchers use
-/// `keccak256(PENDING_SLOT_NAMESPACE || account || slot)` transient marker slots, keeping them
+/// `blake3(PENDING_SLOT_NAMESPACE || account || slot)` transient marker slots, keeping them
 /// visibly separate from spendable credit balances.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct StorageCredits {}
@@ -139,7 +142,7 @@ impl StorageCredits {
         bytes[..32].copy_from_slice(PENDING_SLOT_NAMESPACE.as_slice());
         bytes[32..52].copy_from_slice(account.as_slice());
         bytes[52..].copy_from_slice(&slot.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(bytes).0)
+        U256::from_be_bytes(blake3_256_cached(bytes).0)
     }
 
     pub fn watch_pending_credit_slot(&mut self, account: Address, slot: U256) -> Result<()> {
@@ -157,6 +160,7 @@ impl StorageCredits {
         if pending == 0 {
             return Ok(0);
         }
+        debug_assert_eq!(pending, 1, "pending credit count must be one");
 
         let final_value = U256::handle(slot, LayoutCtx::FULL, account).read()?;
         let minted = if final_value.is_zero() { pending } else { 0 };
@@ -237,8 +241,11 @@ mod tests {
     use crate::storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider};
 
     #[test]
-    fn pending_slot_namespace_is_keccak_domain_separator() {
-        assert_eq!(PENDING_SLOT_NAMESPACE, keccak256(b"tip1060/pending"));
+    fn pending_slot_namespace_is_blake3_domain_separator() {
+        assert_eq!(
+            PENDING_SLOT_NAMESPACE,
+            b256!("0xac1d9537b78cbe8d65f758e0a101991d20f3fd80e99fbfa57645681b4de7eb68")
+        );
     }
 
     #[test]

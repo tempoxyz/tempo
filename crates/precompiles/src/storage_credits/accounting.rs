@@ -140,7 +140,8 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                 .tload(STORAGE_CREDITS_ADDRESS, account_slot)
                 .try_into()
                 .map_err(|_| B::Error::fatal_external())?;
-            // Fee bookkeeping watches one restorable slot per owner.
+            // Clearing one watched slot can defer one credit; finalization decides whether it
+            // survives after post-tx fee writes.
             transient_state.pending_credits = 1;
             store_credit_state(backend, account_slot, transient_state)?;
         } else {

@@ -494,11 +494,11 @@ dependencies = [
 [[package]]
 name = "alloy-primitives"
 version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4885c1409b6936c4898e646ef58baf6ec54edaf6d8179f79df805a7b85b7cf3e"
+source = "git+https://github.com/alloy-rs/core?branch=dan%2Fadd-blake3-cache-support#39028b05f1d33ac04f5dc425a270b68f8cd79dc8"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
+ "blake3",
  "bytes",
  "cfg-if",
  "const-hex",
