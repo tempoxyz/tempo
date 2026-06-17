@@ -804,8 +804,6 @@ mod tests {
                     ),
                     // SLOAD paused: fee escrow respects token pause state.
                     StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
-                    // SLOAD balances[sender]: read sender balance before fee escrow debit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, starting_balance),
                     // SLOAD userRewardInfo[sender].rewardRecipient: fee payer is opted out.
                     StorageAction::Sload(
                         PATH_USD_ADDRESS,
@@ -830,6 +828,8 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
+                    // SLOAD balances[sender]: read fee payer balance for debit.
+                    StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, starting_balance),
                     // SSTORE balances[sender]: debit max fee escrow.
                     StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
                     // SLOAD balances[FeeManager]: read fee escrow custody balance.
