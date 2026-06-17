@@ -109,10 +109,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
+    let present_is_zero = values.is_present_zero();
+    let new_is_zero = values.is_new_zero();
 
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
     // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
-    if values.is_present_zero() == values.is_new_zero() {
+    if present_is_zero == new_is_zero {
         return Ok(());
     }
 
@@ -139,7 +141,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
-    if values.is_new_zero() {
+    if new_is_zero {
         // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
         was_changed = true;
