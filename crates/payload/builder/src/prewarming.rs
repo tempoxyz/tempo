@@ -466,7 +466,9 @@ fn storage_touches_for_transaction(
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
+    if expiring_nonce_offset.is_some() {
+        add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
+    }
 
     touches
 }
