@@ -221,11 +221,15 @@ impl AASigned {
     }
 
     /// Get the length of the transaction when RLP encoded.
+    #[cold]
+    #[inline(never)]
     fn rlp_encoded_length(&self) -> usize {
         self.rlp_header().length_with_payload()
     }
 
     /// Get the length of the transaction when EIP-2718 encoded (includes type byte).
+    #[cold]
+    #[inline(never)]
     fn eip2718_encoded_length(&self) -> usize {
         1 + self.rlp_encoded_length()
     }
@@ -416,6 +420,8 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
 }
 
 impl Encodable2718 for AASigned {
+    #[cold]
+    #[inline(never)]
     fn encode_2718_len(&self) -> usize {
         self.eip2718_encoded_length()
     }
