@@ -17,7 +17,7 @@ use reth_transaction_pool::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
@@ -516,7 +516,7 @@ fn add_tip20_call_touches(
         ITIP20::ITIP20Calls::transfer(call) => {
             add_tip20_balance_touch(touches, token, sender);
             add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, sender);
                 add_tip20_reward_touches(touches, token, call.to);
@@ -525,7 +525,7 @@ fn add_tip20_call_touches(
         ITIP20::ITIP20Calls::transferWithMemo(call) => {
             add_tip20_balance_touch(touches, token, sender);
             add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, sender);
                 add_tip20_reward_touches(touches, token, call.to);
@@ -535,7 +535,7 @@ fn add_tip20_call_touches(
             add_tip20_balance_touch(touches, token, call.from);
             add_tip20_balance_touch(touches, token, call.to);
             add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, call.from);
                 add_tip20_reward_touches(touches, token, call.to);
@@ -545,7 +545,7 @@ fn add_tip20_call_touches(
             add_tip20_balance_touch(touches, token, call.from);
             add_tip20_balance_touch(touches, token, call.to);
             add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, call.from);
                 add_tip20_reward_touches(touches, token, call.to);
@@ -556,14 +556,14 @@ fn add_tip20_call_touches(
         }
         ITIP20::ITIP20Calls::mint(call) => {
             add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, call.to);
             }
         }
         ITIP20::ITIP20Calls::mintWithMemo(call) => {
             add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_receive_policy_touch(touches, token, call.to);
+            add_tip20_receive_policy_touch(touches, call.to);
             if !spec.is_t8() {
                 add_tip20_reward_touches(touches, token, call.to);
             }
@@ -591,14 +591,10 @@ fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, acco
     add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
-fn add_tip20_receive_policy_touch(
-    touches: &mut Vec<StorageTouch>,
-    token: Address,
-    account: Address,
-) {
+fn add_tip20_receive_policy_touch(touches: &mut Vec<StorageTouch>, account: Address) {
     add_storage_touch(
         touches,
-        token,
+        TIP403_REGISTRY_ADDRESS,
         account.mapping_slot(tip403_registry::slots::RECEIVE_POLICIES),
     );
 }
