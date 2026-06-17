@@ -118,6 +118,8 @@ impl AASigned {
     /// Non-expiring transactions delegate to the regular recovery path. Expiring nonce transactions
     /// reuse the encoded signing payload for both `keccak256(encode_for_signing)` and
     /// `keccak256(encode_for_signing || sender)`.
+    #[cold]
+    #[inline(never)]
     pub fn recover_signer_with_expiring_nonce_hash(
         &self,
     ) -> Result<(Address, Option<B256>), alloy_consensus::crypto::RecoveryError> {
