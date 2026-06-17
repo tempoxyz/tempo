@@ -157,14 +157,16 @@ pub(crate) fn sstore<DB: Database>(
     sstore_with_gas_accounting(context, |context, owner, values| {
         {
             let InstructionContext { interpreter, host } = context;
-            sstore_storage_credits(
-                &mut StorageCreditsContext {
-                    context: host,
-                    gas_tracker: interpreter.gas.tracker_mut(),
-                },
-                owner,
-                values,
-            )?;
+            if values.data.is_present_zero() != values.data.is_new_zero() {
+                sstore_storage_credits(
+                    &mut StorageCreditsContext {
+                        context: host,
+                        gas_tracker: interpreter.gas.tracker_mut(),
+                    },
+                    owner,
+                    values,
+                )?;
+            }
         }
 
         // Storage-credit hook only handles TIP-1060 bookkeeping + state gas. Keep default
