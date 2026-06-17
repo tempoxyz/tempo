@@ -162,11 +162,11 @@ impl StorageCredits {
         limit: u64,
         f: impl FnOnce() -> Result<T>,
     ) -> Result<(T, i128)> {
-        if limit == 0 {
-            if !StorageCtx.spec().is_t7() {
-                return f().map(|value| (value, 0));
-            }
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
 
+        if limit == 0 {
             let before = self.balance_of(credit_owner)?;
             let value = f()?;
             let after = self.balance_of(credit_owner)?;
@@ -178,20 +178,17 @@ impl StorageCredits {
         let before = self.balance_of(credit_owner)?;
         let result = f();
         let after = self.balance_of(credit_owner)?;
-        let current_state = self.credit_state_of(credit_owner)?;
-        let spent = limit.saturating_sub(current_state.budget.min(limit));
-
-        // If not all budget was spent, manually reset to `Preserve`.
-        if spent < limit {
-            let state = TransientState {
-                budget: 0,
-                mode: CreditMode::Preserve,
-                pending_refunds: current_state.pending_refunds,
-            };
-            self.write_credit_state_of(credit_owner, state)?;
-        }
-
         let delta = i128::from(after) - i128::from(before);
+
+        // After `f` has been applied and accounting is done, reset to `Preserve`.
+        let current_state = self.credit_state_of(credit_owner)?;
+        let state = TransientState {
+            budget: 0,
+            mode: CreditMode::Preserve,
+            pending_refunds: current_state.pending_refunds,
+        };
+        self.write_credit_state_of(credit_owner, state)?;
+
         result.map(|value| (value, delta))
     }
 }
