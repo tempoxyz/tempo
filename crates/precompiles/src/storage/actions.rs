@@ -59,10 +59,14 @@ impl StorageActions {
 
     /// Records an action if recording is enabled.
     pub fn record(&self, action: StorageAction) {
-        if !self.enabled.get() {
-            return;
+        if self.enabled.get() {
+            self.record_enabled(action);
         }
+    }
 
+    #[cold]
+    #[inline(never)]
+    fn record_enabled(&self, action: StorageAction) {
         self.actions.borrow_mut().push(action);
     }
 }
