@@ -19,8 +19,8 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use std::{
     fs::File,
-    io::{BufWriter, Write},
-    path::PathBuf,
+    io::{self, BufWriter, Write},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tempo_precompiles::{
@@ -120,15 +120,29 @@ impl GenerateStateBloat {
         let estimated_size_mib =
             (num_tokens * (overhead_per_token + accounts_per_token * entry_size)) as f64
                 / (1024.0 * 1024.0);
-        let out_display = out.display();
+        let stream_stdout = is_stdout_path(&out);
+        let out_display = if stream_stdout {
+            "stdout".to_string()
+        } else {
+            out.display().to_string()
+        };
         let num_chunks = total_accounts.div_ceil(chunk_size);
-        println!("State bloat generation:");
-        println!("  Target size: {size} MiB");
-        println!("  Tokens: {num_tokens}");
-        println!("  Accounts per token: {accounts_per_token}");
-        println!("  Estimated file size: {estimated_size_mib:.2} MiB");
-        println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
-        println!("  Output: {out_display}");
+        macro_rules! status {
+            ($($arg:tt)*) => {
+                if stream_stdout {
+                    eprintln!($($arg)*);
+                } else {
+                    println!($($arg)*);
+                }
+            };
+        }
+        status!("State bloat generation:");
+        status!("  Target size: {size} MiB");
+        status!("  Tokens: {num_tokens}");
+        status!("  Accounts per token: {accounts_per_token}");
+        status!("  Estimated file size: {estimated_size_mib:.2} MiB");
+        status!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
+        status!("  Output: {out_display}");
 
         // Step 1: Derive parent key
         let parent_key = derive_parent_key(&mnemonic)?;
@@ -138,9 +152,9 @@ impl GenerateStateBloat {
         // Step 2: Generate token addresses
         let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
 
-        println!("\nToken addresses:");
+        status!("\nToken addresses:");
         for (id, addr) in tokens.iter().zip(&token_addresses) {
-            println!("  Token {id}: {addr}");
+            status!("  Token {id}: {addr}");
         }
 
         // Step 3: Precompute constants
@@ -150,11 +164,16 @@ impl GenerateStateBloat {
         let total_supply_bytes = total_supply.to_be_bytes::<32>();
         let total_supply_slot_bytes = tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>();
 
-        // Step 4: Stream-write the binary file in chunks
-        let file = File::create(&out).wrap_err("failed to create output file")?;
-        let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, file); // 64MB buffer
+        // Step 4: Stream-write the binary output in chunks.
+        let output: Box<dyn Write> = if stream_stdout {
+            Box::new(io::stdout())
+        } else {
+            Box::new(File::create(&out).wrap_err("failed to create output file")?)
+        };
+        let mut writer = BufWriter::with_capacity(64 * 1024 * 1024, output); // 64MB buffer
+        let mut bytes_written = 0u64;
 
-        println!("\nGenerating and writing in {num_chunks} chunks...");
+        status!("\nGenerating and writing in {num_chunks} chunks...");
 
         let pb = ProgressBar::new(total_accounts as u64);
         pb.set_style(
@@ -195,11 +214,13 @@ impl GenerateStateBloat {
                 let pair_count = chunk_len as u64 + if is_first_chunk { 1 } else { 0 };
 
                 write_header(&mut writer, *token_addr, pair_count)?;
+                bytes_written += 40;
 
                 // Only write total_supply in the first chunk for each token
                 if is_first_chunk {
                     writer.write_all(&total_supply_slot_bytes)?;
                     writer.write_all(&total_supply_bytes)?;
+                    bytes_written += 64;
                 }
 
                 // Write balance entries in chunks
@@ -209,6 +230,7 @@ impl GenerateStateBloat {
                     chunk_buf.extend_from_slice(&balance_bytes);
                 }
                 writer.write_all(&chunk_buf)?;
+                bytes_written += chunk_buf.len() as u64;
 
                 // Only count progress once per chunk (on the last token)
                 if token_idx == token_addresses.len() - 1 {
@@ -222,15 +244,18 @@ impl GenerateStateBloat {
         writer.flush()?;
         pb.finish_with_message("done");
 
-        let file_size = std::fs::metadata(&out)?.len();
-        println!(
+        status!(
             "\nGenerated {} ({:.2} MiB)",
-            out.display(),
-            file_size as f64 / (1024.0 * 1024.0)
+            out_display,
+            bytes_written as f64 / (1024.0 * 1024.0)
         );
 
         Ok(())
     }
+}
+
+fn is_stdout_path(path: &Path) -> bool {
+    path.as_os_str().to_str() == Some("-")
 }
 
 /// Compute a reserved TIP20 token address from a token ID.

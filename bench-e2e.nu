@@ -343,7 +343,38 @@ def trusted-peers-from-localnet [localnet_dir: string] {
     } | str join ","
 }
 
-def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+def load-e2e-state-bloat [
+    tempo_bin: string,
+    genesis: string,
+    datadir: string,
+    bloat: int,
+    bloat_file: string,
+    profile: string,
+] {
+    if $bloat_file == "-" {
+        let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+        let script = 'set -euo pipefail
+cargo run -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --out - "${@:6}" | "$3" init-from-binary-dump --chain "$4" --datadir "$5" -
+'
+        let bloat_result = (run-external "bash" "-c" $script "stream-e2e-bloat" $profile ($bloat | into string) $tempo_bin $genesis $datadir ...$token_args | complete)
+        if $bloat_result.stdout != "" { print $bloat_result.stdout }
+        if $bloat_result.stderr != "" { print $bloat_result.stderr }
+        if $bloat_result.exit_code != 0 {
+            print $"Error: streamed state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
+            exit $bloat_result.exit_code
+        }
+    } else {
+        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+        if $bloat_result.stdout != "" { print $bloat_result.stdout }
+        if $bloat_result.stderr != "" { print $bloat_result.stderr }
+        if $bloat_result.exit_code != 0 {
+            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
+            exit $bloat_result.exit_code
+        }
+    }
+}
+
+def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string, profile: string] {
     print $"Initializing database at ($datadir)..."
     let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
     if $init_result.stdout != "" { print $init_result.stdout }
@@ -354,14 +385,9 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
     }
 
     if $bloat > 0 {
-        print $"Loading state bloat into ($datadir)..."
-        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
-        if $bloat_result.stdout != "" { print $bloat_result.stdout }
-        if $bloat_result.stderr != "" { print $bloat_result.stderr }
-        if $bloat_result.exit_code != 0 {
-            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
-            exit $bloat_result.exit_code
-        }
+        let source_label = if $bloat_file == "-" { "streamed generator output" } else { $bloat_file }
+        print $"Loading state bloat into ($datadir) from ($source_label)..."
+        load-e2e-state-bloat $tempo_bin $genesis $datadir $bloat $bloat_file $profile
     }
 }
 
@@ -899,6 +925,7 @@ def init-local-e2e-side [
     generated_trusted_peers: string,
     bloat: int,
     bloat_file: string,
+    profile: string,
     tempo_bin: string,
     marker: record,
 ] {
@@ -908,7 +935,7 @@ def init-local-e2e-side [
     mkdir $datadir
     mkdir $node_dir
 
-    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file $profile
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
@@ -1454,8 +1481,7 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
-    let bloat_tmp_key = (e2e-sanitize-snapshot-key $"($benchmark_id)-($snapshot_key_label)")
-    let bloat_tmp_dir = $"($E2E_BLOAT_TMP_DIR)-($bloat_tmp_key)"
+    let init_key = (e2e-sanitize-snapshot-key $"($benchmark_id)-($snapshot_key_label)")
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
@@ -1491,16 +1517,14 @@ def "main e2e" [
     }
 
     if $should_init_snapshots {
-        let init_dir = $"($LOCALNET_DIR)/e2e-local-init-($bloat_tmp_key)"
+        let init_dir = $"($LOCALNET_DIR)/e2e-local-init-($init_key)"
         let generated_genesis = $"($init_dir)/genesis.json"
         let generated_trusted_peers = $"($init_dir)/trusted-peers.txt"
-        let bloat_file = $"($bloat_tmp_dir)/state_bloat.bin"
+        let bloat_file = "-"
         mark-schelk-dirty-at $E2E_A_STATE_PATH
         mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
-        if ($bloat_tmp_dir | path exists) { rm -rf $bloat_tmp_dir }
-        mkdir $bloat_tmp_dir
 
         let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
@@ -1516,9 +1540,7 @@ def "main e2e" [
         }
         if $bloat_mib > 0 {
             ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            print $"Local e2e state bloat will be streamed into each snapshot \(($bloat_mib) MiB\)."
         }
 
         let marker = {
@@ -1533,11 +1555,8 @@ def "main e2e" [
             state_hardfork: $snapshot_state_hardfork
             snapshot_key: $snapshot_key_label
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($bloat_tmp_dir | path exists) {
-            rm -rf $bloat_tmp_dir
-        }
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
         if ($init_dir | path exists) {
             rm -rf $init_dir
         }
