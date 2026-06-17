@@ -1,6 +1,6 @@
 //! CLI type definitions for the Tempo node.
 
-use crate::{defaults, follow, tempo_cmd};
+use crate::{defaults, follow, tempo_cmd, thread_policy};
 use reth_ethereum_cli::Cli;
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -80,6 +80,9 @@ pub struct TempoArgs {
 
     #[command(flatten)]
     pub(crate) faucet_args: FaucetArgs,
+
+    #[command(flatten)]
+    pub(crate) thread_policy: thread_policy::ThreadPolicyArgs,
 
     #[command(flatten)]
     pub(crate) node_args: TempoNodeArgs,

@@ -279,6 +279,7 @@ indicatif = "0.18"
 insta = { version = "1", features = ["yaml"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
+libc = "0.2"
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.3"
 minisign = "0.8"

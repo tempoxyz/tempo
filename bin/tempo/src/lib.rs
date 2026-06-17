@@ -35,6 +35,7 @@ pub mod regenesis;
 mod snapshot_download;
 mod snapshot_manifest;
 pub mod tempo_cmd;
+mod thread_policy;
 mod utils;
 
 pub use crate::{
@@ -433,6 +434,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             None
         };
         let chain_id = builder.config().chain.chain().id();
+        let _thread_policy = thread_policy::spawn(args.thread_policy.clone())
+            .wrap_err("failed starting thread policy supervisor")?;
 
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
@@ -802,5 +805,38 @@ mod tests {
                 .payload_builder_builder()
                 .enable_prewarming
         );
+    }
+
+    #[test]
+    fn thread_policy_args_parse() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--thread-policy.enabled",
+            "--thread-policy.engine-cpus",
+            "0",
+            "--thread-policy.worker-cpus",
+            "1-3",
+            "--thread-policy.worker-nice",
+            "7",
+            "--thread-policy.scan-interval-ms",
+            "100",
+        ])
+        .unwrap();
+
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+
+        let thread_policy = node_cmd.ext.thread_policy;
+        assert!(thread_policy.enabled);
+        assert_eq!(thread_policy.engine_nice, -20);
+        assert_eq!(thread_policy.worker_nice, 7);
+        assert_eq!(thread_policy.engine_cpus.unwrap().to_string(), "0");
+        assert_eq!(thread_policy.worker_cpus.unwrap().to_string(), "1,2,3");
+        assert_eq!(thread_policy.scan_interval_ms, 100);
     }
 }

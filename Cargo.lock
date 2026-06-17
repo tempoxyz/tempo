@@ -12910,6 +12910,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "libc",
  "opentelemetry-otlp 0.31.1",
  "pyroscope",
  "pyroscope_pprofrs",
