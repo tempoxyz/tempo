@@ -132,7 +132,7 @@ on:
         required: true
         default: true
       bench-args:
-        description: Extra bench args. Include snapshot-key=NAME to isolate local e2e snapshots.
+        description: Extra bench args. Include snapshot-key=NAME to isolate the feature e2e snapshot.
         type: string
         required: false
         default: ""
@@ -279,7 +279,7 @@ on:
         required: false
         default: "false"
       bench-args:
-        description: Extra bench args. Include snapshot-key=NAME to isolate local e2e snapshots.
+        description: Extra bench args. Include snapshot-key=NAME to isolate the feature e2e snapshot.
         type: string
         required: false
         default: ""

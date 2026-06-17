@@ -522,7 +522,7 @@ jobs:
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const benchArgs = process.env.ACK_BENCH_ARGS || '';
             const snapshotKeyMatch = benchArgs.match(/(?:^|\s)(?:--)?(?:snapshot-key|state-layout-key|BENCH_SNAPSHOT_KEY)=([^\s]+)/);
-            const snapshotKeyNote = snapshotKeyMatch ? `, snapshot-key: \`${snapshotKeyMatch[1].replace(/`/g, '\\`')}\`` : '';
+            const snapshotKeyNote = snapshotKeyMatch ? `, feature-snapshot-key: \`${snapshotKeyMatch[1].replace(/`/g, '\\`')}\`` : '';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${naNote}${noCacheNote}${snapshotKeyNote}`;

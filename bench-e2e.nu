@@ -428,6 +428,21 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
 }
 
+def e2e-read-trusted-peers [a_db: string, b_db: string] {
+    let a_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+    if ($a_path | path exists) {
+        return (open $a_path | str trim)
+    }
+
+    let b_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+    if ($b_path | path exists) {
+        return (open $b_path | str trim)
+    }
+
+    print $"Error: trusted peers file not found in ($a_path) or ($b_path)"
+    exit 1
+}
+
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
@@ -628,6 +643,14 @@ def taskset-command [cmd: list<string>, cpus: string] {
     }
 }
 
+def wrap-e2e-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
+    if $samply {
+        ["sudo" "samply" "record" ...$samply_args "--" ...$cmd]
+    } else {
+        $cmd
+    }
+}
+
 def start-e2e-local-node [
     role: string,
     phase: string,
@@ -647,7 +670,7 @@ def start-e2e-local-node [
         $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($profile_label).json.gz"]
     } else { [] }
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
-    let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
+    let node_cmd = wrap-e2e-samply $pinned_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
@@ -660,7 +683,21 @@ def start-e2e-local-node [
     }
 }
 
-def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+def e2e-signing-key-is-encrypted [node_dir: string] {
+    let signing_key = $"($node_dir)/signing.key"
+    let signing_key_contents = (open --raw $signing_key | into binary)
+    $signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f]
+}
+
+def e2e-consensus-secret-path [node_dir: string] {
+    if (e2e-signing-key-is-encrypted $node_dir) {
+        prepare-localnet-consensus-secret-fifo $node_dir
+    } else {
+        ""
+    }
+}
+
+def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string, consensus_secret: string] {
     let addr = ($node_dir | path basename)
     let inferred_ip = if ($addr | str contains ":") {
         $addr | split row ":" | get 0
@@ -671,10 +708,8 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-    let signing_key_contents = (open --raw $signing_key | into binary)
-    let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
-    let signing_secret_args = if $signing_key_is_encrypted {
-        ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
+    let signing_secret_args = if $consensus_secret != "" {
+        ["--consensus.secret" $consensus_secret]
     } else {
         []
     }
@@ -707,7 +742,10 @@ def stop-e2e-processes-gracefully [] {
         print $"Stopping tempo processes: ($pids | str join ', ')"
     }
     for pid in $pids {
-        sudo kill -s 2 $pid
+        let result = (^kill -s 2 $pid | complete)
+        if $result.exit_code != 0 {
+            sudo kill -s 2 $pid | ignore
+        }
     }
     for pid in $pids {
         mut wait = 0
@@ -718,7 +756,10 @@ def stop-e2e-processes-gracefully [] {
         }
         if $wait >= 30 {
             print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
-            sudo kill -s 9 $pid
+            let result = (^kill -s 9 $pid | complete)
+            if $result.exit_code != 0 {
+                sudo kill -s 9 $pid | ignore
+            }
             sleep 1sec
         }
     }
@@ -1020,7 +1061,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
-    let genesis = ($run | get -o genesis | default $ctx.genesis)
+    let snapshot = if $run_type == "baseline" { $ctx.baseline_snapshot } else { $ctx.feature_snapshot }
+    let genesis = ($run | get -o genesis | default "")
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
@@ -1028,22 +1070,22 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
-    bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
-    bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    bench-restore-at $snapshot.a.state_path $snapshot.a.mount $snapshot.a.datadir
+    bench-restore-at $snapshot.b.state_path $snapshot.b.mount $snapshot.b.datadir
 
-    for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
+    for path in [$genesis $snapshot.a.node_dir $snapshot.b.node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
             exit 1
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $snapshot.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $snapshot.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
-        { role: "a", node_dir: $ctx.a.node_dir }
-        { role: "b", node_dir: $ctx.b.node_dir }
+        { role: "a", node_dir: $snapshot.a.node_dir }
+        { role: "b", node_dir: $snapshot.b.node_dir }
     ] {
         for required_file in ["signing.key" "signing.share" "enode.key"] {
             let path = $"($role_info.node_dir)/($required_file)"
@@ -1077,16 +1119,18 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+    let a_consensus_secret = (e2e-consensus-secret-path $snapshot.a.node_dir)
+    let b_consensus_secret = (e2e-consensus-secret-path $snapshot.b.node_dir)
+    let a_base_args = (build-base-args $genesis $snapshot.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+        | append (build-e2e-consensus-args $snapshot.a.node_dir $snapshot.trusted_peers $snapshot.a.consensus_port $snapshot.a.ip $a_consensus_secret)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+    let b_base_args = (build-base-args $genesis $snapshot.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+        | append (build-e2e-consensus-args $snapshot.b.node_dir $snapshot.trusted_peers $snapshot.b.consensus_port $snapshot.b.ip $b_consensus_secret)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1103,11 +1147,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
-    mark-schelk-dirty-at $ctx.a.state_path
-    mark-schelk-dirty-at $ctx.b.state_path
+    mark-schelk-dirty-at $snapshot.a.state_path
+    mark-schelk-dirty-at $snapshot.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    if $a_consensus_secret != "" { start-localnet-consensus-secret-writer $a_consensus_secret }
+    if $b_consensus_secret != "" { start-localnet-consensus-secret-writer $b_consensus_secret }
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $snapshot.a.cpus $snapshot.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $snapshot.b.cpus $snapshot.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1364,7 +1410,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --force-bloat                                      # Regenerate and promote both local e2e snapshots
+    --force-bloat                                      # Regenerate and promote the selected feature e2e snapshot
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = ""                             # Additional Cargo features appended to the e2e defaults
@@ -1457,14 +1503,15 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let snapshot_suffix = if $snapshot_key == "" { "" } else { $"_($snapshot_key)" }
-    let snapshot_key_label = if $snapshot_key == "" { "default" } else { $snapshot_key }
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($snapshot_suffix)"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($snapshot_suffix)"
-    let a_identity = $a_db
-    let b_identity = $b_db
-    let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
-    let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
+    let baseline_snapshot_label = "default"
+    let feature_snapshot_suffix = if $snapshot_key == "" { "" } else { $"_($snapshot_key)" }
+    let feature_snapshot_label = if $snapshot_key == "" { "default" } else { $snapshot_key }
+    let baseline_a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let baseline_b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let feature_a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($feature_snapshot_suffix)"
+    let feature_b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($feature_snapshot_suffix)"
+    let baseline_genesis_source_path = $"($baseline_a_db)/($BENCH_META_SUBDIR)/genesis.json"
+    let feature_genesis_source_path = $"($feature_a_db)/($BENCH_META_SUBDIR)/genesis.json"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = ($env | get --optional BENCHMARK_ID)
@@ -1481,14 +1528,15 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
-    let init_key = (e2e-sanitize-snapshot-key $"($benchmark_id)-($snapshot_key_label)")
+    let init_key = (e2e-sanitize-snapshot-key $"($benchmark_id)-($feature_snapshot_label)")
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
-    print $"Using local e2e snapshot key: ($snapshot_key_label)"
+    print $"Using local e2e baseline snapshot key: ($baseline_snapshot_label)"
+    print $"Using local e2e feature snapshot key: ($feature_snapshot_label)"
     if $snapshot_key != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
-        let updated_config = $"($current_config), snapshot-key: `($snapshot_key_label)`"
+        let updated_config = $"($current_config), feature-snapshot-key: `($feature_snapshot_label)`"
         $env.BENCH_CONFIG = $updated_config
         let github_env = ($env | get -o GITHUB_ENV | default "")
         if $github_env != "" {
@@ -1499,20 +1547,35 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
+    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
 
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
-    if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
-        let missing_a = (e2e-snapshot-missing-files $a_db)
-        let missing_b = (e2e-snapshot-missing-files $b_db)
+    let baseline_snapshots_ready = (e2e-snapshots-ready $baseline_a_db $baseline_b_db)
+    if $snapshot_key != "" and not $baseline_snapshots_ready {
+        let missing_a = (e2e-snapshot-missing-files $baseline_a_db)
+        let missing_b = (e2e-snapshot-missing-files $baseline_b_db)
+        print "Error: feature snapshot-key requires an existing unkeyed baseline e2e snapshot."
         if ($missing_a | length) > 0 {
-            print $"  Missing from a: ($missing_a | str join ', ')"
+            print $"  Missing from baseline a: ($missing_a | str join ', ')"
         }
         if ($missing_b | length) > 0 {
-            print $"  Missing from b: ($missing_b | str join ', ')"
+            print $"  Missing from baseline b: ($missing_b | str join ', ')"
+        }
+        print "Run the e2e bloat initialization once without snapshot-key to create the legacy baseline snapshot."
+        exit 1
+    }
+
+    let feature_snapshots_ready = (e2e-snapshots-ready $feature_a_db $feature_b_db)
+    let should_init_snapshots = $force_bloat or (not $feature_snapshots_ready)
+    if (not $feature_snapshots_ready) and (not $force_bloat) {
+        print $"Local e2e feature snapshot ($bloat_mib) MiB, key=($feature_snapshot_label) is missing required files; initializing it once."
+        let missing_a = (e2e-snapshot-missing-files $feature_a_db)
+        let missing_b = (e2e-snapshot-missing-files $feature_b_db)
+        if ($missing_a | length) > 0 {
+            print $"  Missing from feature a: ($missing_a | str join ', ')"
+        }
+        if ($missing_b | length) > 0 {
+            print $"  Missing from feature b: ($missing_b | str join ', ')"
         }
     }
 
@@ -1553,17 +1616,17 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
-            snapshot_key: $snapshot_key_label
+            snapshot_key: $feature_snapshot_label
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db $feature_a_db $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $feature_a_db | insert node_dir $feature_a_db | insert validator_addr $a_validator)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db $feature_b_db $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $feature_b_db | insert node_dir $feature_b_db | insert validator_addr $b_validator)
         if ($init_dir | path exists) {
             rm -rf $init_dir
         }
-        bench-promote-at $E2E_A_STATE_PATH $a_db
-        bench-promote-at $E2E_B_STATE_PATH $b_db
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+        bench-promote-at $E2E_A_STATE_PATH $feature_a_db
+        bench-promote-at $E2E_B_STATE_PATH $feature_b_db
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
     }
 
     if $init_only {
@@ -1571,25 +1634,16 @@ def "main e2e" [
         return
     }
     let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
-    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $genesis_path }
-    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $genesis_path }
+    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $baseline_genesis_source_path }
+    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $feature_genesis_source_path }
     if $hardfork_mode {
         if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
         mkdir $hardfork_genesis_dir
-        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
-        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit
+        e2e-synthesize-genesis $baseline_genesis_source_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
+        e2e-synthesize-genesis $feature_genesis_source_path $feature_genesis_path $feature_hardfork_name $gas_limit
     }
-    let trusted_peers = if ($a_trusted_peers_path | path exists) {
-        open $a_trusted_peers_path | str trim
-    } else {
-        let b_trusted_peers_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-        if ($b_trusted_peers_path | path exists) {
-            open $b_trusted_peers_path | str trim
-        } else {
-            print $"Error: trusted peers file not found in ($a_trusted_peers_path) or ($b_trusted_peers_path)"
-            exit 1
-        }
-    }
+    let baseline_trusted_peers = (e2e-read-trusted-peers $baseline_a_db $baseline_b_db)
+    let feature_trusted_peers = (e2e-read-trusted-peers $feature_a_db $feature_b_db)
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
@@ -1659,27 +1713,51 @@ def "main e2e" [
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
-        genesis: $genesis_path
-        trusted_peers: $trusted_peers
-        a: {
-            state_path: $E2E_A_STATE_PATH
-            mount: $E2E_A_MOUNT
-            datadir: $a_db
-            node_dir: $a_identity
-            ip: $a_ip
-            consensus_port: $a_consensus_port
-            cpus: $E2E_A_CPUS
-            memory: $E2E_A_MEMORY
+        baseline_snapshot: {
+            trusted_peers: $baseline_trusted_peers
+            a: {
+                state_path: $E2E_A_STATE_PATH
+                mount: $E2E_A_MOUNT
+                datadir: $baseline_a_db
+                node_dir: $baseline_a_db
+                ip: $a_ip
+                consensus_port: $a_consensus_port
+                cpus: $E2E_A_CPUS
+                memory: $E2E_A_MEMORY
+            }
+            b: {
+                state_path: $E2E_B_STATE_PATH
+                mount: $E2E_B_MOUNT
+                datadir: $baseline_b_db
+                node_dir: $baseline_b_db
+                ip: $b_ip
+                consensus_port: $b_consensus_port
+                cpus: $E2E_B_CPUS
+                memory: $E2E_B_MEMORY
+            }
         }
-        b: {
-            state_path: $E2E_B_STATE_PATH
-            mount: $E2E_B_MOUNT
-            datadir: $b_db
-            node_dir: $b_identity
-            ip: $b_ip
-            consensus_port: $b_consensus_port
-            cpus: $E2E_B_CPUS
-            memory: $E2E_B_MEMORY
+        feature_snapshot: {
+            trusted_peers: $feature_trusted_peers
+            a: {
+                state_path: $E2E_A_STATE_PATH
+                mount: $E2E_A_MOUNT
+                datadir: $feature_a_db
+                node_dir: $feature_a_db
+                ip: $a_ip
+                consensus_port: $a_consensus_port
+                cpus: $E2E_A_CPUS
+                memory: $E2E_A_MEMORY
+            }
+            b: {
+                state_path: $E2E_B_STATE_PATH
+                mount: $E2E_B_MOUNT
+                datadir: $feature_b_db
+                node_dir: $feature_b_db
+                ip: $b_ip
+                consensus_port: $b_consensus_port
+                cpus: $E2E_B_CPUS
+                memory: $E2E_B_MEMORY
+            }
         }
         preset: $preset
         preset_path: $preset_path
@@ -1808,8 +1886,12 @@ def "main e2e" [
     try { git worktree remove --force $feature_wt } catch { }
     try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
+    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
+    if $snapshot_key != "" {
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $baseline_a_db
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $baseline_b_db
+    }
     if $e2e_exit != 0 {
         exit $e2e_exit
     }
