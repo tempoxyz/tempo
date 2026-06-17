@@ -685,10 +685,6 @@ where
                 continue;
             }
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
             let execution_result = executor.execute_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
@@ -713,15 +709,29 @@ where
                 }) = &err
                 {
                     invalid_pool_transaction_execution_attempts += 1;
+                    let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                        .then(|| format!("{:?}", pool_tx.transaction));
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        if let Some(tx_debug_repr) = tx_debug_repr.as_ref() {
+                            trace!(
+                                %error,
+                                tx = %tx_debug_repr,
+                                "skipping nonce too low transaction"
+                            );
+                        }
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        if let Some(tx_debug_repr) = tx_debug_repr.as_ref() {
+                            trace!(
+                                %error,
+                                tx = %tx_debug_repr,
+                                "skipping invalid transaction and its descendants"
+                            );
+                        }
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
