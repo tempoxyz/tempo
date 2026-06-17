@@ -465,7 +465,7 @@ def derive-tracing-otlp [tracing_otlp: string] {
     $tracing_otlp
 }
 
-def systemd-scope-command [unit: string, cpus: string, memory: string, script: string, run_as_root: bool] {
+def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
     if not $can_scope {
         return ["bash" "-lc" $script]
@@ -483,13 +483,6 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         [$"--preserve-env=($telemetry_env_names | str join ',')"]
     } else { [] }
     let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
-    let uid_gid_args = if $run_as_root {
-        []
-    } else {
-        let uid = (id -u | str trim)
-        let gid = (id -g | str trim)
-        ["--uid" $uid "--gid" $gid]
-    }
     [
         "sudo"
         ...$preserve_env_args
@@ -499,7 +492,6 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--collect"
         "--same-dir"
         "--unit" $unit
-        ...$uid_gid_args
         ...$telemetry_env
         ...$memory_args
         "bash"
@@ -529,7 +521,6 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
-    run_as_root: bool,
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -540,7 +531,7 @@ def start-e2e-local-node [
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
-    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script $run_as_root)
+    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
@@ -994,8 +985,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory ($ctx.tracy != "off")
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory ($ctx.tracy != "off")
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
