@@ -16,7 +16,8 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
     nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
@@ -459,6 +460,7 @@ fn storage_touches_for_transaction(
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+    add_keychain_fee_limit_touches(&mut touches, tx, fee_payer, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
@@ -469,6 +471,45 @@ fn storage_touches_for_transaction(
     add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_offset);
 
     touches
+}
+
+fn add_keychain_fee_limit_touches(
+    touches: &mut Vec<StorageTouch>,
+    tx: &BestTransaction,
+    fee_payer: Address,
+    fee_token: Address,
+) {
+    let Some(subject) = tx.transaction.keychain_subject() else {
+        return;
+    };
+    if fee_payer != subject.account {
+        return;
+    }
+
+    add_account_keychain_limit_touches(touches, subject.account, subject.key_id, fee_token);
+}
+
+fn add_account_keychain_limit_touches(
+    touches: &mut Vec<StorageTouch>,
+    account: Address,
+    key_id: Address,
+    token: Address,
+) {
+    if key_id.is_zero() {
+        return;
+    }
+
+    let keychain = AccountKeychain::new();
+    add_storage_touch(
+        touches,
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        keychain.keys[account][key_id].base_slot(),
+    );
+
+    let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+    let limit_slot = keychain.spending_limits[limit_key][token].base_slot();
+    add_storage_touch(touches, ACCOUNT_KEYCHAIN_ADDRESS, limit_slot);
+    add_storage_touch(touches, ACCOUNT_KEYCHAIN_ADDRESS, limit_slot + U256::from(1));
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
