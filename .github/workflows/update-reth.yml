@@ -125,11 +125,21 @@ jobs:
           fi
           # Print the final result text
           echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          PRINTED_RAW_OUTPUT=false
           if [ "$AMP_EXIT" -ne 0 ]; then
             echo "::warning::Amp exited with status $AMP_EXIT"
+            echo "::group::Amp raw stdout/stderr"
+            printf '%s\n' "$OUTPUT"
+            echo "::endgroup::"
+            PRINTED_RAW_OUTPUT=true
           fi
           # Propagate error if amp failed
           IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
+          if [ "$IS_ERROR" = "true" ] && [ "$PRINTED_RAW_OUTPUT" = "false" ]; then
+            echo "::group::Amp raw stdout/stderr"
+            printf '%s\n' "$OUTPUT"
+            echo "::endgroup::"
+          fi
           if [ "$AMP_EXIT" -ne 0 ] || [ "$IS_ERROR" = "true" ]; then
             exit 1
           fi
