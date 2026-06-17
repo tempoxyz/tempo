@@ -142,6 +142,8 @@ impl Call {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn size(&self) -> usize {
         size_of::<Self>() + self.input.len()
     }
@@ -350,7 +352,8 @@ impl TempoTransaction {
     }
 
     /// Calculates a heuristic for the in-memory size of the transaction
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + self.calls.iter().map(|call| call.size()).sum::<usize>()
