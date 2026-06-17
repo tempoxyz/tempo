@@ -20,7 +20,7 @@ use reth_primitives_traits::{
     HeaderTy, Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef,
 };
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
-use reth_transaction_pool::{PoolPooledTx, PoolTransaction, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -492,18 +492,19 @@ where
         self.inner.send_raw_transaction_sync_timeout()
     }
 
-    fn send_transaction(
+    fn send_pool_transaction(
         &self,
         origin: TransactionOrigin,
-        tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
+        tx: WithEncoded<PoolTx<Self::Pool>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
-        match tx.value().inner().subblock_proposer() {
+        let recovered = tx.value().clone_into_consensus();
+        match recovered.inner().subblock_proposer() {
             Some(proposer) if self.matches_validator_key(&proposer) => {
                 let subblock_tx = self.subblock_transactions_tx.clone();
                 Either::Left(Either::Left(async move {
-                    let tx_hash = *tx.value().tx_hash();
+                    let tx_hash = *recovered.tx_hash();
 
-                    subblock_tx.send(tx.into_value()).map_err(|_| {
+                    subblock_tx.send(recovered).map_err(|_| {
                         EthApiError::from(RethError::msg("subblocks service channel closed"))
                     })?;
 
@@ -516,7 +517,11 @@ where
                 ))
                 .into(),
             ))),
-            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
+            None => Either::Right(
+                self.inner
+                    .send_pool_transaction(origin, tx)
+                    .map_err(Into::into),
+            ),
         }
     }
 }
