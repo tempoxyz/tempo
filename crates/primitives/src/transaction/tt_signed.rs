@@ -187,6 +187,8 @@ impl AASigned {
     }
 
     /// Encode the transaction fields and signature as RLP list (without type byte)
+    #[cold]
+    #[inline(never)]
     pub fn rlp_encode(&self, out: &mut dyn BufMut) {
         // RLP header
         self.rlp_header().encode(out);
@@ -231,6 +233,8 @@ impl AASigned {
     }
 
     /// EIP-2718 encode the signed transaction.
+    #[cold]
+    #[inline(never)]
     pub fn eip2718_encode(&self, out: &mut dyn BufMut) {
         // Type byte
         out.put_u8(TEMPO_TX_TYPE_ID);
