@@ -554,6 +554,7 @@ where
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
     /// execution can use by providing the appropriate exec loop function.
+    #[inline(never)]
     fn execute_single_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
