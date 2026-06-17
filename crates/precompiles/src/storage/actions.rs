@@ -16,31 +16,37 @@ pub enum StorageAction {
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub struct StorageActions {
-    enabled: Rc<Cell<bool>>,
-    actions: Rc<RefCell<Vec<StorageAction>>>,
+    inner: Rc<StorageActionsInner>,
+}
+
+#[derive(Debug, Default)]
+struct StorageActionsInner {
+    enabled: Cell<bool>,
+    actions: RefCell<Vec<StorageAction>>,
 }
 
 impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording disabled.
     pub fn disabled() -> Self {
         Self {
-            enabled: Rc::new(Cell::new(false)),
-            actions: Rc::default(),
+            inner: Rc::default(),
         }
     }
 
     /// Returns an [`StorageActions`] instance with actions recording enabled.
     pub fn enabled() -> Self {
         Self {
-            enabled: Rc::new(Cell::new(true)),
-            actions: Rc::default(),
+            inner: Rc::new(StorageActionsInner {
+                enabled: Cell::new(true),
+                actions: RefCell::default(),
+            }),
         }
     }
 
     /// Enables actions recording.
     pub fn enable(&self) {
-        self.enabled.set(true);
-        self.actions.borrow_mut().clear();
+        self.inner.enabled.set(true);
+        self.inner.actions.borrow_mut().clear();
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
@@ -50,19 +56,22 @@ impl StorageActions {
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
-        if !self.enabled.get() {
+        if !self.inner.enabled.get() {
             return None;
         }
 
-        Some(std::mem::replace(&mut *self.actions.borrow_mut(), actions))
+        Some(std::mem::replace(
+            &mut *self.inner.actions.borrow_mut(),
+            actions,
+        ))
     }
 
     /// Records an action if recording is enabled.
     pub fn record(&self, action: StorageAction) {
-        if !self.enabled.get() {
+        if !self.inner.enabled.get() {
             return;
         }
 
-        self.actions.borrow_mut().push(action);
+        self.inner.actions.borrow_mut().push(action);
     }
 }
