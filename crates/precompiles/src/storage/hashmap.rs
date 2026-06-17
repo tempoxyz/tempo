@@ -239,6 +239,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
             self.events = snapshot.events;
         }
     }
+
+    fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
+        // HashMapStorageProvider does not run TIP-1060 accounting.
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
