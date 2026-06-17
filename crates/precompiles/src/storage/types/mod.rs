@@ -358,14 +358,24 @@ pub trait StorageKey: sealed::OnlyPrimitives {
     /// Compute storage slot for a mapping with this key.
     ///
     /// Left-pads the key to 32 bytes, concatenates with the slot, and hashes.
+    #[inline]
     fn mapping_slot(&self, slot: U256) -> U256 {
+        self.mapping_slot_with_slot_bytes(&slot.to_be_bytes::<32>())
+    }
+
+    /// Compute storage slot for a mapping when the base slot is already encoded.
+    ///
+    /// This lets mapping handlers reuse their constant base slot encoding across
+    /// many key lookups while preserving the same Solidity-compatible hash input.
+    #[inline]
+    fn mapping_slot_with_slot_bytes(&self, slot_bytes: &[u8; 32]) -> U256 {
         let key_bytes = self.as_storage_bytes();
         let key_bytes = key_bytes.as_ref();
         debug_assert!(key_bytes.len() <= 32);
 
         let mut buf = [0u8; 64];
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
-        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+        buf[32..].copy_from_slice(slot_bytes);
 
         U256::from_be_bytes(keccak256(buf).0)
     }
