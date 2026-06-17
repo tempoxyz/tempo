@@ -47,10 +47,11 @@ pub trait StorageCreditsBackend {
     /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
-        self.gas_tracker()
-            .record_regular_cost(cost)
-            .then_some(())
-            .ok_or_else(Self::Error::out_of_gas)
+        if self.gas_tracker().record_regular_cost(cost) {
+            Ok(())
+        } else {
+            Err(Self::Error::out_of_gas())
+        }
     }
 
     /// SLOAD `address[key]`, optionally skipping the cold load.
