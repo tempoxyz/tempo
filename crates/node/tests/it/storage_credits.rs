@@ -422,8 +422,8 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_recreates_balance_wi
     Ok(())
 }
 
-/// A normal TIP-20 precompile storage clear should mint a TIP-1060 credit for the token, and a
-/// later storage creation by the same token should redeem that account-local credit in Refund mode.
+/// A normal TIP-20 precompile storage clear should mint a persistent TIP-1060 credit for the token,
+/// and a later storage creation by the same token should redeem that account-local credit.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

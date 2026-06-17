@@ -361,6 +361,44 @@ mod tests {
     }
 
     #[test]
+    fn pending_clear_is_not_refund_settleable_before_finalization() {
+        let owner = Address::repeat_byte(0x55);
+        let watched_slot = U256::from(0x66);
+        let fresh_slot = U256::from(0x77);
+        let mut backend = TestBackend::new();
+
+        backend.tstore(
+            STORAGE_CREDITS_ADDRESS,
+            StorageCredits::pending_slot(owner, watched_slot),
+            U256::ONE,
+        );
+        sstore_storage_credits(
+            &mut backend,
+            owner,
+            Some(watched_slot),
+            &sstore_result(U256::ONE, U256::ZERO),
+        )
+        .unwrap();
+
+        sstore_storage_credits(
+            &mut backend,
+            owner,
+            Some(fresh_slot),
+            &sstore_result(U256::ZERO, U256::ONE),
+        )
+        .unwrap();
+
+        let state = backend.transient_state(owner);
+        assert_eq!(state.pending_credits, 1);
+        assert_eq!(state.pending_refunds, 1);
+        assert_eq!(
+            backend.persistent_credit(owner),
+            U256::ZERO,
+            "Refund settlement has no persistent credit to consume before pending finalization"
+        );
+    }
+
+    #[test]
     fn unregistered_zero_key_clear_mints_persistent_credit() {
         let owner = Address::repeat_byte(0x44);
         let mut backend = TestBackend::new();
