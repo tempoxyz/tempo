@@ -569,6 +569,32 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_idle_iterations = 0u64;
+        let mut tx_pool_empty_polls = 0u64;
+        let mut tx_pool_empty_poll_runs = 0u64;
+        let mut tx_pool_empty_polls_before_first_yield = 0u64;
+        let mut tx_pool_empty_polls_between_yields = 0u64;
+        let mut tx_pool_empty_runs_completed_by_yield = 0u64;
+        let mut current_tx_pool_empty_run = 0u64;
+        let mut max_tx_pool_empty_run_iterations = 0u64;
+        let mut first_tx_pool_empty_poll_elapsed = None;
+        let mut last_tx_pool_empty_poll_elapsed = None;
+        let mut first_pool_transaction_yield_elapsed = None;
+        let mut last_pool_transaction_yield_elapsed = None;
+        let mut first_pool_transaction_included_elapsed = None;
+        let mut last_pool_transaction_included_elapsed = None;
+        let mut best_txs_next_calls = 0u64;
+        let mut best_txs_next_slow_calls = 0u64;
+        let mut best_txs_next_total_elapsed = Duration::ZERO;
+        let mut best_txs_next_max_elapsed = Duration::ZERO;
+        let mut best_txs_next_some_total_elapsed = Duration::ZERO;
+        let mut best_txs_next_none_total_elapsed = Duration::ZERO;
+        let mut best_txs_next_some_max_elapsed = Duration::ZERO;
+        let mut best_txs_next_none_max_elapsed = Duration::ZERO;
+        let mut budget_predicted_builder_work = Duration::ZERO;
+        let mut budget_predicted_validator_work = Duration::ZERO;
+        let mut budget_marshal_persist = Duration::ZERO;
+        let mut budget_total_reserved = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -594,6 +620,10 @@ where
                     validation_latency,
                     current_workload,
                 );
+                budget_predicted_builder_work = budget_decision.predicted_builder_work;
+                budget_predicted_validator_work = budget_decision.predicted_validator_work;
+                budget_marshal_persist = budget_decision.marshal_persist;
+                budget_total_reserved = budget_decision.total_reserved;
                 if budget_decision.total_reserved >= build_budget {
                     debug!(
                         target: "payload_builder",
@@ -616,13 +646,37 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
+            let best_txs_next_start = Instant::now();
+            let maybe_pool_tx = best_txs.next();
+            let best_txs_next_elapsed = best_txs_next_start.elapsed();
+            best_txs_next_calls += 1;
+            best_txs_next_total_elapsed += best_txs_next_elapsed;
+            best_txs_next_max_elapsed = best_txs_next_max_elapsed.max(best_txs_next_elapsed);
+            if best_txs_next_elapsed >= Duration::from_millis(1) {
+                best_txs_next_slow_calls += 1;
+            }
+
+            let Some(pool_tx) = maybe_pool_tx else {
+                best_txs_next_none_total_elapsed += best_txs_next_elapsed;
+                best_txs_next_none_max_elapsed =
+                    best_txs_next_none_max_elapsed.max(best_txs_next_elapsed);
+                let empty_poll_elapsed = execution_start.elapsed();
+                first_tx_pool_empty_poll_elapsed.get_or_insert(empty_poll_elapsed);
+                last_tx_pool_empty_poll_elapsed = Some(empty_poll_elapsed);
+                tx_pool_empty_polls += 1;
+                if current_tx_pool_empty_run == 0 {
+                    tx_pool_empty_poll_runs += 1;
+                }
+                current_tx_pool_empty_run += 1;
+                max_tx_pool_empty_run_iterations =
+                    max_tx_pool_empty_run_iterations.max(current_tx_pool_empty_run);
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    normal_transaction_fill_idle_iterations += 1;
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -634,6 +688,21 @@ where
                 };
                 break stop_reason;
             };
+            best_txs_next_some_total_elapsed += best_txs_next_elapsed;
+            best_txs_next_some_max_elapsed =
+                best_txs_next_some_max_elapsed.max(best_txs_next_elapsed);
+            let yield_elapsed = execution_start.elapsed();
+            first_pool_transaction_yield_elapsed.get_or_insert(yield_elapsed);
+            last_pool_transaction_yield_elapsed = Some(yield_elapsed);
+            if current_tx_pool_empty_run > 0 {
+                tx_pool_empty_runs_completed_by_yield += 1;
+                if pool_transactions_yielded == 0 {
+                    tx_pool_empty_polls_before_first_yield += current_tx_pool_empty_run;
+                } else {
+                    tx_pool_empty_polls_between_yields += current_tx_pool_empty_run;
+                }
+                current_tx_pool_empty_run = 0;
+            }
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
@@ -757,6 +826,9 @@ where
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
+            let included_elapsed = execution_start.elapsed();
+            first_pool_transaction_included_elapsed.get_or_insert(included_elapsed);
+            last_pool_transaction_included_elapsed = Some(included_elapsed);
             let _ = roots_tx.send((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
@@ -773,6 +845,11 @@ where
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
+        let tx_pool_empty_polls_at_stop = current_tx_pool_empty_run;
+        let last_pool_transaction_yield_to_stop_elapsed = last_pool_transaction_yield_elapsed
+            .map(|elapsed| normal_transaction_fill_elapsed.saturating_sub(elapsed));
+        let last_pool_transaction_included_to_stop_elapsed = last_pool_transaction_included_elapsed
+            .map(|elapsed| normal_transaction_fill_elapsed.saturating_sub(elapsed));
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
@@ -1130,6 +1207,17 @@ where
             pool_transactions_included,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
+            block_build_stop_reason = block_build_stop_reason.as_str(),
+            normal_transaction_fill_idle_iterations,
+            tx_pool_empty_polls,
+            tx_pool_empty_poll_runs,
+            tx_pool_empty_polls_before_first_yield,
+            tx_pool_empty_polls_between_yields,
+            tx_pool_empty_polls_at_stop,
+            tx_pool_empty_runs_completed_by_yield,
+            max_tx_pool_empty_run_iterations,
+            best_txs_next_calls,
+            best_txs_next_slow_calls,
             subblock_transactions,
             total_transactions,
             ?elapsed,
@@ -1137,6 +1225,25 @@ where
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ?first_tx_pool_empty_poll_elapsed,
+            ?last_tx_pool_empty_poll_elapsed,
+            ?first_pool_transaction_yield_elapsed,
+            ?last_pool_transaction_yield_elapsed,
+            ?first_pool_transaction_included_elapsed,
+            ?last_pool_transaction_included_elapsed,
+            ?last_pool_transaction_yield_to_stop_elapsed,
+            ?last_pool_transaction_included_to_stop_elapsed,
+            ?best_txs_next_total_elapsed,
+            ?best_txs_next_max_elapsed,
+            ?best_txs_next_some_total_elapsed,
+            ?best_txs_next_none_total_elapsed,
+            ?best_txs_next_some_max_elapsed,
+            ?best_txs_next_none_max_elapsed,
+            ?payload_build_budget,
+            ?budget_predicted_builder_work,
+            ?budget_predicted_validator_work,
+            ?budget_marshal_persist,
+            ?budget_total_reserved,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,

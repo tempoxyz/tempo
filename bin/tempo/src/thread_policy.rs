@@ -47,6 +47,102 @@ pub(crate) struct ThreadPolicyArgs {
     )]
     pub(crate) engine_priority: i32,
 
+    /// Nice value for the tx-iterator thread.
+    ///
+    /// When omitted, tx-iterator inherits `thread-policy.worker-nice`.
+    #[arg(
+        long = "thread-policy.tx-iterator-nice",
+        value_name = "NICE",
+        env = "TEMPO_THREAD_POLICY_TX_ITERATOR_NICE"
+    )]
+    pub(crate) tx_iterator_nice: Option<i32>,
+
+    /// Scheduler policy for the tx-iterator thread.
+    ///
+    /// This thread feeds validated transactions back to engine execution, so
+    /// engine latency can depend directly on how quickly it runs after wakeup.
+    #[arg(
+        long = "thread-policy.tx-iterator-scheduler",
+        default_value_t = SchedulerPolicy::Other,
+        value_name = "POLICY",
+        env = "TEMPO_THREAD_POLICY_TX_ITERATOR_SCHEDULER"
+    )]
+    pub(crate) tx_iterator_scheduler: SchedulerPolicy,
+
+    /// Real-time scheduler priority for tx-iterator when using `fifo` or `rr`.
+    ///
+    /// When omitted, this defaults to one below `thread-policy.engine-priority`.
+    #[arg(
+        long = "thread-policy.tx-iterator-priority",
+        value_name = "PRIORITY",
+        env = "TEMPO_THREAD_POLICY_TX_ITERATOR_PRIORITY"
+    )]
+    pub(crate) tx_iterator_priority: Option<i32>,
+
+    /// Nice value for the payload-builder thread.
+    ///
+    /// When omitted, payload-builder inherits `thread-policy.worker-nice`.
+    #[arg(
+        long = "thread-policy.payload-builder-nice",
+        value_name = "NICE",
+        env = "TEMPO_THREAD_POLICY_PAYLOAD_BUILDER_NICE"
+    )]
+    pub(crate) payload_builder_nice: Option<i32>,
+
+    /// Scheduler policy for the payload-builder thread.
+    ///
+    /// This thread builds execution payloads and can sit in the wakeup path for
+    /// consensus-visible block production latency.
+    #[arg(
+        long = "thread-policy.payload-builder-scheduler",
+        default_value_t = SchedulerPolicy::Other,
+        value_name = "POLICY",
+        env = "TEMPO_THREAD_POLICY_PAYLOAD_BUILDER_SCHEDULER"
+    )]
+    pub(crate) payload_builder_scheduler: SchedulerPolicy,
+
+    /// Real-time scheduler priority for payload-builder when using `fifo` or `rr`.
+    ///
+    /// When omitted, this defaults to two below `thread-policy.engine-priority`.
+    #[arg(
+        long = "thread-policy.payload-builder-priority",
+        value_name = "PRIORITY",
+        env = "TEMPO_THREAD_POLICY_PAYLOAD_BUILDER_PRIORITY"
+    )]
+    pub(crate) payload_builder_priority: Option<i32>,
+
+    /// Nice value for payload prewarming coordinator and worker threads.
+    ///
+    /// When omitted, prewarming threads inherit `thread-policy.worker-nice`.
+    #[arg(
+        long = "thread-policy.prewarm-nice",
+        value_name = "NICE",
+        env = "TEMPO_THREAD_POLICY_PREWARM_NICE"
+    )]
+    pub(crate) prewarm_nice: Option<i32>,
+
+    /// Scheduler policy for payload prewarming coordinator and worker threads.
+    ///
+    /// These threads feed warmed transactions back to payload-builder, so
+    /// payload-builder latency can depend on how quickly they run after wakeup.
+    #[arg(
+        long = "thread-policy.prewarm-scheduler",
+        default_value_t = SchedulerPolicy::Other,
+        value_name = "POLICY",
+        env = "TEMPO_THREAD_POLICY_PREWARM_SCHEDULER"
+    )]
+    pub(crate) prewarm_scheduler: SchedulerPolicy,
+
+    /// Real-time scheduler priority for prewarming threads when using `fifo` or `rr`.
+    ///
+    /// When omitted, this defaults to three below `thread-policy.engine-priority`.
+    #[arg(
+        long = "thread-policy.prewarm-priority",
+        value_name = "PRIORITY",
+        env = "TEMPO_THREAD_POLICY_PREWARM_PRIORITY"
+    )]
+    pub(crate) prewarm_priority: Option<i32>,
+
     /// Nice value for background execution and builder worker threads.
     #[arg(
         long = "thread-policy.worker-nice",
@@ -62,6 +158,36 @@ pub(crate) struct ThreadPolicyArgs {
         env = "TEMPO_THREAD_POLICY_ENGINE_CPUS"
     )]
     pub(crate) engine_cpus: Option<CpuList>,
+
+    /// Optional CPU list for tx-iterator.
+    ///
+    /// When omitted, tx-iterator inherits `thread-policy.worker-cpus`.
+    #[arg(
+        long = "thread-policy.tx-iterator-cpus",
+        value_name = "CPUS",
+        env = "TEMPO_THREAD_POLICY_TX_ITERATOR_CPUS"
+    )]
+    pub(crate) tx_iterator_cpus: Option<CpuList>,
+
+    /// Optional CPU list for payload-builder.
+    ///
+    /// When omitted, payload-builder inherits `thread-policy.worker-cpus`.
+    #[arg(
+        long = "thread-policy.payload-builder-cpus",
+        value_name = "CPUS",
+        env = "TEMPO_THREAD_POLICY_PAYLOAD_BUILDER_CPUS"
+    )]
+    pub(crate) payload_builder_cpus: Option<CpuList>,
+
+    /// Optional CPU list for payload prewarming coordinator and worker threads.
+    ///
+    /// When omitted, prewarming threads inherit `thread-policy.worker-cpus`.
+    #[arg(
+        long = "thread-policy.prewarm-cpus",
+        value_name = "CPUS",
+        env = "TEMPO_THREAD_POLICY_PREWARM_CPUS"
+    )]
+    pub(crate) prewarm_cpus: Option<CpuList>,
 
     /// Optional CPU list for background execution and builder worker threads.
     #[arg(
@@ -83,6 +209,15 @@ pub(crate) struct ThreadPolicyArgs {
 impl ThreadPolicyArgs {
     fn validate(&self) -> eyre::Result<()> {
         validate_nice("thread-policy.engine-nice", self.engine_nice)?;
+        if let Some(tx_iterator_nice) = self.tx_iterator_nice {
+            validate_nice("thread-policy.tx-iterator-nice", tx_iterator_nice)?;
+        }
+        if let Some(payload_builder_nice) = self.payload_builder_nice {
+            validate_nice("thread-policy.payload-builder-nice", payload_builder_nice)?;
+        }
+        if let Some(prewarm_nice) = self.prewarm_nice {
+            validate_nice("thread-policy.prewarm-nice", prewarm_nice)?;
+        }
         validate_nice("thread-policy.worker-nice", self.worker_nice)?;
         if self.engine_scheduler.is_realtime() && !(1..=99).contains(&self.engine_priority) {
             bail!(
@@ -90,6 +225,39 @@ impl ThreadPolicyArgs {
                 self.engine_scheduler,
                 self.engine_priority
             );
+        }
+
+        if self.tx_iterator_scheduler.is_realtime() {
+            let tx_iterator_priority = self.tx_iterator_realtime_priority();
+            if !(1..=99).contains(&tx_iterator_priority) {
+                bail!(
+                    "thread-policy.tx-iterator-priority must be between 1 and 99 for {}, got {}",
+                    self.tx_iterator_scheduler,
+                    tx_iterator_priority
+                );
+            }
+        }
+
+        if self.payload_builder_scheduler.is_realtime() {
+            let payload_builder_priority = self.payload_builder_realtime_priority();
+            if !(1..=99).contains(&payload_builder_priority) {
+                bail!(
+                    "thread-policy.payload-builder-priority must be between 1 and 99 for {}, got {}",
+                    self.payload_builder_scheduler,
+                    payload_builder_priority
+                );
+            }
+        }
+
+        if self.prewarm_scheduler.is_realtime() {
+            let prewarm_priority = self.prewarm_realtime_priority();
+            if !(1..=99).contains(&prewarm_priority) {
+                bail!(
+                    "thread-policy.prewarm-priority must be between 1 and 99 for {}, got {}",
+                    self.prewarm_scheduler,
+                    prewarm_priority
+                );
+            }
         }
 
         if self.scan_interval_ms == 0 {
@@ -101,6 +269,33 @@ impl ThreadPolicyArgs {
 
     fn scan_interval(&self) -> Duration {
         Duration::from_millis(self.scan_interval_ms)
+    }
+
+    fn tx_iterator_nice(&self) -> i32 {
+        self.tx_iterator_nice.unwrap_or(self.worker_nice)
+    }
+
+    fn tx_iterator_realtime_priority(&self) -> i32 {
+        self.tx_iterator_priority
+            .unwrap_or_else(|| (self.engine_priority - 1).max(1))
+    }
+
+    fn payload_builder_nice(&self) -> i32 {
+        self.payload_builder_nice.unwrap_or(self.worker_nice)
+    }
+
+    fn payload_builder_realtime_priority(&self) -> i32 {
+        self.payload_builder_priority
+            .unwrap_or_else(|| (self.engine_priority - 2).max(1))
+    }
+
+    fn prewarm_nice(&self) -> i32 {
+        self.prewarm_nice.unwrap_or(self.worker_nice)
+    }
+
+    fn prewarm_realtime_priority(&self) -> i32 {
+        self.prewarm_priority
+            .unwrap_or_else(|| (self.engine_priority - 3).max(1))
     }
 }
 
@@ -258,6 +453,9 @@ pub(crate) fn spawn(args: ThreadPolicyArgs) -> eyre::Result<Option<ThreadPolicyH
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThreadClass {
     Engine,
+    PayloadBuilder,
+    Prewarm,
+    TxIterator,
     Worker,
 }
 
@@ -268,6 +466,18 @@ fn classify_thread(comm: &str) -> Option<ThreadClass> {
         return Some(ThreadClass::Engine);
     }
 
+    if comm == "tx-iterator" {
+        return Some(ThreadClass::TxIterator);
+    }
+
+    if comm == "payload-builder" {
+        return Some(ThreadClass::PayloadBuilder);
+    }
+
+    if is_prewarm_thread(comm) {
+        return Some(ThreadClass::Prewarm);
+    }
+
     if is_worker_thread(comm) {
         return Some(ThreadClass::Worker);
     }
@@ -275,24 +485,26 @@ fn classify_thread(comm: &str) -> Option<ThreadClass> {
     None
 }
 
+fn is_prewarm_thread(comm: &str) -> bool {
+    comm == "builder-prewarm" || comm == "prewarm" || comm.starts_with("prewarm-")
+}
+
 fn is_worker_thread(comm: &str) -> bool {
     const EXACT: &[&str] = &[
         "account-workers",
-        "builder-prewarm",
         "deferred-trie",
-        "payload-builder",
+        "drop",
+        "hash-post-state",
         "payload-convert",
-        "prewarm",
         "receipt-root",
         "sparse-trie",
+        "storage-workers",
         "trie-hashing",
-        "tx-iterator",
     ];
     const TRUNCATED: &[&str] = &["builder-bal-tas", "builder-roots-t"];
     const PREFIXES: &[&str] = &[
         "builder-",
         "cpu-",
-        "prewarm-",
         "proof-acct-",
         "proof-strg-",
         "rayon-",
@@ -371,8 +583,44 @@ mod linux {
             engine_nice = args.engine_nice,
             engine_scheduler = %args.engine_scheduler,
             engine_priority = args.engine_priority,
+            tx_iterator_nice = args.tx_iterator_nice(),
+            tx_iterator_scheduler = %args.tx_iterator_scheduler,
+            tx_iterator_priority = if args.tx_iterator_scheduler.is_realtime() {
+                args.tx_iterator_realtime_priority()
+            } else {
+                0
+            },
+            payload_builder_nice = args.payload_builder_nice(),
+            payload_builder_scheduler = %args.payload_builder_scheduler,
+            payload_builder_priority = if args.payload_builder_scheduler.is_realtime() {
+                args.payload_builder_realtime_priority()
+            } else {
+                0
+            },
+            prewarm_nice = args.prewarm_nice(),
+            prewarm_scheduler = %args.prewarm_scheduler,
+            prewarm_priority = if args.prewarm_scheduler.is_realtime() {
+                args.prewarm_realtime_priority()
+            } else {
+                0
+            },
             worker_nice = args.worker_nice,
             engine_cpus = args.engine_cpus.as_ref().map(ToString::to_string),
+            tx_iterator_cpus = args
+                .tx_iterator_cpus
+                .as_ref()
+                .or(args.worker_cpus.as_ref())
+                .map(ToString::to_string),
+            payload_builder_cpus = args
+                .payload_builder_cpus
+                .as_ref()
+                .or(args.worker_cpus.as_ref())
+                .map(ToString::to_string),
+            prewarm_cpus = args
+                .prewarm_cpus
+                .as_ref()
+                .or(args.worker_cpus.as_ref())
+                .map(ToString::to_string),
             worker_cpus = args.worker_cpus.as_ref().map(ToString::to_string),
             scan_interval_ms = args.scan_interval_ms,
             "started thread policy supervisor"
@@ -486,6 +734,51 @@ mod linux {
                 },
                 nice: args.engine_nice,
                 cpus: args.engine_cpus.clone(),
+            },
+            ThreadClass::TxIterator => DesiredPolicy {
+                class,
+                scheduler: args.tx_iterator_scheduler,
+                reset_on_fork: args.tx_iterator_scheduler.is_realtime(),
+                priority: if args.tx_iterator_scheduler.is_realtime() {
+                    args.tx_iterator_realtime_priority()
+                } else {
+                    0
+                },
+                nice: args.tx_iterator_nice(),
+                cpus: args
+                    .tx_iterator_cpus
+                    .clone()
+                    .or_else(|| args.worker_cpus.clone()),
+            },
+            ThreadClass::PayloadBuilder => DesiredPolicy {
+                class,
+                scheduler: args.payload_builder_scheduler,
+                reset_on_fork: args.payload_builder_scheduler.is_realtime(),
+                priority: if args.payload_builder_scheduler.is_realtime() {
+                    args.payload_builder_realtime_priority()
+                } else {
+                    0
+                },
+                nice: args.payload_builder_nice(),
+                cpus: args
+                    .payload_builder_cpus
+                    .clone()
+                    .or_else(|| args.worker_cpus.clone()),
+            },
+            ThreadClass::Prewarm => DesiredPolicy {
+                class,
+                scheduler: args.prewarm_scheduler,
+                reset_on_fork: args.prewarm_scheduler.is_realtime(),
+                priority: if args.prewarm_scheduler.is_realtime() {
+                    args.prewarm_realtime_priority()
+                } else {
+                    0
+                },
+                nice: args.prewarm_nice(),
+                cpus: args
+                    .prewarm_cpus
+                    .clone()
+                    .or_else(|| args.worker_cpus.clone()),
             },
             ThreadClass::Worker => DesiredPolicy {
                 class,
@@ -606,18 +899,37 @@ mod tests {
     #[test]
     fn thread_names_are_classified() {
         assert_eq!(classify_thread("engine\n"), Some(ThreadClass::Engine));
-        assert_eq!(classify_thread("cpu-09"), Some(ThreadClass::Worker));
-        assert_eq!(classify_thread("prewarm"), Some(ThreadClass::Worker));
+        assert_eq!(
+            classify_thread("tx-iterator"),
+            Some(ThreadClass::TxIterator)
+        );
         assert_eq!(
             classify_thread("payload-builder"),
+            Some(ThreadClass::PayloadBuilder)
+        );
+        assert_eq!(
+            classify_thread("builder-prewarm"),
+            Some(ThreadClass::Prewarm)
+        );
+        assert_eq!(classify_thread("prewarm"), Some(ThreadClass::Prewarm));
+        assert_eq!(classify_thread("prewarm-15"), Some(ThreadClass::Prewarm));
+        assert_eq!(classify_thread("prewarm-txs"), Some(ThreadClass::Prewarm));
+        assert_eq!(classify_thread("cpu-09"), Some(ThreadClass::Worker));
+        assert_eq!(classify_thread("deferred-trie"), Some(ThreadClass::Worker));
+        assert_eq!(classify_thread("drop"), Some(ThreadClass::Worker));
+        assert_eq!(
+            classify_thread("hash-post-state"),
             Some(ThreadClass::Worker)
         );
-        assert_eq!(classify_thread("deferred-trie"), Some(ThreadClass::Worker));
         assert_eq!(
             classify_thread("payload-convert"),
             Some(ThreadClass::Worker)
         );
         assert_eq!(classify_thread("state-ovly-00"), Some(ThreadClass::Worker));
+        assert_eq!(
+            classify_thread("storage-workers"),
+            Some(ThreadClass::Worker)
+        );
         assert_eq!(
             classify_thread("builder-roots-t"),
             Some(ThreadClass::Worker)
@@ -654,8 +966,20 @@ mod tests {
             engine_nice: -20,
             engine_scheduler: SchedulerPolicy::Fifo,
             engine_priority: 10,
+            tx_iterator_nice: None,
+            tx_iterator_scheduler: SchedulerPolicy::Other,
+            tx_iterator_priority: None,
+            payload_builder_nice: None,
+            payload_builder_scheduler: SchedulerPolicy::Other,
+            payload_builder_priority: None,
+            prewarm_nice: None,
+            prewarm_scheduler: SchedulerPolicy::Other,
+            prewarm_priority: None,
             worker_nice: 5,
             engine_cpus: None,
+            tx_iterator_cpus: None,
+            payload_builder_cpus: None,
+            prewarm_cpus: None,
             worker_cpus: None,
             scan_interval_ms: 250,
         };
@@ -664,6 +988,24 @@ mod tests {
         args.engine_priority = 0;
         assert!(args.validate().is_err());
         args.engine_scheduler = SchedulerPolicy::Other;
+        assert!(args.validate().is_ok());
+
+        args.tx_iterator_scheduler = SchedulerPolicy::Fifo;
+        args.tx_iterator_priority = Some(0);
+        assert!(args.validate().is_err());
+        args.tx_iterator_priority = Some(9);
+        assert!(args.validate().is_ok());
+
+        args.payload_builder_scheduler = SchedulerPolicy::Fifo;
+        args.payload_builder_priority = Some(0);
+        assert!(args.validate().is_err());
+        args.payload_builder_priority = Some(8);
+        assert!(args.validate().is_ok());
+
+        args.prewarm_scheduler = SchedulerPolicy::Fifo;
+        args.prewarm_priority = Some(0);
+        assert!(args.validate().is_err());
+        args.prewarm_priority = Some(7);
         assert!(args.validate().is_ok());
     }
 }

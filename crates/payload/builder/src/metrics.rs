@@ -112,6 +112,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum BlockBuildStopReason {
     GasLimit,
     RlpBlockSizeLimit,
@@ -120,7 +121,7 @@ pub(crate) enum BlockBuildStopReason {
 }
 
 impl BlockBuildStopReason {
-    const fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::GasLimit => "gas_limit",
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",

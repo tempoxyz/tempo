@@ -594,6 +594,7 @@ mod tests {
 
     use super::{
         TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+        thread_policy,
     };
     use reth_ethereum::cli::Commands;
 
@@ -818,8 +819,29 @@ mod tests {
             "--thread-policy.enabled",
             "--thread-policy.engine-cpus",
             "0",
+            "--thread-policy.tx-iterator-cpus",
+            "1",
+            "--thread-policy.tx-iterator-nice=-10",
+            "--thread-policy.tx-iterator-scheduler",
+            "fifo",
+            "--thread-policy.tx-iterator-priority",
+            "9",
+            "--thread-policy.payload-builder-cpus",
+            "2",
+            "--thread-policy.payload-builder-nice=-12",
+            "--thread-policy.payload-builder-scheduler",
+            "rr",
+            "--thread-policy.payload-builder-priority",
+            "8",
+            "--thread-policy.prewarm-cpus",
+            "3",
+            "--thread-policy.prewarm-nice=-14",
+            "--thread-policy.prewarm-scheduler",
+            "fifo",
+            "--thread-policy.prewarm-priority",
+            "7",
             "--thread-policy.worker-cpus",
-            "1-3",
+            "4-5",
             "--thread-policy.worker-nice",
             "7",
             "--thread-policy.scan-interval-ms",
@@ -834,9 +856,30 @@ mod tests {
         let thread_policy = node_cmd.ext.thread_policy;
         assert!(thread_policy.enabled);
         assert_eq!(thread_policy.engine_nice, -20);
+        assert_eq!(thread_policy.tx_iterator_nice, Some(-10));
+        assert_eq!(
+            thread_policy.tx_iterator_scheduler,
+            thread_policy::SchedulerPolicy::Fifo
+        );
+        assert_eq!(thread_policy.tx_iterator_priority, Some(9));
+        assert_eq!(thread_policy.payload_builder_nice, Some(-12));
+        assert_eq!(
+            thread_policy.payload_builder_scheduler,
+            thread_policy::SchedulerPolicy::RoundRobin
+        );
+        assert_eq!(thread_policy.payload_builder_priority, Some(8));
+        assert_eq!(thread_policy.prewarm_nice, Some(-14));
+        assert_eq!(
+            thread_policy.prewarm_scheduler,
+            thread_policy::SchedulerPolicy::Fifo
+        );
+        assert_eq!(thread_policy.prewarm_priority, Some(7));
         assert_eq!(thread_policy.worker_nice, 7);
         assert_eq!(thread_policy.engine_cpus.unwrap().to_string(), "0");
-        assert_eq!(thread_policy.worker_cpus.unwrap().to_string(), "1,2,3");
+        assert_eq!(thread_policy.tx_iterator_cpus.unwrap().to_string(), "1");
+        assert_eq!(thread_policy.payload_builder_cpus.unwrap().to_string(), "2");
+        assert_eq!(thread_policy.prewarm_cpus.unwrap().to_string(), "3");
+        assert_eq!(thread_policy.worker_cpus.unwrap().to_string(), "4,5");
         assert_eq!(thread_policy.scan_interval_ms, 100);
     }
 }
