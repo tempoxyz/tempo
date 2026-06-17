@@ -277,6 +277,10 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Ok(());
+        }
+
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
@@ -307,6 +311,10 @@ impl TIP20Token {
 
     /// Handles reward accounting when tokens are minted to an address.
     pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Ok(());
+        }
+
         let to_delegate = self.update_rewards(to)?;
 
         if !to_delegate.is_zero() {
