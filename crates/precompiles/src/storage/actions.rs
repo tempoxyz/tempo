@@ -22,6 +22,7 @@ pub struct StorageActions {
 
 impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording disabled.
+    #[inline]
     pub fn disabled() -> Self {
         Self {
             enabled: Rc::new(Cell::new(false)),
@@ -30,6 +31,7 @@ impl StorageActions {
     }
 
     /// Returns an [`StorageActions`] instance with actions recording enabled.
+    #[inline]
     pub fn enabled() -> Self {
         Self {
             enabled: Rc::new(Cell::new(true)),
@@ -38,17 +40,20 @@ impl StorageActions {
     }
 
     /// Enables actions recording.
+    #[inline]
     pub fn enable(&self) {
         self.enabled.set(true);
         self.actions.borrow_mut().clear();
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    #[inline]
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    #[inline]
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         if !self.enabled.get() {
             return None;
@@ -58,6 +63,7 @@ impl StorageActions {
     }
 
     /// Records an action if recording is enabled.
+    #[inline]
     pub fn record(&self, action: StorageAction) {
         if !self.enabled.get() {
             return;
