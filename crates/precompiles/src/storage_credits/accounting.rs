@@ -44,7 +44,7 @@ pub trait StorageCreditsBackend {
     /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsError::out_of_gas) if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
@@ -124,10 +124,6 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut credit =
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
-    let mut transient_state: TransientState = backend
-        .tload(STORAGE_CREDITS_ADDRESS, account_slot)
-        .try_into()
-        .map_err(|_| B::Error::fatal_external())?;
 
     let mut was_changed = false;
     if values.is_new_zero() {
@@ -138,10 +134,15 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
         // revm's SSTORE function adds the 5k residual for clean writes (`original == present == 0`).
+        let mut transient_state: TransientState = backend
+            .tload(STORAGE_CREDITS_ADDRESS, account_slot)
+            .try_into()
+            .map_err(|_| B::Error::fatal_external())?;
+
         match transient_state.mode {
             CreditMode::Direct => {
                 if credit > 0 && transient_state.budget > 0 {
-                    // If credits + budget, consume a credit to cover the 245k creditable portion.
+                    // If able to spend credits, use one to cover the 245k creditable portion.
                     credit -= 1;
                     was_changed = true;
 
@@ -151,7 +152,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
                         store_credit_state(backend, account_slot, transient_state)?;
                     }
                 } else {
-                    // If no credit or budget available, charge the 245k creditable portion as gas.
+                    // If unable to spend credits, charge the 245k creditable portion as gas.
                     backend.charge_gas(STORAGE_CREDIT_VALUE)?;
                 }
             }

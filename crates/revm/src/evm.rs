@@ -3193,73 +3193,68 @@ mod tests {
 
     #[test]
     fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
-        let key_pair = P256KeyPair::random();
-        let caller = key_pair.address;
-        let contract = Address::repeat_byte(0x88);
+        const MODE_SLOT: u8 = 3;
+        const EXHAUSTED_GAS: (u8, u8) = (4, 5);
+        const AFTER_CLEAR_GAS: (u8, u8) = (6, 7);
 
+        let store_gas = |bytecode: &mut Vec<u8>, slot: u8| {
+            bytecode.extend_from_slice(&[opcode::GAS, opcode::PUSH1, slot, opcode::SSTORE]);
+        };
+        let contract = Address::repeat_byte(0x88);
         let mut bytecode = Vec::new();
+
         append_tip1060_precompile_call(
             &mut bytecode,
             &IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode(),
         );
-        // Consume the one budgeted credit on a fresh create.
-        bytecode.extend_from_slice(&bytes!("6001600055"));
-        // Capture the budget after the spend. This should store 0 in slot 2.
-        let budget_of_input = IStorageCredits::budgetOfCall { account: contract }.abi_encode();
-        append_tip1060_precompile_call_store_return(&mut bytecode, &budget_of_input, Some(2));
-        // Store modeOf(contract) in slot 1. If the old auto-Preserve behavior returns, this writes 1.
-        let mode_of_input = IStorageCredits::modeOfCall { account: contract }.abi_encode();
-        append_tip1060_precompile_call_store_return(&mut bytecode, &mode_of_input, Some(1));
-        // Replenish the budget after it reached zero.
-        append_tip1060_precompile_call(
+        bytecode.extend_from_slice(&bytes!("6001600055")); // budgeted create
+        append_tip1060_precompile_call_store_return(
             &mut bytecode,
-            &IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode(),
+            &IStorageCredits::modeOfCall { account: contract }.abi_encode(),
+            Some(MODE_SLOT),
         );
-        // Capture the restored budget. Storing 1 into slot 3 also spends the replenished budget.
-        let budget_of_input = IStorageCredits::budgetOfCall { account: contract }.abi_encode();
-        append_tip1060_precompile_call_store_return(&mut bytecode, &budget_of_input, Some(3));
+        store_gas(&mut bytecode, EXHAUSTED_GAS.0);
+        bytecode.extend_from_slice(&bytes!("6001600155")); // create while exhausted
+        store_gas(&mut bytecode, EXHAUSTED_GAS.1);
+        bytecode.extend_from_slice(&bytes!("6000600155")); // clear: mint credit, not budget
+        store_gas(&mut bytecode, AFTER_CLEAR_GAS.0);
+        bytecode.extend_from_slice(&bytes!("6001600255")); // still exhausted after clear
+        store_gas(&mut bytecode, AFTER_CLEAR_GAS.1);
         bytecode.push(opcode::STOP);
 
-        let mut evm = create_funded_evm_t7(caller);
-        evm.ctx.db_mut().insert_account_info(
+        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+            CreditMode::Refund,
             contract,
-            AccountInfo {
-                code: Some(Bytecode::new_raw(bytecode.into())),
-                ..Default::default()
+            &bytecode,
+            |evm, contract| {
+                seed_storage_credit_balance(evm, contract, 2);
+                for slot in MODE_SLOT..=AFTER_CLEAR_GAS.1 {
+                    evm.ctx.db_mut().insert_account_storage(
+                        contract,
+                        U256::from(slot),
+                        U256::ONE,
+                    )?;
+                }
+                Ok(())
             },
-        );
-        seed_storage_credit_balance(&mut evm, contract, 2);
+        )?;
 
-        let tx = TxBuilder::new()
-            .call(contract, &[])
-            .gas_limit(2_000_000)
-            .build();
-        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
-            &key_pair.sign_tx(tx)?,
-            caller,
-        ))?;
-        assert!(result.is_success());
+        let word = |slot: u8| {
+            evm.ctx
+                .db()
+                .storage_ref(contract, U256::from(slot))
+                .unwrap()
+        };
+        let delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
 
-        assert_eq!(
-            evm.ctx.db().storage_ref(contract, U256::from(2))?,
-            U256::ZERO,
-            "the one budgeted Direct create must exhaust the starting budget"
+        assert!(
+            delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE
+                && delta(AFTER_CLEAR_GAS) > STORAGE_CREDIT_VALUE,
+            "both exhausted creates must pay full creditable gas"
         );
-        assert_eq!(
-            evm.ctx.db().storage_ref(contract, U256::ONE)?,
-            U256::from(CreditMode::Direct as u8),
-            "modeOf must keep reporting Direct after the finite budget is exhausted"
-        );
-        assert_eq!(
-            evm.ctx.db().storage_ref(contract, U256::from(3))?,
-            U256::ONE,
-            "setBudget must be able to restore the Direct spend budget after it reaches zero"
-        );
-        assert_eq!(
-            storage_credit_balance(&evm, contract),
-            0,
-            "the restored Direct budget should be usable by a later storage creation"
-        );
+        let expected = (U256::from(CreditMode::Direct as u8), U256::ZERO, U256::ONE);
+        assert_eq!((word(MODE_SLOT), word(1), word(2)), expected);
+        assert_eq!(storage_credit_balance(&evm, contract), 2);
 
         Ok(())
     }
