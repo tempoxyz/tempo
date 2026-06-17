@@ -20,7 +20,9 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
-    storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
+    storage_credits::{
+        StorageCredits, StorageCreditsBackend, TransientState, sstore_storage_credits,
+    },
 };
 
 /// Applies storage-credit settlement at the end of a transaction.
@@ -41,25 +43,33 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // This is safe cause refunds are applied in post-execution.
+    // Reinsert them afterwards because post-tx fee reimbursement may still need deferred refund
+    // state to cancel credits for slots it recreates.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
 
     let mut refunds = 0i64;
-    for (key, word) in slots {
+    for (key, word) in slots.iter() {
+        if StorageCredits::is_post_tx_space(*key) {
+            continue;
+        }
+
         let transient_state =
-            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
+            TransientState::try_from(*word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let pending = transient_state.pending_refunds;
         if pending == 0 {
             continue;
         }
 
         // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
-        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
+        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, *key)?.data;
         let mut balance =
             u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
-        let settled = pending.min(balance);
+        // Deferred refunds cannot fund same-tx Refund settlement.
+        let deferred = u64::from(transient_state.deferred_refund);
+        let settleable = balance.saturating_sub(deferred);
+        let settled = pending.min(settleable);
 
         if settled == 0 {
             continue;
@@ -72,8 +82,12 @@ pub fn apply_refund<DB: Database, I>(
         let new_word = U256::from(balance);
         debug_assert_ne!(new_word, old_word);
 
-        journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+        journal.sstore(STORAGE_CREDITS_ADDRESS, *key, new_word)?;
     }
+
+    journal
+        .transient_storage
+        .insert(STORAGE_CREDITS_ADDRESS, slots);
 
     // Refund storage credit value per settled credit.
     gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));

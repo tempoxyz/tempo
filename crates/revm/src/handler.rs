@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
-    ECRECOVER_GAS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -52,6 +52,7 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
+    storage_credits::StorageCredits,
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -1219,6 +1220,8 @@ where
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
         // are collected, so fee-limit validation uses the inline authorization payload instead.
         let mut loaded_tx_access_key = None;
+        // Access key whose fee-token spending limit was debited during fee collection, if any.
+        let mut keychain_fee_key = None;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1328,6 +1331,7 @@ where
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
+                keychain_fee_key = Some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1599,7 +1603,7 @@ where
                     block,
                     cfg,
                     tx,
-                    actions,
+                    actions.clone(),
                     || {
                         let mut keychain = AccountKeychain::new();
                         keychain
@@ -1618,7 +1622,42 @@ where
                             })
                     },
                 )?;
+                keychain_fee_key = Some(key_auth.key_id);
             }
+        }
+
+        if cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
+            // Watch only slots that post-tx fee reimbursement may recreate after user execution.
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                journal,
+                block,
+                cfg,
+                tx,
+                actions,
+                || {
+                    let mut credits = StorageCredits::new();
+                    credits.watch_deferred_refund(
+                        fee_token,
+                        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
+                    )?;
+
+                    if fee_payer == tx.caller
+                        && let Some(key_id) = keychain_fee_key
+                    {
+                        let keychain = AccountKeychain::new();
+                        let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+                        credits.watch_deferred_refund(
+                            ACCOUNT_KEYCHAIN_ADDRESS,
+                            keychain.spending_limits[limit_key][fee_token]
+                                .remaining
+                                .slot(),
+                        )?;
+                    }
+
+                    Ok::<_, TempoPrecompileError>(())
+                },
+            )
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
         }
 
         Ok(())

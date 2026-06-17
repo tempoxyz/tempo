@@ -1,7 +1,7 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-    storage_credits::sstore_storage_credits,
+    storage_credits::{sstore_storage_credits, update_deferred_refund_status},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -277,7 +277,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
-            sstore_storage_credits(self, address, &result)?
+            let update = sstore_storage_credits(self, address, &result)?;
+            update_deferred_refund_status(self, address, key, &result.data, update)?;
         }
 
         // dynamic gas

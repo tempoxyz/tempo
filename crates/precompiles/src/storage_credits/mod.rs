@@ -3,7 +3,9 @@
 pub mod accounting;
 pub mod dispatch;
 
-pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
+pub use accounting::{
+    StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits, update_deferred_refund_status,
+};
 
 use crate::{
     STORAGE_CREDITS_ADDRESS,
@@ -13,6 +15,11 @@ use crate::{
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
+
+/// Storage space for per-account persistent balance and transaction-local credit state.
+pub const ACCOUNT_SPACE: u8 = 0;
+/// Storage space for the transaction-local slot that post-tx fee reimbursement may recreate.
+pub const POST_TX_SPACE: u8 = 1;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
@@ -30,6 +37,9 @@ pub struct TransientState {
     pub budget: u64,
     /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Whether same-tx refund settlement is deferred until post-tx fee reimbursement either restores
+    /// the slot or leaves the clear persistent.
+    pub deferred_refund: bool,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
@@ -43,6 +53,7 @@ impl TryFrom<U256> for TransientState {
         Ok(Self {
             budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
+            deferred_refund: limbs[2] != 0,
             pending_refunds: limbs[3],
         })
     }
@@ -51,7 +62,12 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
+        Self::from_limbs([
+            value.budget,
+            value.mode as u64,
+            u64::from(value.deferred_refund),
+            value.pending_refunds,
+        ])
     }
 }
 
@@ -77,7 +93,7 @@ impl StorageCredits {
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
-        u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
+        self.slot_handler::<u64>(ACCOUNT_SPACE, account).read()
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
@@ -115,21 +131,72 @@ impl StorageCredits {
         self.write_credit_state_of(msg_sender, state)
     }
 
+    /// Returns the storage key for `account` within a storage-credit namespace.
     #[inline]
-    pub fn slot(account: Address) -> U256 {
-        U256::from_be_bytes(account.into_word().0)
+    pub fn slot(storage_space: u8, account: Address) -> U256 {
+        let mut bytes = account.into_word().0;
+        bytes[0] = storage_space;
+        U256::from_be_bytes(bytes)
+    }
+
+    /// Returns a full-slot handler in the selected storage-credit namespace.
+    #[inline]
+    fn slot_handler<T: StorableType>(&self, storage_space: u8, account: Address) -> T::Handler {
+        T::handle(
+            Self::slot(storage_space, account),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
+
+    /// Returns true for transient candidate-slot keys that are not account credit state.
+    #[inline]
+    pub fn is_post_tx_space(key: U256) -> bool {
+        let bytes = key.to_be_bytes::<32>();
+        bytes[0] == POST_TX_SPACE
+    }
+
+    /// Registers a slot whose same-tx refund may be deferred for post-tx fee reimbursement.
+    pub fn watch_deferred_refund(&mut self, account: Address, slot: U256) -> Result<()> {
+        self.slot_handler::<U256>(POST_TX_SPACE, account)
+            .t_write(slot)
+    }
+
+    /// Cancels a deferred refund when post-tx fee reimbursement recreates the registered slot.
+    pub fn cancel_deferred_refund(&mut self, account: Address, slot: U256) -> Result<bool> {
+        let candidate = self.slot_handler::<U256>(POST_TX_SPACE, account).t_read()?;
+        // No-op unless reimbursement recreates the exact registered slot.
+        if candidate != slot {
+            return Ok(false);
+        }
+
+        let mut state = self.credit_state_of(account)?;
+        if !state.deferred_refund {
+            return Ok(false);
+        }
+
+        let mut handler = self.slot_handler::<u64>(ACCOUNT_SPACE, account);
+        let balance = handler.read()?;
+        if balance > 0 {
+            handler.write(balance - 1)?;
+        }
+
+        state.deferred_refund = false;
+        self.write_credit_state_of(account, state)?;
+        Ok(balance > 0)
     }
 
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+        self.slot_handler::<U256>(ACCOUNT_SPACE, account)
             .t_read()?
             .try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
+        self.slot_handler::<U256>(ACCOUNT_SPACE, account)
+            .t_write(state.into())
     }
 }
 

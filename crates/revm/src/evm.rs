@@ -269,7 +269,7 @@ mod tests {
         STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
-        storage_credits::{CreditMode, StorageCredits},
+        storage_credits::{ACCOUNT_SPACE, CreditMode, StorageCredits},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
     };
@@ -1971,7 +1971,7 @@ mod tests {
         evm.ctx
             .db_mut()
             .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
-        let slot = StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
         evm.ctx
             .db_mut()
             .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, U256::from(balance))
@@ -1979,7 +1979,7 @@ mod tests {
     }
 
     fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
-        let slot = StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
         evm.ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
@@ -2885,7 +2885,10 @@ mod tests {
         let balance = evm
             .ctx
             .db_mut()
-            .storage(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(contract))?
+            .storage(
+                STORAGE_CREDITS_ADDRESS,
+                StorageCredits::slot(ACCOUNT_SPACE, contract),
+            )?
             .as_limbs()[0];
         let slots = evm
             .ctx
