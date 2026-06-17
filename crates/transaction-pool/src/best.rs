@@ -138,10 +138,10 @@ impl BestTransactions for MergeBestTransactions {
 /// included transactions.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    /// Tracks decreased TIP20 balance slots: `token_address -> slot -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    decreased_balances: HashMap<Address, HashMap<U256, U256>>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -164,12 +164,27 @@ where
                 continue;
             }
 
-            for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
-                    self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
+            if let Some(balances) = self.decreased_balances.get_mut(&address) {
+                for (&slot, storage_slot) in &account.storage {
+                    if storage_slot.present_value < storage_slot.original_value {
+                        balances.insert(slot, storage_slot.present_value);
+                    } else if let Some(balance) = balances.get_mut(&slot) {
+                        *balance = storage_slot.present_value;
+                    }
+                }
+            } else {
+                let mut balances: Option<HashMap<U256, U256>> = None;
+
+                for (&slot, storage_slot) in &account.storage {
+                    if storage_slot.present_value < storage_slot.original_value {
+                        balances
+                            .get_or_insert_with(HashMap::default)
+                            .insert(slot, storage_slot.present_value);
+                    }
+                }
+
+                if let Some(balances) = balances {
+                    self.decreased_balances.insert(address, balances);
                 }
             }
         }
@@ -186,19 +201,24 @@ where
         loop {
             let tx = self.inner.next()?;
 
-            let Some(key) = tx.transaction.fee_balance_slot() else {
+            let Some((token, slot)) = tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
             };
 
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+            if let Some(balances) = self.decreased_balances.get(&token)
+                && let Some(&balance) = balances.get(&slot)
             {
+                let fee_token_cost = tx.transaction.fee_token_cost();
+                if balance >= fee_token_cost {
+                    return Some(tx);
+                }
+
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
+                            (balance, fee_token_cost).into(),
                         ),
                     ),
                 );
