@@ -29,6 +29,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     checkpoint_stack: Vec<(usize, usize)>,
     /// Recorded storage actions.
     actions: StorageActions,
+    record_actions: bool,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -53,6 +54,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
+            record_actions: false,
         }
     }
 
@@ -89,6 +91,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.record_actions = actions.is_enabled();
         self.actions = actions;
         self
     }
@@ -134,8 +137,10 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     ) -> Result<StateLoad<U256>, Self::Error> {
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sload(address, key, val.present_value));
+        if self.record_actions {
+            self.actions
+                .record(StorageAction::Sload(address, key, val.present_value));
+        }
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
@@ -151,8 +156,10 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
             .internals
             .load_account_mut(address)?
             .sstore(key, value, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sstore(address, key, value));
+        if self.record_actions {
+            self.actions
+                .record(StorageAction::Sstore(address, key, value));
+        }
         Ok(val)
     }
 
@@ -267,8 +274,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value,
             insufficient_gas_for_cold_load,
         )?;
-        self.actions
-            .record(StorageAction::Sstore(address, key, value));
+        if self.record_actions {
+            self.actions
+                .record(StorageAction::Sstore(address, key, value));
+        }
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -345,8 +354,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value = val.present_value;
             is_cold = val.is_cold;
         };
-        self.actions
-            .record(StorageAction::Sload(address, key, value));
+        if self.record_actions {
+            self.actions
+                .record(StorageAction::Sload(address, key, value));
+        }
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
