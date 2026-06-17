@@ -1677,9 +1677,10 @@ def "main e2e" [
         print "\nUploading local e2e tracy profiles to R2..."
         for run in $runs {
             let profile = $"($results_dir)/tracy-profile-($run.phase).tracy"
-            let viewer_url = (upload-tracy-profile $profile $run.phase $run.ref)
-            if $viewer_url != null {
-                $viewer_url | save -f $"($results_dir)/tracy-($run.phase)-url.txt"
+            let tracy_urls = (upload-tracy-profile $profile $run.phase $run.ref)
+            if $tracy_urls != null {
+                $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.phase)-url.txt"
+                $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.phase)-profile-url.txt"
             }
         }
     }

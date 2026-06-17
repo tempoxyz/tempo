@@ -840,7 +840,7 @@ def upload-samply-profile [profile_path: string] {
     $url
 }
 
-# Upload a tracy profile (.tracy) to R2 via mc and return the viewer URL.
+# Upload a tracy profile (.tracy) to R2 via mc and return the viewer and raw profile URLs.
 # Returns null on failure or if mc is not available.
 # Deletes the large .tracy file after successful upload to save disk.
 def upload-tracy-profile [profile_path: string, label: string, commit_sha: string] {
@@ -861,14 +861,16 @@ def upload-tracy-profile [profile_path: string, label: string, commit_sha: strin
     let remote_name = $"($label)-($short_sha)-($timestamp).tracy"
     let mc_alias = "r2"
     let viewer_base = "https://tracy.tempoxyz.dev"
+    let remote_profile_path = $"/profiles/($remote_name)"
 
     try {
         mc cp $profile_path $"($mc_alias)/tracy/profiles/($remote_name)"
-        let viewer_url = $"($viewer_base)?profile_url=/profiles/($remote_name)"
+        let viewer_url = $"($viewer_base)?profile_url=($remote_profile_path)"
+        let profile_url = $"($viewer_base)($remote_profile_path)"
         print $"  ($label): ($viewer_url)"
         # Delete large .tracy file after upload to free disk
         rm $profile_path
-        $viewer_url
+        { viewer_url: $viewer_url, profile_url: $profile_url }
     } catch {
         print "  Warning: failed to upload tracy profile"
         null
@@ -2839,9 +2841,10 @@ def "main bench" [
             print "\nUploading tracy profiles to R2..."
             for run in $runs {
                 let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-                let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
-                if $viewer_url != null {
-                    $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                let tracy_urls = (upload-tracy-profile $profile $run.label $run.git_ref)
+                if $tracy_urls != null {
+                    $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                    $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.label)-profile-url.txt"
                 }
             }
         }

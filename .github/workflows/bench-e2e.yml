@@ -1111,8 +1111,15 @@ jobs:
               const links = [];
               for (const run of runs) {
                 try {
-                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run} / validator a**: [Tracy Viewer](${url})`);
+                  const viewerUrl = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
+                  let profileUrl = '';
+                  try {
+                    profileUrl = fs.readFileSync(`${resultsDir}/tracy-${run}-profile-url.txt`, 'utf8').trim();
+                  } catch (e) {}
+                  if (viewerUrl) {
+                    const profileLink = profileUrl ? ` | [Tracy Profile](${profileUrl})` : '';
+                    links.push(`- **${run} / validator a**: [Tracy Viewer](${viewerUrl})${profileLink}`);
+                  }
                 } catch (e) {}
               }
               if (links.length > 0) {
