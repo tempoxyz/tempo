@@ -115,6 +115,19 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        self.with_read_only_storage_ctx_ref(spec, &actions, f)
+    }
+
+    /// Returns a read-only storage provider for the given spec, borrowing the action recorder.
+    fn with_read_only_storage_ctx_ref<R>(
+        &mut self,
+        spec: TempoHardfork,
+        actions: &StorageActions,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        Self: Sized,
+    {
         StorageCtx::enter(
             &mut ReadOnlyStorageProvider::new(self, spec).with_actions(actions),
             f,
@@ -150,7 +163,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Check stored user token preference
-        let user_token = self.with_read_only_storage_ctx(spec, actions.clone(), || {
+        let user_token = self.with_read_only_storage_ctx_ref(spec, &actions, || {
             // ensure TIP_FEE_MANAGER_ADDRESS is loaded
             TipFeeManager::new().user_tokens[fee_payer].read()
         })?;
@@ -174,7 +187,7 @@ pub trait TempoStateAccess<M = ()> {
                 }
             ;
 
-            if can_infer_tip20 && self.is_valid_fee_token(spec, to, actions.clone())? {
+            if can_infer_tip20 && self.is_valid_fee_token_ref(spec, to, &actions)? {
                 return Ok(to);
             }
         }
@@ -188,11 +201,11 @@ pub trait TempoStateAccess<M = ()> {
             && (!tx.is_aa() || calls.next().is_none())
         {
             if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
+                && self.is_valid_fee_token_ref(spec, call.tokenIn, &actions)?
             {
                 return Ok(call.tokenIn);
             } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(spec, call.tokenIn, actions)?
+                && self.is_valid_fee_token_ref(spec, call.tokenIn, &actions)?
             {
                 return Ok(call.tokenIn);
             }
@@ -214,7 +227,20 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, actions, || {
+        self.is_tip20_usd_ref(spec, fee_token, &actions)
+    }
+
+    /// Checks if the given TIP20 token has USD currency, borrowing the action recorder.
+    fn is_tip20_usd_ref(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+        actions: &StorageActions,
+    ) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx_ref(spec, actions, || {
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
@@ -233,7 +259,20 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, actions, || {
+        self.ensure_tip20_usd_ref(spec, fee_token, &actions)
+    }
+
+    /// Ensures the given TIP20 token uses USD currency, borrowing the action recorder.
+    fn ensure_tip20_usd_ref(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+        actions: &StorageActions,
+    ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx_ref(spec, actions, || {
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
@@ -268,13 +307,26 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        self.is_valid_fee_token_ref(spec, fee_token, &actions)
+    }
+
+    /// Checks if the given token can be used as a fee token, borrowing the action recorder.
+    fn is_valid_fee_token_ref(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+        actions: &StorageActions,
+    ) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
         // Must have TIP20 prefix to be a valid fee token
         if !fee_token.is_tip20() {
             return Ok(false);
         }
 
         // Ensure the currency is USD
-        self.is_tip20_usd(spec, fee_token, actions)
+        self.is_tip20_usd_ref(spec, fee_token, actions)
     }
 
     /// Checks if a fee token is paused.
@@ -382,14 +434,14 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 /// and returning errors for write operations.
 ///
 /// The marker generic `M` selects which `TempoStateAccess<M>` impl to use for the backend.
-struct ReadOnlyStorageProvider<'a, S, M = ()> {
+struct ReadOnlyStorageProvider<'a, 'actions, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
-    actions: Option<StorageActions>,
+    actions: Option<&'actions StorageActions>,
     _marker: PhantomData<M>,
 }
 
-impl<'a, S, M> ReadOnlyStorageProvider<'a, S, M>
+impl<'a, 'actions, S, M> ReadOnlyStorageProvider<'a, 'actions, S, M>
 where
     S: TempoStateAccess<M>,
 {
@@ -403,13 +455,13 @@ where
         }
     }
 
-    fn with_actions(mut self, actions: StorageActions) -> Self {
+    fn with_actions(mut self, actions: &'actions StorageActions) -> Self {
         self.actions = Some(actions);
         self
     }
 }
 
-impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, S, M>
+impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, '_, S, M>
 where
     S: TempoStateAccess<M>,
 {
