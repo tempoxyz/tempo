@@ -626,7 +626,10 @@ impl StablecoinDEX {
         Ok(order_id)
     }
 
-    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
+    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity.
+    ///
+    /// On T7+, `charge_credits` spends maker credits. Keep it `false` for taker-triggered flips
+    /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
@@ -872,6 +875,7 @@ impl StablecoinDEX {
 
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
+        // In-place flips are taker-triggered, so don't spend maker credits.
         self.commit_order_to_book(flipped, false)?;
 
         // Emit OrderFlipped event for flip order
