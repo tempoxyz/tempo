@@ -45,6 +45,7 @@ alloy-eip7928.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
 
 metrics.workspace = true
 tracing.workspace = true
