@@ -397,7 +397,9 @@ impl Inner<Init> {
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.time).await;
+                    if proposal_return.time > context.current() {
+                        context.sleep_until(proposal_return.time).await;
+                    }
                 }
 
                 eyre::Ok(digest)
