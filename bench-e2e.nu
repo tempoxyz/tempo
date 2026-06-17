@@ -355,7 +355,7 @@ def load-e2e-state-bloat [
     if $bloat_file == "-" {
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
         let script = 'set -euo pipefail
-cargo run --manifest-path "$6" -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --out - "${@:7}" | "$3" init-from-binary-dump --chain "$4" --datadir "$5" -
+"$3" init-from-binary-dump --chain "$4" --datadir "$5" <(cargo run --manifest-path "$6" -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --out - "${@:7}")
 '
         let xtask_manifest = $"($xtask_worktree)/Cargo.toml"
         let bloat_result = (run-external "bash" "-c" $script "stream-e2e-bloat" $profile ($bloat | into string) $tempo_bin $genesis $datadir $xtask_manifest ...$token_args | complete)
