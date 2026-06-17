@@ -653,13 +653,9 @@ impl AA2dPool {
         };
         let independent = self
             .independent_transactions
-            .values()
-            .filter_map(|tx| {
-                let id = tx
-                    .transaction
-                    .transaction
-                    .aa_transaction_id()
-                    .expect("Independent transaction must have AA transaction ID");
+            .iter()
+            .filter_map(|(seq_id, tx)| {
+                let id = AA2dTransactionId::new(*seq_id, tx.transaction.nonce());
                 let tx = self.by_id.get(&id)?;
                 Some(tx.inner.clone_into_pending(base_fee))
             })
