@@ -47,7 +47,7 @@ use tempo_payload_types::{
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tracing::{Level, debug, info, info_span, instrument, trace, warn};
 
 use super::{
     Mailbox,
@@ -513,7 +513,7 @@ impl Inner<Init> {
         )
         .await?;
 
-        debug!(height = %parent.height(), "retrieved parent block",);
+        trace!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
