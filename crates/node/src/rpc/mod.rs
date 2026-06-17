@@ -16,13 +16,9 @@ pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{
-    HeaderTy, Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef,
-};
+use reth_primitives_traits::{HeaderTy, Recovered, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
-use reth_transaction_pool::{
-    PoolPooledTx, PoolTransaction, PoolTx, TransactionOrigin, TransactionPool,
-};
+use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -492,34 +488,6 @@ where
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
         self.inner.send_raw_transaction_sync_timeout()
-    }
-
-    fn send_transaction(
-        &self,
-        origin: TransactionOrigin,
-        tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
-    ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
-        match tx.value().inner().subblock_proposer() {
-            Some(proposer) if self.matches_validator_key(&proposer) => {
-                let subblock_tx = self.subblock_transactions_tx.clone();
-                Either::Left(Either::Left(async move {
-                    let tx_hash = *tx.value().tx_hash();
-
-                    subblock_tx.send(tx.into_value()).map_err(|_| {
-                        EthApiError::from(RethError::msg("subblocks service channel closed"))
-                    })?;
-
-                    Ok(tx_hash)
-                }))
-            }
-            Some(_) => Either::Left(Either::Right(futures::future::err(
-                EthApiError::from(RethError::msg(
-                    "subblock transaction rejected: target validator mismatch",
-                ))
-                .into(),
-            ))),
-            None => Either::Right(self.inner.send_transaction(origin, tx).map_err(Into::into)),
-        }
     }
 
     fn send_pool_transaction(
