@@ -118,11 +118,22 @@ impl StablecoinDEX {
         }
     }
 
-    /// Deletes a reusable order record and returns the number of DEX TIP-1060 credits minted.
+    /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
     fn delete_order(&mut self, order: &Order) -> Result<u64> {
         StorageCredits::new()
             .track_credit_delta(self.address, || self.orders[order.order_id()].delete())
             .map(|delta| delta.max(0) as u64)
+    }
+
+    /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
+    fn delete_order_and_track_deltas(
+        &mut self,
+        storage_credits: &mut StorageCreditDeltas,
+        order: &Order,
+    ) -> Result<()> {
+        let credits = self.delete_order(order)?;
+        storage_credits.credit_slots(order.maker(), credits);
+        Ok(())
     }
 
     /// Writes a reusable order record while spending at most the maker's DEX storage credits.
@@ -1039,13 +1050,11 @@ impl StablecoinDEX {
             // record must be deleted to avoid leaving an orphan in storage.
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
-                let credits = self.delete_order(order)?;
-                storage_credits.credit_slots(order.maker(), credits);
+                self.delete_order_and_track_deltas(storage_credits, order)?;
             }
         } else {
             // Non-flip filled order: always delete.
-            let credits = self.delete_order(order)?;
-            storage_credits.credit_slots(order.maker(), credits);
+            self.delete_order_and_track_deltas(storage_credits, order)?;
         }
 
         // Advance tick if liquidity is exhausted
