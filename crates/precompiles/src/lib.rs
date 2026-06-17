@@ -229,7 +229,7 @@ macro_rules! tempo_precompile {
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
         let gas_params = $cfg.gas_params.clone();
-        let actions = $actions.clone();
+        let actions = $actions;
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::revert(
