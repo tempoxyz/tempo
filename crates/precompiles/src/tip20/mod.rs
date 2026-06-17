@@ -1098,6 +1098,7 @@ impl TIP20Token {
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+    #[inline(never)]
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
