@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Component, Path, PathBuf},
     time::Instant,
@@ -14,8 +15,6 @@ use tracing::info;
 use url::Url;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
-
-const BOOTSTRAP_FINALIZATION_FILE: &str = "bootstrap/finalization.cert";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -77,8 +76,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             .unwrap_or_else(|| datadir.join("consensus"));
 
         let loaded_consensus = load_consensus_manifest(manifest_url, manifest_path).await?;
-        install_consensus_prunable_archive(&consensus_dir, &loaded_consensus).await?;
-        write_bootstrap_finalization(&consensus_dir, &loaded_consensus.manifest)?;
+        install_consensus_archive(&consensus_dir, &loaded_consensus).await?;
 
         Ok(())
     })
@@ -177,10 +175,7 @@ fn resolve_consensus_archive_source(
     source: &ManifestSource,
     archive_file: &str,
 ) -> eyre::Result<ConsensusArchiveSource> {
-    ensure!(
-        !archive_file.is_empty(),
-        "consensus prunable archive file is empty"
-    );
+    ensure!(!archive_file.is_empty(), "consensus archive file is empty");
 
     if let Ok(url) = Url::parse(archive_file) {
         return archive_source_from_url(url);
@@ -243,7 +238,7 @@ fn archive_source_from_url(url: Url) -> eyre::Result<ConsensusArchiveSource> {
     }
 }
 
-async fn install_consensus_prunable_archive(
+async fn install_consensus_archive(
     consensus_dir: &Path,
     loaded: &LoadedConsensusManifest,
 ) -> eyre::Result<()> {
@@ -276,18 +271,18 @@ async fn install_consensus_prunable_archive(
 
     fs::create_dir_all(consensus_dir)
         .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
-    clear_prunable_partitions(consensus_dir, &loaded.manifest.consensus_block_partitions)?;
-    extract_zstd_tar_archive(
-        &archive_bytes,
-        consensus_dir,
-        &loaded.manifest.consensus_block_partitions,
-    )?;
+    let partitions = consensus_archive_storage_partitions(&archive_bytes)?;
+    clear_consensus_partitions(consensus_dir, &partitions)?;
+    extract_zstd_tar_archive(&archive_bytes, consensus_dir)?;
 
-    info!("persisted consensus prunable archive");
+    info!("persisted consensus archive");
     Ok(())
 }
 
-fn clear_prunable_partitions(consensus_dir: &Path, partitions: &[String; 2]) -> eyre::Result<()> {
+fn clear_consensus_partitions(
+    consensus_dir: &Path,
+    partitions: &BTreeSet<String>,
+) -> eyre::Result<()> {
     for partition in partitions {
         let path = safe_output_path(consensus_dir, partition)?;
         if !path.exists() {
@@ -306,11 +301,27 @@ fn clear_prunable_partitions(consensus_dir: &Path, partitions: &[String; 2]) -> 
     Ok(())
 }
 
-fn extract_zstd_tar_archive(
-    bytes: &[u8],
-    target_dir: &Path,
-    partitions: &[String; 2],
-) -> eyre::Result<()> {
+fn consensus_archive_storage_partitions(bytes: &[u8]) -> eyre::Result<BTreeSet<String>> {
+    let decoder = zstd::stream::read::Decoder::new(bytes)?;
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .wrap_err("failed to read consensus archive")?;
+    let mut partitions = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.wrap_err("failed to read consensus archive entry")?;
+        let entry_type = entry.header().entry_type();
+        let entry_path = entry
+            .path()
+            .wrap_err("failed reading consensus archive entry path")?
+            .to_string_lossy()
+            .to_string();
+        partitions.insert(consensus_archive_partition(&entry_path, entry_type)?);
+    }
+    Ok(partitions)
+}
+
+fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()> {
     let decoder = zstd::stream::read::Decoder::new(bytes)?;
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
@@ -325,11 +336,8 @@ fn extract_zstd_tar_archive(
             .wrap_err("failed reading consensus archive entry path")?
             .to_string_lossy()
             .to_string();
+        consensus_archive_partition(&entry_path, entry_type)?;
         if entry_type.is_dir() {
-            ensure!(
-                archive_path_is_under_partition(&entry_path, partitions)?,
-                "consensus archive contains unexpected directory: {entry_path}",
-            );
             let output_path = safe_output_path(target_dir, &entry_path)?;
             fs::create_dir_all(&output_path)
                 .wrap_err_with(|| format!("failed to create {}", output_path.display()))?;
@@ -339,10 +347,6 @@ fn extract_zstd_tar_archive(
         ensure!(
             entry_type.is_file(),
             "consensus archive contains a non-file entry",
-        );
-        ensure!(
-            archive_path_is_under_partition(&entry_path, partitions)?,
-            "consensus archive contains unexpected file: {entry_path}",
         );
 
         let output_path = safe_output_path(target_dir, &entry_path)?;
@@ -357,15 +361,28 @@ fn extract_zstd_tar_archive(
     Ok(())
 }
 
-fn archive_path_is_under_partition(relative: &str, partitions: &[String; 2]) -> eyre::Result<bool> {
+fn consensus_archive_partition(relative: &str, entry_type: tar::EntryType) -> eyre::Result<String> {
     let path = safe_relative_path(relative)?;
-    for partition in partitions {
-        let partition = safe_relative_path(partition)?;
-        if path == partition || path.starts_with(&partition) {
-            return Ok(true);
-        }
+    let mut components = path.components();
+    let Some(Component::Normal(partition)) = components.next() else {
+        bail!("consensus archive entry path must not be empty");
+    };
+    let partition = partition.to_string_lossy().to_string();
+    ensure!(
+        tempo_consensus::storage::snapshot::is_snapshot_storage_partition(&partition),
+        "consensus archive contains unexpected storage partition: {partition}",
+    );
+    if components.next().is_none() {
+        ensure!(
+            entry_type.is_dir(),
+            "consensus archive partition entry must be a directory: {relative}",
+        );
     }
-    Ok(false)
+    ensure!(
+        entry_type.is_dir() || entry_type.is_file(),
+        "consensus archive contains a non-file entry",
+    );
+    Ok(partition)
 }
 
 fn safe_output_path(root: &Path, relative: &str) -> eyre::Result<PathBuf> {
@@ -391,31 +408,10 @@ fn safe_relative_path(relative: &str) -> eyre::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn write_bootstrap_finalization(
-    consensus_dir: &Path,
-    consensus_manifest: &TempoConsensusManifest,
-) -> eyre::Result<()> {
-    let path = consensus_dir.join(BOOTSTRAP_FINALIZATION_FILE);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("failed to create dir: {}", parent.display()))?;
-    }
-
-    fs::write(
-        &path,
-        consensus_manifest.anchor_finalization_certificate.as_ref(),
-    )
-    .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
-
-    info!(path = %path.display(), "persisted bootstrap finalization");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{B256, Bytes};
-    use reth_cli_commands::download::manifest::SingleArchive;
+    use alloy_primitives::B256;
 
     #[test]
     fn args_parses_mixed_reth_and_tempo_flags() {
@@ -467,16 +463,10 @@ mod tests {
                 "execution_finalized_digest": "0x0000000000000000000000000000000000000000000000000000000000000028",
                 "tip_finalization_height": 42,
                 "tip_finalization_digest": "0x000000000000000000000000000000000000000000000000000000000000002a",
-                "tip_finalization_certificate": "0xaabbcc",
                 "anchor_finalization_height": 41,
                 "anchor_finalization_digest": "0x0000000000000000000000000000000000000000000000000000000000000029",
-                "anchor_finalization_certificate": "0xddeeff",
-                "consensus_block_partitions": [
-                    "engine-finalized-blocks-prunable-key",
-                    "engine-finalized-blocks-prunable-value"
-                ],
                 "consensus_archive": {
-                    "file": "consensus-prunable.tar.zst",
+                    "file": "consensus.tar.zst",
                     "size": 0,
                     "output_files": []
                 }
@@ -494,86 +484,63 @@ mod tests {
             manifest.manifest.tip_finalization_digest,
             B256::with_last_byte(0x2a)
         );
-        assert_eq!(
-            manifest.manifest.tip_finalization_certificate,
-            Bytes::from(vec![0xaa, 0xbb, 0xcc])
-        );
         assert_eq!(manifest.manifest.anchor_finalization_height, 41);
         assert_eq!(
             manifest.manifest.anchor_finalization_digest,
             B256::with_last_byte(0x29)
         );
-        assert_eq!(
-            manifest.manifest.anchor_finalization_certificate,
-            Bytes::from(vec![0xdd, 0xee, 0xff])
-        );
         match manifest.archive_source {
             ConsensusArchiveSource::Path(archive_path) => {
-                assert_eq!(archive_path, dir.path().join("consensus-prunable.tar.zst"));
+                assert_eq!(archive_path, dir.path().join("consensus.tar.zst"));
             }
             ConsensusArchiveSource::Url(_) => panic!("local manifest must resolve local archive"),
         }
     }
 
     #[test]
-    fn write_finalization_writes_raw_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let tempo_consensus = TempoConsensusManifest {
-            execution_finalized_height: 40,
-            execution_finalized_digest: B256::with_last_byte(0x28),
-            tip_finalization_height: 42,
-            tip_finalization_digest: B256::with_last_byte(0x2a),
-            tip_finalization_certificate: Bytes::from(vec![0x00, 0x01, 0x02, 0xff]),
-            anchor_finalization_height: 41,
-            anchor_finalization_digest: B256::with_last_byte(0x29),
-            anchor_finalization_certificate: Bytes::from(vec![0x03, 0x04, 0x05]),
-            consensus_block_partitions: [
-                "engine-finalized-blocks-prunable-key".to_string(),
-                "engine-finalized-blocks-prunable-value".to_string(),
-            ],
-            consensus_archive: SingleArchive {
-                file: "consensus-prunable.tar.zst".to_string(),
-                size: 0,
-                decompressed_size: 0,
-                blake3: None,
-                output_files: Vec::new(),
-            },
-        };
-
-        write_bootstrap_finalization(dir.path(), &tempo_consensus).unwrap();
-
-        let bytes = fs::read(dir.path().join(BOOTSTRAP_FINALIZATION_FILE)).unwrap();
-        assert_eq!(bytes, [0x03, 0x04, 0x05]);
-    }
-
-    #[test]
     fn extract_zstd_tar_archive_allows_partition_directory_entries() {
         let source = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
-        let partition = source.path().join("partition").join("nested");
+        let partition_name = "engine-finalized-blocks-prunable-key";
+        let partition = source.path().join(partition_name).join("nested");
         fs::create_dir_all(&partition).unwrap();
         fs::write(partition.join("00"), b"abc").unwrap();
 
         let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
         let mut builder = tar::Builder::new(encoder);
         builder
-            .append_dir_all("partition", source.path().join("partition"))
+            .append_dir_all(partition_name, source.path().join(partition_name))
             .unwrap();
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         let archive = encoder.finish().unwrap();
 
-        extract_zstd_tar_archive(
-            &archive,
-            target.path(),
-            &["partition".to_string(), "partition-value".to_string()],
-        )
-        .unwrap();
+        extract_zstd_tar_archive(&archive, target.path()).unwrap();
 
         assert_eq!(
-            fs::read(target.path().join("partition").join("nested").join("00")).unwrap(),
+            fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
             b"abc"
         );
+    }
+
+    #[test]
+    fn extract_zstd_tar_archive_rejects_unexpected_partition() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let partition = source.path().join("unexpected-partition");
+        fs::create_dir_all(&partition).unwrap();
+        fs::write(partition.join("00"), b"abc").unwrap();
+
+        let encoder = zstd::Encoder::new(Vec::new(), 0).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+        builder
+            .append_dir_all("unexpected-partition", &partition)
+            .unwrap();
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+
+        assert!(extract_zstd_tar_archive(&archive, target.path()).is_err());
     }
 
     #[test]

@@ -27,9 +27,18 @@ pub struct State {
     pub anchor_finalization_height: u64,
     /// Anchor finalization certificate used to bootstrap consensus.
     pub anchor_finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
-    /// On-disk commonware partitions that back the prunable finalized-block
-    /// archive and must be bundled into the snapshot.
-    pub consensus_blocks_partitions: [String; 2],
+}
+
+/// Finalization archive entry to copy into the snapshot archive.
+pub struct FinalizationArchiveEntry {
+    pub height: u64,
+    pub finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+}
+
+/// Prepared consensus snapshot state plus finalization entries to materialize.
+pub struct Prepared {
+    pub state: State,
+    pub finalization_archive_entries: Vec<FinalizationArchiveEntry>,
 }
 
 /// Prepares consensus finalized-block storage for snapshot packaging.
@@ -42,7 +51,7 @@ pub struct State {
 pub async fn prepare<TContext>(
     context: &TContext,
     execution_finalized_height: u64,
-) -> eyre::Result<State>
+) -> eyre::Result<Prepared>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
@@ -61,14 +70,73 @@ where
         find_anchor_and_tip_finalizations(&finalizations, &prunable, execution_finalized_height)
             .await?;
 
-    Ok(State {
-        execution_finalized_height,
-        tip_finalization_height: selected.tip_height,
-        tip_finalization: selected.tip_finalization,
-        anchor_finalization_height: selected.anchor_height,
-        anchor_finalization: selected.anchor_finalization,
-        consensus_blocks_partitions: prunable_finalized_blocks_partitions(crate::PARTITION_PREFIX),
+    let finalization_archive_entries = collect_finalization_archive_entries(
+        &finalizations,
+        selected.anchor_height,
+        selected.tip_height,
+    )
+    .await?;
+
+    Ok(Prepared {
+        state: State {
+            execution_finalized_height,
+            tip_finalization_height: selected.tip_height,
+            tip_finalization: selected.tip_finalization,
+            anchor_finalization_height: selected.anchor_height,
+            anchor_finalization: selected.anchor_finalization,
+        },
+        finalization_archive_entries,
     })
+}
+
+/// Returns whether `name` is one of the finalized-block prunable storage
+/// partitions that must be copied into a consensus snapshot archive.
+pub fn is_prunable_finalized_blocks_partition(name: &str) -> bool {
+    name.starts_with(&partition_prefix(super::PRUNABLE_FINALIZED_BLOCKS))
+}
+
+/// Returns whether `name` is a consensus storage partition that can appear in a
+/// consensus snapshot archive.
+pub fn is_snapshot_storage_partition(name: &str) -> bool {
+    name.starts_with(&partition_prefix(super::FINALIZATIONS_BY_HEIGHT))
+        || is_prunable_finalized_blocks_partition(name)
+}
+
+fn partition_prefix(archive_name: &str) -> String {
+    format!("{}-{archive_name}-", crate::PARTITION_PREFIX)
+}
+
+/// Materialize finalization entries into a fresh finalizations-by-height archive.
+pub async fn write_finalizations_archive<TContext>(
+    context: &TContext,
+    entries: Vec<FinalizationArchiveEntry>,
+) -> eyre::Result<()>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let mut finalizations =
+        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
+            .await
+            .wrap_err("failed to open snapshot finalizations-by-height archive")?;
+
+    for entry in entries {
+        let key = entry.finalization.proposal.payload;
+        finalizations
+            .put(entry.height, key, entry.finalization)
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed writing snapshot finalization certificate at height `{}`",
+                    entry.height,
+                )
+            })?;
+    }
+
+    finalizations
+        .sync()
+        .await
+        .wrap_err("failed syncing snapshot finalizations-by-height archive")
 }
 
 struct AnchorAndTipFinalizations {
@@ -76,6 +144,43 @@ struct AnchorAndTipFinalizations {
     tip_finalization: FinalizationCertificate,
     anchor_height: u64,
     anchor_finalization: FinalizationCertificate,
+}
+
+async fn collect_finalization_archive_entries<TContext>(
+    finalizations: &FinalizationsArchive<TContext>,
+    anchor_height: u64,
+    tip_height: u64,
+) -> eyre::Result<Vec<FinalizationArchiveEntry>>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    let mut entries = Vec::new();
+    let mut height = anchor_height;
+
+    loop {
+        if let Some(finalization) = finalizations
+            .get(Identifier::Index(height))
+            .await
+            .wrap_err_with(|| {
+                format!("failed reading finalization certificate at height `{height}`")
+            })?
+        {
+            entries.push(FinalizationArchiveEntry {
+                height,
+                finalization,
+            });
+        }
+
+        if height == tip_height {
+            break;
+        }
+
+        height = height
+            .checked_add(1)
+            .ok_or_else(|| eyre!("tip finalization height cannot exceed u64::MAX"))?;
+    }
+
+    Ok(entries)
 }
 
 async fn find_anchor_and_tip_finalizations<TContext>(
@@ -202,12 +307,4 @@ where
             return Ok(Some((height, finalization)));
         }
     }
-}
-
-fn prunable_finalized_blocks_partitions(partition_prefix: &str) -> [String; 2] {
-    use super::PRUNABLE_FINALIZED_BLOCKS;
-    [
-        format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-key"),
-        format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-value"),
-    ]
 }
