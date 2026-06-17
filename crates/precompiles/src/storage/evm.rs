@@ -371,12 +371,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         let current = self.sload_inner(address, key, false)?;
+
+        let mut sstore_action = StorageAction::Sinc(address, key, delta);
+        if current == U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            sstore_action = StorageAction::Sstore(address, key, delta);
+        }
+
         let value = current
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
 
-        let action = StorageAction::Sinc(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
@@ -391,8 +398,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
 
-        let action = StorageAction::Sdec(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        let mut sstore_action = StorageAction::Sdec(address, key, delta);
+        if value == U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            sstore_action = StorageAction::Sstore(address, key, value);
+        }
+
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
