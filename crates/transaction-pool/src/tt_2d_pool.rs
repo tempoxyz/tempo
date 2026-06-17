@@ -82,9 +82,10 @@ pub struct AA2dPool {
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
     /// Expiring nonce eviction-order lookup key by expiring nonce hash.
     ///
-    /// This is the authoritative live index for expiring eviction keys. Canonical
-    /// state updates remove from this map immediately and may leave stale keys in
-    /// the BTree until an ordered view is needed.
+    /// Cached lookup key for removing expiring nonce eviction entries by hash.
+    ///
+    /// Kept in lockstep with `expiring_nonce_eviction_order` so pool fetch can
+    /// clone the ordered index without filtering stale entries.
     expiring_nonce_eviction_order_by_hash: B256Map<EvictionOrderKey>,
     /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
     ///
@@ -655,7 +656,7 @@ impl AA2dPool {
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.live_expiring_nonce_eviction_order()
+            self.expiring_nonce_eviction_order.clone()
         } else {
             self.expiring_nonce_txs
                 .values()
@@ -1227,8 +1228,6 @@ impl AA2dPool {
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
     /// Evicts the transaction with lowest priority; ties broken by submission order (newer first).
     fn evict_one_pending(&mut self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.prune_stale_expiring_nonce_eviction_order();
-
         let worst_2d = self
             .by_eviction_order
             .iter()
@@ -1296,28 +1295,15 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        if let Some(order_key) = self
-            .expiring_nonce_eviction_order_by_hash
-            .remove(expiring_hash)
-        {
-            self.expiring_nonce_eviction_order.remove(&order_key);
-        } else {
-            self.expiring_nonce_eviction_order
-                .remove(&EvictionOrderKey::new(
-                    TempoTipOrdering::default()
-                        .priority(&pending_tx.transaction.transaction, self.base_fee),
-                    pending_tx.submission_id,
-                ));
-        }
+        self.remove_expiring_nonce_eviction_key(expiring_hash, &pending_tx);
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
     /// Removes included expiring nonce transactions found in a canonical state update.
     ///
-    /// Blocks with thousands of expiring nonce inclusions otherwise remove thousands of
-    /// entries from `expiring_nonce_eviction_order` one by one. Instead, inclusion
-    /// removes from the live maps and leaves stale BTree keys to be filtered when an
-    /// ordered view is needed.
+    /// Blocks with thousands of expiring nonce inclusions can otherwise shift this
+    /// work into payload pool fetch. Keep the ordered eviction index exact here so
+    /// `best_transactions` stays a cheap clone of live entries.
     fn remove_included_expiring_nonce_txs(
         &mut self,
         included_expiring_nonce_hashes: &mut Vec<(U256, B256)>,
@@ -1333,8 +1319,7 @@ impl AA2dPool {
             let Some(pending_tx) = self.expiring_nonce_txs.remove(&expiring_nonce_hash) else {
                 continue;
             };
-            self.expiring_nonce_eviction_order_by_hash
-                .remove(&expiring_nonce_hash);
+            self.remove_expiring_nonce_eviction_key(&expiring_nonce_hash, &pending_tx);
             self.slot_to_expiring_nonce_hash.remove(&slot);
             mined.push(self.remove_included_expiring_nonce_pending_tx(pending_tx));
         }
@@ -1343,36 +1328,6 @@ impl AA2dPool {
             self.expiring_nonce_eviction_order.clear();
             self.expiring_nonce_eviction_order_by_hash.clear();
         }
-    }
-
-    fn live_expiring_nonce_eviction_order(&self) -> BTreeSet<ExpiringNonceEvictionKey> {
-        if self.expiring_nonce_eviction_order.len()
-            == self.expiring_nonce_eviction_order_by_hash.len()
-        {
-            return self.expiring_nonce_eviction_order.clone();
-        }
-
-        self.expiring_nonce_eviction_order
-            .iter()
-            .filter(|key| {
-                self.expiring_nonce_eviction_order_by_hash
-                    .contains_key(&key.expiring_hash())
-            })
-            .cloned()
-            .collect()
-    }
-
-    fn prune_stale_expiring_nonce_eviction_order(&mut self) {
-        if self.expiring_nonce_eviction_order.len()
-            == self.expiring_nonce_eviction_order_by_hash.len()
-        {
-            return;
-        }
-
-        self.expiring_nonce_eviction_order.retain(|key| {
-            self.expiring_nonce_eviction_order_by_hash
-                .contains_key(&key.expiring_hash())
-        });
     }
 
     /// Removes secondary state for an already-detached expiring nonce transaction.
@@ -1407,6 +1362,26 @@ impl AA2dPool {
         self.decrement_sender_count(pending_tx.transaction.sender());
         self.pending_count -= 1;
         pending_tx.transaction
+    }
+
+    fn remove_expiring_nonce_eviction_key(
+        &mut self,
+        expiring_hash: &B256,
+        pending_tx: &AA2dStoredTransaction,
+    ) {
+        if let Some(order_key) = self
+            .expiring_nonce_eviction_order_by_hash
+            .remove(expiring_hash)
+        {
+            self.expiring_nonce_eviction_order.remove(&order_key);
+        } else {
+            self.expiring_nonce_eviction_order
+                .remove(&EvictionOrderKey::new(
+                    TempoTipOrdering::default()
+                        .priority(&pending_tx.transaction.transaction, self.base_fee),
+                    pending_tx.submission_id,
+                ));
+        }
     }
 
     fn remove_from_counts(&mut self, pending: bool) {
@@ -1521,6 +1496,15 @@ impl AA2dPool {
         self.on_state_updates(state)
     }
 
+    /// Test/benchmark entrypoint for constructing the best-transaction snapshot.
+    #[cfg(feature = "test-utils")]
+    pub fn best_transactions_snapshot_len_for_test(&self) -> usize {
+        self.best_transactions()
+            .size_hint()
+            .1
+            .expect("best transactions has an upper bound")
+    }
+
     /// Asserts that all assumptions are valid.
     #[cfg(test)]
     pub(crate) fn assert_invariants(&self) {
@@ -1547,11 +1531,12 @@ impl AA2dPool {
             self.expiring_nonce_txs.len(),
             self.expiring_nonce_eviction_order_by_hash.len()
         );
-        assert!(
-            self.expiring_nonce_eviction_order.len() >= self.expiring_nonce_txs.len(),
-            "expiring_nonce_eviction_order.len() ({}) < expiring_nonce_txs.len() ({})",
+        assert_eq!(
+            self.expiring_nonce_txs.len(),
             self.expiring_nonce_eviction_order.len(),
-            self.expiring_nonce_txs.len()
+            "expiring_nonce_txs.len() ({}) != expiring_nonce_eviction_order.len() ({})",
+            self.expiring_nonce_txs.len(),
+            self.expiring_nonce_eviction_order.len(),
         );
         assert_eq!(
             self.by_id.len(),
@@ -6631,7 +6616,7 @@ mod tests {
     }
 
     #[test]
-    fn on_state_updates_filters_stale_expiring_nonce_from_best_transactions() {
+    fn on_state_updates_keeps_expiring_nonce_eviction_order_live() {
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
         let mut pool = AA2dPool::default();
@@ -6642,6 +6627,9 @@ mod tests {
             .max_fee(30_000_000_000)
             .build();
         let removed_hash = *removed_tx.hash();
+        let removed_expiring_hash = removed_tx
+            .expiring_nonce_hash()
+            .expect("expiring nonce tx must have expiring hash");
         let removed_slot = removed_tx
             .expiring_nonce_slot()
             .expect("expiring nonce tx must have storage slot");
@@ -6652,6 +6640,9 @@ mod tests {
             .max_fee(30_000_000_000)
             .build();
         let kept_hash = *kept_tx.hash();
+        let kept_expiring_hash = kept_tx
+            .expiring_nonce_hash()
+            .expect("expiring nonce tx must have expiring hash");
 
         for tx in [removed_tx, kept_tx] {
             pool.add_transaction(
@@ -6678,10 +6669,9 @@ mod tests {
         assert_eq!(mined[0].hash(), &removed_hash);
         assert!(!pool.contains(&removed_hash));
         assert!(pool.contains(&kept_hash));
-        assert!(
-            pool.expiring_nonce_eviction_order.len() > pool.expiring_nonce_txs.len(),
-            "state update should leave a stale ordered key for lazy pruning"
-        );
+        assert_expiring_eviction_index_len(&pool, 1);
+        assert_expiring_eviction_index_missing(&pool, removed_expiring_hash);
+        assert_expiring_eviction_index_contains(&pool, kept_expiring_hash);
 
         let hashes = pool
             .best_transactions()
@@ -6709,7 +6699,7 @@ mod tests {
     fn assert_expiring_eviction_index_len(pool: &AA2dPool, len: usize) {
         assert_eq!(pool.expiring_nonce_txs.len(), len);
         assert_eq!(pool.expiring_nonce_eviction_order_by_hash.len(), len);
-        assert!(pool.expiring_nonce_eviction_order.len() >= len);
+        assert_eq!(pool.expiring_nonce_eviction_order.len(), len);
         pool.assert_invariants();
     }
 
@@ -6728,6 +6718,13 @@ mod tests {
     }
 
     fn assert_expiring_eviction_index_missing(pool: &AA2dPool, expiring_hash: B256) {
+        assert!(
+            !pool
+                .expiring_nonce_eviction_order
+                .iter()
+                .any(|key| key.expiring_hash() == expiring_hash),
+            "expiring_nonce_eviction_order should not contain {expiring_hash:?}"
+        );
         assert!(
             !pool
                 .expiring_nonce_eviction_order_by_hash

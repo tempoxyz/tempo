@@ -90,6 +90,14 @@ impl ExpiringNonceFixture {
 
         pool
     }
+
+    fn pool_after_state_updates(&self) -> AA2dPool {
+        let mut pool = self.pool();
+        let (promoted, mined) = pool.on_state_updates_for_test(&self.state);
+        assert!(promoted.is_empty());
+        assert!(!mined.is_empty());
+        pool
+    }
 }
 
 fn expiring_nonce_transaction(idx: usize) -> TempoPooledTransaction {
@@ -179,5 +187,37 @@ fn notify_aa_pool_on_expiring_nonce_updates(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, notify_aa_pool_on_expiring_nonce_updates);
+fn best_transactions_after_expiring_nonce_updates(c: &mut Criterion) {
+    let mut group = c.benchmark_group("aa_pool_best_transactions/after_expiring_nonce_inclusions");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+
+    for (pool_size, update_count) in [
+        (10_000, 10_000),
+        (15_000, 15_000),
+        (50_000, 10_000),
+        (50_000, 15_000),
+    ] {
+        let fixture = ExpiringNonceFixture::new(pool_size, update_count);
+        let id = BenchmarkId::from_parameter(format!("pool_{pool_size}_updates_{update_count}"));
+        let remaining = pool_size - update_count;
+        group.throughput(Throughput::Elements(remaining.max(1) as u64));
+        group.bench_with_input(id, &fixture, |b, fixture| {
+            b.iter_batched_ref(
+                || fixture.pool_after_state_updates(),
+                |pool| black_box(pool.best_transactions_snapshot_len_for_test()),
+                BatchSize::LargeInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    notify_aa_pool_on_expiring_nonce_updates,
+    best_transactions_after_expiring_nonce_updates
+);
 criterion_main!(benches);
