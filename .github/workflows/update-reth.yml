@@ -114,7 +114,10 @@ jobs:
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
+          set +e
           OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          AMP_EXIT=$?
+          set -e
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
@@ -122,9 +125,12 @@ jobs:
           fi
           # Print the final result text
           echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          if [ "$AMP_EXIT" -ne 0 ]; then
+            echo "::warning::Amp exited with status $AMP_EXIT"
+          fi
           # Propagate error if amp failed
           IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
-          if [ "$IS_ERROR" = "true" ]; then
+          if [ "$AMP_EXIT" -ne 0 ] || [ "$IS_ERROR" = "true" ]; then
             exit 1
           fi
           WRAPPER
@@ -212,7 +218,13 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::Amp attempt $attempt exited with status $amp_exit; verifying current tree before retrying"
+            fi
             echo "::endgroup::"
 
             echo "::group::Verify cargo clippy"
@@ -276,7 +288,13 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::Amp attempt $attempt exited with status $amp_exit; verifying current tree before retrying"
+            fi
             echo "::endgroup::"
 
             echo "::group::Verify test compilation"

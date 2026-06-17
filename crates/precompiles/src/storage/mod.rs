@@ -3,6 +3,9 @@
 //! Provides traits and types for reading/writing contract state from EVM storage,
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
+pub mod actions;
+pub use actions::{StorageAction, StorageActions};
+
 pub mod evm;
 pub mod hashmap;
 
@@ -124,6 +127,13 @@ pub trait PrecompileStorageProvider {
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    ///
+    /// Implementations that do not run TIP-1060 accounting may treat this as a no-op. Production
+    /// providers must still hardfork-gate enabling so calling this with `true` before T7 does not
+    /// activate storage credits early.
+    fn set_tip1060_storage_credits(&mut self, enabled: bool);
 
     /// Computes keccak256 and charges the appropriate gas.
     ///
