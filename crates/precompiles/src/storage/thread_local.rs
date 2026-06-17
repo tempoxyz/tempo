@@ -213,6 +213,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically
@@ -344,6 +349,28 @@ impl<'evm> StorageCtx {
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
         // The core logic of setting up thread-local storage is here.
+        Self::enter(&mut provider, f)
+    }
+
+    /// Enters storage with TIP-1060 storage-credit accounting disabled.
+    ///
+    /// Use when provider gas is not charged, or is charged externally, and the writes must not
+    /// mint, consume, or settle storage credits. If those writes create persistent storage, the
+    /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
+    pub fn enter_evm_without_tip1060_accounting<J, R>(
+        journal: &'evm mut J,
+        block_env: &'evm dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
+        f: impl FnOnce() -> R,
+    ) -> R
+    where
+        J: JournalTr<Database: Database> + Debug,
+    {
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        provider.set_tip1060_storage_credits(false);
+
         Self::enter(&mut provider, f)
     }
 
