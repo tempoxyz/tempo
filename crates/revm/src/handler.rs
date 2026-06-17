@@ -884,7 +884,9 @@ where
         if spec.is_t7() {
             // No cap: leave the accumulated refund counter untouched after
             // recording the EIP-7702 auth refund.
-            gas.record_refund(eip7702_refund);
+            if eip7702_refund != 0 {
+                gas.record_refund(eip7702_refund);
+            }
         } else {
             post_execution::refund(spec.into(), gas, eip7702_refund);
         }
