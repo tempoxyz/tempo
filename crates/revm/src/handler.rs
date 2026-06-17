@@ -852,7 +852,7 @@ where
         init_and_floor_gas: InitialAndFloorGas,
         eip7702_gas_refund: i64,
     ) -> Result<ResultGas, Self::Error> {
-        if exec_result.instruction_result().is_ok() {
+        if exec_result.instruction_result().is_ok() && evm.ctx.cfg.spec.is_t7() {
             gas_credits::apply_refund(evm, exec_result.gas_mut())?;
         }
         self.refund(evm, exec_result, eip7702_gas_refund);

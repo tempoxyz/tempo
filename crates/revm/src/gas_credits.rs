@@ -34,9 +34,7 @@ pub fn apply_refund<DB: Database, I>(
     evm: &mut TempoEvm<DB, I>,
     gas: &mut Gas,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-    if !evm.cfg.spec.is_t7() {
-        return Ok(());
-    }
+    debug_assert!(evm.cfg.spec.is_t7());
 
     let journal = &mut evm.inner.ctx.journaled_state;
 
