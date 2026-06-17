@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
+    storage::{Handler, PrecompileStorageProvider, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},
@@ -443,7 +443,7 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         if let Some(actions) = &self.actions {
-            actions.record(StorageAction::Sload(address, key, value));
+            actions.record_sload(address, key, value);
         }
 
         Ok(value)

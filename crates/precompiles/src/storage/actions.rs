@@ -58,11 +58,36 @@ impl StorageActions {
     }
 
     /// Records an action if recording is enabled.
+    #[inline]
     pub fn record(&self, action: StorageAction) {
         if !self.enabled.get() {
             return;
         }
 
         self.actions.borrow_mut().push(action);
+    }
+
+    /// Records an SLOAD action if recording is enabled.
+    #[inline]
+    pub fn record_sload(&self, address: Address, key: U256, value: U256) {
+        if !self.enabled.get() {
+            return;
+        }
+
+        self.actions
+            .borrow_mut()
+            .push(StorageAction::Sload(address, key, value));
+    }
+
+    /// Records an SSTORE action if recording is enabled.
+    #[inline]
+    pub fn record_sstore(&self, address: Address, key: U256, value: U256) {
+        if !self.enabled.get() {
+            return;
+        }
+
+        self.actions
+            .borrow_mut()
+            .push(StorageAction::Sstore(address, key, value));
     }
 }

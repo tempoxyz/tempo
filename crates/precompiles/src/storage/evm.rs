@@ -134,8 +134,7 @@ impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStor
     ) -> Result<StateLoad<U256>, Self::Error> {
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sload(address, key, val.present_value));
+        self.actions.record_sload(address, key, val.present_value);
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
@@ -151,8 +150,7 @@ impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStor
             .internals
             .load_account_mut(address)?
             .sstore(key, value, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sstore(address, key, value));
+        self.actions.record_sstore(address, key, value);
         Ok(val)
     }
 
@@ -272,8 +270,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value,
             insufficient_gas_for_cold_load,
         )?;
-        self.actions
-            .record(StorageAction::Sstore(address, key, value));
+        self.actions.record_sstore(address, key, value);
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -350,8 +347,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value = val.present_value;
             is_cold = val.is_cold;
         };
-        self.actions
-            .record(StorageAction::Sload(address, key, value));
+        self.actions.record_sload(address, key, value);
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
