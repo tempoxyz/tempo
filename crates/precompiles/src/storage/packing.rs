@@ -132,8 +132,17 @@ pub fn insert_into_word<T: FromWord + StorableType>(
     let field_value = value.to_word();
 
     // Calculate shift and mask
-    let shift_bits = offset * 8;
     let mask = create_element_mask(bytes);
+    if offset == 0 {
+        let positioned = field_value & mask;
+        if current.is_zero() || bytes == 32 {
+            return Ok(positioned);
+        }
+
+        return Ok((current & !mask) | positioned);
+    }
+
+    let shift_bits = offset * 8;
 
     // Clear the bits for this field in the current slot value
     let clear_mask = !(mask << shift_bits);
