@@ -68,7 +68,7 @@ use crate::{
     TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
-    evm::TempoContext,
+    evm::{CachedValidatorFeeToken, TempoContext},
     tip1060,
 };
 
@@ -1376,6 +1376,13 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let block_number = block.number();
+            let beneficiary = block.beneficiary();
+            let cached_validator_token = evm.validator_fee_token.and_then(|cached| {
+                (cached.block_number == block_number && cached.beneficiary == beneficiary)
+                    .then_some(cached.token)
+            });
+            let mut loaded_validator_token = None;
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 &block,
@@ -1383,15 +1390,32 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    TipFeeManager::new().collect_fee_pre_tx(
+                    let mut fee_manager = TipFeeManager::new();
+                    let validator_token = match cached_validator_token {
+                        Some(token) => token,
+                        None => {
+                            let token = fee_manager.get_validator_token(beneficiary)?;
+                            loaded_validator_token = Some(token);
+                            token
+                        }
+                    };
+
+                    fee_manager.collect_fee_pre_tx_with_validator_token(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
-                        block.beneficiary(),
+                        validator_token,
                         skip_liquidity_check,
                     )
                 },
             );
+            if let Some(token) = loaded_validator_token {
+                evm.validator_fee_token = Some(CachedValidatorFeeToken {
+                    block_number,
+                    beneficiary,
+                    token,
+                });
+            }
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1662,6 +1686,12 @@ where
         // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
+        let block_number = context.block.number();
+        let cached_validator_token = evm.validator_fee_token.and_then(|cached| {
+            (cached.block_number == block_number && cached.beneficiary == beneficiary)
+                .then_some(cached.token)
+        });
+        let mut loaded_validator_token = None;
 
         let credited = StorageCtx::enter_evm_without_tip1060_accounting(
             &mut *journal,
@@ -1677,14 +1707,25 @@ where
                     let fee_token = evm
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
+                    let validator_token = match cached_validator_token {
+                        Some(token) => token,
+                        None => {
+                            let token = fee_manager
+                                .get_validator_token(beneficiary)
+                                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                            loaded_validator_token = Some(token);
+                            token
+                        }
+                    };
                     // Call collectFeePostTx (handles both refund and fee queuing)
                     fee_manager
-                        .collect_fee_post_tx(
+                        .collect_fee_post_tx_with_validator_token(
                             fee_payer,
                             actual_spending,
                             refund_amount,
                             fee_token,
                             beneficiary,
+                            validator_token,
                         )
                         .map_err(|e| EVMError::Custom(format!("{e:?}")))
                 } else {
@@ -1692,6 +1733,13 @@ where
                 }
             },
         )?;
+        if let Some(token) = loaded_validator_token {
+            evm.validator_fee_token = Some(CachedValidatorFeeToken {
+                block_number,
+                beneficiary,
+                token,
+            });
+        }
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.

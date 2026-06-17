@@ -16,6 +16,13 @@ use tempo_precompiles::storage::StorageActions;
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CachedValidatorFeeToken {
+    pub(crate) block_number: U256,
+    pub(crate) beneficiary: Address,
+    pub(crate) token: Address,
+}
+
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
@@ -39,6 +46,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// The validator fee token loaded for the current block beneficiary.
+    pub(crate) validator_fee_token: Option<CachedValidatorFeeToken>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -97,6 +106,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            validator_fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
