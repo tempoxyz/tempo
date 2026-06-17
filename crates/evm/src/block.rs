@@ -398,6 +398,15 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        self.validate_tx_with_payment_hint(tx, gas_used, None)
+    }
+
+    fn validate_tx_with_payment_hint(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+        payment_hint: Option<bool>,
+    ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
@@ -426,10 +435,11 @@ where
                 }
             }
         } else {
+            let is_payment = payment_hint.unwrap_or_else(|| self.is_payment(tx));
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -453,6 +463,77 @@ where
                 }
             }
         }
+    }
+
+    pub fn execute_transaction_with_payment_hint_and_result_closure(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        is_payment: bool,
+        f: impl FnOnce(&TempoTxResult),
+    ) -> Result<GasOutput, BlockExecutionError> {
+        let output =
+            self.execute_transaction_without_commit_with_payment_hint(tx, Some(is_payment))?;
+        f(&output);
+        Ok(<Self as BlockExecutor>::commit_transaction(self, output))
+    }
+
+    fn execute_transaction_without_commit_with_payment_hint(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        payment_hint: Option<bool>,
+    ) -> Result<TempoTxResult, BlockExecutionError> {
+        let (mut tx_env, recovered) = tx.into_parts();
+        // Remove any prewarming-specific context that was added to the tx env.
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = None;
+        }
+        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+
+        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
+        // If we are dealing with a subblock transaction, configure the fee recipient context.
+        if let Some(validator) = recovered.tx().subblock_proposer() {
+            let fee_recipient = *self
+                .subblock_fee_recipients
+                .get(&validator)
+                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+
+            self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+        }
+        let result = self
+            .inner
+            .execute_transaction_without_commit((tx_env, &recovered));
+
+        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+
+        let inner = result?;
+
+        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
+        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
+            inner.result.result.gas().block_regular_gas_used()
+        } else {
+            inner.result.result.tx_gas_used()
+        };
+
+        let next_section = if let Some(next_section) = next_section {
+            // If pre-execution validation returned a section to use, just use it.
+            next_section
+        } else if let Some(is_payment) = payment_hint {
+            self.validate_tx_with_payment_hint(recovered.tx(), block_gas_used, Some(is_payment))?
+        } else {
+            self.validate_tx(recovered.tx(), block_gas_used)?
+        };
+        // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
+        let validator_fee = self.evm().validator_fee();
+        Ok(TempoTxResult {
+            inner,
+            next_section,
+            is_payment: payment_hint.unwrap_or_else(|| self.is_payment(recovered.tx())),
+            tx: matches!(next_section, BlockSection::SubBlock { .. })
+                .then(|| recovered.tx().clone()),
+            block_gas_used,
+            validator_fee,
+        })
     }
 }
 
@@ -509,56 +590,7 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
-        // Remove any prewarming-specific context that was added to the tx env.
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
-        }
-        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
-
-        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
-        // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = recovered.tx().subblock_proposer() {
-            let fee_recipient = *self
-                .subblock_fee_recipients
-                .get(&validator)
-                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
-
-            self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
-        }
-        let result = self
-            .inner
-            .execute_transaction_without_commit((tx_env, &recovered));
-
-        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
-
-        let inner = result?;
-
-        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
-        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
-        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
-            inner.result.result.gas().block_regular_gas_used()
-        } else {
-            inner.result.result.tx_gas_used()
-        };
-
-        let next_section = if let Some(next_section) = next_section {
-            // If pre-execution validation returned a section to use, just use it.
-            next_section
-        } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
-        };
-        // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
-        let validator_fee = self.evm().validator_fee();
-        Ok(TempoTxResult {
-            inner,
-            next_section,
-            is_payment: self.is_payment(recovered.tx()),
-            tx: matches!(next_section, BlockSection::SubBlock { .. })
-                .then(|| recovered.tx().clone()),
-            block_gas_used,
-            validator_fee,
-        })
+        self.execute_transaction_without_commit_with_payment_hint(tx, None)
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
