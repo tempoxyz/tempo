@@ -39,6 +39,10 @@ impl TryFrom<U256> for TransientState {
 
     #[inline]
     fn try_from(value: U256) -> Result<Self> {
+        if value.is_zero() {
+            return Ok(Self::default());
+        }
+
         let limbs = value.as_limbs();
         Ok(Self {
             budget: limbs[0],
