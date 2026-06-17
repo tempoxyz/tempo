@@ -39,6 +39,28 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
+        Self::new_with_tip1060_storage_credits(
+            internals,
+            gas_limit,
+            reservoir,
+            spec,
+            amsterdam_eip8037_enabled,
+            is_static,
+            gas_params,
+            true,
+        )
+    }
+
+    fn new_with_tip1060_storage_credits(
+        internals: EvmInternals<'a>,
+        gas_limit: u64,
+        reservoir: u64,
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+        is_static: bool,
+        gas_params: GasParams,
+        tip1060_storage_credits_enabled: bool,
+    ) -> Self {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
@@ -46,7 +68,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
-            tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credits_enabled: tip1060_storage_credits_enabled && spec.is_t7(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
@@ -62,6 +84,23 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
+        )
+    }
+
+    /// Creates a maximum-gas provider with TIP-1060 storage-credit accounting disabled.
+    pub fn new_max_gas_without_tip1060_storage_credits(
+        internals: EvmInternals<'a>,
+        cfg: &CfgEnv<TempoHardfork>,
+    ) -> Self {
+        Self::new_with_tip1060_storage_credits(
+            internals,
+            u64::MAX,
+            0,
+            cfg.spec,
+            cfg.enable_amsterdam_eip8037,
+            false,
+            cfg.gas_params.clone(),
+            false,
         )
     }
 
