@@ -160,11 +160,13 @@ impl TempoTxEnvelope {
     }
 
     /// Returns true if this is a Tempo system transaction
+    #[inline]
     pub fn is_system_tx(&self) -> bool {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
     }
 
     /// Returns true if this is a valid Tempo system transaction, i.e all gas fields and nonce are zero.
+    #[inline]
     pub fn is_valid_system_tx(&self, chain_id: u64) -> bool {
         self.max_fee_per_gas() == 0
             && self.gas_limit() == 0
