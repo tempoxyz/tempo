@@ -445,7 +445,9 @@ where
             .sload(address, key)
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
-        if self.record_actions && let Some(actions) = &self.actions {
+        if self.record_actions
+            && let Some(actions) = &self.actions
+        {
             actions.record(StorageAction::Sload(address, key, value));
         }
 
