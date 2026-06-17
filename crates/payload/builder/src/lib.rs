@@ -606,6 +606,18 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    if pool_transactions_yielded == 0 {
+                        let work_elapsed = start
+                            .elapsed()
+                            .saturating_sub(normal_transaction_fill_idle_elapsed);
+                        let empty_workload = ValidationLatencyWorkload::new(0, 0);
+                        if validation_latency
+                            .and_then(|estimate| estimate.estimate(empty_workload))
+                            .is_some_and(|reserve| work_elapsed >= reserve)
+                        {
+                            break BlockBuildStopReason::TxPoolEmpty;
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
