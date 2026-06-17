@@ -510,6 +510,8 @@ where
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
 
+        reth_tasks::once!(reth_tasks::utils::increase_thread_priority);
+
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
