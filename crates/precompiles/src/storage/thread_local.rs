@@ -372,8 +372,10 @@ impl<'evm> StorageCtx {
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
         let mut provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg).with_actions(actions);
-        provider.set_tip1060_storage_credits(false);
+            EvmPrecompileStorageProvider::new_max_gas_without_tip1060_storage_credits(
+                internals, cfg,
+            )
+            .with_actions(actions);
 
         Self::enter(&mut provider, f)
     }
