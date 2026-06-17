@@ -308,7 +308,8 @@ mod tests {
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        TIP403_REGISTRY_ADDRESS,
         storage::{StorageAction, StorageCtx, StorageKey},
         test_util::TIP20Setup,
         tip_fee_manager::slots as fee_manager_slots,
@@ -317,6 +318,7 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
+        tip1060_storage_credits::TIP1060StorageCredits,
     };
     use tempo_primitives::transaction::calc_gas_balance_spending;
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
@@ -590,7 +592,7 @@ mod tests {
             let beneficiary = Address::repeat_byte(0x03);
             let starting_balance = U256::from(1_000_000);
             let transfer_amount = U256::from(100);
-            let gas_limit = 250_001;
+            let gas_limit = 1_000_000;
             let gas_price = 1_000_000_000u64;
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
@@ -676,6 +678,7 @@ mod tests {
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
             let collected_fees_slot = PATH_USD_ADDRESS
                 .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+            let path_usd_storage_credit_slot = TIP1060StorageCredits::slot(PATH_USD_ADDRESS);
             let currency_word = short_string_word(USD_CURRENCY.as_bytes());
 
             let sender_after_fee = starting_balance - max_fee_spending;
@@ -743,6 +746,12 @@ mod tests {
                         PATH_USD_ADDRESS,
                         recipient_balance_slot,
                         transfer_amount,
+                    ),
+                    // SLOAD storageCredits[PATH_USD]: TIP-1060 tracks the user transfer credit.
+                    StorageAction::Sload(
+                        STORAGE_CREDITS_ADDRESS,
+                        path_usd_storage_credit_slot,
+                        U256::ZERO,
                     ),
                     // SLOAD balances[FeeManager]: read escrow custody before refunding unused fee.
                     StorageAction::Sload(

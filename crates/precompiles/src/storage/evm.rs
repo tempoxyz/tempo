@@ -134,6 +134,8 @@ impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStor
     ) -> Result<StateLoad<U256>, Self::Error> {
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
+        self.actions
+            .record(StorageAction::Sload(address, key, val.present_value));
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
@@ -145,10 +147,13 @@ impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStor
         value: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
-        self.internals
+        let val = self
+            .internals
             .load_account_mut(address)?
-            .sstore(key, value, skip_cold_load)
-            .map_err(Into::into)
+            .sstore(key, value, skip_cold_load)?;
+        self.actions
+            .record(StorageAction::Sstore(address, key, value));
+        Ok(val)
     }
 
     #[inline]
