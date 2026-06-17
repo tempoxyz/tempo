@@ -494,6 +494,10 @@ where
     fn checkpoint_revert(&mut self, _: revm::context::journaled_state::JournalCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
+
+    fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
+        // Read-only storage never runs TIP-1060 accounting.
+    }
 }
 
 #[cfg(test)]
