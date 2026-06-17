@@ -87,6 +87,8 @@ impl AASigned {
     }
 
     /// Returns the transaction without signature.
+    #[cold]
+    #[inline(never)]
     pub fn strip_signature(self) -> TempoTransaction {
         self.tx
     }
@@ -215,6 +217,8 @@ impl AASigned {
     }
 
     /// Splits the transaction into parts.
+    #[cold]
+    #[inline(never)]
     pub fn into_parts(self) -> (TempoTransaction, TempoSignature, B256) {
         let hash = *self.hash();
         (self.tx, self.signature, hash)
