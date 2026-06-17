@@ -96,6 +96,8 @@ impl TempoSignedAuthorization {
     }
 
     /// Decodes the authorization from RLP bytes, including the signature.
+    #[cold]
+    #[inline(never)]
     fn decode_fields(buf: &mut &[u8]) -> RlpResult<Self> {
         Ok(Self {
             inner: Authorization {
@@ -122,6 +124,8 @@ impl TempoSignedAuthorization {
 }
 
 impl Decodable for TempoSignedAuthorization {
+    #[cold]
+    #[inline(never)]
     fn decode(buf: &mut &[u8]) -> RlpResult<Self> {
         let header = Header::decode(buf)?;
         if !header.list {
