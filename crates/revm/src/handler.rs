@@ -963,7 +963,9 @@ where
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
-        let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+        let fee_payer = evm
+            .fee_payer
+            .expect("fee payer is set in `validate_env`");
         let fee_token = journal
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
@@ -1630,7 +1632,9 @@ where
                 let mut fee_manager = TipFeeManager::new();
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                    let fee_payer = evm
+                        .fee_payer
+                        .expect("fee payer is set in `validate_env`");
                     let fee_token = evm
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
@@ -1677,9 +1681,11 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.fee_payer = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
+        evm.fee_payer = Some(fee_payer);
 
         if evm.ctx.cfg.spec.is_t2()
             && evm.ctx.tx.has_fee_payer_signature()
