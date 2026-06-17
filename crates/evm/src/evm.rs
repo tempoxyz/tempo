@@ -777,8 +777,6 @@ mod tests {
                         sender_balance_slot,
                         sender_after_refund,
                     ),
-                    // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
-                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
                     // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
                     // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
@@ -960,8 +958,6 @@ mod tests {
                         sender_balance_slot,
                         sender_after_refund,
                     ),
-                    // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
-                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
                     // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
                     // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
