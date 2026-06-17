@@ -148,9 +148,9 @@ impl Block {
         }
     }
 
-    /// Consumes the block and returns only the execution-layer block.
-    pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        self.execution_block.into_sealed_block()
+    /// Consumes the block and returns the wrapped execution block handle.
+    pub(crate) fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
+        self.execution_block
     }
 
     /// Consumes the block and returns the execution-layer block plus optional BAL.

@@ -4,13 +4,14 @@ use std::fmt::Display;
 
 use alloy_primitives::B256;
 use futures::Future;
+use reth_primitives_traits::SealedOrRecoveredBlock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
     pub epoch: u64,
@@ -21,7 +22,17 @@ pub struct CertifiedBlock {
     pub certificate: String,
 
     /// The Tempo block.
-    pub block: Block,
+    pub block: SealedOrRecoveredBlock<Block>,
+}
+
+impl PartialEq for CertifiedBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.epoch == other.epoch
+            && self.view == other.view
+            && self.digest == other.digest
+            && self.certificate == other.certificate
+            && self.block.sealed_block() == other.block.sealed_block()
+    }
 }
 
 impl Display for CertifiedBlock {
