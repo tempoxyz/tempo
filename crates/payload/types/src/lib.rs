@@ -70,9 +70,15 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into owned execution payload parts.
     pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
+        let Self {
+            inner,
+            block_access_list,
+            ..
+        } = self;
+
         (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
-            self.block_access_list,
+            Arc::unwrap_or_clone(inner.into_block_arc()).into_sealed_block(),
+            block_access_list,
         )
     }
 
