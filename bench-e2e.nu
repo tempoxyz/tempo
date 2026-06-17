@@ -350,13 +350,15 @@ def load-e2e-state-bloat [
     bloat: int,
     bloat_file: string,
     profile: string,
+    xtask_worktree: string,
 ] {
     if $bloat_file == "-" {
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
         let script = 'set -euo pipefail
-cargo run -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --out - "${@:6}" | "$3" init-from-binary-dump --chain "$4" --datadir "$5" -
+cargo run --manifest-path "$6" -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --out - "${@:7}" | "$3" init-from-binary-dump --chain "$4" --datadir "$5" -
 '
-        let bloat_result = (run-external "bash" "-c" $script "stream-e2e-bloat" $profile ($bloat | into string) $tempo_bin $genesis $datadir ...$token_args | complete)
+        let xtask_manifest = $"($xtask_worktree)/Cargo.toml"
+        let bloat_result = (run-external "bash" "-c" $script "stream-e2e-bloat" $profile ($bloat | into string) $tempo_bin $genesis $datadir $xtask_manifest ...$token_args | complete)
         if $bloat_result.stdout != "" { print $bloat_result.stdout }
         if $bloat_result.stderr != "" { print $bloat_result.stderr }
         if $bloat_result.exit_code != 0 {
@@ -374,7 +376,7 @@ cargo run -p tempo-xtask --profile "$1" -- generate-state-bloat --size "$2" --ou
     }
 }
 
-def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string, profile: string] {
+def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string, profile: string, xtask_worktree: string] {
     print $"Initializing database at ($datadir)..."
     let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
     if $init_result.stdout != "" { print $init_result.stdout }
@@ -387,7 +389,7 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
     if $bloat > 0 {
         let source_label = if $bloat_file == "-" { "streamed generator output" } else { $bloat_file }
         print $"Loading state bloat into ($datadir) from ($source_label)..."
-        load-e2e-state-bloat $tempo_bin $genesis $datadir $bloat $bloat_file $profile
+        load-e2e-state-bloat $tempo_bin $genesis $datadir $bloat $bloat_file $profile $xtask_worktree
     }
 }
 
@@ -968,6 +970,7 @@ def init-local-e2e-side [
     bloat_file: string,
     profile: string,
     tempo_bin: string,
+    xtask_worktree: string,
     marker: record,
 ] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
@@ -976,13 +979,82 @@ def init-local-e2e-side [
     mkdir $datadir
     mkdir $node_dir
 
-    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file $profile
+    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file $profile $xtask_worktree
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
     $trusted_peers | save -f $generated_trusted_peers
 
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
+}
+
+def init-local-e2e-snapshot [
+    snapshot_kind: string
+    snapshot_label: string
+    a_db: string
+    b_db: string
+    a_validator: string
+    b_validator: string
+    bloat_mib: int
+    bloat_gib: int
+    accounts: int
+    gas_limit: string
+    gas_limit_args: list<string>
+    snapshot_hardfork_args: list<string>
+    snapshot_state_hardfork: string
+    profile: string
+    tempo_bin: string
+    xtask_worktree: string
+    init_key: string
+] {
+    let side_init_key = (e2e-sanitize-snapshot-key $"($init_key)-($snapshot_kind)-($snapshot_label)")
+    let init_dir = $"($LOCALNET_DIR)/e2e-local-init-($side_init_key)"
+    let generated_genesis = $"($init_dir)/genesis.json"
+    let generated_trusted_peers = $"($init_dir)/trusted-peers.txt"
+    let bloat_file = "-"
+    mark-schelk-dirty-at $E2E_A_STATE_PATH
+    mark-schelk-dirty-at $E2E_B_STATE_PATH
+    if ($init_dir | path exists) { rm -rf $init_dir }
+    mkdir $init_dir
+
+    let genesis_accounts = ([$accounts 3] | math max) + 1
+    let xtask_manifest = $"($xtask_worktree)/Cargo.toml"
+    print $"Generating ($snapshot_kind) local e2e localnet config for validators: ($E2E_VALIDATORS)"
+    cargo run --manifest-path $xtask_manifest -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
+
+    let trusted_peers = (trusted-peers-from-localnet $init_dir)
+    if $trusted_peers == "" {
+        print $"Error: generated ($snapshot_kind) localnet did not produce trusted peers"
+        exit 1
+    }
+    if $bloat_mib > 0 {
+        ensure-bloat-space $bloat_mib
+        print $"Local e2e ($snapshot_kind) state bloat will be streamed into each snapshot \(($bloat_mib) MiB\)."
+    }
+
+    let marker = {
+        bloat_mib: $bloat_mib
+        bloat: $bloat_gib
+        accounts: $genesis_accounts
+        validators: $E2E_VALIDATORS
+        seed: $E2E_SEED
+        gas_limit: $gas_limit
+        dkg_in_genesis: true
+        topology: "single-runner"
+        state_hardfork: $snapshot_state_hardfork
+        snapshot_key: $snapshot_label
+        snapshot_kind: $snapshot_kind
+        snapshot_worktree: $xtask_worktree
+    }
+    init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_db $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin $xtask_worktree ($marker | insert bench_datadir $a_db | insert node_dir $a_db | insert validator_addr $a_validator)
+    init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_db $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin $xtask_worktree ($marker | insert bench_datadir $b_db | insert node_dir $b_db | insert validator_addr $b_validator)
+    if ($init_dir | path exists) {
+        rm -rf $init_dir
+    }
+    bench-promote-at $E2E_A_STATE_PATH $a_db
+    bench-promote-at $E2E_B_STATE_PATH $b_db
+    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 }
 
 # Update the PR comment with current benchmark phase status.
@@ -1410,7 +1482,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --force-bloat                                      # Regenerate and promote the selected feature e2e snapshot
+    --force-bloat                                      # Regenerate and promote all local e2e snapshots needed for the run
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = ""                             # Additional Cargo features appended to the e2e defaults
@@ -1547,108 +1619,6 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
-
-    let baseline_snapshots_ready = (e2e-snapshots-ready $baseline_a_db $baseline_b_db)
-    if $snapshot_key != "" and not $baseline_snapshots_ready {
-        let missing_a = (e2e-snapshot-missing-files $baseline_a_db)
-        let missing_b = (e2e-snapshot-missing-files $baseline_b_db)
-        print "Error: feature snapshot-key requires an existing unkeyed baseline e2e snapshot."
-        if ($missing_a | length) > 0 {
-            print $"  Missing from baseline a: ($missing_a | str join ', ')"
-        }
-        if ($missing_b | length) > 0 {
-            print $"  Missing from baseline b: ($missing_b | str join ', ')"
-        }
-        print "Run the e2e bloat initialization once without snapshot-key to create the legacy baseline snapshot."
-        exit 1
-    }
-
-    let feature_snapshots_ready = (e2e-snapshots-ready $feature_a_db $feature_b_db)
-    let should_init_snapshots = $force_bloat or (not $feature_snapshots_ready)
-    if (not $feature_snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e feature snapshot ($bloat_mib) MiB, key=($feature_snapshot_label) is missing required files; initializing it once."
-        let missing_a = (e2e-snapshot-missing-files $feature_a_db)
-        let missing_b = (e2e-snapshot-missing-files $feature_b_db)
-        if ($missing_a | length) > 0 {
-            print $"  Missing from feature a: ($missing_a | str join ', ')"
-        }
-        if ($missing_b | length) > 0 {
-            print $"  Missing from feature b: ($missing_b | str join ', ')"
-        }
-    }
-
-    if $should_init_snapshots {
-        let init_dir = $"($LOCALNET_DIR)/e2e-local-init-($init_key)"
-        let generated_genesis = $"($init_dir)/genesis.json"
-        let generated_trusted_peers = $"($init_dir)/trusted-peers.txt"
-        let bloat_file = "-"
-        mark-schelk-dirty-at $E2E_A_STATE_PATH
-        mark-schelk-dirty-at $E2E_B_STATE_PATH
-        if ($init_dir | path exists) { rm -rf $init_dir }
-        mkdir $init_dir
-
-        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
-        let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
-        let genesis_accounts = ([$accounts 3] | math max) + 1
-        print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
-
-        let trusted_peers = (trusted-peers-from-localnet $init_dir)
-        if $trusted_peers == "" {
-            print "Error: generated localnet did not produce trusted peers"
-            exit 1
-        }
-        if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
-            print $"Local e2e state bloat will be streamed into each snapshot \(($bloat_mib) MiB\)."
-        }
-
-        let marker = {
-            bloat_mib: $bloat_mib
-            bloat: $bloat
-            accounts: $genesis_accounts
-            validators: $E2E_VALIDATORS
-            seed: $E2E_SEED
-            gas_limit: $gas_limit
-            dkg_in_genesis: true
-            topology: "single-runner"
-            state_hardfork: $snapshot_state_hardfork
-            snapshot_key: $feature_snapshot_label
-        }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db $feature_a_db $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $feature_a_db | insert node_dir $feature_a_db | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db $feature_b_db $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $generated_trusted_peers $bloat_mib $bloat_file $profile $tempo_bin ($marker | insert bench_datadir $feature_b_db | insert node_dir $feature_b_db | insert validator_addr $b_validator)
-        if ($init_dir | path exists) {
-            rm -rf $init_dir
-        }
-        bench-promote-at $E2E_A_STATE_PATH $feature_a_db
-        bench-promote-at $E2E_B_STATE_PATH $feature_b_db
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
-    }
-
-    if $init_only {
-        cleanup-local-e2e-processes
-        return
-    }
-    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
-    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $baseline_genesis_source_path }
-    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $feature_genesis_source_path }
-    if $hardfork_mode {
-        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
-        mkdir $hardfork_genesis_dir
-        e2e-synthesize-genesis $baseline_genesis_source_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
-        e2e-synthesize-genesis $feature_genesis_source_path $feature_genesis_path $feature_hardfork_name $gas_limit
-    }
-    let baseline_trusted_peers = (e2e-read-trusted-peers $baseline_a_db $baseline_b_db)
-    let feature_trusted_peers = (e2e-read-trusted-peers $feature_a_db $feature_b_db)
-
-    let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
-    mkdir $results_dir
-    print $"BENCH_RESULTS_DIR=($results_dir)"
-
     git worktree prune
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
@@ -1710,6 +1680,57 @@ def "main e2e" [
             $"BENCH_CONFIG=($updated_config)\n" | save --append $github_env
         }
     }
+
+    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $feature_a_db
+    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $feature_b_db
+
+    let shared_snapshot = $baseline_a_db == $feature_a_db and $baseline_b_db == $feature_b_db
+    let baseline_snapshots_ready = (e2e-snapshots-ready $baseline_a_db $baseline_b_db)
+    let feature_snapshots_ready = (e2e-snapshots-ready $feature_a_db $feature_b_db)
+    let should_init_baseline_snapshot = if $shared_snapshot { false } else { $force_bloat or (not $baseline_snapshots_ready) }
+    let should_init_feature_snapshot = $force_bloat or (not $feature_snapshots_ready)
+
+    if $should_init_baseline_snapshot {
+        if $force_bloat {
+            print $"Regenerating local e2e baseline snapshot ($bloat_mib) MiB, key=($baseline_snapshot_label)."
+        } else {
+            print $"Local e2e baseline snapshot ($bloat_mib) MiB, key=($baseline_snapshot_label) is missing required files; initializing it once."
+        }
+        init-local-e2e-snapshot baseline $baseline_snapshot_label $baseline_a_db $baseline_b_db $a_validator $b_validator $bloat_mib $bloat $accounts $gas_limit $gas_limit_args $snapshot_hardfork_args $snapshot_state_hardfork $profile $baseline_tempo $baseline_wt $init_key
+    }
+
+    if $should_init_feature_snapshot {
+        if $force_bloat {
+            print $"Regenerating local e2e feature snapshot ($bloat_mib) MiB, key=($feature_snapshot_label)."
+        } else {
+            print $"Local e2e feature snapshot ($bloat_mib) MiB, key=($feature_snapshot_label) is missing required files; initializing it once."
+        }
+        init-local-e2e-snapshot feature $feature_snapshot_label $feature_a_db $feature_b_db $a_validator $b_validator $bloat_mib $bloat $accounts $gas_limit $gas_limit_args $snapshot_hardfork_args $snapshot_state_hardfork $profile $feature_tempo $feature_wt $init_key
+    }
+
+    if $init_only {
+        cleanup-local-e2e-processes
+        try { git worktree remove --force $baseline_wt } catch { }
+        try { git worktree remove --force $feature_wt } catch { }
+        try { git worktree remove --force $regenesis_wt } catch { }
+        return
+    }
+    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
+    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $baseline_genesis_source_path }
+    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $feature_genesis_source_path }
+    if $hardfork_mode {
+        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
+        mkdir $hardfork_genesis_dir
+        e2e-synthesize-genesis $baseline_genesis_source_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
+        e2e-synthesize-genesis $feature_genesis_source_path $feature_genesis_path $feature_hardfork_name $gas_limit
+    }
+    let baseline_trusted_peers = (e2e-read-trusted-peers $baseline_a_db $baseline_b_db)
+    let feature_trusted_peers = (e2e-read-trusted-peers $feature_a_db $feature_b_db)
+
+    let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
+    mkdir $results_dir
+    print $"BENCH_RESULTS_DIR=($results_dir)"
+
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
