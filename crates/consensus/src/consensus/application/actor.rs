@@ -35,7 +35,7 @@ use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
-use reth_node_builder::{Block as _, ConsensusEngineHandle};
+use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -1128,7 +1128,10 @@ async fn verify_header(
     Ok(())
 }
 
-/// Read a block from the execution layer or fetches it from consensus p2p.
+/// Resolves a block by digest.
+///
+/// Checks the EL first. If the block is not available there, subscribes to the
+/// CL and waits until the block becomes available.
 #[instrument(skip_all, fields(%round, %digest), err, ret(Display))]
 async fn subscribe(
     execution_node: &TempoFullNode,
@@ -1138,11 +1141,11 @@ async fn subscribe(
 ) -> eyre::Result<Block> {
     let block = if let Some(block) = execution_node
         .provider
-        .find_block_by_hash(digest.0, BlockSource::Any)
+        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block.seal(), None)
+        Block::from_execution_block_unchecked(block, None)
     } else {
         marshal
             .subscribe_by_digest(Some(round), digest)
