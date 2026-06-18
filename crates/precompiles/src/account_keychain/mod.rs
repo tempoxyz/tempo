@@ -1406,13 +1406,6 @@ impl AccountKeychain {
         if !self.storage.spec().is_t3() {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             let refunded = remaining.saturating_add(amount);
-            if remaining.is_zero() && !refunded.is_zero() {
-                // Post-tx refund recreated the spending-limit slot.
-                StorageCredits::new().cancel_deferred_refund(
-                    ACCOUNT_KEYCHAIN_ADDRESS,
-                    self.spending_limits[limit_key][token].remaining.slot(),
-                )?;
-            }
             return self.spending_limits[limit_key][token]
                 .remaining
                 .write(refunded);
