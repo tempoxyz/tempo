@@ -20,13 +20,13 @@ use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
 use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
-use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
+use commonware_consensus::types::Height;
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::{NZU64, ordered};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
@@ -1100,11 +1100,6 @@ impl ValidatorInfo {
                 .ok_or_else(|| eyre!("unknown chain id {chain_id}, pass --chain explicitly"))?,
         };
 
-        let epoch_length = chain
-            .info
-            .epoch_length()
-            .ok_or_eyre("epochLength not found in chainspec")?;
-
         let validator = read_validator_from_contract(&provider, self.id).await?;
         let pubkey_bytes = validator.publicKey.0;
 
@@ -1113,12 +1108,10 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         let current_height = Height::new(latest_block_number);
-        let current_epoch_info = epoch_strategy
-            .containing(current_height)
+        let current_epoch = chain
+            .epoch_at_block(latest_block_number)
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
-        let current_epoch = current_epoch_info.epoch();
 
         let mut is_dkg_dealer = None;
         let mut is_dkg_player = None;
@@ -1127,20 +1120,16 @@ impl ValidatorInfo {
         if !self.no_dkg_information {
             use alloy_consensus::BlockHeader;
 
-            let boundary_height = current_epoch
-                .previous()
-                .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-                .unwrap_or_default();
+            let boundary_height = chain
+                .previous_epoch_boundary_block(latest_block_number)
+                .ok_or_eyre("epochLength not found in chainspec")?;
 
             let boundary_block = provider
-                .get_block_by_number(boundary_height.get().into())
+                .get_block_by_number(boundary_height.into())
                 .hashes()
                 .await
                 .wrap_err_with(|| {
-                    format!(
-                        "failed to get block header at height {}",
-                        boundary_height.get()
-                    )
+                    format!("failed to get block header at height {boundary_height}")
                 })?
                 .ok_or_eyre("boundary block not found")?;
 
@@ -1148,7 +1137,7 @@ impl ValidatorInfo {
             if extra_data.is_empty() {
                 return Err(eyre!(
                     "boundary block at height {} has no DKG outcome in extra_data",
-                    boundary_height.get()
+                    boundary_height
                 ));
             }
 
@@ -1165,7 +1154,7 @@ impl ValidatorInfo {
         }
 
         let output = ValidatorInfoOutput {
-            current_epoch: current_epoch.get(),
+            current_epoch,
             current_height: current_height.get(),
             validator: ValidatorOutput {
                 validator,
@@ -1250,35 +1239,27 @@ impl Info {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         let current_height = Height::new(latest_block_number);
-        let current_epoch_info = epoch_strategy
-            .containing(current_height)
+        let current_epoch = chain
+            .epoch_at_block(latest_block_number)
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
 
-        let current_epoch = current_epoch_info.epoch();
-        let boundary_height = current_epoch
-            .previous()
-            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
-            .unwrap_or_default();
+        let boundary_height = chain
+            .previous_epoch_boundary_block(latest_block_number)
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let boundary_block = provider
-            .get_block_by_number(boundary_height.get().into())
+            .get_block_by_number(boundary_height.into())
             .hashes()
             .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to get block header at height {}",
-                    boundary_height.get()
-                )
-            })?
+            .wrap_err_with(|| format!("failed to get block header at height {boundary_height}"))?
             .ok_or_eyre("boundary block not found")?;
 
         let extra_data = boundary_block.header.extra_data();
         if extra_data.is_empty() {
             return Err(eyre!(
                 "boundary block at height {} has no DKG outcome in extra_data",
-                boundary_height.get()
+                boundary_height
             ));
         }
 
@@ -1373,9 +1354,9 @@ impl Info {
 
         let output = InfoOutput {
             validators,
-            current_epoch: current_epoch.get(),
+            current_epoch,
             current_height: current_height.get(),
-            last_boundary: boundary_height.get(),
+            last_boundary: boundary_height,
             epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,

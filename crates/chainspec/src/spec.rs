@@ -106,6 +106,48 @@ impl TempoGenesisInfo {
     }
 }
 
+/// Block-to-epoch conversion parameters for a Tempo chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TempoEpochs {
+    epoch_length: core::num::NonZeroU64,
+}
+
+impl TempoEpochs {
+    /// Creates epoch conversion parameters from a non-zero epoch length.
+    pub const fn new(epoch_length: core::num::NonZeroU64) -> Self {
+        Self { epoch_length }
+    }
+
+    /// Returns the epoch length in blocks.
+    pub const fn epoch_length(self) -> core::num::NonZeroU64 {
+        self.epoch_length
+    }
+
+    /// Returns the epoch containing `block_number`.
+    pub const fn epoch_at_block(self, block_number: u64) -> u64 {
+        block_number / self.epoch_length.get()
+    }
+
+    /// Returns the last block in `epoch`.
+    pub const fn last_block_in_epoch(self, epoch: u64) -> Option<u64> {
+        match epoch.checked_add(1) {
+            Some(next_epoch) => match next_epoch.checked_mul(self.epoch_length.get()) {
+                Some(next_epoch_first_block) => next_epoch_first_block.checked_sub(1),
+                None => None,
+            },
+            None => None,
+        }
+    }
+
+    /// Returns the last block of the epoch preceding the block's epoch, or genesis for epoch 0.
+    pub const fn previous_epoch_boundary_block(self, block_number: u64) -> Option<u64> {
+        match self.epoch_at_block(block_number).checked_sub(1) {
+            Some(epoch) => self.last_block_in_epoch(epoch),
+            None => Some(0),
+        }
+    }
+}
+
 /// Tempo chain specification parser.
 #[derive(Debug, Clone, Default)]
 pub struct TempoChainSpecParser;
@@ -253,6 +295,28 @@ impl TempoChainSpec {
     /// Returns the mainnet chainspec.
     pub fn mainnet() -> Self {
         PRESTO.as_ref().clone()
+    }
+
+    /// Returns the block-to-epoch conversion parameters for this chain.
+    pub fn epochs(&self) -> Option<TempoEpochs> {
+        Some(TempoEpochs::new(core::num::NonZeroU64::new(
+            self.info.epoch_length()?,
+        )?))
+    }
+
+    /// Returns the epoch containing `block_number`.
+    pub fn epoch_at_block(&self, block_number: u64) -> Option<u64> {
+        Some(self.epochs()?.epoch_at_block(block_number))
+    }
+
+    /// Returns the last block in `epoch`.
+    pub fn last_block_in_epoch(&self, epoch: u64) -> Option<u64> {
+        self.epochs()?.last_block_in_epoch(epoch)
+    }
+
+    /// Returns the last block of the epoch preceding the block's epoch, or genesis for epoch 0.
+    pub fn previous_epoch_boundary_block(&self, block_number: u64) -> Option<u64> {
+        self.epochs()?.previous_epoch_boundary_block(block_number)
     }
 }
 

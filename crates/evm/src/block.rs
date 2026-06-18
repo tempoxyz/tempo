@@ -182,6 +182,16 @@ where
         }
     }
 
+    /// Returns the epoch containing the block currently being executed.
+    pub fn current_epoch(&self) -> Option<u64> {
+        Some(
+            self.inner
+                .spec
+                .epochs()?
+                .epoch_at_block(self.inner.evm.block().number.to::<u64>()),
+        )
+    }
+
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
