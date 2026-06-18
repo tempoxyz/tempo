@@ -423,13 +423,26 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+fn direct_tip20_calls_only(tx: &TempoTxEnv) -> bool {
+    let mut has_call = false;
+    for (kind, _) in tx.calls() {
+        has_call = true;
+        if !matches!(kind, TxKind::Call(to) if to.is_tip20()) {
+            return false;
+        }
+    }
+    has_call
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let channel_open_context_hash = (!direct_tip20_calls_only(&ctx.tx))
+            .then(|| ctx.tx.channel_open_context_hash())
+            .flatten();
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
