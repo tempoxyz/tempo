@@ -41,6 +41,8 @@ impl<T> Storable for Vec<T>
 where
     T: Storable,
 {
+    #[cold]
+    #[inline(never)]
     fn load<S: StorageOps>(storage: &S, len_slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
 
@@ -60,6 +62,8 @@ where
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn store<S: StorageOps>(&self, storage: &mut S, len_slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
         let data_start = calc_data_slot(len_slot);
@@ -88,6 +92,8 @@ where
     }
 
     /// Custom delete for Vec: clears both length slot and all data slots.
+    #[cold]
+    #[inline(never)]
     fn delete<S: StorageOps>(storage: &mut S, len_slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
 
