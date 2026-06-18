@@ -466,7 +466,11 @@ impl Inner<Init> {
             mut response,
             round,
         } = verify;
-        let result = select!(
+        let VerifyResult {
+            result,
+            block,
+            parent,
+        } = select!(
             () = response.closed() => {
                 Err(eyre!(
                     "verification return channel was closed by consensus \
@@ -482,6 +486,8 @@ impl Inner<Init> {
         if response.send(result).is_err() {
             warn!("received dropped channel before verification result could be returned");
         }
+        // Keep large block drops out of the pre-response path.
+        drop((block, parent));
 
         Ok(())
     }
@@ -740,7 +746,7 @@ impl Inner<Init> {
         payload: Digest,
         proposer: PublicKey,
         round: Round,
-    ) -> eyre::Result<bool> {
+    ) -> eyre::Result<VerifyResult> {
         let (block, parent) = try_join(
             subscribe(&self.execution_node, round, payload, &self.marshal),
             subscribe(
@@ -768,9 +774,17 @@ impl Inner<Init> {
                 if !self.marshal.verified(round, block).await {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
-                return Ok(true);
+                return Ok(VerifyResult {
+                    result: true,
+                    block: None,
+                    parent: Some(parent),
+                });
             } else {
-                return Ok(false);
+                return Ok(VerifyResult {
+                    result: false,
+                    block: Some(block),
+                    parent: Some(parent),
+                });
             }
         }
 
@@ -785,7 +799,11 @@ impl Inner<Init> {
         .await
         {
             warn!(%reason, "header could not be verified; failing block");
-            return Ok(false);
+            return Ok(VerifyResult {
+                result: false,
+                block: Some(block),
+                parent: Some(parent),
+            });
         }
 
         if let Err(error) = self
@@ -845,8 +863,19 @@ impl Inner<Init> {
                 .canonicalize_head(block_height, block_digest)
                 .await
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
+
+            return Ok(VerifyResult {
+                result: true,
+                block: None,
+                parent: Some(parent),
+            });
         }
-        Ok(is_good)
+
+        Ok(VerifyResult {
+            result: false,
+            block: Some(block),
+            parent: Some(parent),
+        })
     }
 }
 
@@ -894,6 +923,18 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
+}
+
+struct VerifyResult {
+    /// Whether consensus should accept the verified proposal.
+    ///
+    /// This is the value sent through `Verify::response`: `true` accepts the
+    /// proposal, `false` rejects it.
+    result: bool,
+    /// The proposed block when it was not moved into the verified marshal state.
+    block: Option<Block>,
+    /// The parent block fetched to verify the proposal.
+    parent: Option<Block>,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
