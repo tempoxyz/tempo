@@ -81,6 +81,10 @@ struct ProposalReturn {
     /// After the proposal is persisted locally, the actor sleeps until this time
     /// so early builds still respect the proposal pacing budget.
     return_at: SystemTime,
+    /// Approximate encoded proposal size used for marshal-persist pacing.
+    ///
+    /// This is a reasonably close estimate derived during payload building, not the exact final
+    /// encoded block size.
     block_size_estimate_bytes: usize,
 }
 
