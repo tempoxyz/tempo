@@ -152,18 +152,18 @@ impl AddressRegistry {
     /// # Errors
     /// - `VirtualAddressUnregistered` — `to` is a virtual address whose `masterId` is not registered
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
+        let Some((master_id, _)) = to.decode_virtual() else {
+            return Ok(to);
+        };
+
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
         if !self.storage.spec().is_t3() {
             return Ok(to);
         }
 
-        match to.decode_virtual() {
-            None => Ok(to),
-            Some((master_id, _)) => self
-                .get_master(master_id)?
-                .ok_or(AddrRegistryError::virtual_address_unregistered().into()),
-        }
+        self.get_master(master_id)?
+            .ok_or(AddrRegistryError::virtual_address_unregistered().into())
     }
 
     /// Resolves a virtual address to its registered master.
