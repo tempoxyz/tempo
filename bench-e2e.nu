@@ -1435,13 +1435,16 @@ def "main e2e" [
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
+    let baseline_target_key = (bench-cache-key $baseline $baseline_tbc.features $no_default_features)
+    let feature_target_key = (bench-cache-key $feature $feature_tbc.features $no_default_features)
     mut builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features, target_key: $baseline_target_key }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features, target_key: $feature_target_key }
     ]
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
+    let regenesis_target_key = if $regenesis_needed { bench-cache-key $regenesis_sha $regenesis_tbc.features $no_default_features } else { "" }
     if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features, target_key: $regenesis_target_key })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
@@ -1450,9 +1453,9 @@ def "main e2e" [
             build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
-    let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
-    let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
-    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
+    let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo" $baseline_target_key)
+    let feature_tempo = (worktree-bin $feature_wt $profile "tempo" $feature_target_key)
+    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" $regenesis_target_key } else { "" }
     let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
     let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"

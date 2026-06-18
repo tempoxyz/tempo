@@ -72,6 +72,23 @@ def cargo-feature-args [features: string, no_default_features: bool] {
     $no_default_args | append $feature_args
 }
 
+def cargo-profile-dir [profile: string] {
+    if $profile == "dev" { "debug" } else { $profile }
+}
+
+def cargo-target-dir [worktree_dir: string, target_key: string] {
+    let root = ($env | get -o BENCH_CARGO_TARGET_ROOT | default "")
+    if $root == "" {
+        $"($worktree_dir)/target"
+    } else {
+        $"($root)/($target_key)"
+    }
+}
+
+def cargo-bin-path [target_dir: string, profile: string, bin_name: string] {
+    $"($target_dir)/(cargo-profile-dir $profile)/($bin_name)"
+}
+
 # Validate mode is either "dev" or "consensus"
 def validate-mode [mode: string] {
     if $mode != "dev" and $mode != "consensus" {
@@ -446,16 +463,13 @@ def try-cache-download [worktree_dir: string, profile: string, commit_sha: strin
     }
 
     # All binaries exist – download them
-    let target_dir = if $profile == "dev" {
-        $"($worktree_dir)/target/debug"
-    } else {
-        $"($worktree_dir)/target/($profile)"
-    }
-    mkdir $target_dir
+    let target_dir = (cargo-target-dir $worktree_dir $cache_key)
+    let profile_dir = $"($target_dir)/(cargo-profile-dir $profile)"
+    mkdir $profile_dir
 
     for bin in $bins {
         let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
-        let local = $"($target_dir)/($bin)"
+        let local = (cargo-bin-path $target_dir $profile $bin)
         print $"Downloading cached ($bin) for ($commit_sha | str substring 0..8)..."
         try {
             mc cp $remote $local
@@ -468,7 +482,7 @@ def try-cache-download [worktree_dir: string, profile: string, commit_sha: strin
 
     # Verify binaries work
     for bin in $bins {
-        let local = $"($target_dir)/($bin)"
+        let local = (cargo-bin-path $target_dir $profile $bin)
         try {
             run-external $local "--version"
         } catch {
@@ -485,14 +499,10 @@ def try-cache-download [worktree_dir: string, profile: string, commit_sha: strin
 def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cache_key: string] {
     if not (has-mc) { return }
 
-    let target_dir = if $profile == "dev" {
-        $"($worktree_dir)/target/debug"
-    } else {
-        $"($worktree_dir)/target/($profile)"
-    }
+    let target_dir = (cargo-target-dir $worktree_dir $cache_key)
 
     for bin in ["tempo"] {
-        let local = $"($target_dir)/($bin)"
+        let local = (cargo-bin-path $target_dir $profile $bin)
         let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
         print $"Uploading ($bin) to cache for ($commit_sha | str substring 0..8)..."
         try {
@@ -518,7 +528,8 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     let build_cmd = ["cargo" "build" "--profile" $profile]
         | append $feature_args
         | append ["--bin" "tempo"]
-    with-env { RUSTFLAGS: $rustflags } {
+    let target_dir = (cargo-target-dir $worktree_dir $cache_key)
+    with-env { RUSTFLAGS: $rustflags, CARGO_TARGET_DIR: $target_dir } {
         do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
     }
 
@@ -527,12 +538,10 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
 }
 
 # Get the path to a built binary in a worktree
-def worktree-bin [worktree_dir: string, profile: string, bin_name: string] {
-    if $profile == "dev" {
-        $"($worktree_dir)/target/debug/($bin_name)"
-    } else {
-        $"($worktree_dir)/target/($profile)/($bin_name)"
-    }
+def worktree-bin [worktree_dir: string, profile: string, bin_name: string, target_key?: string] {
+    let key = ($target_key | default "")
+    let target_dir = if $key == "" { $"($worktree_dir)/target" } else { cargo-target-dir $worktree_dir $key }
+    cargo-bin-path $target_dir $profile $bin_name
 }
 
 # Dedup CLI args: if extra_args provides a flag already present in base_args,
