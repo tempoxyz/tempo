@@ -1399,6 +1399,7 @@ impl BuilderTx {
     }
 }
 
+/// Result produced by the roots task while finalizing payload block data.
 #[derive(Debug)]
 pub(crate) struct RootsTaskResult {
     /// The root hash of the transaction trie.
