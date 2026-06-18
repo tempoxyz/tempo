@@ -3,7 +3,10 @@
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::{Cell, RefCell},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -49,11 +52,20 @@ pub(crate) struct StateCacheDb<'a, DB> {
     cache: &'a StateCache,
     /// The underlying database.
     db: DB,
+    /// Address of the last basic account read served by this adapter.
+    last_account_address: Cell<Option<Address>>,
+    /// Account value for `last_account_address`, including cached missing accounts.
+    last_account: RefCell<Option<Option<AccountInfo>>>,
 }
 
 impl<'a, DB> StateCacheDb<'a, DB> {
-    pub(crate) const fn new(cache: &'a StateCache, db: DB) -> Self {
-        Self { cache, db }
+    pub(crate) fn new(cache: &'a StateCache, db: DB) -> Self {
+        Self {
+            cache,
+            db,
+            last_account_address: Cell::new(None),
+            last_account: RefCell::new(None),
+        }
     }
 }
 
@@ -61,10 +73,22 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
     type Error = DB::Error;
 
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if let Some(account) = self.cache.accounts.get(&address) {
+        if self.last_account_address.get() == Some(address)
+            && let Some(account) = self.last_account.borrow().as_ref()
+        {
             return Ok(account.clone());
         }
+
+        if let Some(account) = self.cache.accounts.get(&address) {
+            let account = account.clone();
+            self.last_account_address.set(Some(address));
+            *self.last_account.borrow_mut() = Some(account.clone());
+            return Ok(account);
+        }
+
         let account = self.db.basic_ref(address)?;
+        self.last_account_address.set(Some(address));
+        *self.last_account.borrow_mut() = Some(account.clone());
         if self.cache.account_count.load(Ordering::Relaxed) < StateCache::MAX_ACCOUNTS
             && self
                 .cache
