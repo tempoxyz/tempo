@@ -7,6 +7,22 @@ const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
+def txgen-tip20-token-address [token_id: int] {
+    ^printf "0x20c000000000000000000000%016x" $token_id
+}
+
+def txgen-tip20-token-choices [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count | each { |id| txgen-tip20-token-address $id } | to json -r
+}
+
+def --env txgen-configure-tip20-token-env [token_count: int] {
+    $env.TXGEN_TIP20_TOKENS = (txgen-tip20-token-choices $token_count)
+}
+
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
     let escaped = ($s | str replace -a "'" "'\"'\"'")
@@ -236,6 +252,7 @@ def txgen-run-preset-pipeline [
     --max-concurrent-requests: int
     --bench-args: string = ""
     --bench-env: string = ""
+    --taskset-cpus: string = ""
     --git-ref: string = ""
     --git-ref-label: string = ""
     --build-profile: string = ""
@@ -249,6 +266,7 @@ def txgen-run-preset-pipeline [
     --victoriametrics-url: string = ""
     --clickhouse-url: string = ""
     --bloat-mib: int = 0
+    --tip20-token-count: int = 0
     --bloat-token-count: int = 4
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
@@ -258,6 +276,8 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
+    let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
+    txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
@@ -265,7 +285,9 @@ def txgen-run-preset-pipeline [
 
     let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
+    let taskset_prefix = if $taskset_cpus != "" { ["taskset" "-c" $taskset_cpus] } else { [] }
     let txgen_cmd = [
+        ...$taskset_prefix
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
@@ -276,6 +298,7 @@ def txgen-run-preset-pipeline [
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
+        ...$taskset_prefix
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
