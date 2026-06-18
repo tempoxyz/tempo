@@ -25,6 +25,51 @@ pub(crate) struct EncodedBlockTransactionList {
     rlp: Bytes,
 }
 
+impl EncodedBlockTransactionList {
+    /// Encodes the block with these already encoded transactions when the transaction count matches.
+    ///
+    /// Falls back to a full block encoding if the transaction count does not match.
+    ///
+    /// Returns `true` if the cached transactions were reused.
+    fn encode_block_with_transactions(
+        &self,
+        block: &SealedBlock<tempo_primitives::Block>,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let body = block.body();
+        if body.transactions.len() != self.transaction_count {
+            warn!(
+                block_number = block.number(),
+                block_hash = ?block.hash(),
+                block_transactions = body.transactions.len(),
+                encoded_transactions = self.transaction_count,
+                "cached execution block transaction list did not match block body"
+            );
+            block.encode(out);
+            return false;
+        }
+
+        let payload_length = block.header().length()
+            + self.rlp.len()
+            + body.ommers.length()
+            + body.withdrawals.as_ref().map_or(0, Encodable::length);
+
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+        block.header().encode(out);
+        out.extend_from_slice(&self.rlp);
+        body.ommers.encode(out);
+        if let Some(withdrawals) = &body.withdrawals {
+            withdrawals.encode(out);
+        }
+
+        true
+    }
+}
+
 /// Incrementally builds the RLP transaction-list bytes used inside the execution block body.
 #[derive(Debug, Default)]
 pub(crate) struct EncodedBlockTransactionsBuilder {
@@ -102,8 +147,9 @@ impl ExecutionBlockEncoder {
             let block = self.block.sealed_block();
             let mut encoded = Vec::with_capacity(self.estimated_rlp_block_size);
             let encode_start = Instant::now();
-            let reused_encoded_transactions =
-                encode_block_with_transactions(block, &self.encoded_transactions, &mut encoded);
+            let reused_encoded_transactions = self
+                .encoded_transactions
+                .encode_block_with_transactions(block, &mut encoded);
             let encode_elapsed = encode_start.elapsed();
             info!(
                 block_number = block.number(),
@@ -116,49 +162,6 @@ impl ExecutionBlockEncoder {
             encoded.into()
         })
     }
-}
-
-/// Encodes the block with the given already encoded transactions when the transaction count matches.
-///
-/// Falls back to a full block encoding if the transaction count does not match.
-///
-/// Returns `true` if the cached transactions were reused.
-fn encode_block_with_transactions(
-    block: &SealedBlock<tempo_primitives::Block>,
-    transactions: &EncodedBlockTransactionList,
-    out: &mut Vec<u8>,
-) -> bool {
-    let body = block.body();
-    if body.transactions.len() != transactions.transaction_count {
-        warn!(
-            block_number = block.number(),
-            block_hash = ?block.hash(),
-            block_transactions = body.transactions.len(),
-            encoded_transactions = transactions.transaction_count,
-            "cached execution block transaction list did not match block body"
-        );
-        block.encode(out);
-        return false;
-    }
-
-    let payload_length = block.header().length()
-        + transactions.rlp.len()
-        + body.ommers.length()
-        + body.withdrawals.as_ref().map_or(0, Encodable::length);
-
-    alloy_rlp::Header {
-        list: true,
-        payload_length,
-    }
-    .encode(out);
-    block.header().encode(out);
-    out.extend_from_slice(&transactions.rlp);
-    body.ommers.encode(out);
-    if let Some(withdrawals) = &body.withdrawals {
-        withdrawals.encode(out);
-    }
-
-    true
 }
 
 impl Drop for ExecutionBlockEncoder {
@@ -448,11 +451,9 @@ mod tests {
         });
 
         let mut encoded_from_cache = Vec::new();
-        assert!(encode_block_with_transactions(
-            &block,
-            &encoded_transactions,
-            &mut encoded_from_cache
-        ));
+        assert!(
+            encoded_transactions.encode_block_with_transactions(&block, &mut encoded_from_cache)
+        );
 
         let mut expected = Vec::new();
         block.encode(&mut expected);
@@ -478,11 +479,7 @@ mod tests {
         });
 
         let mut encoded = Vec::new();
-        assert!(!encode_block_with_transactions(
-            &block,
-            &cached_transactions,
-            &mut encoded
-        ));
+        assert!(!cached_transactions.encode_block_with_transactions(&block, &mut encoded));
 
         let mut expected = Vec::new();
         block.encode(&mut expected);
@@ -513,9 +510,8 @@ mod tests {
             let expected = full_block_encoding(&block);
 
             let mut encoded = Vec::new();
-            prop_assert!(encode_block_with_transactions(
+            prop_assert!(encoded_transactions.encode_block_with_transactions(
                 &block,
-                &encoded_transactions,
                 &mut encoded
             ));
 
@@ -533,9 +529,8 @@ mod tests {
             let expected = full_block_encoding(&block);
 
             let mut encoded = Vec::new();
-            prop_assert!(!encode_block_with_transactions(
+            prop_assert!(!encoded_transactions.encode_block_with_transactions(
                 &block,
-                &encoded_transactions,
                 &mut encoded
             ));
 
