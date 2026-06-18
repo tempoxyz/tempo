@@ -273,21 +273,29 @@ impl StorageCtx {
     }
 
     /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Revert`] and the current gas values.
+    #[cold]
+    #[inline(never)]
     pub fn revert_output(&self, output: Bytes) -> PrecompileOutput {
         PrecompileOutput::revert(self.gas_used(), output, self.reservoir())
     }
 
     /// Reverts with an ABI-encoded error.
+    #[cold]
+    #[inline(never)]
     pub fn abi_revert(&self, error: impl SolInterface) -> PrecompileOutput {
         self.revert_output(error.abi_encode().into())
     }
 
     /// Returns a [`PrecompileOutput`] with [`revm::precompile::PrecompileStatus::Halt`] and the current gas values.
+    #[cold]
+    #[inline(never)]
     pub fn halt_output(&self, halt: PrecompileHalt) -> PrecompileOutput {
         PrecompileOutput::halt(halt, self.reservoir())
     }
 
     /// Returns a [`PrecompileResult`] constructed from the given [`TempoPrecompileError`].
+    #[cold]
+    #[inline(never)]
     pub fn error_result(&self, error: impl Into<TempoPrecompileError>) -> PrecompileResult {
         error
             .into()
