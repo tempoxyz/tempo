@@ -133,6 +133,12 @@ impl StorageCredits {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn invalid_credit_mode_error() -> TempoPrecompileError {
+    StorageCreditsError::invalid_mode().into()
+}
+
 impl TryFrom<u8> for CreditMode {
     type Error = TempoPrecompileError;
 
@@ -141,7 +147,7 @@ impl TryFrom<u8> for CreditMode {
             0 => Ok(Self::Refund),
             1 => Ok(Self::Preserve),
             2 => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
+            _ => Err(invalid_credit_mode_error()),
         }
     }
 }
@@ -154,7 +160,7 @@ impl TryFrom<Mode> for CreditMode {
             Mode::Refund => Ok(Self::Refund),
             Mode::Preserve => Ok(Self::Preserve),
             Mode::Direct => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
+            _ => Err(invalid_credit_mode_error()),
         }
     }
 }
