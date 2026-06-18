@@ -6,18 +6,20 @@ pub mod dispatch;
 pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
 
 use crate::{
-    STORAGE_CREDITS_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType},
+    tip_fee_manager::TipFeeManager,
+    tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
+use std::{cell::Cell, rc::Rc};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Storage space for per-account persistent balance and transaction-local credit state.
 pub const ACCOUNT_SPACE: u8 = 0;
-/// Storage space for the transaction-local storage slot whose clear must not mint a credit.
-pub const NO_CREDIT_SLOT_SPACE: u8 = 1;
 
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,8 +30,6 @@ pub struct TransientState {
     pub mode: CreditMode,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
-    /// Whether this account has a transaction-local slot whose clear must not mint a credit.
-    pub has_non_creditable_slot: bool,
 }
 
 #[repr(u8)]
@@ -39,6 +39,58 @@ pub enum CreditMode {
     Refund,
     Preserve,
     Direct,
+}
+
+/// Concrete transaction-local protocol bookkeeping slots whose clears must not mint storage credits.
+pub type NonCreditableSlot = [(Address, U256); 3];
+
+#[inline]
+pub fn non_creditable_slots() -> Rc<Cell<NonCreditableSlot>> {
+    Rc::new(Cell::new([(Address::ZERO, U256::ZERO); 3]))
+}
+
+pub fn set_fee_bookkeeping_slots(
+    slots: &Rc<Cell<NonCreditableSlot>>,
+    fee_token: Address,
+    fee_payer: Address,
+    beneficiary: Address,
+    validator_token: Address,
+) {
+    let mut entries = slots.get();
+    entries[0] = (
+        fee_token,
+        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
+    );
+    entries[1] = (
+        TIP_FEE_MANAGER_ADDRESS,
+        TipFeeManager::new().collected_fees[beneficiary][validator_token].slot(),
+    );
+    slots.set(entries);
+}
+
+pub fn set_keychain_limit_slot(
+    slots: &Rc<Cell<NonCreditableSlot>>,
+    fee_payer: Address,
+    key_id: Address,
+    fee_token: Address,
+) {
+    let keychain = AccountKeychain::new();
+    let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+    let mut entries = slots.get();
+    entries[2] = (
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        keychain.spending_limits[limit_key][fee_token]
+            .remaining
+            .slot(),
+    );
+    slots.set(entries);
+}
+
+#[inline]
+pub fn contains_non_creditable_slot(slots: NonCreditableSlot, owner: Address, slot: U256) -> bool {
+    slots
+        .into_iter()
+        .any(|(entry_owner, entry_slot)| entry_owner == owner && entry_slot == slot)
 }
 
 /// TIP-1060 storage credits precompile, tracking each storage owner's credit balance and tx state.
@@ -52,10 +104,8 @@ pub enum CreditMode {
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 ///
-/// Transaction-local mode, direct-spend budget, pending Refund creations, and whether this account
-/// has a slot whose clear must not mint a credit live transiently at the account-space slot.
-/// Post-tx fee bookkeeping can also register one storage slot per owner whose clear must not mint
-/// storage credits during the transaction.
+/// Transaction-local mode, direct-spend budget, and pending Refund creations live transiently at
+/// the account-space slot.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct StorageCredits {}
 
@@ -128,28 +178,6 @@ impl StorageCredits {
         )
     }
 
-    /// Registers the single transaction-local storage slot whose clear must not mint a credit.
-    pub fn mark_non_creditable_slot(&mut self, account: Address, slot: U256) -> Result<()> {
-        let mut state = self.credit_state_of(account)?;
-        if state.has_non_creditable_slot {
-            let current = self
-                .handler::<U256>(NO_CREDIT_SLOT_SPACE, account)
-                .t_read()?;
-            if current == slot {
-                return Ok(());
-            }
-
-            return Err(TempoPrecompileError::Fatal(
-                "multiple TIP-1060 non-creditable slots for one account".to_string(),
-            ));
-        }
-
-        state.has_non_creditable_slot = true;
-        self.write_credit_state_of(account, state)?;
-        self.handler::<U256>(NO_CREDIT_SLOT_SPACE, account)
-            .t_write(slot)
-    }
-
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
         self.handler::<U256>(ACCOUNT_SPACE, account)
@@ -174,7 +202,6 @@ impl TryFrom<U256> for TransientState {
             budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
             pending_refunds: limbs[2],
-            has_non_creditable_slot: limbs[3] != 0,
         })
     }
 }
@@ -182,12 +209,7 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([
-            value.budget,
-            value.mode as u64,
-            value.pending_refunds,
-            u64::from(value.has_non_creditable_slot),
-        ])
+        Self::from_limbs([value.budget, value.mode as u64, value.pending_refunds, 0])
     }
 }
 
@@ -280,61 +302,65 @@ mod tests {
     }
 
     #[test]
-    fn mark_non_creditable_slot_deduplicates_and_preserves_zero_slot() -> eyre::Result<()> {
-        let account = Address::repeat_byte(0x13);
-        let mut storage = HashMapStorageProvider::new(1);
+    fn non_creditable_slots_match_fee_bookkeeping_slots() {
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let fee_payer = Address::repeat_byte(0x13);
+        let beneficiary = Address::repeat_byte(0x14);
+        let validator_token = Address::repeat_byte(0x15);
+        let slots = non_creditable_slots();
+        set_fee_bookkeeping_slots(&slots, fee_token, fee_payer, beneficiary, validator_token);
+        let slots = slots.get();
 
-        StorageCtx::enter(&mut storage, || {
-            let mut credits = StorageCredits::new();
-            credits.mark_non_creditable_slot(account, U256::ZERO)?;
-            credits.mark_non_creditable_slot(account, U256::ZERO)?;
+        let fee_balance_slot =
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        assert!(contains_non_creditable_slot(
+            slots,
+            fee_token,
+            fee_balance_slot
+        ));
+        assert!(!contains_non_creditable_slot(
+            slots,
+            fee_token,
+            fee_balance_slot + U256::ONE
+        ));
 
-            assert!(credits.credit_state_of(account)?.has_non_creditable_slot);
-            assert_eq!(
-                credits
-                    .handler::<U256>(NO_CREDIT_SLOT_SPACE, account)
-                    .t_read()?,
-                U256::ZERO
-            );
-            assert!(
-                credits
-                    .mark_non_creditable_slot(account, U256::from(1))
-                    .is_err()
-            );
-
-            Ok(())
-        })
+        let collected_fees_slot =
+            TipFeeManager::new().collected_fees[beneficiary][validator_token].slot();
+        assert!(contains_non_creditable_slot(
+            slots,
+            TIP_FEE_MANAGER_ADDRESS,
+            collected_fees_slot
+        ));
+        assert!(!contains_non_creditable_slot(
+            slots,
+            TIP_FEE_MANAGER_ADDRESS,
+            collected_fees_slot + U256::ONE
+        ));
     }
 
     #[test]
-    fn mark_non_creditable_slot_preserves_existing_transient_state() -> eyre::Result<()> {
-        let account = Address::repeat_byte(0x14);
-        let slot = U256::from(0x21);
-        let mut storage = HashMapStorageProvider::new(1);
+    fn non_creditable_slots_match_keychain_limit_slot() {
+        let fee_payer = Address::repeat_byte(0x16);
+        let key_id = Address::repeat_byte(0x17);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let slots = non_creditable_slots();
+        set_keychain_limit_slot(&slots, fee_payer, key_id, fee_token);
+        let slots = slots.get();
 
-        StorageCtx::enter(&mut storage, || {
-            let mut credits = StorageCredits::new();
-            let mut state = credits.credit_state_of(account)?;
-            state.mode = CreditMode::Direct;
-            state.budget = 7;
-            state.pending_refunds = 3;
-            credits.write_credit_state_of(account, state)?;
-
-            credits.mark_non_creditable_slot(account, slot)?;
-
-            let state = credits.credit_state_of(account)?;
-            assert_eq!(state.mode, CreditMode::Direct);
-            assert_eq!(state.budget, 7);
-            assert_eq!(state.pending_refunds, 3);
-            assert!(state.has_non_creditable_slot);
-            assert_eq!(
-                credits
-                    .handler::<U256>(NO_CREDIT_SLOT_SPACE, account)
-                    .t_read()?,
-                slot
-            );
-
-            Ok(())
-        })
+        let keychain = AccountKeychain::new();
+        let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+        let remaining_slot = keychain.spending_limits[limit_key][fee_token]
+            .remaining
+            .slot();
+        assert!(contains_non_creditable_slot(
+            slots,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            remaining_slot
+        ));
+        assert!(!contains_non_creditable_slot(
+            slots,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            remaining_slot + U256::ONE
+        ));
     }
 }

@@ -1,7 +1,10 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-    storage_credits::sstore_storage_credits,
+    storage_credits::{
+        NonCreditableSlot, contains_non_creditable_slot, non_creditable_slots,
+        sstore_storage_credits,
+    },
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -11,6 +14,7 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
+use std::{cell::Cell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
@@ -24,6 +28,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     is_static: bool,
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
+    non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -50,6 +55,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
+            non_creditable_slots: non_creditable_slots(),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -90,6 +96,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Sets the transaction-local non-creditable clear-slot context for this provider.
+    pub fn with_non_creditable_slots(mut self, slots: Rc<Cell<NonCreditableSlot>>) -> Self {
+        self.non_creditable_slots = slots;
         self
     }
 
@@ -255,6 +267,11 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
+    }
+
+    #[inline]
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        contains_non_creditable_slot(self.non_creditable_slots.get(), owner, key)
     }
 }
 

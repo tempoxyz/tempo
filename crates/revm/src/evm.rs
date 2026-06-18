@@ -10,8 +10,12 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
+use std::{cell::Cell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::StorageActions;
+use tempo_precompiles::{
+    storage::StorageActions,
+    storage_credits::{NonCreditableSlot, non_creditable_slots},
+};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -54,6 +58,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub skip_liquidity_check: bool,
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
+    /// Transaction-local protocol slots whose clears must not mint storage credits.
+    pub(crate) non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -64,8 +70,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Create a new Tempo EVM with a buffer for recording storage actions.
     pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
+        let non_creditable_slots = non_creditable_slots();
         let precompiles =
-            tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions.clone());
+            tempo_precompiles::tempo_precompiles_with_actions_and_non_creditable_slots(
+                &ctx.cfg,
+                actions.clone(),
+                non_creditable_slots.clone(),
+            );
 
         Self::new_inner(
             Evm {
@@ -76,6 +87,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
                 frame_stack: FrameStack::new(),
             },
             actions,
+            non_creditable_slots,
         )
     }
 
@@ -91,6 +103,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
+        non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
     ) -> Self {
         Self {
             inner,
@@ -101,6 +114,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             actions,
+            non_creditable_slots,
         }
     }
 
@@ -124,14 +138,32 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        let Self { inner, actions, .. } = self;
-        TempoEvm::new_inner(inner.with_inspector(inspector), actions)
+        let Self {
+            inner,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+        TempoEvm::new_inner(
+            inner.with_inspector(inspector),
+            actions,
+            non_creditable_slots,
+        )
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        let Self { inner, actions, .. } = self;
-        Self::new_inner(inner.with_precompiles(precompiles), actions)
+        let Self {
+            inner,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+        Self::new_inner(
+            inner.with_precompiles(precompiles),
+            actions,
+            non_creditable_slots,
+        )
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -144,6 +176,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
+        self.non_creditable_slots
+            .set([(Address::ZERO, U256::ZERO); 3]);
     }
 }
 

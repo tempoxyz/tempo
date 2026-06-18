@@ -8,7 +8,7 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{ACCOUNT_SPACE, CreditMode, NO_CREDIT_SLOT_SPACE, StorageCredits, TransientState};
+use super::{ACCOUNT_SPACE, CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
@@ -75,6 +75,11 @@ pub trait StorageCreditsBackend {
 
     /// TSTORE `address[key] = value`.
     fn tstore(&mut self, address: Address, key: U256, value: U256);
+
+    /// Returns true when `owner[key]` is a tx-local slot whose clear must not mint a credit.
+    fn is_non_creditable_slot(&mut self, _owner: Address, _key: U256) -> bool {
+        false
+    }
 }
 
 #[inline]
@@ -130,21 +135,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let mut was_changed = false;
     if values.is_new_zero() {
         // x→0: storage deletion doesn't mint on protocol fee/keychain bookkeeping slots.
-        if let Some(key) = key {
-            let transient_state: TransientState = backend
-                .tload(STORAGE_CREDITS_ADDRESS, account_slot)
-                .try_into()
-                .map_err(|_| B::Error::fatal_external())?;
-
-            if transient_state.has_non_creditable_slot {
-                let target_slot = backend.tload(
-                    STORAGE_CREDITS_ADDRESS,
-                    StorageCredits::slot(NO_CREDIT_SLOT_SPACE, owner),
-                );
-                if target_slot == key {
-                    return Ok(());
-                }
-            }
+        if let Some(key) = key
+            && backend.is_non_creditable_slot(owner, key)
+        {
+            return Ok(());
         }
 
         // x→0: storage deletion mints a new credit on regular slots.
@@ -207,41 +201,41 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCOUNT_SPACE, CreditMode, NO_CREDIT_SLOT_SPACE, StorageCredits};
+    use super::{ACCOUNT_SPACE, CreditMode, StorageCredits};
     use crate::{
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
-        storage::{
-            Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
-        },
+        storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
+        storage_credits::{non_creditable_slots, set_fee_bookkeeping_slots},
+        tip20::TIP20Token,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn mark_non_creditable_slot_is_not_persistent_or_direct_spendable_credit() -> eyre::Result<()> {
+    fn non_creditable_slot_is_not_persistent_or_direct_spendable_credit() -> eyre::Result<()> {
         let owner = PATH_USD_ADDRESS;
-        let no_credit_slot = U256::from(0x22);
+        let fee_payer = Address::repeat_byte(0x22);
+        let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
         let fresh_slot = U256::from(0x33);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.set_spec(TempoHardfork::T7);
 
-        StorageCtx::enter(&mut storage, || {
-            StorageCredits::new().mark_non_creditable_slot(owner, no_credit_slot)
-        })?;
+        let non_creditable_slots = non_creditable_slots();
+        set_fee_bookkeeping_slots(
+            &non_creditable_slots,
+            owner,
+            fee_payer,
+            Address::repeat_byte(0x44),
+            Address::repeat_byte(0x55),
+        );
+        storage.set_non_creditable_slots(non_creditable_slots.get());
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
 
         StorageCtx::enter(&mut storage, || {
             let mut credits = StorageCredits::new();
             assert_eq!(credits.balance_of(owner)?, 0);
-            assert!(credits.credit_state_of(owner)?.has_non_creditable_slot);
-            assert_eq!(
-                credits
-                    .handler::<U256>(NO_CREDIT_SLOT_SPACE, owner)
-                    .t_read()?,
-                no_credit_slot
-            );
 
             let mut state = credits.credit_state_of(owner)?;
             state.mode = CreditMode::Direct;
@@ -262,9 +256,10 @@ mod tests {
     }
 
     #[test]
-    fn mark_non_creditable_slot_recreation_is_accounted_as_normal_creation() -> eyre::Result<()> {
+    fn non_creditable_slot_recreation_is_accounted_as_normal_creation() -> eyre::Result<()> {
         let owner = PATH_USD_ADDRESS;
-        let no_credit_slot = U256::from(0x55);
+        let fee_payer = Address::repeat_byte(0x55);
+        let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.sstore(
@@ -274,9 +269,15 @@ mod tests {
         )?;
         storage.set_spec(TempoHardfork::T7);
 
-        StorageCtx::enter(&mut storage, || {
-            StorageCredits::new().mark_non_creditable_slot(owner, no_credit_slot)
-        })?;
+        let non_creditable_slots = non_creditable_slots();
+        set_fee_bookkeeping_slots(
+            &non_creditable_slots,
+            owner,
+            fee_payer,
+            Address::repeat_byte(0x66),
+            Address::repeat_byte(0x77),
+        );
+        storage.set_non_creditable_slots(non_creditable_slots.get());
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
 
@@ -285,7 +286,6 @@ mod tests {
             let state = credits.credit_state_of(owner)?;
             assert_eq!(credits.balance_of(owner)?, 1);
             assert_eq!(state.pending_refunds, 1);
-            assert!(state.has_non_creditable_slot);
             Ok::<_, TempoPrecompileError>(())
         })?;
 

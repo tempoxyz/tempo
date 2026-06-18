@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ECRECOVER_GAS,
+    ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -52,8 +52,8 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
-    storage_credits::StorageCredits,
-    tip_fee_manager::{TIP_FEE_MANAGER_ADDRESS, TipFeeManager},
+    storage_credits::{set_fee_bookkeeping_slots, set_keychain_limit_slot},
+    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -1331,7 +1331,7 @@ where
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
-                keychain_fee_key = Some(loaded_key.key_id);
+                keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1380,7 +1380,7 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let watch_existing_keychain_key = if cfg.spec.is_t7() && fee_payer == tx.caller {
+            let non_creditable_keychain_key = if cfg.spec.is_t7() && fee_payer == tx.caller {
                 keychain_fee_key
             } else {
                 None
@@ -1401,66 +1401,62 @@ where
                         skip_liquidity_check,
                     )?;
 
-                    if cfg.spec.is_t7() {
-                        let mut credits = StorageCredits::new();
-                        credits.mark_non_creditable_slot(
-                            fee_token,
-                            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer]
-                                .slot(),
-                        )?;
-
-                        if let Some(key_id) = watch_existing_keychain_key {
-                            let keychain = AccountKeychain::new();
-                            let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
-                            credits.mark_non_creditable_slot(
-                                ACCOUNT_KEYCHAIN_ADDRESS,
-                                keychain.spending_limits[limit_key][fee_token]
-                                    .remaining
-                                    .slot(),
-                            )?;
-                        }
-
-                        credits.mark_non_creditable_slot(
-                            TIP_FEE_MANAGER_ADDRESS,
-                            fee_manager.collected_fees[block.beneficiary()][validator_token].slot(),
-                        )?;
-                    }
-
-                    Ok::<_, TempoPrecompileError>(fee_token)
+                    Ok::<_, TempoPrecompileError>(validator_token)
                 },
             );
 
-            if let Err(err) = result {
-                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                journal.checkpoint_revert(checkpoint);
+            let validator_token = match result {
+                Ok(validator_token) => validator_token,
+                Err(err) => {
+                    // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+                    journal.checkpoint_revert(checkpoint);
 
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
+                    // Map fee collection errors to transaction validation errors since they
+                    // indicate the transaction cannot be included (e.g., insufficient liquidity
+                    // in FeeAMM pool for fee swaps)
+                    return Err(match err {
+                        TempoPrecompileError::TIPFeeAMMError(
+                            TIPFeeAMMError::InsufficientLiquidity(_),
+                        ) => FeePaymentError::InsufficientAmmLiquidity {
+                            fee: gas_balance_spending,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
+                        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                            InsufficientBalance { available, .. },
+                        )) => FeePaymentError::InsufficientFeeTokenBalance {
+                            fee: gas_balance_spending,
+                            balance: available,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
+                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                            TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                        }
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                        TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
+                        _ => FeePaymentError::Other(err.to_string()).into(),
+                    });
+                }
+            };
+
+            if cfg.spec.is_t7() {
+                set_fee_bookkeeping_slots(
+                    &evm.non_creditable_slots,
+                    fee_token,
+                    fee_payer,
+                    block.beneficiary(),
+                    validator_token,
+                );
+                if let Some(key_id) = non_creditable_keychain_key {
+                    set_keychain_limit_slot(
+                        &evm.non_creditable_slots,
+                        fee_payer,
+                        key_id,
+                        fee_token,
+                    );
+                }
             }
 
             journal.checkpoint_commit();
@@ -1654,21 +1650,13 @@ where
                                 err => FeePaymentError::Other(err.to_string()).into(),
                             })?;
 
-                        if cfg.spec.is_t7() && fee_payer == tx.caller {
-                            let mut credits = StorageCredits::new();
-                            let limit_key =
-                                AccountKeychain::spending_limit_key(fee_payer, key_auth.key_id);
-                            credits
-                                .mark_non_creditable_slot(
-                                    ACCOUNT_KEYCHAIN_ADDRESS,
-                                    keychain.spending_limits[limit_key][fee_token]
-                                        .remaining
-                                        .slot(),
-                                )
-                                .map_err(|err| match err {
-                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                    err => FeePaymentError::Other(err.to_string()).into(),
-                                })?;
+                        if cfg.spec.is_t7() && fee_payer == tx.caller && key_auth.limits.is_some() {
+                            set_keychain_limit_slot(
+                                &evm.non_creditable_slots,
+                                fee_payer,
+                                key_auth.key_id,
+                                fee_token,
+                            );
                         }
 
                         Ok(())
@@ -1777,6 +1765,8 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.non_creditable_slots
+            .set([(Address::ZERO, U256::ZERO); 3]);
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
