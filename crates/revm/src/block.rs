@@ -20,6 +20,7 @@ pub struct TempoBlockEnv {
 
 impl TempoBlockEnv {
     /// Returns the current timestamp in milliseconds.
+    #[inline(always)]
     pub fn timestamp_millis(&self) -> U256 {
         self.inner
             .timestamp
@@ -29,48 +30,49 @@ impl TempoBlockEnv {
 }
 
 impl Block for TempoBlockEnv {
-    #[inline]
+    #[inline(always)]
     fn number(&self) -> U256 {
         self.inner.number()
     }
 
-    #[inline]
+    #[inline(always)]
     fn beneficiary(&self) -> Address {
         self.inner.beneficiary()
     }
 
-    #[inline]
+    #[inline(always)]
     fn timestamp(&self) -> U256 {
         self.inner.timestamp()
     }
 
-    #[inline]
+    #[inline(always)]
     fn gas_limit(&self) -> u64 {
         self.inner.gas_limit()
     }
 
-    #[inline]
+    #[inline(always)]
     fn basefee(&self) -> u64 {
         self.inner.basefee()
     }
 
-    #[inline]
+    #[inline(always)]
     fn difficulty(&self) -> U256 {
         self.inner.difficulty()
     }
 
-    #[inline]
+    #[inline(always)]
     fn prevrandao(&self) -> Option<B256> {
         self.inner.prevrandao()
     }
 
-    #[inline]
+    #[inline(always)]
     fn blob_excess_gas_and_price(&self) -> Option<BlobExcessGasAndPrice> {
         self.inner.blob_excess_gas_and_price()
     }
 }
 
 impl BlockEnvironment for TempoBlockEnv {
+    #[inline(always)]
     fn inner_mut(&mut self) -> &mut BlockEnv {
         &mut self.inner
     }
