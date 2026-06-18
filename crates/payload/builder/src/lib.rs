@@ -1503,9 +1503,6 @@ impl ExecutionBlockEncoder {
             let encode_start = Instant::now();
             let reused_encoded_transactions =
                 encode_block_with_transactions(block, &self.encoded_transactions, &mut encoded);
-            if !reused_encoded_transactions {
-                block.encode(&mut encoded);
-            }
             let encode_elapsed = encode_start.elapsed();
             info!(
                 block_number = block.number(),
@@ -1520,10 +1517,11 @@ impl ExecutionBlockEncoder {
     }
 }
 
-/// Encodes the block with the given already encoded transactions, if the transaction count matches.
+/// Encodes the block with the given already encoded transactions when the transaction count matches.
 ///
-/// - Returns `true` if the encoding was successful, and we could reuse the cached transactions.
-/// - Returns `false` if the transaction count does not match, and the encoding should be done from scratch.
+/// Falls back to a full block encoding if the transaction count does not match.
+///
+/// Returns `true` if the cached transactions were reused.
 fn encode_block_with_transactions(
     block: &reth_primitives_traits::SealedBlock<tempo_primitives::Block>,
     transactions: &EncodedBlockTransactionList,
@@ -1538,6 +1536,7 @@ fn encode_block_with_transactions(
             encoded_transactions = transactions.transaction_count,
             "cached execution block transaction list did not match block body"
         );
+        block.encode(out);
         return false;
     }
 
@@ -1758,6 +1757,36 @@ mod tests {
         block.encode(&mut expected);
 
         assert_eq!(encoded_from_cache, expected);
+    }
+
+    #[test]
+    fn cached_transaction_list_block_encoding_falls_back_on_count_mismatch() {
+        let cached_transactions =
+            encoded_block_transactions(&[legacy_tx(Bytes::from_static(b"cached"))]);
+        let block_transactions = vec![
+            legacy_tx(Bytes::from_static(b"legacy")),
+            eip1559_tx(Bytes::from_static(b"typed")),
+        ];
+        let block = SealedBlock::seal_slow(Block {
+            header: TempoHeader::default(),
+            body: BlockBody {
+                transactions: block_transactions,
+                ommers: vec![TempoHeader::default()],
+                withdrawals: None,
+            },
+        });
+
+        let mut encoded = Vec::new();
+        assert!(!encode_block_with_transactions(
+            &block,
+            &cached_transactions,
+            &mut encoded
+        ));
+
+        let mut expected = Vec::new();
+        block.encode(&mut expected);
+
+        assert_eq!(encoded, expected);
     }
 
     #[test]
