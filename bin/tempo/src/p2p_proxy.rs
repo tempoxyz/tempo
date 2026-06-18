@@ -54,7 +54,7 @@ const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 #[command(
     about = "Run a proxy P2P node that serves cached block data fetched from an RPC endpoint"
 )]
-pub(crate) struct P2pProxyArgs {
+pub struct P2pProxyArgs {
     /// RPC endpoint to fetch blocks from (HTTP or WebSocket).
     #[arg(long, required = true)]
     rpc_url: String,

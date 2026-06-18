@@ -9,9 +9,18 @@ pub mod gas {
     use alloy_eips::eip1559::BaseFeeParams;
 
     const COLD_SLOAD: u64 = 2100;
-    const SSTORE_SET: u64 = 20000;
     const WARM_SLOAD: u64 = 100;
     const WARM_SSTORE_RESET: u64 = 2900;
+    const T1_SSTORE_SET: u64 = 20_000;
+
+    /// TIP-1000 storage creation component for a zero-to-nonzero SSTORE.
+    pub const SSTORE_CREATE_COST: u64 = 250_000;
+
+    /// TIP-1060 SSTORE residual: EVM `0→x` base cost paid even when a credit applies.
+    pub const SSTORE_SET_COST: u64 = 5_000;
+
+    /// TIP-1060 value credited for clearing one occupied storage slot.
+    pub const STORAGE_CREDIT_VALUE: u64 = SSTORE_CREATE_COST - SSTORE_SET_COST;
 
     /// T0 base fee: 10 billion attodollars (1×10^10).
     ///
@@ -80,7 +89,7 @@ pub mod gas {
         TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
     /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero).
-    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
+    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + T1_SSTORE_SET;
     /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
     pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
