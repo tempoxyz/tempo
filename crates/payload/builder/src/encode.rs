@@ -9,10 +9,10 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::Bytes;
 use alloy_rlp::Encodable;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock};
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 use tempo_payload_types::EncodedBlock;
 use tempo_primitives::TempoTxEnvelope;
-use tracing::{info, warn};
+use tracing::warn;
 
 /// RLP transaction-list bytes for the execution block.
 ///
@@ -150,19 +150,8 @@ impl ExecutionBlockEncoder {
         self.encoded_block.get_or_encode_with(|| {
             let block = self.block.sealed_block();
             let mut encoded = Vec::with_capacity(self.estimated_rlp_block_size);
-            let encode_start = Instant::now();
-            let reused_encoded_transactions = self
-                .encoded_transactions
+            self.encoded_transactions
                 .encode_block_with_transactions(block, &mut encoded);
-            let encode_elapsed = encode_start.elapsed();
-            info!(
-                block_number = block.number(),
-                block_hash = ?block.hash(),
-                encoded_size_bytes = encoded.len(),
-                reused_encoded_transactions,
-                ?encode_elapsed,
-                "encoded execution block rlp"
-            );
             encoded.into()
         })
     }
