@@ -8,23 +8,23 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{CreditMode, TIP1060StorageCredits, TransientState};
+use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
-use alloy::primitives::{Address, IntoLogData, LogData, U256};
+use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
     interpreter::{InstructionResult, SStoreResult, StateLoad, gas::GasTracker},
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
-use tempo_contracts::precompiles::{STORAGE_CREDITS_ADDRESS, TIP1060StorageCreditsEvent};
+use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
 
 /// Error mapping required by storage credit accounting.
-pub trait StorageCreditsError: Sized {
+pub trait StorageCreditsErr: Sized {
     fn out_of_gas() -> Self;
     fn fatal_external() -> Self;
 }
 
-impl StorageCreditsError for InstructionResult {
+impl StorageCreditsErr for InstructionResult {
     fn out_of_gas() -> Self {
         Self::OutOfGas
     }
@@ -36,7 +36,7 @@ impl StorageCreditsError for InstructionResult {
 
 /// Minimal journal/gas operations required by storage credit accounting.
 pub trait StorageCreditsBackend {
-    type Error: StorageCreditsError;
+    type Error: StorageCreditsErr;
 
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
@@ -44,7 +44,7 @@ pub trait StorageCreditsBackend {
     /// Gas tracker for the active execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
-    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsError::out_of_gas) if insufficient.
+    /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
     #[inline]
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
         self.gas_tracker()
@@ -75,19 +75,6 @@ pub trait StorageCreditsBackend {
 
     /// TSTORE `address[key] = value`.
     fn tstore(&mut self, address: Address, key: U256, value: U256);
-
-    /// Emits `event` from `address`.
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error>;
-}
-
-#[inline]
-fn emit_mode_updated<B: StorageCreditsBackend>(
-    backend: &mut B,
-    account: Address,
-    new_mode: CreditMode,
-) -> Result<(), B::Error> {
-    let event = TIP1060StorageCreditsEvent::mode_updated(account, new_mode.into());
-    backend.emit_event(STORAGE_CREDITS_ADDRESS, event.into_log_data())
 }
 
 #[inline]
@@ -126,7 +113,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    let account_slot = TIP1060StorageCredits::slot(owner);
+    let account_slot = StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =
@@ -154,33 +141,18 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
         match transient_state.mode {
             CreditMode::Direct if credit > 0 && transient_state.budget > 0 => {
-                // Consume one credit to cover the 245k creditable portion.
+                // Use one to cover the 245k creditable portion.
                 credit -= 1;
                 was_changed = true;
 
                 // An unlimited budget is never decremented.
                 if transient_state.budget != u64::MAX {
                     transient_state.budget -= 1;
-                    if transient_state.budget == 0 {
-                        // When budget is exhausted, switch to `Preserve` mode.
-                        transient_state.mode = CreditMode::Preserve;
-                        emit_mode_updated(backend, owner, CreditMode::Preserve)?;
-                    }
                     store_credit_state(backend, account_slot, transient_state)?;
                 }
             }
-            CreditMode::Direct => {
-                // If no credit available, charge the 245k creditable portion as gas.
-                if transient_state.budget == 0 {
-                    // When budget is exhausted, switch to `Preserve` mode.
-                    transient_state.mode = CreditMode::Preserve;
-                    store_credit_state(backend, account_slot, transient_state)?;
-                    emit_mode_updated(backend, owner, CreditMode::Preserve)?;
-                }
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
-            }
-            CreditMode::Preserve => {
-                // Always charge the 245k creditable portion as gas without consuming credits.
+            CreditMode::Direct | CreditMode::Preserve => {
+                // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
                 backend.charge_gas(STORAGE_CREDIT_VALUE)?;
             }
             CreditMode::Refund => {

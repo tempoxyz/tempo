@@ -1,7 +1,7 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-    tip1060_storage_credits::sstore_storage_credits,
+    storage_credits::sstore_storage_credits,
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -112,7 +112,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
+impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvider<'_> {
     type Error = TempoPrecompileError;
 
     #[inline]
@@ -164,11 +164,6 @@ impl crate::tip1060_storage_credits::StorageCreditsBackend for EvmPrecompileStor
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
-    }
-
-    #[inline]
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
-        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 

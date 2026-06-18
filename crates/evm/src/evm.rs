@@ -311,6 +311,7 @@ mod tests {
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         TIP403_REGISTRY_ADDRESS,
         storage::{StorageAction, StorageCtx, StorageKey},
+        storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip_fee_manager::slots as fee_manager_slots,
         tip20::{
@@ -318,7 +319,6 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
-        tip1060_storage_credits::TIP1060StorageCredits,
     };
     use tempo_primitives::transaction::calc_gas_balance_spending;
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
@@ -678,7 +678,7 @@ mod tests {
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
             let collected_fees_slot = PATH_USD_ADDRESS
                 .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
-            let path_usd_storage_credit_slot = TIP1060StorageCredits::slot(PATH_USD_ADDRESS);
+            let path_usd_storage_credit_slot = StorageCredits::slot(PATH_USD_ADDRESS);
             let currency_word = short_string_word(USD_CURRENCY.as_bytes());
 
             let sender_after_fee = starting_balance - max_fee_spending;
