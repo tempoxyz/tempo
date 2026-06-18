@@ -277,6 +277,7 @@ where
         self.inspect = enabled;
     }
 
+    #[inline(always)]
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
         (
             &self.inner.inner.ctx.journaled_state.database,
@@ -285,6 +286,7 @@ where
         )
     }
 
+    #[inline(always)]
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         (
             &mut self.inner.inner.ctx.journaled_state.database,
