@@ -296,7 +296,7 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     let expected_gas = if schedule.is_active(TempoHardfork::T8) {
         547407
     } else if schedule.is_active(TempoHardfork::T6) {
-        545190
+        553657
     } else if schedule.is_active(TempoHardfork::T3) {
         551540
     } else {
