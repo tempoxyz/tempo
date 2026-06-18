@@ -664,11 +664,6 @@ where
                 continue;
             }
 
-            check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
             let tx_rlp_length = pool_tx.transaction.encoded_length();
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
@@ -683,6 +678,50 @@ where
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
                 continue;
+            }
+
+            if let Some(build_budget) = payload_build_budget {
+                let elapsed = start.elapsed();
+                let candidate_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used.saturating_add(max_regular_gas_used),
+                    pool_transactions_included as usize + 1,
+                );
+                let budget_decision = payload_budget_decision(
+                    elapsed,
+                    normal_transaction_fill_idle_elapsed,
+                    build_time_multiplier,
+                    marshal_persist,
+                    block_size_used.saturating_add(tx_rlp_length),
+                    validation_latency,
+                    candidate_workload,
+                );
+                if budget_decision.total_reserved >= build_budget {
+                    debug!(
+                        target: "payload_builder",
+                        ?elapsed,
+                        ?normal_transaction_fill_idle_elapsed,
+                        ?build_budget,
+                        predicted_builder_work = ?budget_decision.predicted_builder_work,
+                        predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        total_reserved = ?budget_decision.total_reserved,
+                        marshal_persist = ?budget_decision.marshal_persist,
+                        ?candidate_workload,
+                        gas_used = cumulative_gas_used,
+                        candidate_gas = max_regular_gas_used,
+                        transactions = pool_transactions_included,
+                        block_size_used,
+                        candidate_rlp_length = tx_rlp_length,
+                        build_time_multiplier = build_time_multiplier as f64
+                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        "stopping pool transaction execution before next transaction would exhaust payload build budget"
+                    );
+                    break BlockBuildStopReason::BuildBudget;
+                }
+            }
+
+            check_cancel!();
+            if is_payment {
+                payment_transactions += 1;
             }
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
