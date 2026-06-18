@@ -630,17 +630,12 @@ where
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
+                mark_exceeds_non_shared_gas_limit(
+                    &mut best_txs,
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
+                    non_shared_gas_limit - cumulative_gas_used,
+                    &self.metrics,
                 );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
             }
 
@@ -653,14 +648,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                mark_exceeds_general_gas_limit(&mut best_txs, &pool_tx, &self.metrics);
                 continue;
             }
 
@@ -1295,6 +1283,40 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+type PayloadBestTransactions =
+    dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>;
+
+#[cold]
+fn mark_exceeds_non_shared_gas_limit(
+    best_txs: &mut PayloadBestTransactions,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    remaining_gas: u64,
+    metrics: &TempoPayloadBuilderMetrics,
+) {
+    // Mark this transaction as invalid since it doesn't fit. The iterator handles
+    // lane switching internally when appropriate.
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::ExceedsGasLimit(pool_tx.gas_limit(), remaining_gas),
+    );
+    metrics.inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+}
+
+#[cold]
+fn mark_exceeds_general_gas_limit(
+    best_txs: &mut PayloadBestTransactions,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    metrics: &TempoPayloadBuilderMetrics,
+) {
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::Other(Box::new(
+            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+        )),
+    );
+    metrics.inc_pool_tx_skipped("exceeds_general_gas_limit");
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
