@@ -64,7 +64,7 @@ impl BlockAccessListError {
 ///
 /// The shared encoded-byte cache lets payload building, proposal broadcast, and commonware
 /// `EncodeSize` reuse the same execution-block RLP bytes once any path has encoded them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
     /// The execution-layer block, either sealed-only or fully recovered when built locally.
     execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
@@ -228,23 +228,6 @@ impl Display for Block {
         ))
     }
 }
-
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        self.execution_block.sealed_block() == other.execution_block.sealed_block() && {
-            #[cfg(feature = "bal")]
-            {
-                self.block_access_list == other.block_access_list
-            }
-            #[cfg(not(feature = "bal"))]
-            {
-                true
-            }
-        }
-    }
-}
-
-impl Eq for Block {}
 
 impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;

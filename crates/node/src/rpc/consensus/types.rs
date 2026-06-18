@@ -11,7 +11,7 @@ use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
     pub epoch: u64,
@@ -23,16 +23,6 @@ pub struct CertifiedBlock {
 
     /// The Tempo block.
     pub block: SealedOrRecoveredBlock<Block>,
-}
-
-impl PartialEq for CertifiedBlock {
-    fn eq(&self, other: &Self) -> bool {
-        self.epoch == other.epoch
-            && self.view == other.view
-            && self.digest == other.digest
-            && self.certificate == other.certificate
-            && self.block.sealed_block() == other.block.sealed_block()
-    }
 }
 
 impl Display for CertifiedBlock {
