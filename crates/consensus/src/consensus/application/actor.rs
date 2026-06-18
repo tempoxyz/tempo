@@ -76,8 +76,16 @@ struct BuildProposalArgs {
 }
 
 struct ProposalReturn {
-    time: SystemTime,
-    block_size_bytes: usize,
+    /// Earliest time the built proposal may be returned to consensus.
+    ///
+    /// After the proposal is persisted locally, the actor sleeps until this time
+    /// so early builds still respect the proposal pacing budget.
+    return_at: SystemTime,
+    /// Approximate encoded proposal size used for marshal-persist pacing.
+    ///
+    /// This is a reasonably close estimate derived during payload building, not the exact final
+    /// encoded block size.
+    block_size_estimate_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -324,7 +332,7 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        let proposal_digest = {
+        let proposal_block = {
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
                 //
@@ -338,9 +346,6 @@ impl Inner<Init> {
                 // >archive index and be silently dropped.
                 //
                 // >Skip this view and let the voter nullify it via timeout.
-                //
-                // TODO: we are diverging from commonware in that we return the digest
-                // here. Is that ok or can that cause problems?
                 //
                 // `marshal.get_verified` can take a long time if marshal is busy
                 // persisting the parent block, so we race it with payload building to
@@ -385,22 +390,21 @@ impl Inner<Init> {
                     proposal_result?
                 };
 
-                let digest = block.digest();
                 if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
-                    if !self.marshal.proposed(round, block).await {
+                    if !self.marshal.proposed(round, block.clone()).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
                     observe_marshal_persist(
-                        proposal_return.block_size_bytes,
+                        proposal_return.block_size_estimate_bytes,
                         persist_start.elapsed(),
                     );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.time).await;
+                    context.sleep_until(proposal_return.return_at).await;
                 }
 
-                eyre::Ok(digest)
+                eyre::Ok(block)
             });
 
             tokio::select! {
@@ -417,6 +421,7 @@ impl Inner<Init> {
             }
         };
 
+        let proposal_digest = proposal_block.digest();
         info!(
             proposal.digest = %proposal_digest,
             "constructed proposal",
@@ -698,16 +703,21 @@ impl Inner<Init> {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
-        let (block, block_access_list) = payload.into_execution_payload();
-        let execution_block_rlp_size_bytes = block.rlp_length();
-        let proposal = Block::from_execution_block_with_encoded_size(
+        let execution_block_rlp_size_estimate_bytes = payload.execution_block_size_estimate();
+        let (block, block_access_list, execution_block_encoded) =
+            payload.into_consensus_execution_payload();
+        let block_access_list_size_bytes = block_access_list
+            .as_ref()
+            .map_or(0, |block_access_list| block_access_list.encode_size());
+        let proposal = Block::from_execution_block_with_encoded_cache(
             block,
             block_access_list,
-            execution_block_rlp_size_bytes,
+            execution_block_encoded,
         )
         .wrap_err("payload builder produced an invalid block access list")?;
-        let consensus_block_size_bytes = proposal.encode_size();
-        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
+        let block_size_estimate_bytes =
+            execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
+        let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -724,17 +734,17 @@ impl Inner<Init> {
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
-            execution_block_rlp_size_bytes,
-            consensus_block_size_bytes,
+            execution_block_rlp_size_estimate_bytes,
+            block_size_estimate_bytes,
             "sleeping before returning proposal"
         );
-        let proposal_return_time = context.current() + return_delay;
+        let return_at = context.current() + return_delay;
 
         Ok((
             proposal,
             Some(ProposalReturn {
-                time: proposal_return_time,
-                block_size_bytes: consensus_block_size_bytes,
+                return_at,
+                block_size_estimate_bytes,
             }),
         ))
     }
@@ -996,10 +1006,9 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
-        block: Arc::new(block),
-        block_access_list,
+        block: block.execution_block().clone(),
+        block_access_list: block.block_access_list().cloned(),
         validator_set,
     };
     let validation_start = Instant::now();
