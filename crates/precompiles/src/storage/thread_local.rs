@@ -268,6 +268,8 @@ impl StorageCtx {
     }
 
     /// Returns an ABI-encoded success output.
+    #[cold]
+    #[inline(never)]
     pub fn abi_success(&self, output: impl SolInterface) -> PrecompileOutput {
         self.success_output(output.abi_encode().into())
     }
