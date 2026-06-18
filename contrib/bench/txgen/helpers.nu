@@ -265,6 +265,7 @@ def txgen-run-preset-pipeline [
     --victoriametrics-url: string = ""
     --clickhouse-url: string = ""
     --bloat-mib: int = 0
+    --tip20-token-count: int = 0
     --bloat-token-count: int = 4
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
@@ -274,7 +275,8 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
-    txgen-configure-tip20-token-env $bloat_token_count
+    let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
+    txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
