@@ -635,6 +635,8 @@ impl TIP20Token {
         self.emit_event(TIP20Event::burn_blocked(owner, amount))
     }
 
+    #[cold]
+    #[inline(never)]
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         // Validate issuer role and (+T3) ensure token is not paused
         if self.storage.spec().is_t3() {
