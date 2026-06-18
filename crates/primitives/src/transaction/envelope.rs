@@ -280,6 +280,18 @@ impl TempoTxEnvelope {
         self.as_aa()
             .is_some_and(|tx| tx.tx().is_expiring_nonce_tx())
     }
+
+    #[cold]
+    #[inline(never)]
+    fn non_aa_tx_hash(&self) -> &B256 {
+        match self {
+            Self::Legacy(tx) => tx.hash(),
+            Self::Eip2930(tx) => tx.hash(),
+            Self::Eip1559(tx) => tx.hash(),
+            Self::Eip7702(tx) => tx.hash(),
+            Self::AA(tx) => tx.hash(),
+        }
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
@@ -329,11 +341,8 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
 impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
     fn tx_hash(&self) -> &B256 {
         match self {
-            Self::Legacy(tx) => tx.hash(),
-            Self::Eip2930(tx) => tx.hash(),
-            Self::Eip1559(tx) => tx.hash(),
-            Self::Eip7702(tx) => tx.hash(),
             Self::AA(tx) => tx.hash(),
+            _ => self.non_aa_tx_hash(),
         }
     }
 }
