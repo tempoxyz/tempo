@@ -160,7 +160,7 @@ where
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
         for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
+            if account.storage.is_empty() || !is_tip20_prefix(address) {
                 continue;
             }
 
@@ -168,7 +168,9 @@ where
                 if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
                         .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                } else if !self.decreased_balances.is_empty()
+                    && let Some(balance) = self.decreased_balances.get_mut(&(address, slot))
+                {
                     *balance = storage_slot.present_value;
                 }
             }
