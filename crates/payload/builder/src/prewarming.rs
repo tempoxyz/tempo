@@ -113,7 +113,7 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_offset);
+                    Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
