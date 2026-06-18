@@ -20,7 +20,6 @@ use commonware_utils::{
     vec::NonEmptyVec,
 };
 use eyre::Report;
-use reth_node_core::primitives::SealedBlock;
 use reth_provider::{BlockReader as _, BlockSource};
 use tempo_node::TempoFullNode;
 use tokio::select;
@@ -206,11 +205,12 @@ where
     }
 }
 
+/// Resolves an encoded block from the local execution layer.
 #[instrument(skip(execution_node))]
 fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result<Bytes, bool> {
     let Ok(Some(block)) = execution_node
         .provider
-        .find_block_by_hash(block_digest.0, BlockSource::Any)
+        .find_sealed_or_recovered_block(block_digest.0, BlockSource::Any)
         .map_err(Report::new)
         .inspect_err(
             |error| error!(%error, "unable to communicate with execution layer to lookup block"),
@@ -220,8 +220,7 @@ fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result
     };
     // Follow-mode recovery reads from the EL database, which persists only the block.
     // BAL is p2p side data, so it is unavailable here.
-    let consensus_block =
-        Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None);
+    let consensus_block = Block::from_execution_block_unchecked(block, None);
     Ok(consensus_block.encode())
 }
 
