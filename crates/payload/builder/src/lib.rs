@@ -1152,10 +1152,7 @@ where
             encoded_block_transactions,
         );
         let execution_block_encoded = execution_block_encoder.encoded_block();
-        self.executor
-            .spawn_blocking_named("builder-block-rlp", move || {
-                execution_block_encoder.encode_block();
-            });
+        self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
