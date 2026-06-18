@@ -94,6 +94,12 @@ pub struct TempoTxEnv {
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
 }
 
+#[cold]
+#[inline(never)]
+fn non_aa_first_call(tx: &TempoTxEnv) -> Option<(&TxKind, &[u8])> {
+    Some((&tx.inner.kind, tx.inner.input().as_ref()))
+}
+
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
@@ -136,7 +142,7 @@ impl TempoTxEnv {
                 .first()
                 .map(|call| (&call.to, call.input.as_ref()))
         } else {
-            Some((&self.inner.kind, &self.inner.data))
+            non_aa_first_call(self)
         }
     }
 
