@@ -914,6 +914,10 @@ where
             finish_provider.hashed_post_state(&db.bundle_state)
         };
 
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
+
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
@@ -963,10 +967,6 @@ where
 
             (state_root, Arc::new(trie_updates))
         };
-
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
