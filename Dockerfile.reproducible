@@ -15,7 +15,7 @@
 #   ./out/tempo                              the reproducible binary
 #
 # Reproducibility-critical decisions:
-#   * Pinned base image digest (rust 1.95.0 on Debian Bookworm).
+#   * Pinned base image digest (rust 1.96.0 on Debian Bookworm).
 #   * `cargo --locked` so registry deps cannot drift.
 #   * RUSTFLAGS strip every source of nondeterminism we know about:
 #     SOURCE_DATE_EPOCH for build timestamps, --remap-path-prefix for the
@@ -28,8 +28,8 @@
 #   * `[profile.reproducible]` (defined in Cargo.toml) disables incremental,
 #     emits no debuginfo, and inherits `release`'s fat LTO + 1 codegen-unit.
 
-ARG RUST_TOOLCHAIN=1.95.0
-FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:d0a4aa3ca2e1088ac0c81690914a0d810f2eee188197034edf366ed010a2b382 AS builder
+ARG RUST_TOOLCHAIN=1.96.0
+FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS builder
 
 ARG SOURCE_DATE_EPOCH
 ARG VERSION
