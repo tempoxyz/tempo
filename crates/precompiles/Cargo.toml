@@ -45,7 +45,7 @@ rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
 

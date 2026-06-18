@@ -2079,7 +2079,6 @@ def "main follower" [
     --node-args: string = ""    # Additional node arguments (space-separated)
     --skip-build                # Skip building (assumes binary is already built)
     --reset                     # Wipe follower data before starting
-    --certify                   # Enable experimental consensus certification in follow mode
 ] {
     # Validate localnet exists
     if not ($LOCALNET_DIR | path exists) {
@@ -2158,7 +2157,6 @@ def "main follower" [
             "--consensus.use-local-defaults"
             "--consensus.bypass-ip-check"
         ]
-        | append (if $certify { ["--follow.experimental.certify"] } else { [] })
         | append (log-filter-args $loud)
         | append $extra_args
 
@@ -3467,7 +3465,6 @@ def main [] {
     print "Follower flags:"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print "  --reset                  Wipe follower data before starting"
-    print "  --certify                Enable experimental consensus certification in follow mode"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
