@@ -4,6 +4,7 @@ use std::fmt::Display;
 
 use alloy_primitives::B256;
 use futures::Future;
+use reth_primitives_traits::SealedOrRecoveredBlock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
 use tempo_primitives::Block;
@@ -21,7 +22,7 @@ pub struct CertifiedBlock {
     pub certificate: String,
 
     /// The Tempo block.
-    pub block: Block,
+    pub block: SealedOrRecoveredBlock<Block>,
 }
 
 impl Display for CertifiedBlock {
