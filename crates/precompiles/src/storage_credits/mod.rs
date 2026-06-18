@@ -18,6 +18,15 @@ use std::cell::OnceCell;
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub enum CreditMode {
+    #[default]
+    Refund,
+    Preserve,
+    Direct,
+}
+
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
@@ -29,13 +38,25 @@ pub struct TransientState {
     pub pending_refunds: u64,
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub enum CreditMode {
-    #[default]
-    Refund,
-    Preserve,
-    Direct,
+impl TryFrom<U256> for TransientState {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn try_from(value: U256) -> Result<Self> {
+        let limbs = value.as_limbs();
+        Ok(Self {
+            budget: limbs[0],
+            mode: (limbs[1] as u8).try_into()?,
+            pending_refunds: limbs[2],
+        })
+    }
+}
+
+impl From<TransientState> for U256 {
+    #[inline]
+    fn from(value: TransientState) -> Self {
+        Self::from_limbs([value.budget, value.mode as u64, value.pending_refunds, 0])
+    }
 }
 
 /// Concrete transaction-local protocol bookkeeping slots whose clears must not mint storage credits.
@@ -221,27 +242,6 @@ impl StorageCredits {
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         self.handler::<U256>(account).t_write(state.into())
-    }
-}
-
-impl TryFrom<U256> for TransientState {
-    type Error = TempoPrecompileError;
-
-    #[inline]
-    fn try_from(value: U256) -> Result<Self> {
-        let limbs = value.as_limbs();
-        Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[2],
-        })
-    }
-}
-
-impl From<TransientState> for U256 {
-    #[inline]
-    fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, value.pending_refunds, 0])
     }
 }
 

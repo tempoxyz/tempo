@@ -1388,21 +1388,18 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    let mut fee_manager = TipFeeManager::new();
-                    let (_, validator_token) = fee_manager.collect_fee_pre_tx(
+                    TipFeeManager::new().collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
                         block.beneficiary(),
                         skip_liquidity_check,
-                    )?;
-
-                    Ok::<_, TempoPrecompileError>(validator_token)
+                    )
                 },
             );
 
             let validator_token = match result {
-                Ok(validator_token) => validator_token,
+                Ok((_, validator_token)) => validator_token,
                 Err(err) => {
                     // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
                     journal.checkpoint_revert(checkpoint);
@@ -1626,7 +1623,7 @@ where
                     cfg,
                     tx,
                     actions,
-                    || -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+                    || {
                         let mut keychain = AccountKeychain::new();
                         keychain
                             .set_transaction_key(key_auth.key_id)
@@ -1641,9 +1638,7 @@ where
                             .map_err(|err| match err {
                                 TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                                 err => FeePaymentError::Other(err.to_string()).into(),
-                            })?;
-
-                        Ok(())
+                            })
                     },
                 )?;
             }
@@ -1697,9 +1692,8 @@ where
             &context.cfg,
             tx,
             actions,
-            || -> Result<U256, Self::Error> {
+            || {
                 let mut fee_manager = TipFeeManager::new();
-                let mut credited = U256::ZERO;
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
                     let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
@@ -1707,7 +1701,7 @@ where
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
                     // Call collectFeePostTx (handles both refund and fee queuing)
-                    credited = fee_manager
+                    fee_manager
                         .collect_fee_post_tx(
                             fee_payer,
                             actual_spending,
@@ -1715,10 +1709,10 @@ where
                             fee_token,
                             beneficiary,
                         )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                } else {
+                    Ok(U256::ZERO)
                 }
-
-                Ok(credited)
             },
         )?;
 
