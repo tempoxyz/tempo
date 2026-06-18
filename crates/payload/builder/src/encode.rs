@@ -1,3 +1,9 @@
+//! Execution block encoding helpers for the payload builder.
+//!
+//! This module carries transaction-list bytes produced by the roots task into the asynchronous
+//! block encoder so payload construction can reuse already encoded transactions while preserving
+//! byte-for-byte compatibility with regular RLP block encoding.
+
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bloom, Bytes};
