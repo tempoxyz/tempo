@@ -151,6 +151,8 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
                 Ok(())
             }
 
+            #[cold]
+            #[inline(never)]
             fn delete<S: crate::storage::StorageOps>(
                 storage: &mut S,
                 base_slot: ::alloy::primitives::U256,
