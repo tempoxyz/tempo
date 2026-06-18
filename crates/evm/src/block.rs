@@ -393,10 +393,20 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
+    ) -> Result<BlockSection, BlockValidationError> {
+        self.validate_tx_with_payment(tx, gas_used, self.is_payment(tx))
+    }
+
+    pub(crate) fn validate_tx_with_payment(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+        is_payment: bool,
     ) -> Result<BlockSection, BlockValidationError> {
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
@@ -429,7 +439,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -542,18 +552,22 @@ where
             inner.result.result.tx_gas_used()
         };
 
-        let next_section = if let Some(next_section) = next_section {
+        let (next_section, is_payment) = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
-            next_section
+            (next_section, false)
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            let is_payment = self.is_payment(recovered.tx());
+            (
+                self.validate_tx_with_payment(recovered.tx(), block_gas_used, is_payment)?,
+                is_payment,
+            )
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
