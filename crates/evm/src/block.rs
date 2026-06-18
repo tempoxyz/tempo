@@ -501,6 +501,7 @@ where
         Ok(())
     }
 
+    #[inline(always)]
     fn receipts(&self) -> &[Self::Receipt] {
         self.inner.receipts()
     }
@@ -647,10 +648,12 @@ where
         Ok((evm, result))
     }
 
+    #[inline(always)]
     fn evm_mut(&mut self) -> &mut Self::Evm {
         self.inner.evm_mut()
     }
 
+    #[inline(always)]
     fn evm(&self) -> &Self::Evm {
         self.inner.evm()
     }
