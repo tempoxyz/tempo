@@ -59,7 +59,17 @@ impl From<TransientState> for U256 {
     }
 }
 
-/// Concrete transaction-local protocol bookkeeping slots whose clears must not mint storage credits.
+/// Container for slots which are not eligible for storage credits mints.
+///
+/// There are 3 storage slots that are special in terms of TIP-1060 accounting:
+///   1. Balance of the current transaction's fee payer
+///   2. Spending limit of the current transaction's keychain fee
+///   3. Collected fees of the current transaction's beneficiary
+///
+/// Those three slots might get recreated during `collectFeePostTx` call inside of
+/// which we don't do gas accounting or burn storage credits, and thus allowing to
+/// mint credits for those slots during transaction execution might result in those
+/// credits being unbacked.
 #[derive(Debug)]
 pub struct NonCreditableSlots {
     fee_payer: Address,
@@ -162,19 +172,19 @@ impl NonCreditableSlots {
     }
 }
 
-/// TIP-1060 storage credits precompile, tracking each storage owner's credit balance and tx state.
+/// TIP-1060 storage credits precompile, which tracks per-account storage credit state.
 ///
-/// Unlike the Solidity-compatible `Mapping<K, V>` layout, persistent credit balances are stored
-/// directly at a namespaced account-derived slot: the 20-byte address is left-padded to 32 bytes
-/// and used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
+/// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, persistent account state is
+/// stored directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and
+/// used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
 ///
 /// ```text
-/// storage_credit_slot = (uint256(uint8(space)) << 248) | uint160(account)
+/// storage_credit_slot = uint256(bytes32(account))
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 ///
-/// Transaction-local mode, direct-spend budget, and pending Refund creations live transiently at
-/// the account-space slot.
+/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
+/// transient state at the same account-derived slot.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct StorageCredits {}
 
