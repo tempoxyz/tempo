@@ -734,18 +734,12 @@ impl TIP403Registry {
         if data.is_compound() {
             let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
-                AuthRole::Sender => self.is_authorized_simple_at(
-                    compound.sender_policy_id,
-                    user,
-                    None,
-                    hardfork,
-                ),
-                AuthRole::Recipient => self.is_authorized_simple_at(
-                    compound.recipient_policy_id,
-                    user,
-                    None,
-                    hardfork,
-                ),
+                AuthRole::Sender => {
+                    self.is_authorized_simple_at(compound.sender_policy_id, user, None, hardfork)
+                }
+                AuthRole::Recipient => {
+                    self.is_authorized_simple_at(compound.recipient_policy_id, user, None, hardfork)
+                }
                 AuthRole::MintRecipient => self.is_authorized_simple_at(
                     compound.mint_recipient_policy_id,
                     user,
