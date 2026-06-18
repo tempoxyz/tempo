@@ -673,14 +673,12 @@ where
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
+                mark_oversized_block(
+                    &mut best_txs,
                     &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
+                    estimated_block_size_with_tx,
+                    &self.metrics,
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
                 continue;
             }
@@ -1295,6 +1293,26 @@ pub fn is_more_subblocks(
     };
 
     subblocks.len() > best_metadata.len()
+}
+
+type PayloadBestTransactions =
+    dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>;
+
+#[cold]
+fn mark_oversized_block(
+    best_txs: &mut PayloadBestTransactions,
+    pool_tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    size: usize,
+    metrics: &TempoPayloadBuilderMetrics,
+) {
+    best_txs.mark_invalid(
+        pool_tx,
+        InvalidPoolTransactionError::OversizedData {
+            size,
+            limit: MAX_RLP_BLOCK_SIZE,
+        },
+    );
+    metrics.inc_pool_tx_skipped("oversized_block");
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the
