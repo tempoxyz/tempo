@@ -12,7 +12,7 @@
 //! - Values are right-aligned within their byte range
 //! - Types smaller than 32 bytes can pack multiple per slot when dimensions align
 
-use alloy::primitives::U256;
+use alloy::primitives::{U256, uint};
 
 use crate::{
     error::Result,
@@ -68,10 +68,14 @@ impl FieldLocation {
 /// For 32-byte values, returns U256::MAX.
 #[inline]
 pub fn create_element_mask(byte_count: usize) -> U256 {
-    if byte_count >= 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (byte_count * 8)) - U256::ONE
+    match byte_count {
+        0 => U256::ZERO,
+        1 => uint!(0xff_U256),
+        8 => uint!(0xffffffffffffffff_U256),
+        16 => uint!(0xffffffffffffffffffffffffffffffff_U256),
+        20 => uint!(0xffffffffffffffffffffffffffffffffffffffff_U256),
+        32.. => U256::MAX,
+        _ => (U256::ONE << (byte_count * 8)) - U256::ONE,
     }
 }
 
