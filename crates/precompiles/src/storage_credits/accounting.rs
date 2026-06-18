@@ -12,7 +12,7 @@ use super::{
     ACCOUNT_SPACE, CreditMode, DEFERRED_SLOT_SPACE, DEFERRED_STATUS_SPACE, DeferredClear,
     StorageCredits, TransientState,
 };
-use crate::storage::FromWord;
+use crate::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::FromWord};
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
@@ -20,6 +20,7 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
+use tempo_primitives::TempoAddressExt;
 
 /// Error mapping required by storage credit accounting.
 pub trait StorageCreditsErr: Sized {
@@ -134,7 +135,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
     // Handle watched fee-restorable slots before regular TIP-1060 accounting.
-    if let Some(key) = key {
+    if let Some(key) = key
+        && (owner.is_tip20()
+            || owner == ACCOUNT_KEYCHAIN_ADDRESS
+            || owner == TIP_FEE_MANAGER_ADDRESS)
+    {
         let deferred_status_slot = StorageCredits::slot(DEFERRED_STATUS_SPACE, owner);
         let deferred_slot = StorageCredits::slot(DEFERRED_SLOT_SPACE, owner);
 
@@ -229,7 +234,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 mod tests {
     use super::{ACCOUNT_SPACE, CreditMode, DeferredClear, StorageCredits};
     use crate::{
-        STORAGE_CREDITS_ADDRESS,
+        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
         storage::{
             Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
@@ -242,7 +247,7 @@ mod tests {
     #[test]
     fn watched_clear_is_not_persistent_or_direct_spendable_before_finalization() -> eyre::Result<()>
     {
-        let owner = Address::repeat_byte(0x11);
+        let owner = PATH_USD_ADDRESS;
         let watched_slot = U256::from(0x22);
         let fresh_slot = U256::from(0x33);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -285,7 +290,7 @@ mod tests {
     #[test]
     fn watched_clear_recreation_nets_without_consuming_credit_or_pending_refund() -> eyre::Result<()>
     {
-        let owner = Address::repeat_byte(0x44);
+        let owner = PATH_USD_ADDRESS;
         let watched_slot = U256::from(0x55);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.sstore(owner, watched_slot, U256::ONE)?;

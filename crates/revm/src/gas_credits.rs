@@ -50,20 +50,22 @@ pub fn apply_refund<DB: Database, I>(
     };
 
     let mut refunds = 0i64;
-    for (key, word) in slots.iter() {
-        if StorageCredits::is_deferred_clear_space(*key) {
+    let mut deferred_slots: revm::primitives::StorageKeyMap<U256> = Default::default();
+    for (key, word) in slots {
+        if StorageCredits::is_deferred_clear_space(key) {
+            deferred_slots.insert(key, word);
             continue;
         }
 
         let transient_state =
-            TransientState::try_from(*word).map_err(|err| EVMError::Custom(err.to_string()))?;
+            TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let pending = transient_state.pending_refunds;
         if pending == 0 {
             continue;
         }
 
         // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
-        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, *key)?.data;
+        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
         let mut balance =
             u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let settled = pending.min(balance);
@@ -79,12 +81,14 @@ pub fn apply_refund<DB: Database, I>(
         let new_word = U256::from(balance);
         debug_assert_ne!(new_word, old_word);
 
-        journal.sstore(STORAGE_CREDITS_ADDRESS, *key, new_word)?;
+        journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
     }
 
-    journal
-        .transient_storage
-        .insert(STORAGE_CREDITS_ADDRESS, slots);
+    if !deferred_slots.is_empty() {
+        journal
+            .transient_storage
+            .insert(STORAGE_CREDITS_ADDRESS, deferred_slots);
+    }
 
     // Refund storage credit value per settled credit.
     gas.record_refund(refunds.saturating_mul(STORAGE_CREDIT_VALUE as i64));

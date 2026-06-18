@@ -1380,6 +1380,11 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let watch_existing_keychain_key = if cfg.spec.is_t7() && fee_payer == tx.caller {
+                keychain_fee_key
+            } else {
+                None
+            };
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 &block,
@@ -1387,13 +1392,41 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    TipFeeManager::new().collect_fee_pre_tx(
+                    let mut fee_manager = TipFeeManager::new();
+                    let (_, validator_token) = fee_manager.collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
                         block.beneficiary(),
                         skip_liquidity_check,
-                    )
+                    )?;
+
+                    if cfg.spec.is_t7() {
+                        let mut credits = StorageCredits::new();
+                        credits.watch_deferred_clear_slot(
+                            fee_token,
+                            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer]
+                                .slot(),
+                        )?;
+
+                        if let Some(key_id) = watch_existing_keychain_key {
+                            let keychain = AccountKeychain::new();
+                            let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+                            credits.watch_deferred_clear_slot(
+                                ACCOUNT_KEYCHAIN_ADDRESS,
+                                keychain.spending_limits[limit_key][fee_token]
+                                    .remaining
+                                    .slot(),
+                            )?;
+                        }
+
+                        credits.watch_deferred_clear_slot(
+                            TIP_FEE_MANAGER_ADDRESS,
+                            fee_manager.collected_fees[block.beneficiary()][validator_token].slot(),
+                        )?;
+                    }
+
+                    Ok::<_, TempoPrecompileError>(fee_token)
                 },
             );
 
@@ -1603,8 +1636,8 @@ where
                     block,
                     cfg,
                     tx,
-                    actions.clone(),
-                    || {
+                    actions,
+                    || -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
                         let mut keychain = AccountKeychain::new();
                         keychain
                             .set_transaction_key(key_auth.key_id)
@@ -1619,52 +1652,29 @@ where
                             .map_err(|err| match err {
                                 TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                                 err => FeePaymentError::Other(err.to_string()).into(),
-                            })
+                            })?;
+
+                        if cfg.spec.is_t7() && fee_payer == tx.caller {
+                            let mut credits = StorageCredits::new();
+                            let limit_key =
+                                AccountKeychain::spending_limit_key(fee_payer, key_auth.key_id);
+                            credits
+                                .watch_deferred_clear_slot(
+                                    ACCOUNT_KEYCHAIN_ADDRESS,
+                                    keychain.spending_limits[limit_key][fee_token]
+                                        .remaining
+                                        .slot(),
+                                )
+                                .map_err(|err| match err {
+                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                    err => FeePaymentError::Other(err.to_string()).into(),
+                                })?;
+                        }
+
+                        Ok(())
                     },
                 )?;
-                keychain_fee_key = Some(key_auth.key_id);
             }
-        }
-
-        if cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
-            // Watch only slots that post-tx fee bookkeeping may recreate after user execution.
-            StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions,
-                || {
-                    let mut credits = StorageCredits::new();
-                    credits.watch_deferred_clear_slot(
-                        fee_token,
-                        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
-                    )?;
-
-                    if fee_payer == tx.caller
-                        && let Some(key_id) = keychain_fee_key
-                    {
-                        let keychain = AccountKeychain::new();
-                        let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
-                        credits.watch_deferred_clear_slot(
-                            ACCOUNT_KEYCHAIN_ADDRESS,
-                            keychain.spending_limits[limit_key][fee_token]
-                                .remaining
-                                .slot(),
-                        )?;
-                    }
-
-                    let fee_manager = TipFeeManager::new();
-                    let validator_token = fee_manager.get_validator_token(block.beneficiary())?;
-                    credits.watch_deferred_clear_slot(
-                        TIP_FEE_MANAGER_ADDRESS,
-                        fee_manager.collected_fees[block.beneficiary()][validator_token].slot(),
-                    )?;
-
-                    Ok::<_, TempoPrecompileError>(())
-                },
-            )
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
         }
 
         Ok(())
