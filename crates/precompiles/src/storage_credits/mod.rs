@@ -72,22 +72,32 @@ impl From<TransientState> for U256 {
 pub struct StorageCredits {}
 
 impl StorageCredits {
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn balance_of(&self, account: Address) -> Result<u64> {
         u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
         self.credit_state_of(account).map(|state| state.mode)
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn budget_of(&self, account: Address) -> Result<u64> {
         self.credit_state_of(account).map(|state| state.budget)
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mode = CreditMode::try_from(mode)?;
         let budget = if matches!(mode, CreditMode::Direct) {
@@ -99,10 +109,14 @@ impl StorageCredits {
         self.write_mode_with_budget(msg_sender, mode, budget)
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
         self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
     }
 
+    #[cold]
+    #[inline(never)]
     fn write_mode_with_budget(
         &mut self,
         msg_sender: Address,
@@ -120,14 +134,16 @@ impl StorageCredits {
         U256::from_be_bytes(account.into_word().0)
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
         U256::handle(Self::slot(account), LayoutCtx::FULL, self.address)
             .t_read()?
             .try_into()
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
     }
