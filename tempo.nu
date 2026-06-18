@@ -680,10 +680,8 @@ def run-bench-single [
     let args = (dedup-args $base_args $extra_args)
 
     # Tracy environment variables
-    let tracy_env_prefix = if $tracy == "on" {
-        "TRACY_NO_SYS_TRACE=1 "
-    } else if $tracy == "full" {
-        "TRACY_SAMPLING_HZ=1 "
+    let tracy_env_prefix = if $tracy == "tracy" {
+        "TRACY_SAMPLING_HZ=18999 "
     } else { "" }
 
     # OTEL resource attributes for benchmark identification in logs/traces
@@ -840,7 +838,7 @@ def upload-samply-profile [profile_path: string] {
     $url
 }
 
-# Upload a tracy profile (.tracy) to R2 via mc and return the viewer URL.
+# Upload a tracy profile (.tracy) to R2 via mc and return the viewer and raw profile URLs.
 # Returns null on failure or if mc is not available.
 # Deletes the large .tracy file after successful upload to save disk.
 def upload-tracy-profile [profile_path: string, label: string, commit_sha: string] {
@@ -861,14 +859,16 @@ def upload-tracy-profile [profile_path: string, label: string, commit_sha: strin
     let remote_name = $"($label)-($short_sha)-($timestamp).tracy"
     let mc_alias = "r2"
     let viewer_base = "https://tracy.tempoxyz.dev"
+    let remote_profile_path = $"/profiles/($remote_name)"
 
     try {
         mc cp $profile_path $"($mc_alias)/tracy/profiles/($remote_name)"
-        let viewer_url = $"($viewer_base)?profile_url=/profiles/($remote_name)"
+        let viewer_url = $"($viewer_base)?profile_url=($remote_profile_path)"
+        let profile_url = $"($viewer_base)($remote_profile_path)"
         print $"  ($label): ($viewer_url)"
         # Delete large .tracy file after upload to free disk
         rm $profile_path
-        $viewer_url
+        { viewer_url: $viewer_url, profile_url: $profile_url }
     } catch {
         print "  Warning: failed to upload tracy profile"
         null
@@ -2354,7 +2354,7 @@ def "main bench" [
     --bench-datadir: string = ""                    # Node database directory (default: LOCALNET_DIR/reth, /reth-bench for schelk)
     --tune                                          # Apply system tuning for dedicated benchmark runners (Linux only)
     --no-cache                                      # Skip binary cache (force build from source)
-    --tracy: string = "off"                         # Tracy profiling: off, on, full
+    --tracy: string = "off"                         # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                # Tracy tracing filter level
     --tracy-seconds: int = 30                       # Tracy capture duration limit in seconds (0 = unlimited)
     --tracy-offset: int = 120                       # Seconds to wait before starting tracy capture (default: 120)
@@ -2403,8 +2403,8 @@ def "main bench" [
     let tuning_state = if $tune { apply-system-tuning } else { { tuned: false } }
 
     # Validate tracy flag
-    if $tracy not-in ["off" "on" "full"] {
-        print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+    if $tracy not-in ["off" "tracy"] {
+        print $"Error: --tracy must be one of: off, tracy \(got '($tracy)'\)"
         exit 1
     }
     if $samply and $tracy != "off" {
@@ -2740,8 +2740,8 @@ def "main bench" [
             docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
         }
 
-        # Setup kernel permissions for tracy full mode (CPU sampling)
-        if $tracy == "full" and (^uname | str trim) == "Linux" {
+        # Setup kernel permissions for tracy CPU sampling.
+        if $tracy == "tracy" and (^uname | str trim) == "Linux" {
             print "Configuring system for tracy CPU sampling..."
             # Allow non-root perf event access (required for CPU sampling)
             try { sudo sysctl -w kernel.perf_event_paranoid=-1 } catch { }
@@ -2837,9 +2837,10 @@ def "main bench" [
             print "\nUploading tracy profiles to R2..."
             for run in $runs {
                 let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-                let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
-                if $viewer_url != null {
-                    $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                let tracy_urls = (upload-tracy-profile $profile $run.label $run.git_ref)
+                if $tracy_urls != null {
+                    $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                    $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.label)-profile-url.txt"
                 }
             }
         }
@@ -3417,7 +3418,7 @@ def main [] {
     print "  --nodes <N>              Number of consensus nodes (default: 3, consensus mode only)"
     print "  --samply                 Profile nodes with samply"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
-    print "  --tracy <MODE>           Tracy profiling: off (default), on, full"
+    print "  --tracy <MODE>           Tracy profiling: off (default), tracy"
     print "  --tracy-filter <FILTER>  Tracy tracing filter level (default: debug)"
     print "  --tracy-seconds <N>      Tracy capture duration limit in seconds (default: 30, 0 = unlimited)"
     print "  --tracy-offset <N>       Seconds to wait before starting tracy capture (default: 120)"
