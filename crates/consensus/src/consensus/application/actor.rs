@@ -343,9 +343,6 @@ impl Inner<Init> {
                 //
                 // >Skip this view and let the voter nullify it via timeout.
                 //
-                // TODO: we are diverging from commonware in that we return the digest
-                // here. Is that ok or can that cause problems?
-                //
                 // `marshal.get_verified` can take a long time if marshal is busy
                 // persisting the parent block, so we race it with payload building to
                 // avoid delaying the usual proposal path. If it finds a verified block,
