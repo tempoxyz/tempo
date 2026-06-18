@@ -545,10 +545,12 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     let override_keys = ($extra_args | where { |a| $a starts-with "--" }
         | each { |a| $a | split row "=" | first })
 
-    # Walk base_args, skip any flag (and its value) whose key is overridden
+    # Walk base_args, skip any flag (and its value) whose key is overridden.
+    # Bare boolean flags are followed by another `--flag`, not a value.
     mut result = []
     mut skip_next = false
-    for arg in $base_args {
+    for entry in ($base_args | enumerate) {
+        let arg = $entry.item
         if $skip_next {
             $skip_next = false
             continue
@@ -556,9 +558,15 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
         if ($arg starts-with "--") {
             let key = ($arg | split row "=" | first)
             if ($key in $override_keys) {
-                # Skip this flag; if it's `--flag value` form (no =), skip next token too
+                # Skip this flag; if it's `--flag value` form, skip next token too.
                 if not ($arg | str contains "=") {
-                    $skip_next = true
+                    let next_index = $entry.index + 1
+                    if $next_index < ($base_args | length) {
+                        let next_arg = ($base_args | get $next_index)
+                        if not ($next_arg starts-with "--") {
+                            $skip_next = true
+                        }
+                    }
                 }
                 continue
             }
