@@ -1327,7 +1327,7 @@ mod tests {
 
             let rejected = SYSTEM_PRECOMPILES
                 .iter()
-                .map(|&(address, _)| address)
+                .filter_map(|&(address, hf)| (hf <= StorageCtx.spec()).then_some(address))
                 .chain([PATH_USD_ADDRESS, virtual_addr]);
 
             for recovery_address in rejected {

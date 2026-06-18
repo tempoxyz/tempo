@@ -28,7 +28,7 @@ use tracing::info;
 
 /// Patch a block-0 database to use a new genesis header.
 #[derive(Debug, Parser)]
-pub(crate) struct Regenesis<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser> {
+pub struct Regenesis<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser> {
     #[command(flatten)]
     env: EnvironmentArgs<C>,
 }
