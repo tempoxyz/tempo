@@ -11,6 +11,10 @@ pub enum StorageAction {
     Sload(Address, U256, U256),
     /// Records an SSTORE opcode.
     Sstore(Address, U256, U256),
+    /// Records an increment of a storage slot by delta.
+    Sinc(Address, U256, U256),
+    /// Records a decrement of a storage slot by delta.
+    Sdec(Address, U256, U256),
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).
