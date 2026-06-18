@@ -69,7 +69,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
-    tip1060,
+    gas_credits,
 };
 
 /// Additional gas for P256 signature verification
@@ -853,7 +853,7 @@ where
         eip7702_gas_refund: i64,
     ) -> Result<ResultGas, Self::Error> {
         if exec_result.instruction_result().is_ok() {
-            tip1060::apply_refund(evm, exec_result.gas_mut())?;
+            gas_credits::apply_refund(evm, exec_result.gas_mut())?;
         }
         self.refund(evm, exec_result, eip7702_gas_refund);
 
