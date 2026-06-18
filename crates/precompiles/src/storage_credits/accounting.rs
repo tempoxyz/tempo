@@ -129,7 +129,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut was_changed = false;
     if values.is_new_zero() {
-        // x→0: storage deletion doesn't mint on protocol fee/keychain bookeeping slots.
+        // x→0: storage deletion doesn't mint on protocol fee/keychain bookkeeping slots.
         if let Some(key) = key {
             let transient_state: TransientState = backend
                 .tload(STORAGE_CREDITS_ADDRESS, account_slot)

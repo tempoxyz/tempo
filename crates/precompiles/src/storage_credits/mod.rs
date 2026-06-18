@@ -186,7 +186,7 @@ impl From<TransientState> for U256 {
             value.budget,
             value.mode as u64,
             value.pending_refunds,
-            value.has_non_creditable_slot as u64,
+            u64::from(value.has_non_creditable_slot),
         ])
     }
 }
