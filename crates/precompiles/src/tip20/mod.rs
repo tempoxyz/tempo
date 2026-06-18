@@ -27,7 +27,6 @@ use crate::{
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
-    storage_credits::StorageCredits,
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -995,6 +994,10 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    pub fn balance_slot(&self, account: Address) -> U256 {
+        self.balances[account].slot()
+    }
+
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
@@ -1370,11 +1373,6 @@ impl TIP20Token {
         let new_to_balance = to_balance
             .checked_add(refund)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
-        if to_balance.is_zero() && !new_to_balance.is_zero() {
-            // Post-tx refund recreated the fee-payer balance slot; cancel its reserved clear credit.
-            let balance_slot = self.balances[to].slot();
-            StorageCredits::new().cancel_deferred_refund(self.address, balance_slot)?;
-        }
         self.set_balance(to, new_to_balance)
     }
 }

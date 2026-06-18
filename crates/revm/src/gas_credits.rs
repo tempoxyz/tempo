@@ -43,15 +43,15 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // Reinsert them afterwards because post-tx fee reimbursement may still need deferred refund
-    // state to cancel credits for slots it recreates.
+    // Reinsert them afterwards because post-tx fee reimbursement still needs the watched-slot
+    // table to finalize pending clears after its disabled-accounting writes.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
 
     let mut refunds = 0i64;
     for (key, word) in slots.iter() {
-        if StorageCredits::is_post_tx_space(*key) {
+        if !StorageCredits::is_account_space(*key) {
             continue;
         }
 
@@ -66,10 +66,7 @@ pub fn apply_refund<DB: Database, I>(
         let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, *key)?.data;
         let mut balance =
             u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
-        // Deferred refunds cannot fund same-tx Refund settlement.
-        let deferred = u64::from(transient_state.deferred_refund);
-        let settleable = balance.saturating_sub(deferred);
-        let settled = pending.min(settleable);
+        let settled = pending.min(balance);
 
         if settled == 0 {
             continue;
@@ -168,6 +165,7 @@ pub(crate) fn sstore<DB: Database>(
                     gas_tracker: interpreter.gas.tracker_mut(),
                 },
                 owner,
+                None,
                 values,
             )?;
         }

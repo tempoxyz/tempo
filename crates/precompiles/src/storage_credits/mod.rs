@@ -3,14 +3,12 @@
 pub mod accounting;
 pub mod dispatch;
 
-pub use accounting::{
-    StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits, update_deferred_refund_status,
-};
+pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
 
 use crate::{
     STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{FromWord, Handler, LayoutCtx, StorableType},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
@@ -18,8 +16,19 @@ use tempo_precompiles_macros::{Storable, contract};
 
 /// Storage space for per-account persistent balance and transaction-local credit state.
 pub const ACCOUNT_SPACE: u8 = 0;
-/// Storage space for the transaction-local slot that post-tx fee reimbursement may recreate.
-pub const POST_TX_SPACE: u8 = 1;
+/// Storage space for the transaction-local post-tx-restorable watch status.
+pub const POST_TX_STATUS_SPACE: u8 = 1;
+/// Storage space for the transaction-local post-tx-restorable watched slot key.
+pub const POST_TX_SLOT_SPACE: u8 = 2;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub(crate) enum PostTxStatus {
+    #[default]
+    Unwatched,
+    Watched,
+    PendingClear,
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
@@ -37,9 +46,6 @@ pub struct TransientState {
     pub budget: u64,
     /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
-    /// Whether same-tx refund settlement is deferred until post-tx fee reimbursement either restores
-    /// the slot or leaves the clear persistent.
-    pub deferred_refund: bool,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
@@ -53,7 +59,6 @@ impl TryFrom<U256> for TransientState {
         Ok(Self {
             budget: limbs[0],
             mode: (limbs[1] as u8).try_into()?,
-            deferred_refund: limbs[2] != 0,
             pending_refunds: limbs[3],
         })
     }
@@ -62,28 +67,24 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([
-            value.budget,
-            value.mode as u64,
-            u64::from(value.deferred_refund),
-            value.pending_refunds,
-        ])
+        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
     }
 }
 
-/// TIP-1060 storage credits precompile, which tracks per-account storage credit state.
+/// TIP-1060 storage credits precompile, tracking each storage owner's credit balance and tx state.
 ///
-/// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, persistent account state is
-/// stored directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and
-/// used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
+/// Unlike the Solidity-compatible `Mapping<K, V>` layout, persistent credit balances are stored
+/// directly at a namespaced account-derived slot: the 20-byte address is left-padded to 32 bytes
+/// and used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
 ///
 /// ```text
-/// storage_credit_slot = uint256(bytes32(account))
+/// storage_credit_slot = (uint256(uint8(space)) << 248) | uint160(account)
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 ///
-/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
-/// transient state at the same account-derived slot.
+/// Transaction-local mode, direct-spend budget, and pending Refund creations live transiently at the
+/// account-space slot. Post-tx fee bookkeeping can also watch one restorable slot per owner with
+/// transient status/slot words; watched clears mint only if finalization sees the slot zero.
 #[contract(addr = STORAGE_CREDITS_ADDRESS)]
 pub struct StorageCredits {}
 
@@ -139,6 +140,13 @@ impl StorageCredits {
         U256::from_be_bytes(bytes)
     }
 
+    /// Returns true for storage-credit account-state keys.
+    #[inline]
+    pub fn is_account_space(key: U256) -> bool {
+        let bytes = key.to_be_bytes::<32>();
+        bytes[0] == ACCOUNT_SPACE
+    }
+
     /// Returns a full-slot handler in the selected storage-credit namespace.
     #[inline]
     fn slot_handler<T: StorableType>(&self, storage_space: u8, account: Address) -> T::Handler {
@@ -149,41 +157,62 @@ impl StorageCredits {
         )
     }
 
-    /// Returns true for transient candidate-slot keys that are not account credit state.
-    #[inline]
-    pub fn is_post_tx_space(key: U256) -> bool {
-        let bytes = key.to_be_bytes::<32>();
-        bytes[0] == POST_TX_SPACE
-    }
+    /// Registers a storage slot whose clear credit must be finalized after post-tx fee writes.
+    pub fn watch_deferred_clear_slot(&mut self, account: Address, slot: U256) -> Result<()> {
+        let status = self
+            .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+            .t_read()?;
+        if status != PostTxStatus::Unwatched {
+            let current = self
+                .slot_handler::<U256>(POST_TX_SLOT_SPACE, account)
+                .t_read()?;
+            if current == slot {
+                return Ok(());
+            }
 
-    /// Registers a slot whose same-tx refund may be deferred for post-tx fee reimbursement.
-    pub fn watch_deferred_refund(&mut self, account: Address, slot: U256) -> Result<()> {
-        self.slot_handler::<U256>(POST_TX_SPACE, account)
+            return Err(TempoPrecompileError::Fatal(
+                "multiple TIP-1060 post-tx watched slots for one account".to_string(),
+            ));
+        }
+
+        self.slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+            .t_write(PostTxStatus::Watched)?;
+        self.slot_handler::<U256>(POST_TX_SLOT_SPACE, account)
             .t_write(slot)
     }
 
-    /// Cancels a deferred refund when post-tx fee reimbursement recreates the registered slot.
-    pub fn cancel_deferred_refund(&mut self, account: Address, slot: U256) -> Result<bool> {
-        let candidate = self.slot_handler::<U256>(POST_TX_SPACE, account).t_read()?;
-        // No-op unless reimbursement recreates the exact registered slot.
-        if candidate != slot {
-            return Ok(false);
+    /// Finalizes the pending watched clear for `account` after post-tx fee writes have run.
+    ///
+    /// A watched clear mints a storage credit only if its final persistent slot value is still zero.
+    /// If fee reimbursement or other post-tx bookkeeping recreated the slot, the pending clear is
+    /// discarded. Returns the number of credits minted.
+    pub fn finalize_deferred_clears(&mut self, account: Address) -> Result<u64> {
+        let status = self
+            .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+            .t_read()?;
+        if status == PostTxStatus::Unwatched {
+            return Ok(0);
         }
 
-        let mut state = self.credit_state_of(account)?;
-        if !state.deferred_refund {
-            return Ok(false);
+        let minted = if status == PostTxStatus::PendingClear {
+            let watched_slot = self
+                .slot_handler::<U256>(POST_TX_SLOT_SPACE, account)
+                .t_read()?;
+            let final_value = U256::handle(watched_slot, LayoutCtx::FULL, account).read()?;
+            u64::from(final_value.is_zero())
+        } else {
+            0
+        };
+
+        if minted > 0 {
+            let mut handler = self.slot_handler::<u64>(ACCOUNT_SPACE, account);
+            let balance = handler.read()?;
+            handler.write(balance.saturating_add(minted))?;
         }
 
-        let mut handler = self.slot_handler::<u64>(ACCOUNT_SPACE, account);
-        let balance = handler.read()?;
-        if balance > 0 {
-            handler.write(balance - 1)?;
-        }
-
-        state.deferred_refund = false;
-        self.write_credit_state_of(account, state)?;
-        Ok(balance > 0)
+        self.slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+            .t_write(PostTxStatus::Unwatched)?;
+        Ok(minted)
     }
 
     #[inline]
@@ -197,6 +226,37 @@ impl StorageCredits {
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         self.slot_handler::<U256>(ACCOUNT_SPACE, account)
             .t_write(state.into())
+    }
+}
+
+impl TryFrom<u8> for PostTxStatus {
+    type Error = TempoPrecompileError;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Unwatched),
+            1 => Ok(Self::Watched),
+            2 => Ok(Self::PendingClear),
+            _ => Err(TempoPrecompileError::Fatal(
+                "invalid TIP-1060 post-tx watch status".to_string(),
+            )),
+        }
+    }
+}
+
+impl TryFrom<U256> for PostTxStatus {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn try_from(value: U256) -> Result<Self> {
+        u8::from_word(value)?.try_into()
+    }
+}
+
+impl From<PostTxStatus> for U256 {
+    #[inline]
+    fn from(status: PostTxStatus) -> Self {
+        Self::from(status as u8)
     }
 }
 
@@ -283,6 +343,66 @@ mod tests {
             credits.set_budget(account, 0)?;
             assert_eq!(credits.mode_of(account)?, CreditMode::Direct);
             assert_eq!(credits.budget_of(account)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn watch_deferred_clear_slot_deduplicates_and_preserves_zero_slot() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x13);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+            credits.watch_deferred_clear_slot(account, U256::ZERO)?;
+            credits.watch_deferred_clear_slot(account, U256::ZERO)?;
+
+            assert_eq!(
+                credits
+                    .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+                    .t_read()?,
+                PostTxStatus::Watched
+            );
+            assert_eq!(
+                credits
+                    .slot_handler::<U256>(POST_TX_SLOT_SPACE, account)
+                    .t_read()?,
+                U256::ZERO
+            );
+            assert!(
+                credits
+                    .watch_deferred_clear_slot(account, U256::from(1))
+                    .is_err()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn finalize_deferred_clears_mints_only_when_slot_stays_zero() -> eyre::Result<()> {
+        let account = Address::repeat_byte(0x14);
+        let cleared_slot = U256::from(0x21);
+        let restored_slot = U256::from(0x22);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+            credits.watch_deferred_clear_slot(account, cleared_slot)?;
+            credits
+                .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+                .t_write(PostTxStatus::PendingClear)?;
+            assert_eq!(credits.finalize_deferred_clears(account)?, 1);
+            assert_eq!(credits.balance_of(account)?, 1);
+
+            U256::handle(restored_slot, LayoutCtx::FULL, account).write(U256::ONE)?;
+            credits.watch_deferred_clear_slot(account, restored_slot)?;
+            credits
+                .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, account)
+                .t_write(PostTxStatus::PendingClear)?;
+            assert_eq!(credits.finalize_deferred_clears(account)?, 0);
+            assert_eq!(credits.balance_of(account)?, 1);
 
             Ok(())
         })

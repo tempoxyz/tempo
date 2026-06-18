@@ -53,7 +53,7 @@ use tempo_precompiles::{
         evm::EvmPrecompileStorageProvider,
     },
     storage_credits::StorageCredits,
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::{TIP_FEE_MANAGER_ADDRESS, TipFeeManager},
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -1627,7 +1627,7 @@ where
         }
 
         if cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
-            // Watch only slots that post-tx fee reimbursement may recreate after user execution.
+            // Watch only slots that post-tx fee bookkeeping may recreate after user execution.
             StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 block,
@@ -1636,9 +1636,9 @@ where
                 actions,
                 || {
                     let mut credits = StorageCredits::new();
-                    credits.watch_deferred_refund(
+                    credits.watch_deferred_clear_slot(
                         fee_token,
-                        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
+                        TIP20Token::from_address_unchecked(fee_token).balance_slot(fee_payer),
                     )?;
 
                     if fee_payer == tx.caller
@@ -1646,13 +1646,20 @@ where
                     {
                         let keychain = AccountKeychain::new();
                         let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
-                        credits.watch_deferred_refund(
+                        credits.watch_deferred_clear_slot(
                             ACCOUNT_KEYCHAIN_ADDRESS,
                             keychain.spending_limits[limit_key][fee_token]
                                 .remaining
                                 .slot(),
                         )?;
                     }
+
+                    let fee_manager = TipFeeManager::new();
+                    let validator_token = fee_manager.get_validator_token(block.beneficiary())?;
+                    credits.watch_deferred_clear_slot(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        fee_manager.collected_fees_slot(block.beneficiary(), validator_token),
+                    )?;
 
                     Ok::<_, TempoPrecompileError>(())
                 },
@@ -1708,8 +1715,9 @@ where
             &context.cfg,
             tx,
             actions,
-            || {
+            || -> Result<U256, Self::Error> {
                 let mut fee_manager = TipFeeManager::new();
+                let mut credited = U256::ZERO;
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
                     let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
@@ -1717,7 +1725,7 @@ where
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
                     // Call collectFeePostTx (handles both refund and fee queuing)
-                    fee_manager
+                    credited = fee_manager
                         .collect_fee_post_tx(
                             fee_payer,
                             actual_spending,
@@ -1725,10 +1733,26 @@ where
                             fee_token,
                             beneficiary,
                         )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
-                } else {
-                    Ok(U256::ZERO)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
                 }
+
+                if context.cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
+                    let fee_token = evm
+                        .fee_token
+                        .expect("set in `validate_against_state_and_deduct_caller`");
+                    let mut credits = StorageCredits::new();
+                    credits
+                        .finalize_deferred_clears(fee_token)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    credits
+                        .finalize_deferred_clears(ACCOUNT_KEYCHAIN_ADDRESS)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    credits
+                        .finalize_deferred_clears(TIP_FEE_MANAGER_ADDRESS)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                }
+
+                Ok(credited)
             },
         )?;
 

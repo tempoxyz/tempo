@@ -74,6 +74,11 @@ impl TipFeeManager {
         }
     }
 
+    /// Returns the storage slot for accumulated fees owed to `validator` in `token`.
+    pub fn collected_fees_slot(&self, validator: Address, token: Address) -> U256 {
+        self.collected_fees[validator][token].slot()
+    }
+
     /// Sets the caller's preferred fee token as a validator.
     ///
     /// Rejects the call if `sender` is the current block's beneficiary (prevents mid-block

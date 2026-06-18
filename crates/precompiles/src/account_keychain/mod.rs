@@ -29,7 +29,6 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
     storage::{Handler, Mapping, Set},
-    storage_credits::StorageCredits,
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -1412,7 +1411,6 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        let old_remaining = limit_state.remaining;
         let refunded = limit_state.remaining.saturating_add(amount);
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
@@ -1422,13 +1420,6 @@ impl AccountKeychain {
         } else {
             refunded.min(U256::from(limit_state.max))
         };
-        if old_remaining.is_zero() && !limit_state.remaining.is_zero() {
-            // Post-tx refund recreated the spending-limit slot.
-            StorageCredits::new().cancel_deferred_refund(
-                ACCOUNT_KEYCHAIN_ADDRESS,
-                self.spending_limits[limit_key][token].remaining.slot(),
-            )?;
-        }
 
         self.spending_limits[limit_key][token].write(limit_state)
     }

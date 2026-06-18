@@ -8,7 +8,10 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{ACCOUNT_SPACE, CreditMode, POST_TX_SPACE, StorageCredits, TransientState};
+use super::{
+    ACCOUNT_SPACE, CreditMode, POST_TX_SLOT_SPACE, POST_TX_STATUS_SPACE, PostTxStatus,
+    StorageCredits, TransientState,
+};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
@@ -88,24 +91,30 @@ fn store_credit_state<B: StorageCreditsBackend>(
 }
 
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
+///
+/// When provided, `key` identifies slots post-tx fee bookkeeping may restore with accounting off:
+/// - watched `x→0`: mark a pending clear instead of minting a credit during execution.
+/// - watched `0→x` with pending clear: net churn instead of charging creation/spending credits.
+///
+/// Pending clears finalize after post-tx fees and mint only if the slot still ends zero.
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
+    key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
-) -> Result<bool, B::Error> {
-    let mut minted_credit = false;
+) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
 
     // Only account for storage credits when the slot crosses the zero boundary (x→0 or 0→x).
     // If both values are zero or non-zero, slot occupancy is unchanged, so skip credits accounting.
     if values.is_present_zero() == values.is_new_zero() {
-        return Ok(minted_credit);
+        return Ok(());
     }
 
     // Storage-credit precompile state is used for protocol bookkeeping. Because of that,
     // always skips TIP-1000 + TIP-1060 self-accounting and charge only update gas.
     if owner == STORAGE_CREDITS_ADDRESS {
-        return Ok(minted_credit);
+        return Ok(());
     }
 
     // Load the persistent storage credit balance for the storage-owning account.
@@ -124,11 +133,43 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let mut credit =
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
+    // Handle watched fee-restorable slots before regular TIP-1060 accounting.
+    if let Some(key) = key {
+        let post_tx_status_slot = StorageCredits::slot(POST_TX_STATUS_SPACE, owner);
+        let post_tx_slot = StorageCredits::slot(POST_TX_SLOT_SPACE, owner);
+
+        let status: PostTxStatus = backend
+            .tload(STORAGE_CREDITS_ADDRESS, post_tx_status_slot)
+            .try_into()
+            .map_err(|_| B::Error::fatal_external())?;
+
+        let is_watched = status != PostTxStatus::Unwatched
+            && backend.tload(STORAGE_CREDITS_ADDRESS, post_tx_slot) == key;
+
+        let new_status = match (is_watched, values.is_new_zero(), status) {
+            // x→0 on a watched slot: defer the clear action.
+            (true, true, _) => Some(PostTxStatus::PendingClear),
+            // x→0→x churn on a watched slot: cancel the pending clear.
+            (true, false, PostTxStatus::PendingClear) => Some(PostTxStatus::Watched),
+            // Otherwise, proceed normally.
+            _ => None,
+        };
+
+        if let Some(status_to_write) = new_status {
+            backend.tstore(
+                STORAGE_CREDITS_ADDRESS,
+                post_tx_status_slot,
+                status_to_write.into(),
+            );
+            return Ok(());
+        }
+    }
+
     let mut was_changed = false;
     if values.is_new_zero() {
         // x→0: storage deletion always mints a new credit.
         credit = credit.saturating_add(1);
-        (was_changed, minted_credit) = (true, true);
+        was_changed = true;
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.
@@ -181,47 +222,116 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         };
     }
 
-    Ok(minted_credit)
+    Ok(())
 }
 
-/// Tracks same-transaction refunds deferred by post-tx-fee-refund-restorable storage clears.
-///
-/// TIP-1060 clears mint a persistent credit immediately, but fee-refund-restorable slots defer that
-/// credit from same-tx refund settlement until the slot is restored or post-tx reimbursement
-pub fn update_deferred_refund_status<B: StorageCreditsBackend>(
-    backend: &mut B,
-    owner: Address,
-    key: U256,
-    values: &SStoreResult,
-    minted_credit: bool,
-) -> Result<(), B::Error> {
-    if owner == STORAGE_CREDITS_ADDRESS || values.is_present_zero() == values.is_new_zero() {
-        return Ok(());
+#[cfg(test)]
+mod tests {
+    use super::{ACCOUNT_SPACE, CreditMode, PostTxStatus, StorageCredits};
+    use crate::{
+        STORAGE_CREDITS_ADDRESS,
+        error::TempoPrecompileError,
+        storage::{
+            Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+        },
+        storage_credits::POST_TX_STATUS_SPACE,
+    };
+    use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
+
+    #[test]
+    fn watched_clear_is_not_persistent_or_direct_spendable_before_finalization() -> eyre::Result<()>
+    {
+        let owner = Address::repeat_byte(0x11);
+        let watched_slot = U256::from(0x22);
+        let fresh_slot = U256::from(0x33);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        storage.sstore(owner, watched_slot, U256::ONE)?;
+        storage.set_spec(TempoHardfork::T7);
+
+        StorageCtx::enter(&mut storage, || {
+            StorageCredits::new().watch_deferred_clear_slot(owner, watched_slot)
+        })?;
+        storage.sstore(owner, watched_slot, U256::ZERO)?;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut credits = StorageCredits::new();
+            assert_eq!(credits.balance_of(owner)?, 0);
+            assert_eq!(
+                credits
+                    .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, owner)
+                    .t_read()?,
+                PostTxStatus::PendingClear
+            );
+
+            let mut state = credits.credit_state_of(owner)?;
+            state.mode = CreditMode::Direct;
+            state.budget = u64::MAX;
+            credits.write_credit_state_of(owner, state)
+        })?;
+
+        storage.sstore(owner, fresh_slot, U256::ONE)?;
+
+        StorageCtx::enter(&mut storage, || {
+            let credits = StorageCredits::new();
+            assert_eq!(credits.balance_of(owner)?, 0);
+            assert_eq!(credits.credit_state_of(owner)?.budget, u64::MAX);
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
-    let candidate_key = StorageCredits::slot(POST_TX_SPACE, owner);
-    let candidate = backend.tload(STORAGE_CREDITS_ADDRESS, candidate_key);
+    #[test]
+    fn watched_clear_recreation_nets_without_consuming_credit_or_pending_refund() -> eyre::Result<()>
+    {
+        let owner = Address::repeat_byte(0x44);
+        let watched_slot = U256::from(0x55);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        storage.sstore(owner, watched_slot, U256::ONE)?;
+        storage.sstore(
+            STORAGE_CREDITS_ADDRESS,
+            StorageCredits::slot(ACCOUNT_SPACE, owner),
+            U256::ONE,
+        )?;
+        storage.set_spec(TempoHardfork::T7);
 
-    // Only the registered fee-refund-restorable slot can defer or release a refund.
-    if candidate != key {
-        return Ok(());
+        StorageCtx::enter(&mut storage, || {
+            StorageCredits::new().watch_deferred_clear_slot(owner, watched_slot)
+        })?;
+        storage.sstore(owner, watched_slot, U256::ZERO)?;
+        storage.sstore(owner, watched_slot, U256::ONE)?;
+
+        StorageCtx::enter(&mut storage, || {
+            let credits = StorageCredits::new();
+            assert_eq!(credits.balance_of(owner)?, 1);
+            assert_eq!(credits.credit_state_of(owner)?.pending_refunds, 0);
+            assert_eq!(
+                credits
+                    .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, owner)
+                    .t_read()?,
+                PostTxStatus::Watched
+            );
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
-    let account_slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
-    let mut transient_state: TransientState = backend
-        .tload(STORAGE_CREDITS_ADDRESS, account_slot)
-        .try_into()
-        .map_err(|_| B::Error::fatal_external())?;
+    #[test]
+    fn unregistered_zero_key_clear_mints_persistent_credit() -> eyre::Result<()> {
+        let owner = Address::repeat_byte(0x66);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        storage.sstore(owner, U256::ZERO, U256::ONE)?;
+        storage.set_spec(TempoHardfork::T7);
 
-    if values.is_new_zero() {
-        if minted_credit && !transient_state.deferred_refund {
-            transient_state.deferred_refund = true;
-            store_credit_state(backend, account_slot, transient_state)?;
-        }
-    } else if transient_state.deferred_refund {
-        transient_state.deferred_refund = false;
-        store_credit_state(backend, account_slot, transient_state)?;
+        storage.sstore(owner, U256::ZERO, U256::ZERO)?;
+
+        StorageCtx::enter(&mut storage, || {
+            assert_eq!(StorageCredits::new().balance_of(owner)?, 1);
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
-
-    Ok(())
 }
