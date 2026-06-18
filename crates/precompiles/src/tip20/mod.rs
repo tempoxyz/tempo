@@ -994,10 +994,6 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
-    pub fn balance_slot(&self, account: Address) -> U256 {
-        self.balances[account].slot()
-    }
-
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }

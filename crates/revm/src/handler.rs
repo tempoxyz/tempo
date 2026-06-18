@@ -1638,7 +1638,7 @@ where
                     let mut credits = StorageCredits::new();
                     credits.watch_deferred_clear_slot(
                         fee_token,
-                        TIP20Token::from_address_unchecked(fee_token).balance_slot(fee_payer),
+                        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
                     )?;
 
                     if fee_payer == tx.caller
@@ -1658,7 +1658,7 @@ where
                     let validator_token = fee_manager.get_validator_token(block.beneficiary())?;
                     credits.watch_deferred_clear_slot(
                         TIP_FEE_MANAGER_ADDRESS,
-                        fee_manager.collected_fees_slot(block.beneficiary(), validator_token),
+                        fee_manager.collected_fees[block.beneficiary()][validator_token].slot(),
                     )?;
 
                     Ok::<_, TempoPrecompileError>(())

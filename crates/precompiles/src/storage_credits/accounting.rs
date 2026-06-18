@@ -9,8 +9,8 @@
 //!   so precompile-driven storage writes honor the same accounting.
 
 use super::{
-    ACCOUNT_SPACE, CreditMode, POST_TX_SLOT_SPACE, POST_TX_STATUS_SPACE, PostTxStatus,
-    StorageCredits, TransientState,
+    ACCOUNT_SPACE, CreditMode, DEFERRED_CLEAR_SLOT_SPACE, DEFERRED_CLEAR_STATUS_SPACE,
+    DeferredClear, StorageCredits, TransientState,
 };
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
@@ -135,22 +135,22 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     // Handle watched fee-restorable slots before regular TIP-1060 accounting.
     if let Some(key) = key {
-        let post_tx_status_slot = StorageCredits::slot(POST_TX_STATUS_SPACE, owner);
-        let post_tx_slot = StorageCredits::slot(POST_TX_SLOT_SPACE, owner);
+        let deferred_clear_status_slot = StorageCredits::slot(DEFERRED_CLEAR_STATUS_SPACE, owner);
+        let deferred_clear_slot = StorageCredits::slot(DEFERRED_CLEAR_SLOT_SPACE, owner);
 
-        let status: PostTxStatus = backend
-            .tload(STORAGE_CREDITS_ADDRESS, post_tx_status_slot)
+        let status: DeferredClear = backend
+            .tload(STORAGE_CREDITS_ADDRESS, deferred_clear_status_slot)
             .try_into()
             .map_err(|_| B::Error::fatal_external())?;
 
-        let is_watched = status != PostTxStatus::Unwatched
-            && backend.tload(STORAGE_CREDITS_ADDRESS, post_tx_slot) == key;
+        let is_watched = status != DeferredClear::Unwatched
+            && backend.tload(STORAGE_CREDITS_ADDRESS, deferred_clear_slot) == key;
 
         let new_status = match (is_watched, values.is_new_zero(), status) {
             // x→0 on a watched slot: defer the clear action.
-            (true, true, _) => Some(PostTxStatus::PendingClear),
+            (true, true, _) => Some(DeferredClear::Pending),
             // x→0→x churn on a watched slot: cancel the pending clear.
-            (true, false, PostTxStatus::PendingClear) => Some(PostTxStatus::Watched),
+            (true, false, DeferredClear::Pending) => Some(DeferredClear::Watched),
             // Otherwise, proceed normally.
             _ => None,
         };
@@ -158,7 +158,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         if let Some(status_to_write) = new_status {
             backend.tstore(
                 STORAGE_CREDITS_ADDRESS,
-                post_tx_status_slot,
+                deferred_clear_status_slot,
                 status_to_write.into(),
             );
             return Ok(());
@@ -227,14 +227,14 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCOUNT_SPACE, CreditMode, PostTxStatus, StorageCredits};
+    use super::{ACCOUNT_SPACE, CreditMode, DeferredClear, StorageCredits};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
         storage::{
             Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
         },
-        storage_credits::POST_TX_STATUS_SPACE,
+        storage_credits::DEFERRED_CLEAR_STATUS_SPACE,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -259,9 +259,9 @@ mod tests {
             assert_eq!(credits.balance_of(owner)?, 0);
             assert_eq!(
                 credits
-                    .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, owner)
+                    .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, owner)
                     .t_read()?,
-                PostTxStatus::PendingClear
+                DeferredClear::Pending
             );
 
             let mut state = credits.credit_state_of(owner)?;
@@ -308,9 +308,9 @@ mod tests {
             assert_eq!(credits.credit_state_of(owner)?.pending_refunds, 0);
             assert_eq!(
                 credits
-                    .slot_handler::<PostTxStatus>(POST_TX_STATUS_SPACE, owner)
+                    .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, owner)
                     .t_read()?,
-                PostTxStatus::Watched
+                DeferredClear::Watched
             );
             Ok::<_, TempoPrecompileError>(())
         })?;

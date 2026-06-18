@@ -51,7 +51,7 @@ pub fn apply_refund<DB: Database, I>(
 
     let mut refunds = 0i64;
     for (key, word) in slots.iter() {
-        if !StorageCredits::is_account_space(*key) {
+        if StorageCredits::is_deferred_clear_space(*key) {
             continue;
         }
 
