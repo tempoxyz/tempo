@@ -16,8 +16,8 @@ use crate::{
     },
 };
 
-type FinalizationCertificate = Finalization<Scheme<PublicKey, MinSig>, Digest>;
-type FinalizationsArchive<TContext> = immutable::Archive<TContext, Digest, FinalizationCertificate>;
+type FinalizationsArchive<TContext> =
+    immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>;
 
 /// Consensus state prepared for inclusion in an execution snapshot.
 pub struct State {
@@ -40,11 +40,12 @@ pub struct State {
 /// Consensus archive entry to copy into the snapshot archive.
 pub struct ArchiveEntry(ArchiveEntryKind);
 
+struct Certificate {
+    height: u64,
+    finalization: Finalization<Scheme<PublicKey, MinSig>, Digest>,
+}
 enum ArchiveEntryKind {
-    Finalization {
-        height: u64,
-        finalization: FinalizationCertificate,
-    },
+    Certificate(Box<Certificate>),
     Block(Box<Block>),
 }
 
@@ -142,10 +143,11 @@ where
 
     while let Some(entry) = entries.recv().await {
         match entry.0 {
-            ArchiveEntryKind::Finalization {
-                height,
-                finalization,
-            } => {
+            ArchiveEntryKind::Certificate(cert) => {
+                let Certificate {
+                    height,
+                    finalization,
+                } = *cert;
                 let key = finalization.proposal.payload;
                 finalizations
                     .put(height, key, finalization)
@@ -203,10 +205,13 @@ where
             })?
         {
             archive_entries
-                .send(ArchiveEntry(ArchiveEntryKind::Finalization {
-                    height,
-                    finalization,
-                }))
+                .send(ArchiveEntry(ArchiveEntryKind::Certificate(
+                    Certificate {
+                        height,
+                        finalization,
+                    }
+                    .into(),
+                )))
                 .await
                 .map_err(|_| {
                     eyre!(
