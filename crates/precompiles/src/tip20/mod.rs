@@ -527,6 +527,8 @@ impl TIP20Token {
     }
 
     /// Internal helper to mint new tokens and update balances.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn _mint(&mut self, to: &Recipient, total_supply: U256, amount: U256) -> Result<()> {
         let new_supply = total_supply
             .checked_add(amount)
