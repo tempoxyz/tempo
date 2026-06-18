@@ -29,7 +29,6 @@ use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
-use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
@@ -315,8 +314,7 @@ where
             .wrap_err("event contained a malformed finalization certificate")?;
 
         let height = Height::new(certified.block.number());
-        let consensus_block =
-            Block::from_execution_block_unchecked(SealedBlock::seal_slow(certified.block), None);
+        let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"
