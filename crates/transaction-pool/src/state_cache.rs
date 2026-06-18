@@ -3,7 +3,10 @@
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::Cell,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -49,11 +52,17 @@ pub(crate) struct StateCacheDb<'a, DB> {
     cache: &'a StateCache,
     /// The underlying database.
     db: DB,
+    /// Last storage read served by this adapter.
+    last_storage: Cell<Option<((Address, U256), U256)>>,
 }
 
 impl<'a, DB> StateCacheDb<'a, DB> {
     pub(crate) const fn new(cache: &'a StateCache, db: DB) -> Self {
-        Self { cache, db }
+        Self {
+            cache,
+            db,
+            last_storage: Cell::new(None),
+        }
     }
 }
 
@@ -95,10 +104,21 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        if let Some(value) = self.cache.storage.get(&(address, index)) {
-            return Ok(*value);
+        if let Some(((cached_address, cached_index), value)) = self.last_storage.get()
+            && cached_address == address
+            && cached_index == index
+        {
+            return Ok(value);
         }
+
+        if let Some(value) = self.cache.storage.get(&(address, index)) {
+            let value = *value;
+            self.last_storage.set(Some(((address, index), value)));
+            return Ok(value);
+        }
+
         let value = self.db.storage_ref(address, index)?;
+        self.last_storage.set(Some(((address, index), value)));
         if self.cache.storage_count.load(Ordering::Relaxed) < StateCache::MAX_STORAGE_SLOTS
             && self.cache.storage.insert((address, index), value).is_none()
         {
