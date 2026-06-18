@@ -88,8 +88,10 @@ pub(crate) fn payload_budget_decision(
 ) -> PayloadBudgetDecision {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let validation_latency_estimate =
-        validation_latency.and_then(|estimate| estimate.estimate(current_workload));
+    let validation_latency_estimate = (current_workload != ValidationLatencyWorkload::default())
+        .then_some(validation_latency)
+        .flatten()
+        .and_then(|estimate| estimate.estimate(current_workload));
     let predicted_validator_work = validation_latency_estimate
         .map(|estimate| estimate.min(predicted_builder_work))
         .unwrap_or(predicted_builder_work);
@@ -219,6 +221,29 @@ mod tests {
         assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
         assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
         assert_eq!(decision.total_reserved, Duration::from_millis(215));
+    }
+
+    #[test]
+    fn payload_budget_ignores_empty_workload_validator_feedback() {
+        let empty = ValidationLatencyWorkload::default();
+        let validation_latency = validation_latency_estimate(empty, Duration::from_millis(1));
+
+        let decision = payload_budget_decision(
+            Duration::from_millis(500),
+            Duration::from_millis(470),
+            1_000_000,
+            MarshalPersistEstimator::default(),
+            0,
+            validation_latency,
+            empty,
+        );
+
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(30));
+        assert_eq!(
+            decision.predicted_validator_work,
+            decision.predicted_builder_work
+        );
+        assert_eq!(decision.total_reserved, Duration::from_millis(530));
     }
 
     #[test]
