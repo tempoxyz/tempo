@@ -585,6 +585,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Computes the channel id including chain and precompile domain separation.
+    #[cold]
+    #[inline(never)]
     #[expect(clippy::too_many_arguments)]
     fn compute_channel_id_inner(
         &self,
