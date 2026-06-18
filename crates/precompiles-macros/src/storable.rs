@@ -226,6 +226,14 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
+        impl #impl_generics #enum_name #ty_generics #where_clause {
+            #[cold]
+            #[inline(never)]
+            fn __invalid_storable_discriminant() -> crate::error::TempoPrecompileError {
+                crate::error::TempoPrecompileError::enum_conversion_error()
+            }
+        }
+
         impl #impl_generics crate::storage::StorableType for #enum_name #ty_generics #where_clause {
             const LAYOUT: crate::storage::Layout = crate::storage::Layout::Bytes(1);
 
@@ -246,7 +254,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
                 let value = <u8 as crate::storage::Storable>::load(storage, slot, ctx)?;
                 match value {
                     #(discriminant if discriminant == Self::#variant_names as u8 => Ok(Self::#variant_names),)*
-                    _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
+                    _ => Err(Self::__invalid_storable_discriminant()),
                 }
             }
 
