@@ -1079,6 +1079,8 @@ impl TIP20Token {
     ///
     /// Returns `Some(to)` when the caller should proceed with the regular mint.
     /// Returns `None` when funds were minted and blocked, and the caller should return immediately.
+    #[cold]
+    #[inline(never)]
     fn validate_mint(
         &mut self,
         msg_sender: Address,
