@@ -134,45 +134,45 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let mut credit =
         u64::from_word(storage_credit_state_load.data).map_err(|_| B::Error::fatal_external())?;
 
-    // Handle watched fee-restorable slots before regular TIP-1060 accounting.
-    if let Some(key) = key
-        && (owner.is_tip20()
-            || owner == ACCOUNT_KEYCHAIN_ADDRESS
-            || owner == TIP_FEE_MANAGER_ADDRESS)
-    {
-        let deferred_status_slot = StorageCredits::slot(DEFERRED_STATUS_SPACE, owner);
-        let deferred_slot = StorageCredits::slot(DEFERRED_SLOT_SPACE, owner);
-
-        let status: DeferredClear = backend
-            .tload(STORAGE_CREDITS_ADDRESS, deferred_status_slot)
-            .try_into()
-            .map_err(|_| B::Error::fatal_external())?;
-
-        let is_watched = status != DeferredClear::None
-            && backend.tload(STORAGE_CREDITS_ADDRESS, deferred_slot) == key;
-
-        let new_status = match (is_watched, values.is_new_zero(), status) {
-            // x→0 on a watched slot: defer the clear action.
-            (true, true, _) => Some(DeferredClear::Pending),
-            // x→0→x churn on a watched slot: cancel the pending clear.
-            (true, false, DeferredClear::Pending) => Some(DeferredClear::Watched),
-            // Otherwise, proceed normally.
-            _ => None,
-        };
-
-        if let Some(status_to_write) = new_status {
-            backend.tstore(
-                STORAGE_CREDITS_ADDRESS,
-                deferred_status_slot,
-                status_to_write.into(),
-            );
-            return Ok(());
-        }
-    }
-
     let mut was_changed = false;
     if values.is_new_zero() {
-        // x→0: storage deletion always mints a new credit.
+        // x→0: storage deletion doesn't mint on watched slots.
+        if let Some(key) = key
+            && (owner.is_tip20()
+                || owner == ACCOUNT_KEYCHAIN_ADDRESS
+                || owner == TIP_FEE_MANAGER_ADDRESS)
+        {
+            let deferred_status_slot = StorageCredits::slot(DEFERRED_STATUS_SPACE, owner);
+            let deferred_slot = StorageCredits::slot(DEFERRED_SLOT_SPACE, owner);
+
+            let status: DeferredClear = backend
+                .tload(STORAGE_CREDITS_ADDRESS, deferred_status_slot)
+                .try_into()
+                .map_err(|_| B::Error::fatal_external())?;
+
+            let is_watched = status != DeferredClear::None
+                && backend.tload(STORAGE_CREDITS_ADDRESS, deferred_slot) == key;
+
+            let new_status = match (is_watched, values.is_new_zero(), status) {
+                // x→0 on a watched slot: defer the clear action.
+                (true, true, _) => Some(DeferredClear::Pending),
+                // x→0→x churn on a watched slot: cancel the pending clear.
+                (true, false, DeferredClear::Pending) => Some(DeferredClear::Watched),
+                // Otherwise, proceed normally.
+                _ => None,
+            };
+
+            if let Some(status_to_write) = new_status {
+                backend.tstore(
+                    STORAGE_CREDITS_ADDRESS,
+                    deferred_status_slot,
+                    status_to_write.into(),
+                );
+                return Ok(());
+            }
+        }
+
+        // x→0: storage deletion always mints a new credit on regular slots.
         credit = credit.saturating_add(1);
         was_changed = true;
     } else {
