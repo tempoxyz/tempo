@@ -10,6 +10,7 @@ use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
+use tracing::info;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
@@ -39,7 +40,7 @@ pub(crate) struct Args {
     consensus_datadir: Option<PathBuf>,
 }
 
-pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
+pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
     let datadir = matches
@@ -51,9 +52,8 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
     let manifest_url = matches.get_one::<String>("manifest_url").cloned();
     let manifest_path = matches.get_one::<PathBuf>("manifest_path").cloned();
 
-    let runner = CliRunner::try_default_runtime().wrap_err("failed to build obtain runtime")?;
     runner.block_on(async move {
-        eprintln!("running execution layer download...");
+        info!("running execution layer download...");
 
         let start = Instant::now();
         args.inner
@@ -61,13 +61,13 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
             .await
             .wrap_err("execution layer download failed")?;
 
-        eprintln!(
+        info!(
             "execution layer download finished in {}",
             display_duration(start.elapsed())
         );
 
         if args.skip_consensus {
-            eprintln!("--skip-consensus set. skipping consensus layer");
+            info!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
@@ -132,7 +132,7 @@ fn write_bootstrap_finalization(
     fs::write(&path, consensus_manifest.finalization.as_ref())
         .wrap_err_with(|| format!("failed to write finalization to {}", path.display()))?;
 
-    eprintln!("persisted bootstrap finalization: {}", path.display());
+    info!(path = %path.display(), "persisted bootstrap finalization");
     Ok(())
 }
 
