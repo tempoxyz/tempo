@@ -14,7 +14,8 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
+        payload_budget_decision, payload_validation_latency_duration,
+        scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -1081,9 +1082,11 @@ where
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
-        let validation_latency_duration = validation_latency
-            .and_then(|estimate| estimate.estimate(final_workload))
-            .unwrap_or(validation_work_duration);
+        let validation_latency_duration = payload_validation_latency_duration(
+            validation_latency,
+            final_workload,
+            validation_work_duration,
+        );
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();

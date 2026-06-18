@@ -107,6 +107,26 @@ pub(crate) fn payload_budget_decision(
     }
 }
 
+/// Chooses the validation latency recorded on the built payload.
+///
+/// Empty payloads still have replayable builder work, but learned empty
+/// validation feedback can be much smaller than that work. Keep the final
+/// latency at least equal to the measured replayable work for empty payloads so
+/// proposal return budgeting does not inherit sub-millisecond empty samples.
+pub(crate) fn payload_validation_latency_duration(
+    validation_latency: Option<ValidationLatencyEstimate>,
+    final_workload: ValidationLatencyWorkload,
+    validation_work_duration: Duration,
+) -> Duration {
+    if final_workload == ValidationLatencyWorkload::default() {
+        return validation_work_duration;
+    }
+
+    validation_latency
+        .and_then(|estimate| estimate.estimate(final_workload))
+        .unwrap_or(validation_work_duration)
+}
+
 /// Computes the observed total-work to tx-cutoff-work multiplier.
 ///
 /// `work_at_tx_cutoff` is measured when pool transaction execution stops.
@@ -242,6 +262,36 @@ mod tests {
             Duration::from_millis(135)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
+    }
+
+    #[test]
+    fn final_validation_latency_uses_work_duration_for_empty_payloads() {
+        let empty = ValidationLatencyWorkload::default();
+        let validation_latency = validation_latency_estimate(empty, Duration::from_micros(655));
+
+        assert_eq!(
+            payload_validation_latency_duration(
+                validation_latency,
+                empty,
+                Duration::from_millis(29)
+            ),
+            Duration::from_millis(29)
+        );
+    }
+
+    #[test]
+    fn final_validation_latency_uses_feedback_for_non_empty_payloads() {
+        let workload = ValidationLatencyWorkload::new(100, 1);
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(11));
+
+        assert_eq!(
+            payload_validation_latency_duration(
+                validation_latency,
+                workload,
+                Duration::from_millis(29)
+            ),
+            Duration::from_millis(11)
+        );
     }
 
     #[test]
