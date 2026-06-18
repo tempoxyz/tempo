@@ -15,7 +15,7 @@ use reth_node_builder::ConfigureEvm as _;
 use reth_provider::{HeaderProvider as _, StateProviderBox, StateProviderFactory as _};
 use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_precompiles::{
-    storage::StorageCtx,
+    storage::{StorageActions, StorageCtx},
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 use tempo_primitives::TempoHeader;
@@ -172,6 +172,7 @@ where
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || read_fn(&C::default()),
     )?;
     Ok((header.number(), block_hash, res))
