@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     time::Instant,
 };
@@ -244,44 +245,96 @@ async fn install_consensus_archive(
     consensus_dir: &Path,
     loaded: &LoadedConsensusManifest,
 ) -> eyre::Result<()> {
-    let archive_bytes = match &loaded.archive_source {
-        ConsensusArchiveSource::Path(path) => fs::read(path)
-            .wrap_err_with(|| format!("failed to read consensus archive {}", path.display()))?,
-        ConsensusArchiveSource::Url(url) => {
-            let client = reqwest::Client::new();
-            client
-                .get(url)
-                .send()
-                .await
-                .wrap_err("failed to fetch consensus archive")?
-                .error_for_status()
-                .wrap_err("invalid response from consensus archive url")?
-                .bytes()
-                .await
-                .wrap_err("failed reading consensus archive body")?
-                .to_vec()
-        }
-    };
+    let (archive_file, actual_archive_hash) =
+        write_consensus_archive_to_temp(&loaded.archive_source).await?;
 
     if let Some(expected) = &loaded.manifest.consensus_archive.blake3 {
-        let actual = blake3::hash(&archive_bytes).to_hex().to_string();
         ensure!(
-            &actual == expected,
-            "consensus archive checksum mismatch: expected {expected}, got {actual}",
+            &actual_archive_hash == expected,
+            "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
         );
     }
 
     fs::create_dir_all(consensus_dir)
         .wrap_err_with(|| format!("failed to create {}", consensus_dir.display()))?;
-    let partitions = consensus_archive_storage_partitions(&archive_bytes)?;
+    let partitions = consensus_archive_storage_partitions(archive_file.path())?;
     clear_consensus_partitions(consensus_dir, &partitions)?;
-    extract_zstd_tar_archive(&archive_bytes, consensus_dir)?;
+    extract_zstd_tar_archive(archive_file.path(), consensus_dir)?;
     verify_consensus_output_files(
         consensus_dir,
         &loaded.manifest.consensus_archive.output_files,
     )?;
 
     info!("persisted consensus archive");
+    Ok(())
+}
+
+async fn write_consensus_archive_to_temp(
+    source: &ConsensusArchiveSource,
+) -> eyre::Result<(tempfile::NamedTempFile, String)> {
+    let mut archive_file =
+        tempfile::NamedTempFile::new().wrap_err("failed to create temporary consensus archive")?;
+    let mut hasher = blake3::Hasher::new();
+
+    match source {
+        ConsensusArchiveSource::Path(path) => {
+            let mut source_file = fs::File::open(path)
+                .wrap_err_with(|| format!("failed to open consensus archive {}", path.display()))?;
+            write_reader_to_temp(&mut source_file, &mut archive_file, &mut hasher)
+                .wrap_err_with(|| format!("failed to copy consensus archive {}", path.display()))?;
+        }
+        ConsensusArchiveSource::Url(url) => {
+            let client = reqwest::Client::new();
+            let mut resp = client
+                .get(url)
+                .send()
+                .await
+                .wrap_err("failed to fetch consensus archive")?
+                .error_for_status()
+                .wrap_err("invalid response from consensus archive url")?;
+
+            while let Some(chunk) = resp
+                .chunk()
+                .await
+                .wrap_err("failed reading consensus archive body")?
+            {
+                hasher.update(&chunk);
+                archive_file
+                    .as_file_mut()
+                    .write_all(&chunk)
+                    .wrap_err("failed writing temporary consensus archive")?;
+            }
+        }
+    }
+
+    archive_file
+        .as_file_mut()
+        .flush()
+        .wrap_err("failed to flush temporary consensus archive")?;
+
+    Ok((archive_file, hasher.finalize().to_hex().to_string()))
+}
+
+fn write_reader_to_temp<R: Read>(
+    reader: &mut R,
+    archive_file: &mut tempfile::NamedTempFile,
+    hasher: &mut blake3::Hasher,
+) -> eyre::Result<()> {
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .wrap_err("failed reading consensus archive")?;
+        if n == 0 {
+            break;
+        }
+
+        hasher.update(&buf[..n]);
+        archive_file
+            .as_file_mut()
+            .write_all(&buf[..n])
+            .wrap_err("failed writing temporary consensus archive")?;
+    }
     Ok(())
 }
 
@@ -307,8 +360,10 @@ fn clear_consensus_partitions(
     Ok(())
 }
 
-fn consensus_archive_storage_partitions(bytes: &[u8]) -> eyre::Result<BTreeSet<String>> {
-    let decoder = zstd::stream::read::Decoder::new(bytes)?;
+fn consensus_archive_storage_partitions(archive_path: &Path) -> eyre::Result<BTreeSet<String>> {
+    let file = fs::File::open(archive_path)
+        .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
+    let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
         .entries()
@@ -329,8 +384,10 @@ fn consensus_archive_storage_partitions(bytes: &[u8]) -> eyre::Result<BTreeSet<S
     Ok(partitions)
 }
 
-fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()> {
-    let decoder = zstd::stream::read::Decoder::new(bytes)?;
+fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Result<()> {
+    let file = fs::File::open(archive_path)
+        .wrap_err_with(|| format!("failed to open {}", archive_path.display()))?;
+    let decoder = zstd::stream::read::Decoder::new(file)?;
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
         .entries()
@@ -496,6 +553,13 @@ fn safe_relative_path(relative: &str) -> eyre::Result<PathBuf> {
 }
 
 #[cfg(test)]
+fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
+    let archive_file = tempfile::NamedTempFile::new().unwrap();
+    fs::write(archive_file.path(), bytes).unwrap();
+    archive_file
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::B256;
@@ -601,8 +665,9 @@ mod tests {
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
 
-        extract_zstd_tar_archive(&archive, target.path()).unwrap();
+        extract_zstd_tar_archive(archive_file.path(), target.path()).unwrap();
 
         assert_eq!(
             fs::read(target.path().join(partition_name).join("nested").join("00")).unwrap(),
@@ -626,8 +691,24 @@ mod tests {
         builder.finish().unwrap();
         let encoder = builder.into_inner().unwrap();
         let archive = encoder.finish().unwrap();
+        let archive_file = write_test_archive(&archive);
 
-        assert!(extract_zstd_tar_archive(&archive, target.path()).is_err());
+        assert!(extract_zstd_tar_archive(archive_file.path(), target.path()).is_err());
+    }
+
+    #[test]
+    fn write_consensus_archive_to_temp_copies_path_source_while_hashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("consensus.tar.zst");
+        fs::write(&source_path, b"archive").unwrap();
+
+        let (archive_file, hash) = futures::executor::block_on(write_consensus_archive_to_temp(
+            &ConsensusArchiveSource::Path(source_path),
+        ))
+        .unwrap();
+
+        assert_eq!(fs::read(archive_file.path()).unwrap(), b"archive");
+        assert_eq!(hash, blake3::hash(b"archive").to_hex().to_string());
     }
 
     #[test]
