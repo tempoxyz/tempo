@@ -280,12 +280,10 @@ impl TempoTxEnvelope {
         self.as_aa()
             .is_some_and(|tx| tx.tx().is_expiring_nonce_tx())
     }
-}
 
-impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
-    fn recover_signer(
-        &self,
-    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+    #[cold]
+    #[inline(never)]
+    fn recover_non_aa_signer(&self) -> Result<Address, RecoveryError> {
         match self {
             Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
             Self::Legacy(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
@@ -302,9 +300,9 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
         }
     }
 
-    fn recover_signer_unchecked(
-        &self,
-    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+    #[cold]
+    #[inline(never)]
+    fn recover_non_aa_signer_unchecked(&self) -> Result<Address, RecoveryError> {
         match self {
             Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE => Ok(Address::ZERO),
             Self::Legacy(tx) => {
@@ -322,6 +320,28 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::AA(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
+        }
+    }
+}
+
+impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
+    fn recover_signer(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        match self {
+            Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
+            _ => self.recover_non_aa_signer(),
+        }
+    }
+
+    fn recover_signer_unchecked(
+        &self,
+    ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        match self {
+            Self::AA(tx) => {
+                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
+            }
+            _ => self.recover_non_aa_signer_unchecked(),
         }
     }
 }
