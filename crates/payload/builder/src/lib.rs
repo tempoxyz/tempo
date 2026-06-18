@@ -1150,6 +1150,7 @@ where
         );
 
         drop(db);
+        self.executor.spawn_drop(state_provider);
         if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {

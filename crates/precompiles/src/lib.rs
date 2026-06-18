@@ -15,7 +15,7 @@ pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1060_storage_credits;
+pub mod storage_credits;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -35,12 +35,12 @@ use crate::{
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{StorageCtx, actions::StorageActions},
+    storage_credits::StorageCredits,
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
-    tip1060_storage_credits::TIP1060StorageCredits,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
@@ -206,10 +206,7 @@ pub fn extend_tempo_precompiles(
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg, actions.clone()))
         } else if *address == STORAGE_CREDITS_ADDRESS && cfg.spec.is_t7() {
-            Some(TIP1060StorageCredits::create_precompile(
-                &cfg,
-                actions.clone(),
-            ))
+            Some(StorageCredits::create_precompile(&cfg, actions.clone()))
         } else {
             None
         }
@@ -391,7 +388,7 @@ impl ReceivePolicyGuard {
     }
 }
 
-impl TIP1060StorageCredits {
+impl StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(
         cfg: &CfgEnv<TempoHardfork>,

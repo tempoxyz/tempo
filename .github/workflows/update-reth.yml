@@ -115,21 +115,33 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           set +e
-          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          OUTPUT=$(amp "$@" --stream-json 2>&1)
           AMP_EXIT=$?
           set -e
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
-            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
+            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}" >&2
           fi
-          # Print the final result text
+          # Print only the final result to stdout so callers can safely capture it.
           echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
           if [ "$AMP_EXIT" -ne 0 ]; then
-            echo "::warning::Amp exited with status $AMP_EXIT"
+            echo "::warning::Amp exited with status $AMP_EXIT" >&2
+            echo "::group::Amp errors" >&2
+            echo "$OUTPUT" | jq -r 'select(.type=="error") | .message // empty' 2>/dev/null >&2 || true
+            echo "$OUTPUT" | jq -r 'select(.type=="result" and .is_error == true) | .result // empty' 2>/dev/null >&2 || true
+            printf '%s\n' "$OUTPUT" | awk 'substr($0,1,1)!="{" { print }' >&2
+            echo "::endgroup::" >&2
           fi
           # Propagate error if amp failed
           IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
+          if [ "$IS_ERROR" = "true" ] && [ "$AMP_EXIT" -eq 0 ]; then
+            echo "::group::Amp errors" >&2
+            echo "$OUTPUT" | jq -r 'select(.type=="error") | .message // empty' 2>/dev/null >&2 || true
+            echo "$OUTPUT" | jq -r 'select(.type=="result" and .is_error == true) | .result // empty' 2>/dev/null >&2 || true
+            printf '%s\n' "$OUTPUT" | awk 'substr($0,1,1)!="{" { print }' >&2
+            echo "::endgroup::" >&2
+          fi
           if [ "$AMP_EXIT" -ne 0 ] || [ "$IS_ERROR" = "true" ]; then
             exit 1
           fi
