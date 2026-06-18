@@ -50,6 +50,12 @@ pub trait TempoTx {
     fn caller(&self) -> Address;
 }
 
+#[cold]
+#[inline(never)]
+fn non_aa_tx_env_calls(tx: &TempoTxEnv) -> core::iter::Once<(TxKind, &Bytes)> {
+    core::iter::once((tx.inner.kind, &tx.inner.data))
+}
+
 impl TempoTx for TempoTxEnv {
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
@@ -63,7 +69,7 @@ impl TempoTx for TempoTxEnv {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
             Either::Left(aa.aa_calls.iter().map(|call| (call.to, &call.input)))
         } else {
-            Either::Right(core::iter::once((self.inner.kind, &self.inner.data)))
+            Either::Right(non_aa_tx_env_calls(self))
         }
     }
 
