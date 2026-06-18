@@ -248,8 +248,7 @@ async fn resolve_finalized_new(
 
     // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
     // is available when reconstructing this consensus block.
-    let consensus_block =
-        Block::from_execution_block_unchecked(SealedBlock::seal_slow(certified_block.block), None);
+    let consensus_block = Block::from_execution_block_unchecked(certified_block.block, None);
     Ok((finalization, consensus_block).encode())
 }
 
