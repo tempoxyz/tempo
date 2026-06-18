@@ -3,7 +3,10 @@
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
 use revm::{Database, DatabaseRef, bytecode::Bytecode, state::AccountInfo};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    cell::{Cell, RefCell},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// Concurrent cache of raw state reads anchored to a specific tip.
 ///
@@ -49,11 +52,20 @@ pub(crate) struct StateCacheDb<'a, DB> {
     cache: &'a StateCache,
     /// The underlying database.
     db: DB,
+    /// Code hash of the last bytecode read served by this adapter.
+    last_code_hash: Cell<Option<B256>>,
+    /// Bytecode value for `last_code_hash`.
+    last_code: RefCell<Option<Bytecode>>,
 }
 
 impl<'a, DB> StateCacheDb<'a, DB> {
-    pub(crate) const fn new(cache: &'a StateCache, db: DB) -> Self {
-        Self { cache, db }
+    pub(crate) fn new(cache: &'a StateCache, db: DB) -> Self {
+        Self {
+            cache,
+            db,
+            last_code_hash: Cell::new(None),
+            last_code: RefCell::new(None),
+        }
     }
 }
 
@@ -78,10 +90,22 @@ impl<DB: DatabaseRef> DatabaseRef for StateCacheDb<'_, DB> {
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        if let Some(code) = self.cache.contracts.get(&code_hash) {
+        if self.last_code_hash.get() == Some(code_hash)
+            && let Some(code) = self.last_code.borrow().as_ref()
+        {
             return Ok(code.clone());
         }
+
+        if let Some(code) = self.cache.contracts.get(&code_hash) {
+            let code = code.clone();
+            self.last_code_hash.set(Some(code_hash));
+            *self.last_code.borrow_mut() = Some(code.clone());
+            return Ok(code);
+        }
+
         let code = self.db.code_by_hash_ref(code_hash)?;
+        self.last_code_hash.set(Some(code_hash));
+        *self.last_code.borrow_mut() = Some(code.clone());
         if self.cache.contract_count.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
             && self
                 .cache
