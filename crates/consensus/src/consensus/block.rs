@@ -5,7 +5,6 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes, keccak256};
-use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
 #[cfg(feature = "bal")]
 use commonware_codec::RangeCfg;
@@ -19,11 +18,9 @@ use commonware_cryptography::{
     Committable, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use reth_node_core::primitives::SealedBlock;
-use std::{
-    fmt::Display,
-    sync::{Arc, OnceLock},
-};
+use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
+use std::fmt::Display;
+use tempo_payload_types::EncodedBlock;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -58,20 +55,52 @@ impl BlockAccessListError {
     }
 }
 
-/// A Tempo block.
+/// Consensus block shared through commonware.
 ///
-// XXX: This is a refinement type around a reth [`SealedBlock`]
-// to hold the trait implementations required by commonwarexyz. Uses
-// Sealed because of the frequent accesses to the hash.
+/// This wraps the execution-layer block Tempo commits to, plus any consensus sidecars that are not
+/// part of the EL block body. Locally built blocks keep recovered senders so follow-up validation
+/// paths can avoid recovery work; blocks received from the network or storage may only be sealed.
+///
+/// The shared encoded-byte cache lets payload building, proposal broadcast, and commonware
+/// `EncodeSize` reuse the same execution-block RLP bytes once any path has encoded them.
 #[derive(Clone, Debug)]
-pub(crate) struct Block(Arc<BlockInner>);
+pub(crate) struct Block {
+    /// The execution-layer block, either sealed-only or fully recovered when built locally.
+    execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
+    /// Cached execution-layer RLP bytes when already encoded by the caller or a payload clone.
+    execution_block_encoded: EncodedBlock,
+    /// Optional block access list. Only provided if the network supports BALs.
+    #[cfg(feature = "bal")]
+    block_access_list: Option<Bytes>,
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_block == other.execution_block && {
+            #[cfg(feature = "bal")]
+            {
+                self.block_access_list == other.block_access_list
+            }
+            #[cfg(not(feature = "bal"))]
+            {
+                true
+            }
+        }
+    }
+}
+
+impl Eq for Block {}
 
 impl Block {
     /// Creates a block from an execution-layer block and optional BAL.
-    pub(crate) fn from_execution_block(
-        execution_block: SealedBlock<tempo_primitives::Block>,
+    pub(crate) fn from_execution_block<T>(
+        execution_block: T,
         block_access_list: Option<Bytes>,
-    ) -> Result<Self, BlockAccessListError> {
+    ) -> Result<Self, BlockAccessListError>
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
+        let execution_block = execution_block.into();
         validate_block_access_list_hash(
             execution_block.block_access_list_hash(),
             block_access_list.as_ref(),
@@ -83,17 +112,17 @@ impl Block {
         ))
     }
 
-    /// Creates a block and seeds the cached execution-layer RLP size.
-    pub(crate) fn from_execution_block_with_encoded_size(
-        execution_block: SealedBlock<tempo_primitives::Block>,
+    /// Creates a block with a shared execution-layer RLP byte cache.
+    pub(crate) fn from_execution_block_with_encoded_cache<T>(
+        execution_block: T,
         block_access_list: Option<Bytes>,
-        execution_block_encoded_size: usize,
-    ) -> Result<Self, BlockAccessListError> {
-        let block = Self::from_execution_block(execution_block, block_access_list)?;
-        let _ = block
-            .0
-            .execution_block_encoded_size
-            .set(execution_block_encoded_size);
+        execution_block_encoded: EncodedBlock,
+    ) -> Result<Self, BlockAccessListError>
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
+        let mut block = Self::from_execution_block(execution_block, block_access_list)?;
+        block.execution_block_encoded = execution_block_encoded;
         Ok(block)
     }
 
@@ -102,34 +131,51 @@ impl Block {
     /// This is for reconstructing blocks from persisted EL data that does not include
     /// commonware sidecars. Callers must not encode or broadcast a block whose header
     /// commits to a BAL unless the corresponding BAL bytes have been restored.
-    pub(crate) fn from_execution_block_unchecked(
-        execution_block: SealedBlock<tempo_primitives::Block>,
+    pub(crate) fn from_execution_block_unchecked<T>(
+        execution_block: T,
         block_access_list: Option<Bytes>,
-    ) -> Self {
+    ) -> Self
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
+        Self::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            block_access_list,
+            EncodedBlock::default(),
+        )
+    }
+
+    fn from_execution_block_unchecked_with_encoded_cache<T>(
+        execution_block: T,
+        block_access_list: Option<Bytes>,
+        execution_block_encoded: EncodedBlock,
+    ) -> Self
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
         #[cfg(not(feature = "bal"))]
         let _ = block_access_list;
 
-        Self(Arc::new(BlockInner {
-            execution_block,
-            execution_block_encoded_size: OnceLock::new(),
+        Self {
+            execution_block: execution_block.into(),
+            execution_block_encoded,
             #[cfg(feature = "bal")]
             block_access_list,
-        }))
+        }
     }
 
-    /// Consumes the block and returns only the execution-layer block.
-    pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        self.into_inner_parts().execution_block
+    /// Consumes the block and returns the wrapped execution block handle.
+    pub(crate) fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
+        self.execution_block
     }
 
     /// Consumes the block and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
-        let inner = self.into_inner_parts();
         (
-            inner.execution_block,
+            self.execution_block.into_sealed_block(),
             #[cfg(feature = "bal")]
             {
-                inner.block_access_list
+                self.block_access_list
             },
             #[cfg(not(feature = "bal"))]
             {
@@ -138,45 +184,51 @@ impl Block {
         )
     }
 
-    fn into_inner_parts(self) -> BlockInner {
-        Arc::try_unwrap(self.0).unwrap_or_else(|inner| (*inner).clone())
-    }
-
     /// Returns the (eth) hash of the wrapped block.
     pub(crate) fn block_hash(&self) -> B256 {
-        self.0.execution_block.hash()
+        self.execution_block.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn digest(&self) -> Digest {
-        Digest(self.0.execution_block.hash())
+        Digest(self.execution_block.hash())
     }
 
     /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn parent_digest(&self) -> Digest {
-        Digest(self.0.execution_block.parent_hash())
+        Digest(self.execution_block.parent_hash())
     }
 
     /// Returns the timestamp of the wrapped block.
     pub(crate) fn timestamp(&self) -> u64 {
-        self.0.execution_block.timestamp()
+        self.execution_block.timestamp()
     }
 
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
-        &self.0.execution_block
+        self.execution_block.sealed_block()
+    }
+
+    /// Returns the wrapped execution block handle.
+    pub(crate) fn execution_block(&self) -> &SealedOrRecoveredBlock<tempo_primitives::Block> {
+        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]
         {
-            self.0.block_access_list.as_ref()
+            self.block_access_list.as_ref()
         }
         #[cfg(not(feature = "bal"))]
         {
             None
         }
+    }
+
+    fn encoded_execution_block(&self) -> &Bytes {
+        self.execution_block_encoded
+            .get_or_encode(self.execution_block.sealed_block())
     }
 }
 
@@ -190,41 +242,23 @@ impl Display for Block {
     }
 }
 
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.execution_block == other.0.execution_block && {
-            #[cfg(feature = "bal")]
-            {
-                self.0.block_access_list == other.0.block_access_list
-            }
-            #[cfg(not(feature = "bal"))]
-            {
-                true
-            }
-        }
-    }
-}
-
-impl Eq for Block {}
-
 impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.execution_block
+        self.execution_block.sealed_block()
     }
 }
 
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
-        self.0.execution_block.encode(buf);
+        buf.put_slice(self.encoded_execution_block());
         #[cfg(feature = "bal")]
-        if self.0.execution_block.block_access_list_hash().is_some() {
+        if self.execution_block.block_access_list_hash().is_some() {
             // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
             // without the commonware BAL sidecar. Encoding one will panic here, which
             // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
-                .0
                 .block_access_list
                 .as_ref()
                 .expect("BAL bytes must be present when header contains a BAL hash");
@@ -279,10 +313,11 @@ impl Read for Block {
         #[cfg(not(feature = "bal"))]
         let block_access_list = None;
 
-        Self::from_execution_block_with_encoded_size(
+        let execution_block_encoded = EncodedBlock::new(bytes.into());
+        Self::from_execution_block_with_encoded_cache(
             inner,
             block_access_list,
-            execution_block_encoded_size,
+            execution_block_encoded,
         )
         .map_err(|err| err.codec_error())
     }
@@ -290,17 +325,13 @@ impl Read for Block {
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        let execution_block_size = *self
-            .0
-            .execution_block_encoded_size
-            .get_or_init(|| self.0.execution_block.length());
+        let execution_block_size = self.encoded_execution_block().len();
 
         #[cfg(feature = "bal")]
         {
             execution_block_size
-                + if self.0.execution_block.block_access_list_hash().is_some() {
-                    self.0
-                        .block_access_list
+                + if self.execution_block.block_access_list_hash().is_some() {
+                    self.block_access_list
                         .as_ref()
                         .expect("BAL bytes must be present when header contains a BAL hash")
                         .encode_size()
@@ -333,7 +364,7 @@ impl Digestible for Block {
 
 impl Heightable for Block {
     fn height(&self) -> Height {
-        Height::new(self.0.execution_block.number())
+        Height::new(self.execution_block.number())
     }
 }
 
@@ -372,34 +403,6 @@ impl commonware_consensus::CertifiableBlock for Block {
                     parent: (View::new(0), Digest(B256::ZERO)),
                 }
             }
-        }
-    }
-}
-
-/// Inner block data shared by cheap [`Block`] clones.
-#[derive(Debug)]
-struct BlockInner {
-    /// The execution-layer block.
-    execution_block: SealedBlock<tempo_primitives::Block>,
-    /// Cached execution-layer RLP size when it is already known by the caller.
-    execution_block_encoded_size: OnceLock<usize>,
-    /// Optional block access list. Only provided if the network supports BALs.
-    #[cfg(feature = "bal")]
-    block_access_list: Option<Bytes>,
-}
-
-impl Clone for BlockInner {
-    fn clone(&self) -> Self {
-        let execution_block_encoded_size = OnceLock::new();
-        if let Some(size) = self.execution_block_encoded_size.get() {
-            let _ = execution_block_encoded_size.set(*size);
-        }
-
-        Self {
-            execution_block: self.execution_block.clone(),
-            execution_block_encoded_size,
-            #[cfg(feature = "bal")]
-            block_access_list: self.block_access_list.clone(),
         }
     }
 }
