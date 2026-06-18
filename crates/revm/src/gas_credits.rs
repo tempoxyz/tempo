@@ -43,17 +43,14 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // Reinsert them afterwards because post-tx fee reimbursement still needs the watched-slot
-    // table to finalize pending clears after its disabled-accounting writes.
+    // Non-account-space marker slots are transaction-local only and can be dropped here.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
 
     let mut refunds = 0i64;
-    let mut deferred_slots: revm::primitives::StorageKeyMap<U256> = Default::default();
     for (key, word) in slots {
-        if StorageCredits::is_deferred_clear_space(key) {
-            deferred_slots.insert(key, word);
+        if !StorageCredits::is_account_space(key) {
             continue;
         }
 
@@ -82,12 +79,6 @@ pub fn apply_refund<DB: Database, I>(
         debug_assert_ne!(new_word, old_word);
 
         journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
-    }
-
-    if !deferred_slots.is_empty() {
-        journal
-            .transient_storage
-            .insert(STORAGE_CREDITS_ADDRESS, deferred_slots);
     }
 
     // Refund storage credit value per settled credit.

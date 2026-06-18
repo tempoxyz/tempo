@@ -1403,7 +1403,7 @@ where
 
                     if cfg.spec.is_t7() {
                         let mut credits = StorageCredits::new();
-                        credits.watch_deferred_clear_slot(
+                        credits.mark_non_creditable_slot(
                             fee_token,
                             TIP20Token::from_address_unchecked(fee_token).balances[fee_payer]
                                 .slot(),
@@ -1412,7 +1412,7 @@ where
                         if let Some(key_id) = watch_existing_keychain_key {
                             let keychain = AccountKeychain::new();
                             let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
-                            credits.watch_deferred_clear_slot(
+                            credits.mark_non_creditable_slot(
                                 ACCOUNT_KEYCHAIN_ADDRESS,
                                 keychain.spending_limits[limit_key][fee_token]
                                     .remaining
@@ -1420,7 +1420,7 @@ where
                             )?;
                         }
 
-                        credits.watch_deferred_clear_slot(
+                        credits.mark_non_creditable_slot(
                             TIP_FEE_MANAGER_ADDRESS,
                             fee_manager.collected_fees[block.beneficiary()][validator_token].slot(),
                         )?;
@@ -1659,7 +1659,7 @@ where
                             let limit_key =
                                 AccountKeychain::spending_limit_key(fee_payer, key_auth.key_id);
                             credits
-                                .watch_deferred_clear_slot(
+                                .mark_non_creditable_slot(
                                     ACCOUNT_KEYCHAIN_ADDRESS,
                                     keychain.spending_limits[limit_key][fee_token]
                                         .remaining
@@ -1743,22 +1743,6 @@ where
                             fee_token,
                             beneficiary,
                         )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-                }
-
-                if context.cfg.spec.is_t7() && !evm.collected_fee.is_zero() {
-                    let fee_token = evm
-                        .fee_token
-                        .expect("set in `validate_against_state_and_deduct_caller`");
-                    let mut credits = StorageCredits::new();
-                    credits
-                        .finalize_deferred_clears(fee_token)
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-                    credits
-                        .finalize_deferred_clears(ACCOUNT_KEYCHAIN_ADDRESS)
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-                    credits
-                        .finalize_deferred_clears(TIP_FEE_MANAGER_ADDRESS)
                         .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
                 }
 
