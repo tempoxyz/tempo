@@ -11,6 +11,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod current_committee;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -30,6 +31,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
+    current_committee::CurrentCommittee,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -64,8 +66,8 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
@@ -88,6 +90,7 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
     (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
+    (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
 ];
 
@@ -186,8 +189,9 @@ pub fn tempo_precompiles(
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
 /// lookup function that matches addresses to their precompile: TIP-20 tokens (by prefix),
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
-/// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
-/// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
+/// AccountKeychain, ValidatorConfigV2, CurrentCommittee, and StorageCredits. Each precompile is
+/// wrapped via the `tempo_precompile!` macro which enforces direct-call-only (no delegatecall) and
+/// sets up the storage context.
 ///
 /// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
@@ -225,6 +229,8 @@ pub fn extend_tempo_precompiles(
             Some(SignatureVerifier::create_precompile(&env))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&env))
+        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t6() {
+            Some(CurrentCommittee::create_precompile(&env))
         } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
             Some(StorageCredits::create_precompile(&env))
         } else {
@@ -352,6 +358,13 @@ impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
+    }
+}
+
+impl CurrentCommittee {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("CurrentCommittee", env: env, |input| { Self::new() })
     }
 }
 

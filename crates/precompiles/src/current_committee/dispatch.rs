@@ -1,0 +1,84 @@
+//! ABI dispatch for the [`CurrentCommittee`] precompile.
+
+use crate::{
+    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch_call, mutate_void,
+    view,
+};
+use alloy::{primitives::Address, sol_types::SolInterface};
+use revm::precompile::PrecompileResult;
+use tempo_contracts::precompiles::ICurrentCommittee::ICurrentCommitteeCalls;
+
+impl Precompile for CurrentCommittee {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+            return err;
+        }
+
+        dispatch_call(
+            calldata,
+            &[],
+            ICurrentCommitteeCalls::abi_decode,
+            |call| match call {
+                ICurrentCommitteeCalls::getCommitteeMembers(call) => {
+                    view(call, |_| self.get_committee_members())
+                }
+                ICurrentCommitteeCalls::setCommitteeMembers(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_committee_members(s, c))
+                }
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        expect_precompile_revert,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use alloy::{primitives::B256, sol_types::SolCall};
+    use tempo_contracts::precompiles::{CurrentCommitteeError, ICurrentCommittee};
+
+    #[test]
+    fn test_current_committee_selector_coverage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut committee = CurrentCommittee::new();
+
+            let unsupported = check_selector_coverage(
+                &mut committee,
+                ICurrentCommitteeCalls::SELECTORS,
+                "ICurrentCommittee",
+                ICurrentCommitteeCalls::name_by_selector,
+            );
+
+            assert_full_coverage([unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_committee_members_is_system_only() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut committee = CurrentCommittee::new();
+            let call = ICurrentCommittee::setCommitteeMembersCall {
+                epoch: 7,
+                publicKeys: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
+            };
+
+            let unauthorized = committee.call(&call.abi_encode(), Address::repeat_byte(0x01));
+            expect_precompile_revert(&unauthorized, CurrentCommitteeError::unauthorized());
+
+            let system = committee.call(&call.abi_encode(), Address::ZERO);
+            assert!(system.is_ok_and(|output| output.is_success()));
+
+            let ret = committee.get_committee_members()?;
+            assert_eq!(ret.epoch, 7);
+            assert_eq!(ret.publicKeys, call.publicKeys);
+            Ok(())
+        })
+    }
+}

@@ -19,6 +19,7 @@ workspace = true
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
@@ -42,6 +43,7 @@ alloy-consensus.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
 
 derive_more.workspace = true
@@ -54,7 +56,6 @@ alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
-alloy-sol-types.workspace = true
 criterion.workspace = true
 insta.workspace = true
 revm.workspace = true
