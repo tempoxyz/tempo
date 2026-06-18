@@ -5,8 +5,8 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _};
 use futures::{
     FutureExt as _, StreamExt as _,
-    future::BoxFuture,
-    stream::{BoxStream, Fuse},
+    future::{BoxFuture, Either},
+    stream::{self, Fuse, FusedStream},
 };
 use jsonrpsee::{
     core::{client, client::Subscription},
@@ -23,7 +23,8 @@ use tracing::{debug, debug_span, instrument, warn, warn_span};
 
 use crate::utils::OptionFuture;
 
-type EventStream = Fuse<BoxStream<'static, Result<Event, serde_json::Error>>>;
+pub(super) type EventStream =
+    Either<stream::Empty<Result<Event, serde_json::Error>>, Fuse<Subscription<Event>>>;
 
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -58,48 +59,18 @@ where
     }
 
     async fn run(mut self, mut reporter: impl Reporter<Activity = Event>) {
-        self.pending_connect.replace({
-            let url = self.url;
-            async move {
-                (
-                    1,
-                    WsClientBuilder::default()
-                        .build(&url)
-                        .await
-                        .map_err(Report::new),
-                )
-            }
-            .boxed()
-        });
         loop {
+            self.reconnect_or_resubscribe();
+            self.drain_waiters();
+
             select!(
                 biased;
-
-                error = OptionFuture::new(self.connection.as_ref().map(|c| c.on_disconnect()))
-                => {
-                    warn_span!("connection").in_scope(|| warn!(
-                        reason = %Report::new(error),
-                        url = self.url,
-                        "connection to upstream node disconnected, attempting reconnect",
-                    ));
-                    self.connection.take();
-                    self.pending_stream.take();
-                    self.pending_connect.replace({
-                        let url = self.url;
-                        async move {
-                             (1, WsClientBuilder::default().build(&url).await.map_err(Report::new))
-                        }.boxed()
-                    });
-                }
 
                 (attempts, client) = &mut self.pending_connect => {
                     match client {
                         Ok(client) => {
                             let client = Arc::new(client);
-                            self.connection.replace(client.clone());
-                            self.pending_stream.replace(async move {
-                                client.subscribe_events().await
-                            }.boxed());
+                            self.connection.replace(client);
                         }
                         Err(reason) => {
                             let reconnect_in = reconnect_delay(attempts);
@@ -115,10 +86,7 @@ where
                                 let url = self.url;
                                 async move {
                                     context.sleep(reconnect_in).await;
-                                    (
-                                        attempts.saturating_add(1),
-                                        WsClientBuilder::default().build(&url).await.map_err(Report::new),
-                                    )
+                                    connect(url, attempts.saturating_add(1)).await
                                 }.boxed()
                             });
                         }
@@ -130,32 +98,41 @@ where
                         Ok(stream) => {
                         debug_span!("consensus_event_subscription")
                             .in_scope(|| debug!("subscription for consensus events established"));
-                            self.event_stream = stream.boxed().fuse();
+                            self.event_stream = active_event_stream(stream);
                         }
                         Err(error) => {
                             warn_span!("event_subscription").in_scope(|| warn!(
                                 reason = %Report::new(error),
-                                "failed subscribing to events; retrying"
+                                "failed subscribing to events; reconnecting to upstream node"
                             ));
-                            if let Some(client) = self.connection.clone() {
-                                self.pending_stream.replace(async move {
-                                    client.subscribe_events().await
-                                }.boxed());
-                            }
+                            self.connection.take();
+                            self.event_stream = inactive_event_stream();
                         }
                     }
                 }
 
-                Some(event) = self.event_stream.next() => {
-                    debug_span!("consensus_event").in_scope(|| debug!(
-                        ?event, "received consensus event, forwarding to reporter"
-                    ));
+                event = self.event_stream.next(), if !self.event_stream.is_terminated() => {
                     match event {
-                        Ok(event) => reporter.report(event).await,
-                        Err(error) => warn_span!("event").in_scope(|| warn!(
-                            %error,
-                            "event stream encountered an error",
-                        )),
+                        Some(Ok(event)) => {
+                            debug_span!("consensus_event").in_scope(|| debug!(
+                                ?event, "received consensus event, forwarding to reporter"
+                            ));
+                            reporter.report(event).await;
+                        }
+                        Some(Err(error)) => {
+                            warn_span!("event").in_scope(|| warn!(
+                                %error,
+                                "event stream encountered an error",
+                            ));
+                            self.event_stream = inactive_event_stream();
+                        }
+                        None => {
+                            warn_span!("event_subscription").in_scope(|| warn!(
+                                url = self.url,
+                                "event stream terminated",
+                            ));
+                            self.event_stream = inactive_event_stream();
+                        }
                     }
                 }
 
@@ -167,17 +144,85 @@ where
                     }
                 }
             );
-
-            if let Some(client) = &self.connection {
-                for (height, response) in self.waiters.drain(..) {
-                    let client = client.clone();
-                    self.context
-                        .with_label("get_finalization")
-                        .spawn(move |_| get_finalization(client, height, response));
-                }
-            }
         }
     }
+
+    #[instrument(skip_all)]
+    fn reconnect_or_resubscribe(&mut self) {
+        if self.pending_connect.is_some() || self.pending_stream.is_some() {
+            return;
+        }
+
+        let Some(client) = self.connection.clone() else {
+            self.pending_connect.replace(connect(self.url, 1));
+            return;
+        };
+
+        if !self.event_stream.is_terminated() {
+            return;
+        }
+
+        if client.is_connected() {
+            self.pending_stream.replace(subscribe(client));
+        } else {
+            warn!(url = self.url, "upstream client disconnected, reconnecting");
+            self.connection.take();
+            self.pending_connect.replace(connect(self.url, 1));
+        }
+    }
+
+    /// Drains the waiters by fetching the finalizations they are waiting for.
+    ///
+    /// Only executes if a client is present and connected.
+    fn drain_waiters(&mut self) {
+        if self.pending_connect.is_some()
+            || self.pending_stream.is_some()
+            || self.event_stream.is_terminated()
+        {
+            return;
+        }
+
+        let Some(client) = &self.connection else {
+            return;
+        };
+        if !client.is_connected() {
+            return;
+        }
+
+        for (height, response) in self.waiters.drain(..) {
+            let client = client.clone();
+            self.context
+                .with_label("get_finalization")
+                .spawn(move |_| get_finalization(client, height, response));
+        }
+    }
+}
+
+fn connect(url: &'static str, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<WsClient>)> {
+    async move {
+        (
+            attempts,
+            WsClientBuilder::default()
+                .build(&url)
+                .await
+                .map_err(Report::new),
+        )
+    }
+    .boxed()
+}
+
+fn subscribe(
+    client: Arc<WsClient>,
+) -> BoxFuture<'static, Result<Subscription<Event>, client::Error>> {
+    async move { client.subscribe_events().await }.boxed()
+}
+
+pub(super) fn inactive_event_stream() -> EventStream {
+    Either::Left(stream::empty())
+}
+
+fn active_event_stream(stream: Subscription<Event>) -> EventStream {
+    Either::Right(stream.fuse())
 }
 
 fn reconnect_delay(attempts: u64) -> Duration {
