@@ -17,6 +17,7 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000"
+const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
@@ -1001,6 +1002,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         ""
     }
+    let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+        | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -1011,7 +1014,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+                --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
@@ -1204,6 +1207,7 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
+    --runner-metrics-url: string = $E2E_RUNNER_METRICS_URL # Runner node-exporter metrics URL (empty disables runner metrics)
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
@@ -1516,6 +1520,7 @@ def "main e2e" [
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url
         clickhouse_run: $clickhouse_run
+        runner_metrics_url: $runner_metrics_url
         run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
