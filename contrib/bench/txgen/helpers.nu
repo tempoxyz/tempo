@@ -252,6 +252,7 @@ def txgen-run-preset-pipeline [
     --max-concurrent-requests: int
     --bench-args: string = ""
     --bench-env: string = ""
+    --taskset-cpus: string = ""
     --git-ref: string = ""
     --git-ref-label: string = ""
     --build-profile: string = ""
@@ -284,7 +285,9 @@ def txgen-run-preset-pipeline [
 
     let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
+    let taskset_prefix = if $taskset_cpus != "" { ["taskset" "-c" $taskset_cpus] } else { [] }
     let txgen_cmd = [
+        ...$taskset_prefix
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
@@ -295,6 +298,7 @@ def txgen-run-preset-pipeline [
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
+        ...$taskset_prefix
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
