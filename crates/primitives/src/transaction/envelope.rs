@@ -271,8 +271,14 @@ impl TempoTxEnvelope {
         if let Some(aa) = self.as_aa() {
             Either::Left(aa.tx().calls.iter().map(|call| (call.to, &call.input)))
         } else {
-            Either::Right(core::iter::once((self.kind(), self.input())))
+            Either::Right(self.non_aa_calls())
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn non_aa_calls(&self) -> core::iter::Once<(TxKind, &Bytes)> {
+        core::iter::once((self.kind(), self.input()))
     }
 
     /// Returns true if this is an expiring nonce transaction.
