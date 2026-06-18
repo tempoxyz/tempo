@@ -405,6 +405,11 @@ jobs:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Reset workspace directory
+        run: |
+          sudo rm -rf "$GITHUB_WORKSPACE"
+          sudo -u actions-runner mkdir -p "$GITHUB_WORKSPACE"
+
       - name: Configure OTLP telemetry
         if: env.BENCH_OTLP == 'true'
         env:
