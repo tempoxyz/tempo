@@ -69,7 +69,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, e
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
-use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
+use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -1150,6 +1150,7 @@ where
         );
 
         drop(db);
+        self.executor.spawn_drop(state_provider);
         if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
@@ -1315,6 +1316,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
     match ctx.journaled_state.database.with_read_only_storage_ctx(
         ctx.cfg.spec,
+        StorageActions::disabled(),
         || -> Result<Option<Address>, PayloadBuilderError> {
             let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
 
