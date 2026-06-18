@@ -20,9 +20,7 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
     storage::FromWord,
-    storage_credits::{
-        StorageCredits, StorageCreditsBackend, TransientState, sstore_storage_credits,
-    },
+    storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
 /// Applies storage-credit settlement at the end of a transaction.
@@ -43,17 +41,12 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // Non-account-space marker slots are transaction-local only and can be dropped here.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
 
     let mut refunds = 0i64;
     for (key, word) in slots {
-        if !StorageCredits::is_account_space(key) {
-            continue;
-        }
-
         let transient_state =
             TransientState::try_from(word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let pending = transient_state.pending_refunds;

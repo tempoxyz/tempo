@@ -8,7 +8,7 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{ACCOUNT_SPACE, CreditMode, StorageCredits, TransientState};
+use super::{CreditMode, StorageCredits, TransientState};
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
 use revm::{
@@ -120,7 +120,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    let account_slot = StorageCredits::slot(ACCOUNT_SPACE, owner);
+    let account_slot = StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.gas_tracker().remaining() < additional_cold_cost;
     let storage_credit_state_load =
@@ -201,7 +201,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ACCOUNT_SPACE, CreditMode, StorageCredits};
+    use super::{CreditMode, StorageCredits};
     use crate::{
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
@@ -264,7 +264,7 @@ mod tests {
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.sstore(
             STORAGE_CREDITS_ADDRESS,
-            StorageCredits::slot(ACCOUNT_SPACE, owner),
+            StorageCredits::slot(owner),
             U256::ONE,
         )?;
         storage.set_spec(TempoHardfork::T7);

@@ -18,9 +18,6 @@ use std::{cell::Cell, rc::Rc};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
-/// Storage space for per-account persistent balance and transaction-local credit state.
-pub const ACCOUNT_SPACE: u8 = 0;
-
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
@@ -115,7 +112,7 @@ impl StorageCredits {
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
-        self.handler::<u64>(ACCOUNT_SPACE, account).read()
+        self.handler::<u64>(account).read()
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
@@ -153,42 +150,26 @@ impl StorageCredits {
         self.write_credit_state_of(msg_sender, state)
     }
 
-    /// Returns the storage key for `account` within a storage-credit namespace.
+    /// Returns the storage credit balance/state key for `account`.
     #[inline]
-    pub fn slot(storage_space: u8, account: Address) -> U256 {
-        let mut bytes = account.into_word().0;
-        bytes[0] = storage_space;
-        U256::from_be_bytes(bytes)
+    pub fn slot(account: Address) -> U256 {
+        U256::from_be_bytes(account.into_word().0)
     }
 
-    /// Returns true for storage-credit account-state keys.
+    /// Returns a full-slot handler for the account's storage-credit balance/state.
     #[inline]
-    pub fn is_account_space(key: U256) -> bool {
-        let bytes = key.to_be_bytes::<32>();
-        bytes[0] == ACCOUNT_SPACE
-    }
-
-    /// Returns a full-slot handler in the selected storage-credit namespace.
-    #[inline]
-    fn handler<T: StorableType>(&self, storage_space: u8, account: Address) -> T::Handler {
-        T::handle(
-            Self::slot(storage_space, account),
-            LayoutCtx::FULL,
-            self.address,
-        )
+    fn handler<T: StorableType>(&self, account: Address) -> T::Handler {
+        T::handle(Self::slot(account), LayoutCtx::FULL, self.address)
     }
 
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        self.handler::<U256>(ACCOUNT_SPACE, account)
-            .t_read()?
-            .try_into()
+        self.handler::<U256>(account).t_read()?.try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.handler::<U256>(ACCOUNT_SPACE, account)
-            .t_write(state.into())
+        self.handler::<U256>(account).t_write(state.into())
     }
 }
 
