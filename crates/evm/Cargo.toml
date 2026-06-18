@@ -20,6 +20,7 @@ workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 

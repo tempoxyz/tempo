@@ -81,6 +81,7 @@ impl TempoPayloadAttributes {
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
+                target_gas_limit: None,
             },
             payload_build_budget: None,
             validation_latency_estimate: None,
@@ -390,6 +391,7 @@ mod tests {
             withdrawals: Some(Default::default()),
             parent_beacon_block_root: Some(B256::random()),
             slot_number: None,
+            target_gas_limit: None,
         };
 
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
@@ -430,6 +432,7 @@ mod tests {
                 withdrawals: Some(vec![]),
                 parent_beacon_block_root: Some(B256::random()),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part,
             ..Default::default()
@@ -470,6 +473,7 @@ mod tests {
                 }]),
                 parent_beacon_block_root: Some(beacon_root),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 123,
             ..Default::default()
@@ -490,6 +494,7 @@ mod tests {
                 withdrawals: None,
                 parent_beacon_block_root: None,
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 0,
             ..Default::default()
