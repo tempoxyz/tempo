@@ -142,7 +142,12 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
+        self.policy_type_at(StorageCtx.spec())
+    }
+
+    /// Decodes the raw `policy_type` u8 for an already-known hardfork.
+    fn policy_type_at(&self, hardfork: TempoHardfork) -> Result<PolicyType> {
+        let is_t2 = hardfork.is_t2();
 
         match self.policy_type.try_into() {
             Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
@@ -729,30 +734,47 @@ impl TIP403Registry {
         if data.is_compound() {
             let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
-                AuthRole::Sender => {
-                    self.is_authorized_simple(compound.sender_policy_id, user, None)
-                }
-                AuthRole::Recipient => {
-                    self.is_authorized_simple(compound.recipient_policy_id, user, None)
-                }
-                AuthRole::MintRecipient => {
-                    self.is_authorized_simple(compound.mint_recipient_policy_id, user, None)
-                }
+                AuthRole::Sender => self.is_authorized_simple_at(
+                    compound.sender_policy_id,
+                    user,
+                    None,
+                    hardfork,
+                ),
+                AuthRole::Recipient => self.is_authorized_simple_at(
+                    compound.recipient_policy_id,
+                    user,
+                    None,
+                    hardfork,
+                ),
+                AuthRole::MintRecipient => self.is_authorized_simple_at(
+                    compound.mint_recipient_policy_id,
+                    user,
+                    None,
+                    hardfork,
+                ),
                 AuthRole::Transfer => {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
-                    let sender_auth =
-                        self.is_authorized_simple(compound.sender_policy_id, user, None)?;
+                    let sender_auth = self.is_authorized_simple_at(
+                        compound.sender_policy_id,
+                        user,
+                        None,
+                        hardfork,
+                    )?;
                     if hardfork.is_t2() && !sender_auth {
                         return Ok(false);
                     }
-                    let recipient_auth =
-                        self.is_authorized_simple(compound.recipient_policy_id, user, None)?;
+                    let recipient_auth = self.is_authorized_simple_at(
+                        compound.recipient_policy_id,
+                        user,
+                        None,
+                        hardfork,
+                    )?;
                     Ok(sender_auth && recipient_auth)
                 }
             };
         }
 
-        self.is_authorized_simple_inner(policy_id, user, &data)
+        self.is_authorized_simple_inner_at(policy_id, user, &data, hardfork)
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
@@ -775,6 +797,16 @@ impl TIP403Registry {
         user: Address,
         cache: Option<PolicyData>,
     ) -> Result<bool> {
+        self.is_authorized_simple_at(policy_id, user, cache, self.storage.spec())
+    }
+
+    fn is_authorized_simple_at(
+        &self,
+        policy_id: u64,
+        user: Address,
+        cache: Option<PolicyData>,
+        hardfork: TempoHardfork,
+    ) -> Result<bool> {
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
         }
@@ -782,22 +814,23 @@ impl TIP403Registry {
             Some(data) => data,
             None => self.get_policy_data(policy_id)?,
         };
-        self.is_authorized_simple_inner(policy_id, user, &data)
+        self.is_authorized_simple_inner_at(policy_id, user, &data, hardfork)
     }
 
     /// Authorization check for simple (non-compound) policies.
-    fn is_authorized_simple_inner(
+    fn is_authorized_simple_inner_at(
         &self,
         policy_id: u64,
         user: Address,
         data: &PolicyData,
+        hardfork: TempoHardfork,
     ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
-        match data.policy_type()? {
+        match data.policy_type_at(hardfork)? {
             PolicyType::WHITELIST => Ok(is_in_set),
             PolicyType::BLACKLIST => Ok(!is_in_set),
             PolicyType::COMPOUND => Err(TIP403RegistryError::incompatible_policy_type().into()),
