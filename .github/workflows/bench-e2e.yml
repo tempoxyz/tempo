@@ -85,12 +85,12 @@ on:
         description: Profiling.
         type: choice
         required: true
-        default: "Off"
+        default: "off"
         options:
-          - "Off"
-          - Samply
-          - Tracy
-          - Both
+          - "off"
+          - samply
+          - tracy
+          - both
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -233,11 +233,11 @@ on:
       tracy-seconds:
         type: string
         required: false
-        default: "30"
+        default: "10"
       tracy-offset:
         type: string
         required: false
-        default: "120"
+        default: ""
       otlp:
         type: string
         required: false
@@ -368,10 +368,10 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
-      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
-      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
@@ -381,7 +381,7 @@ jobs:
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
-      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
+      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
@@ -489,6 +489,22 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
 
+      - name: Resolve Tracy capture offset
+        if: env.BENCH_TRACY != 'off'
+        run: |
+          if [ -z "$BENCH_TRACY_OFFSET" ]; then
+            if [[ "$BENCH_DURATION" =~ ^[0-9]+$ ]]; then
+              echo "BENCH_TRACY_OFFSET=$((BENCH_DURATION / 2))" >> "$GITHUB_ENV"
+            else
+              echo "BENCH_TRACY_OFFSET=0" >> "$GITHUB_ENV"
+            fi
+            exit 0
+          fi
+          if [[ "$BENCH_DURATION" =~ ^[0-9]+$ ]] && [[ "$BENCH_TRACY_OFFSET" =~ ^[0-9]+$ ]] && [ "$BENCH_DURATION" -le "$BENCH_TRACY_OFFSET" ]; then
+            echo "::notice::tracy-offset ($BENCH_TRACY_OFFSET) is >= duration ($BENCH_DURATION); starting tracy-capture immediately"
+            echo "BENCH_TRACY_OFFSET=0" >> "$GITHUB_ENV"
+          fi
+
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -575,6 +591,45 @@ jobs:
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
           command -v bench
+
+      - name: Install tracy-capture
+        if: env.BENCH_TRACY != 'off'
+        run: |
+          if command -v tracy-capture &>/dev/null; then
+            command -v tracy-capture
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            rm -rf /tmp/tracy /tmp/tracy-capture-build
+            git clone --depth 1 https://github.com/wolfpld/tracy /tmp/tracy
+            if cmake -S /tmp/tracy/capture -B /tmp/tracy-capture-build -DCMAKE_BUILD_TYPE=Release; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::failed to configure tracy-capture"
+              exit 1
+            fi
+            sleep 5
+          done
+          cmake --build /tmp/tracy-capture-build --parallel
+
+          tracy_capture="$(find /tmp/tracy-capture-build -type f -name tracy-capture -perm -111 | head -n 1)"
+          if [ -z "$tracy_capture" ]; then
+            echo "::error::failed to build tracy-capture"
+            exit 1
+          fi
+
+          sudo install "$tracy_capture" /usr/local/bin/tracy-capture
+          command -v tracy-capture
+
+      - name: Configure Tracy CPU sampling
+        if: env.BENCH_TRACY != 'off'
+        run: |
+          sudo sysctl kernel.perf_event_paranoid=-1
+          sudo sysctl kernel.kptr_restrict=0
+          cat /proc/sys/kernel/perf_event_paranoid
+          cat /proc/sys/kernel/kptr_restrict
 
       - name: Resolve PR head branch
         id: pr-info
@@ -1049,14 +1104,21 @@ jobs:
             }
 
             // Tracy profile links (URLs produced by tempo.nu upload-tracy-profile).
-            // Single-runner e2e captures both local validators in one phase-level file.
+            // Local e2e enables Tracy only on validator a to keep one node per capture.
             let tracySection = '';
             if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
               const links = [];
               for (const run of runs) {
                 try {
-                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run} / local validators**: [Tracy Viewer](${url})`);
+                  const viewerUrl = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
+                  let profileUrl = '';
+                  try {
+                    profileUrl = fs.readFileSync(`${resultsDir}/tracy-${run}-profile-url.txt`, 'utf8').trim();
+                  } catch (e) {}
+                  if (viewerUrl) {
+                    const profileLink = profileUrl ? ` | [Tracy Profile](${profileUrl})` : '';
+                    links.push(`- **${run} / validator a**: [Tracy Viewer](${viewerUrl})${profileLink}`);
+                  }
                 } catch (e) {}
               }
               if (links.length > 0) {
