@@ -1006,7 +1006,7 @@ async fn verify_block<TContext: Pacer>(
             .collect(),
     );
     let execution_data = TempoExecutionData {
-        block: block.execution_block(),
+        block: block.execution_block().clone(),
         block_access_list: block.block_access_list().cloned(),
         validator_set,
     };

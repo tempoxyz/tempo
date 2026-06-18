@@ -193,8 +193,8 @@ impl Block {
     }
 
     /// Returns the wrapped execution block handle.
-    pub(crate) fn execution_block(&self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
-        self.execution_block.clone()
+    pub(crate) fn execution_block(&self) -> &SealedOrRecoveredBlock<tempo_primitives::Block> {
+        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
