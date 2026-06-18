@@ -63,6 +63,7 @@ impl EncodedBlockTransactionList {
         }
         .encode(out);
         block.header().encode(out);
+        // The remaining fields are the block body encoding: transactions, ommers, withdrawals.
         out.extend_from_slice(&self.rlp);
         body.ommers.encode(out);
         if let Some(withdrawals) = &body.withdrawals {
