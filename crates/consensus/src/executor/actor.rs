@@ -883,7 +883,7 @@ async fn forward_finalized<TContext: Pacer>(
         .add_ons_handle
         .beacon_engine_handle
         .new_payload(TempoExecutionData {
-            block: block.into(),
+            block,
             block_access_list,
             // can be omitted for finalized blocks
             validator_set: None,
