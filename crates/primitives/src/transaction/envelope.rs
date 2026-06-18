@@ -69,7 +69,7 @@ impl TryFrom<TxType> for TempoTxType {
             TxType::Legacy => Self::Legacy,
             TxType::Eip2930 => Self::Eip2930,
             TxType::Eip1559 => Self::Eip1559,
-            TxType::Eip4844 => return Err(UnsupportedTransactionType::new(TxType::Eip4844)),
+            TxType::Eip4844 => return Err(unsupported_tx_type(TxType::Eip4844)),
             TxType::Eip7702 => Self::Eip7702,
         })
     }
@@ -85,7 +85,7 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip1559 => Self::Eip1559,
             TempoTxType::Eip7702 => Self::Eip7702,
             TempoTxType::AA => {
-                return Err(UnsupportedTransactionType::new(TempoTxType::AA));
+                return Err(unsupported_tx_type(TempoTxType::AA));
             }
         })
     }
@@ -357,10 +357,7 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
         match value {
             EthereumTxEnvelope::Legacy(tx) => Ok(Self::Legacy(tx)),
             EthereumTxEnvelope::Eip2930(tx) => Ok(Self::Eip2930(tx)),
-            tx @ EthereumTxEnvelope::Eip4844(_) => Err(ValueError::new_static(
-                tx,
-                "EIP-4844 transactions are not supported",
-            )),
+            tx @ EthereumTxEnvelope::Eip4844(_) => Err(unsupported_eip4844_envelope(tx)),
             EthereumTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
             EthereumTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
         }
@@ -464,11 +461,25 @@ impl TryFrom<TypedTransaction> for TempoTypedTransaction {
             TypedTransaction::Eip2930(tx) => Self::Eip2930(tx),
             TypedTransaction::Eip1559(tx) => Self::Eip1559(tx),
             TypedTransaction::Eip4844(..) => {
-                return Err(UnsupportedTransactionType::new(TxType::Eip4844));
+                return Err(unsupported_tx_type(TxType::Eip4844));
             }
             TypedTransaction::Eip7702(tx) => Self::Eip7702(tx),
         })
     }
+}
+
+#[cold]
+#[inline(never)]
+fn unsupported_tx_type<T: fmt::Display>(tx_type: T) -> UnsupportedTransactionType<T> {
+    UnsupportedTransactionType::new(tx_type)
+}
+
+#[cold]
+#[inline(never)]
+fn unsupported_eip4844_envelope<Eip4844>(
+    tx: EthereumTxEnvelope<Eip4844>,
+) -> ValueError<EthereumTxEnvelope<Eip4844>> {
+    ValueError::new_static(tx, "EIP-4844 transactions are not supported")
 }
 
 impl From<TempoTxEnvelope> for TempoTypedTransaction {
