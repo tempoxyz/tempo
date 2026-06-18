@@ -5,7 +5,8 @@ use commonware_consensus::{
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::{Archive as _, Identifier, immutable};
-use eyre::{WrapErr as _, eyre};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
+use reth_provider::{BlockIdReader, BlockReader};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -22,6 +23,9 @@ type FinalizationsArchive<TContext> = immutable::Archive<TContext, Digest, Final
 pub struct State {
     /// Highest finalized execution block in the EL snapshot source.
     pub execution_finalized_height: u64,
+    /// Block digest for the highest finalized execution block in the EL
+    /// snapshot source.
+    pub execution_finalized_digest: Digest,
     /// Highest finalization certificate height known to consensus storage.
     pub tip_finalization_height: u64,
     /// Block digest carried by the highest finalization certificate known to
@@ -51,15 +55,22 @@ enum ArchiveEntryKind {
 /// finalization point and the anchor point. When the anchor is above execution
 /// finalized, selection proves the source prunable archive contains a
 /// contiguous path from execution finalized to the anchor.
-pub async fn prepare<TContext>(
+pub async fn prepare<TContext, P>(
     context: &TContext,
-    execution_finalized_height: u64,
+    execution_provider: P,
     archive_entries: tokio::sync::mpsc::Sender<ArchiveEntry>,
 ) -> eyre::Result<State>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let execution_finalized = execution_provider
+        .finalized_block_num_hash()
+        .wrap_err("failed to read finalized execution block num hash")?
+        .ok_or_eyre("no finalized execution state")?;
+    let execution_finalized_height = execution_finalized.number;
+    let execution_finalized_digest = Digest(execution_finalized.hash);
 
     let finalizations =
         init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache.clone())
@@ -86,6 +97,7 @@ where
 
     Ok(State {
         execution_finalized_height,
+        execution_finalized_digest,
         tip_finalization_height: selected.tip_height,
         tip_finalization_digest: selected.tip_digest,
         anchor_finalization_height: selected.anchor_height,

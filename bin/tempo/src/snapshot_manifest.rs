@@ -12,16 +12,13 @@ use commonware_runtime::Runner as _;
 use eyre::{Context as _, OptionExt, ensure};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
-    manifest::{SingleArchive, SnapshotManifest},
+    manifest::{OutputFileChecksum, SingleArchive, SnapshotManifest},
     manifest_cmd::SnapshotManifestCommand,
 };
 use reth_cli_runner::CliRunner;
 use reth_db::DatabaseEnv;
 use reth_node_builder::NodeTypesWithDBAdapter;
-use reth_provider::{
-    BlockIdReader,
-    providers::{BlockchainProvider, ReadOnlyConfig},
-};
+use reth_provider::providers::{BlockchainProvider, ReadOnlyConfig};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser, chainspec_from_chain_id};
@@ -123,21 +120,14 @@ impl Args {
             .wrap_err_with(|| format!("failed reading manifest: {}", manifest_path.display()))?;
 
         let chainspec = resolve_chainspec(chain, manifest.chain_id)?;
-        let execution_provider = execution_provider(chainspec, source_datadir)?;
-
         let consensus_dir = consensus_datadir.unwrap_or_else(|| source_datadir.join("consensus"));
         eprintln!(
             "reading snapshot consensus state. consensus dir: {}",
             consensus_dir.display(),
         );
 
-        let execution_finalized_num_hash = execution_provider
-            .finalized_block_num_hash()
-            .wrap_err("failed to read finalized execution finalized block num hash")?
-            .ok_or_eyre("no finalized execution state")?;
-
         let prepared_consensus =
-            prepare_snapshot_consensus_archive(&consensus_dir, execution_finalized_num_hash.number)
+            prepare_snapshot_consensus_archive(&consensus_dir, chainspec, source_datadir)
                 .wrap_err("failed to prepare consensus snapshot state")?;
         let consensus_state = &prepared_consensus.state;
 
@@ -146,8 +136,8 @@ impl Args {
                 .wrap_err("failed to package consensus storage")?;
 
         let consensus_manifest = TempoConsensusManifest {
-            execution_finalized_height: execution_finalized_num_hash.number,
-            execution_finalized_digest: execution_finalized_num_hash.hash,
+            execution_finalized_height: consensus_state.execution_finalized_height,
+            execution_finalized_digest: consensus_state.execution_finalized_digest.0,
             tip_finalization_height: consensus_state.tip_finalization_height,
             tip_finalization_digest: consensus_state.tip_finalization_digest.0,
             anchor_finalization_height: consensus_state.anchor_finalization_height,
@@ -155,20 +145,23 @@ impl Args {
             consensus_archive,
         };
 
-        if consensus_manifest.anchor_finalization_height < execution_finalized_num_hash.number {
+        if consensus_manifest.anchor_finalization_height
+            < consensus_state.execution_finalized_height
+        {
             eprintln!(
                 "warning: consensus anchor finalization `{}` is below execution finalized `{}`; \
                 snapshot consumers may need to recover consensus state across the execution \
                 finalized boundary",
-                consensus_manifest.anchor_finalization_height, execution_finalized_num_hash.number,
+                consensus_manifest.anchor_finalization_height,
+                consensus_state.execution_finalized_height,
             );
         }
 
         let manifest_height = manifest.block;
         ensure!(
-            manifest_height >= execution_finalized_num_hash.number,
+            manifest_height >= consensus_state.execution_finalized_height,
             "snapshot block `{manifest_height}` must be at or above execution finalized `{}`",
-            execution_finalized_num_hash.number,
+            consensus_state.execution_finalized_height,
         );
 
         let mut manifest_json =
@@ -192,7 +185,7 @@ impl Args {
             "packaged consensus archive with tip finalization `{}` and anchor finalization `{}`; execution finalized=`{}`; execution snapshot=`{manifest_height}`",
             consensus_manifest.tip_finalization_height,
             consensus_manifest.anchor_finalization_height,
-            execution_finalized_num_hash.number,
+            consensus_state.execution_finalized_height,
         );
         Ok(())
     }
@@ -224,8 +217,10 @@ fn resolve_chainspec(
 
 fn prepare_snapshot_consensus_archive(
     consensus_dir: &Path,
-    execution_finalized_height: u64,
+    chainspec: Arc<TempoChainSpec>,
+    source_datadir: &Path,
 ) -> eyre::Result<PreparedConsensusSnapshot> {
+    let execution_provider = execution_provider(chainspec, source_datadir)?;
     let archive_dir = tempfile::tempdir().wrap_err("failed to create consensus snapshot dir")?;
     let archive_storage_dir = archive_dir.path().to_path_buf();
     let (archive_entries_tx, archive_entries_rx) = tokio::sync::mpsc::channel(64);
@@ -246,7 +241,7 @@ fn prepare_snapshot_consensus_archive(
     let state = source_runner.start(|context| async move {
         tempo_consensus::storage::snapshot::prepare(
             &context,
-            execution_finalized_height,
+            execution_provider,
             archive_entries_tx,
         )
         .await
@@ -271,7 +266,8 @@ fn package_consensus_archive(
     archive_dir: &TempDir,
 ) -> eyre::Result<SingleArchive> {
     let archive_path = output_dir.join(CONSENSUS_ARCHIVE_FILE);
-    let decompressed_size = directory_file_size(archive_dir.path())?;
+    let output_files = consensus_archive_output_files(archive_dir.path())?;
+    let decompressed_size = output_files_size(&output_files)?;
     write_zstd_tar_archive(&archive_path, archive_dir.path())?;
     let size = fs::metadata(&archive_path)
         .wrap_err_with(|| format!("failed to stat {}", archive_path.display()))?
@@ -282,34 +278,59 @@ fn package_consensus_archive(
         size,
         decompressed_size,
         blake3: Some(hash_file_blake3(&archive_path)?),
-        output_files: Vec::new(),
+        output_files,
     })
 }
 
-fn directory_file_size(path: &Path) -> eyre::Result<u64> {
+fn consensus_archive_output_files(root: &Path) -> eyre::Result<Vec<OutputFileChecksum>> {
+    let mut output_files = Vec::new();
+    collect_consensus_archive_output_files(root, root, &mut output_files)?;
+    Ok(output_files)
+}
+
+fn collect_consensus_archive_output_files(
+    root: &Path,
+    path: &Path,
+    output_files: &mut Vec<OutputFileChecksum>,
+) -> eyre::Result<()> {
     let metadata =
         fs::metadata(path).wrap_err_with(|| format!("failed to stat {}", path.display()))?;
+
     if metadata.is_file() {
-        return Ok(metadata.len());
+        let relative = path.strip_prefix(root).wrap_err_with(|| {
+            format!(
+                "failed to derive consensus archive output path for {}",
+                path.display()
+            )
+        })?;
+        output_files.push(OutputFileChecksum {
+            path: relative.to_string_lossy().to_string(),
+            size: metadata.len(),
+            blake3: hash_file_blake3(path)?,
+        });
+        return Ok(());
     }
 
     if !metadata.is_dir() {
-        return Ok(0);
+        return Ok(());
     }
 
-    let mut size = 0_u64;
     for entry in fs::read_dir(path)
         .wrap_err_with(|| format!("failed to read directory {}", path.display()))?
     {
         let entry = entry
             .wrap_err_with(|| format!("failed to read directory entry in {}", path.display()))?;
-        let entry_size = directory_file_size(&entry.path())?;
-        size = size.checked_add(entry_size).ok_or_else(|| {
-            eyre::eyre!(
-                "consensus archive plain-output size exceeds u64::MAX under {}",
-                path.display()
-            )
-        })?;
+        collect_consensus_archive_output_files(root, &entry.path(), output_files)?;
+    }
+    Ok(())
+}
+
+fn output_files_size(output_files: &[OutputFileChecksum]) -> eyre::Result<u64> {
+    let mut size = 0_u64;
+    for output_file in output_files {
+        size = size
+            .checked_add(output_file.size)
+            .ok_or_else(|| eyre::eyre!("consensus archive plain-output size exceeds u64::MAX"))?;
     }
     Ok(size)
 }
@@ -471,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn package_consensus_archive_sets_plain_output_size() {
+    fn package_consensus_archive_sets_plain_output_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("partition").join("nested")).unwrap();
@@ -488,6 +509,21 @@ mod tests {
         assert_eq!(archive.file, "consensus.tar.zst");
         assert!(archive.size > 0);
         assert!(archive.blake3.is_some());
-        assert!(archive.output_files.is_empty());
+
+        let mut output_files = archive.output_files;
+        output_files.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(output_files.len(), 2);
+        assert_eq!(output_files[0].path, "partition/00");
+        assert_eq!(output_files[0].size, 3);
+        assert_eq!(
+            output_files[0].blake3,
+            blake3::hash(b"abc").to_hex().to_string(),
+        );
+        assert_eq!(output_files[1].path, "partition/nested/01");
+        assert_eq!(output_files[1].size, 4);
+        assert_eq!(
+            output_files[1].blake3,
+            blake3::hash(b"defg").to_hex().to_string(),
+        );
     }
 }
