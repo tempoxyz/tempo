@@ -292,7 +292,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let Ok(Some(header)) = self
             .node
             .provider
-            .find_block_by_hash(*tip, BlockSource::Any)
+            .find_sealed_or_recovered_block(*tip, BlockSource::Any)
         else {
             debug!(?tip, "missing header for the tip block at {tip}");
             return;
@@ -681,7 +681,7 @@ fn evm_at_block(
         .build();
     let header = node
         .provider
-        .find_block_by_hash(hash, BlockSource::Any)?
+        .find_sealed_or_recovered_block(hash, BlockSource::Any)?
         .ok_or(ProviderError::BestBlockNotFound)?;
 
     Ok(node.evm_config.evm_for_block(db, &header)?)
