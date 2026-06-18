@@ -17,6 +17,7 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000"
+const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
@@ -218,6 +219,18 @@ def e2e-bloat-gib-to-mib [bloat: int] {
     exit 1
 }
 
+def e2e-validate-token-count [token_count: int] {
+    let available_token_count = ($TIP20_TOKEN_IDS | length)
+    if $token_count <= 0 {
+        print "Error: --token-count must be a positive integer"
+        exit 1
+    }
+    if $token_count > $available_token_count {
+        print $"Error: --token-count ($token_count) exceeds ($available_token_count) TIP20 token\(s\) available in state bloat"
+        exit 1
+    }
+}
+
 def validator-dirs-in-localnet [localnet_dir: string] {
     ls $localnet_dir
     | where type == "dir"
@@ -297,11 +310,11 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
-        return (latest-tempo-hardfork)
+        return ""
     }
     let state_hardfork = ($marker | get -o state_hardfork | default "")
     if $state_hardfork == "" {
-        return (latest-tempo-hardfork)
+        return ""
     }
     normalize-hardfork $state_hardfork
 }
@@ -398,11 +411,11 @@ def e2e-regenesis [
     hardfork: string,
     gas_limit: string,
 ] {
-    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
+    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { latest-tempo-hardfork }
     let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
     let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
-    let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
+    let hardfork_matches = $current_hardfork == $target_hardfork
     let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
     if $hardfork_matches and $gas_limit_matches {
         mut matches = []
@@ -923,6 +936,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
+        | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
@@ -930,6 +944,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
+        | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)
@@ -987,6 +1002,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         ""
     }
+    let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+        | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -997,7 +1014,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+                --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
@@ -1016,6 +1033,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --platform "tempo"
                 --scenario $scenario
                 --bloat-mib $ctx.bloat
+                --tip20-token-count $ctx.token_count
                 --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
@@ -1088,6 +1106,7 @@ def e2e-write-summary-config [
     baseline_label: string
     feature_label: string
     bloat_mib: int
+    token_count: int
     preset: string
     tps: int
     duration: int
@@ -1103,6 +1122,7 @@ def e2e-write-summary-config [
         baseline_label: $baseline_label
         feature_label: $feature_label
         bloat_mib: $bloat_mib
+        token_count: $token_count
         preset: $preset
         tps: $tps
         duration: $duration
@@ -1132,8 +1152,9 @@ def e2e-generate-summary [results_dir: string] {
     if ($summary_path | path exists) {
         let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
         let feature_removed_args = ($config | get -o feature_removed_args | default "")
+        let token_count = ($config | get -o token_count | default 4 | into int)
         let summary = (open $summary_path)
-        let summary = ($summary | upsert config ($summary.config | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
         $summary | to json | save -f $summary_path
     }
 
@@ -1167,6 +1188,7 @@ def "main e2e" [
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+    --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1185,6 +1207,7 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
+    --runner-metrics-url: string = $E2E_RUNNER_METRICS_URL # Runner node-exporter metrics URL (empty disables runner metrics)
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
@@ -1219,6 +1242,7 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
         exit 1
@@ -1477,6 +1501,7 @@ def "main e2e" [
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
         bloat: $bloat_mib
+        token_count: $token_count
         txgen: $txgen
         results_dir: $results_dir
         profile: $profile
@@ -1495,6 +1520,7 @@ def "main e2e" [
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url
         clickhouse_run: $clickhouse_run
+        runner_metrics_url: $runner_metrics_url
         run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
@@ -1542,7 +1568,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

@@ -24,7 +24,7 @@ use commonware_runtime::{
 };
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
-use tempo_commonware_node::consensus::Digest;
+use tempo_consensus::consensus::Digest;
 use tempo_node::rpc::consensus::{Event, Query, TempoConsensusApiClient};
 
 /// Test that subscribing to consensus events works and that finalization
@@ -331,7 +331,7 @@ fn get_identity_transition_proof_after_full_dkg() {
         assert!(
             finalization.verify(
                 &mut context,
-                &Scheme::certificate_verifier(tempo_commonware_node::NAMESPACE, old_pubkey),
+                &Scheme::certificate_verifier(tempo_consensus::NAMESPACE, old_pubkey),
                 &commonware_parallel::Sequential
             ),
             "BLS signature verification failed"

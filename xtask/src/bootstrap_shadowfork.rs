@@ -42,7 +42,7 @@ use revm::{
 };
 use serde::Deserialize;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase, SigningShare};
+use tempo_consensus_config::{SigningKey, SigningKeyPassphrase, SigningShare};
 use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
@@ -608,6 +608,10 @@ where
         let (overlay, events) = self.snapshots.remove(checkpoint.journal_i);
         self.overlay = overlay;
         self.events = events;
+    }
+
+    fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
+        // DbStorageOverlay does not run TIP-1060 accounting.
     }
 }
 

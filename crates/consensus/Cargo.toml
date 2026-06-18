@@ -16,21 +16,77 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-consensus-config.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
+tempo-node.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
-
-reth-chainspec.workspace = true
-reth-consensus.workspace = true
-reth-consensus-common.workspace = true
-reth-ethereum-consensus.workspace = true
-reth-primitives-traits.workspace = true
+tempo-payload-types.workspace = true
+tempo-precompiles.workspace = true
+tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
-alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-rlp.workspace = true
+
+axum.workspace = true
+bytes.workspace = true
+clap.workspace = true
+
+commonware-broadcast.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-macros.workspace = true
+commonware-math.workspace = true
+commonware-p2p.workspace = true
+commonware-parallel.workspace = true
+commonware-resolver.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+
+eyre.workspace = true
+futures.workspace = true
+governor.workspace = true
+jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
+indexmap.workspace = true
+jiff = { workspace = true, features = ["std"] }
+parking_lot.workspace = true
+pin-project = "1.1.10"
+prometheus-client.workspace = true
+rand_08.workspace = true
+
+reth-consensus-common.workspace = true
+rand_core.workspace = true
+reth-ethereum.workspace = true
+reth-evm.workspace = true
+reth-node-builder.workspace = true
+reth-node-core.workspace = true
+reth-revm.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
+
+serde_json.workspace = true
 thiserror.workspace = true
 
+tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }
+tokio-stream = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
 [dev-dependencies]
-alloy-genesis = { workspace = true, features = ["std"] }
-alloy-primitives.workspace = true
-serde_json.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["arbitrary"] }
+
+age.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
+
+# `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.
+tracing-subscriber.workspace = true
+
+[features]
+default = []
+bal = []

@@ -209,7 +209,7 @@ impl GenerateShadowfork {
                 .signing_key
                 .write_to_file_encrypted(
                     &signing_key_dst,
-                    tempo_commonware_node_config::SigningKeyPassphrase::from(
+                    tempo_consensus_config::SigningKeyPassphrase::from(
                         SHADOWFORK_SIGNING_KEY_SECRET,
                     ),
                 )
