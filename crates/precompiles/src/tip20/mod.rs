@@ -1306,11 +1306,12 @@ impl TIP20Token {
 
         self.set_balance(from, new_from_balance)?;
 
-        let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+        let fee_manager_balance = self.balances.at_mut(&TIP_FEE_MANAGER_ADDRESS);
+        let to_balance = fee_manager_balance.read()?;
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
+        fee_manager_balance.write(new_to_balance)
     }
 
     /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
@@ -1353,7 +1354,8 @@ impl TIP20Token {
             )?;
         }
 
-        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+        let fee_manager_balance = self.balances.at_mut(&TIP_FEE_MANAGER_ADDRESS);
+        let from_balance = fee_manager_balance.read()?;
         let new_from_balance =
             from_balance
                 .checked_sub(refund)
@@ -1363,7 +1365,7 @@ impl TIP20Token {
                     self.address,
                 ))?;
 
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
+        fee_manager_balance.write(new_from_balance)?;
 
         let to_balance = self.get_balance(to)?;
         let new_to_balance = to_balance
