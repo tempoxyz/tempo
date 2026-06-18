@@ -210,12 +210,53 @@ function appendBuilderDetails(lines, summary) {
   lines.push('</details>');
 }
 
+function canClassifyChanges(summary) {
+  return Number(summary.config?.run_pairs || 0) >= 2;
+}
+
+function isUnchangedMetric(summary, axis) {
+  return summary.results.changes[axis]?.sig === 'neutral';
+}
+
+function appendSectionRows(lines, summary, rows, collapseUnchanged) {
+  let visibleRows = 0;
+  const unchangedRows = [];
+
+  for (const [label, axis, formatter] of rows) {
+    const b = formatter(summary.results.baseline[axis]);
+    const f = formatter(summary.results.feature[axis]);
+    const row = `| ${label} | ${b} | ${f} | ${fmtChange(summary.results.changes[axis])} |`;
+    if (collapseUnchanged && isUnchangedMetric(summary, axis)) {
+      unchangedRows.push(row);
+    } else {
+      lines.push(row);
+      visibleRows += 1;
+    }
+  }
+
+  if (visibleRows === 0) {
+    lines.push('| No improved or regressed metrics | - | - | - |');
+  }
+
+  if (unchangedRows.length > 0) {
+    lines.push('');
+    lines.push('<details><summary>Unchanged metrics</summary>');
+    lines.push('');
+    lines.push('| Metric | Baseline | Feature | Delta |');
+    lines.push('|--------|----------|---------|-------|');
+    lines.push(...unchangedRows);
+    lines.push('');
+    lines.push('</details>');
+  }
+}
+
 function buildMarkdown(summary) {
   const c = summary.classification;
   const derekCommand = summary.config?.derek_command || '';
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
   const featureOnly = summary.config?.run_side === 'feature';
+  const collapseUnchanged = !featureOnly && canClassifyChanges(summary);
   const lines = [
     featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
@@ -242,11 +283,7 @@ function buildMarkdown(summary) {
     lines.push(`## ${section.title}`, '');
     lines.push('| Metric | Baseline | Feature | Delta |');
     lines.push('|--------|----------|---------|-------|');
-    for (const [label, axis, formatter] of section.rows) {
-      const b = formatter(summary.results.baseline[axis]);
-      const f = formatter(summary.results.feature[axis]);
-      lines.push(`| ${label} | ${b} | ${f} | ${fmtChange(summary.results.changes[axis])} |`);
-    }
+    appendSectionRows(lines, summary, section.rows, collapseUnchanged);
     if (section.title === 'Builder') appendBuilderDetails(lines, summary);
     lines.push('');
   }
@@ -288,4 +325,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main };
+module.exports = { main, buildMarkdown };
