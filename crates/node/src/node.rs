@@ -32,11 +32,14 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::EmptyBodyStorage;
+use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{
-    Pool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+    Pool, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
+    TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
+    error::InvalidPoolTransactionError,
 };
+use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
@@ -48,6 +51,7 @@ use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -69,9 +73,20 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
 
-    /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    /// Disable prewarming for the payload builder.
+    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    pub builder_disable_prewarming: bool,
+
+    /// No-op legacy flag for payload builder prewarming.
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
+
+    /// Disable sharing the execution cache with the payload builder.
+    #[arg(
+        long = "engine.disable-execution-cache-sharing-with-builder",
+        default_value_t = false
+    )]
+    pub engine_disable_execution_cache_sharing_with_builder: bool,
 
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
@@ -91,7 +106,9 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
-            builder_enable_prewarming: false,
+            builder_disable_prewarming: false,
+            builder_enable_prewarming: true,
+            engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -103,6 +120,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            ..Default::default()
         }
     }
 
@@ -110,7 +128,7 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming,
+            enable_prewarming: !self.builder_disable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -170,6 +188,39 @@ impl TempoNode {
         ProviderFactoryBuilder::default()
     }
 
+    /// Sets the transaction pool builder.
+    pub fn with_pool_builder(mut self, pool_builder: TempoPoolBuilder) -> Self {
+        self.pool_builder = pool_builder;
+        self
+    }
+
+    /// Maps the transaction pool builder.
+    pub fn map_pool_builder<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(TempoPoolBuilder) -> TempoPoolBuilder,
+    {
+        self.pool_builder = f(self.pool_builder);
+        self
+    }
+
+    /// Sets the payload builder builder.
+    pub fn with_payload_builder_builder(
+        mut self,
+        payload_builder_builder: TempoPayloadBuilderBuilder,
+    ) -> Self {
+        self.payload_builder_builder = payload_builder_builder;
+        self
+    }
+
+    /// Maps the payload builder builder.
+    pub fn map_payload_builder_builder<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(TempoPayloadBuilderBuilder) -> TempoPayloadBuilderBuilder,
+    {
+        self.payload_builder_builder = f(self.payload_builder_builder);
+        self
+    }
+
     /// Sets the validator key for filtering subblock transactions.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
@@ -186,9 +237,10 @@ impl NodeTypes for TempoNode {
 
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
-        TempoEthApiBuilder,
+        TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
         BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
@@ -221,7 +273,7 @@ impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<N>>;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<NodeAdapter<N>>>;
 
     async fn launch_add_ons(
         self,
@@ -268,7 +320,7 @@ impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = TempoEthApi<N>;
+    type EthApi = TempoEthApi<NodeAdapter<N>>;
 
     fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
@@ -302,7 +354,7 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder, self.payload_builder_builder)
+        Self::components(self.pool_builder.clone(), self.payload_builder_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -429,13 +481,17 @@ where
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct TempoPoolBuilder {
     /// Maximum allowed `valid_after` offset for AA txs.
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Optional additional stateless validation check forwarded to the inner ETH validator.
+    pub additional_stateless_validation: Option<StatelessValidationFn<TempoPooledTransaction>>,
+    /// Optional additional stateful validation check forwarded to the inner ETH validator.
+    pub additional_stateful_validation: Option<StatefulValidationFn<TempoPooledTransaction>>,
 }
 
 impl TempoPoolBuilder {
@@ -450,6 +506,91 @@ impl TempoPoolBuilder {
         self.max_tempo_authorizations = max;
         self
     }
+
+    /// Sets an additional stateless validation check applied at the end of the inner ETH
+    /// validator's stateless validation.
+    ///
+    /// This is the programmatic equivalent of installing a custom check with
+    /// [`EthTransactionValidator::set_additional_stateless_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateless_validation).
+    /// It is intended to be used from a [`TempoNode`] mapper, for example via
+    /// `tempo::TempoOverrides::map_tempo_node`, when the validation policy should not be exposed
+    /// as a CLI argument.
+    ///
+    /// The closure receives the transaction origin and pooled transaction. Return `Ok(())` to
+    /// accept the transaction or [`InvalidPoolTransactionError`] to reject it.
+    pub fn with_additional_stateless_validation<F>(mut self, f: F) -> Self
+    where
+        F: Fn(
+                TransactionOrigin,
+                &TempoPooledTransaction,
+            ) -> Result<(), InvalidPoolTransactionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.additional_stateless_validation = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets or clears an additional shared stateless validation check applied at the end of the
+    /// inner ETH validator's stateless validation.
+    ///
+    /// See [`EthTransactionValidator::set_additional_stateless_validation_fn_opt`](reth_transaction_pool::EthTransactionValidator::set_additional_stateless_validation_fn_opt).
+    pub fn with_additional_stateless_validation_fn_opt(
+        mut self,
+        f: Option<StatelessValidationFn<TempoPooledTransaction>>,
+    ) -> Self {
+        self.additional_stateless_validation = f;
+        self
+    }
+
+    /// Sets an additional stateful validation check applied at the end of the inner ETH
+    /// validator's stateful validation.
+    ///
+    /// See [`EthTransactionValidator::set_additional_stateful_validation`](reth_transaction_pool::EthTransactionValidator::set_additional_stateful_validation).
+    pub fn with_additional_stateful_validation<F>(mut self, f: F) -> Self
+    where
+        F: Fn(
+                TransactionOrigin,
+                &TempoPooledTransaction,
+                &dyn AccountInfoReader,
+            ) -> Result<(), InvalidPoolTransactionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.additional_stateful_validation = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets or clears an additional shared stateful validation check applied at the end of the
+    /// inner ETH validator's stateful validation.
+    ///
+    /// See [`EthTransactionValidator::set_additional_stateful_validation_fn_opt`](reth_transaction_pool::EthTransactionValidator::set_additional_stateful_validation_fn_opt).
+    pub fn with_additional_stateful_validation_fn_opt(
+        mut self,
+        f: Option<StatefulValidationFn<TempoPooledTransaction>>,
+    ) -> Self {
+        self.additional_stateful_validation = f;
+        self
+    }
+}
+
+impl core::fmt::Debug for TempoPoolBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TempoPoolBuilder")
+            .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
+            .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field(
+                "additional_stateless_validation",
+                &self.additional_stateless_validation.as_ref().map(|_| "..."),
+            )
+            .field(
+                "additional_stateful_validation",
+                &self.additional_stateful_validation.as_ref().map(|_| "..."),
+            )
+            .finish()
+    }
 }
 
 impl Default for TempoPoolBuilder {
@@ -457,6 +598,8 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            additional_stateless_validation: None,
+            additional_stateful_validation: None,
         }
     }
 }
@@ -500,11 +643,19 @@ where
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
-        let validator = validator.map(|v| {
+        let Self {
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            additional_stateless_validation,
+            additional_stateful_validation,
+        } = self;
+        let validator = validator.map(move |mut v| {
+            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
+            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
             TempoTransactionValidator::new(
                 v,
-                self.aa_valid_after_max_secs,
-                self.max_tempo_authorizations,
+                aa_valid_after_max_secs,
+                max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
         });
@@ -551,7 +702,7 @@ impl Default for TempoPayloadBuilderBuilder {
     fn default() -> Self {
         Self {
             state_provider_metrics: false,
-            enable_prewarming: false,
+            enable_prewarming: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -582,5 +733,61 @@ where
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder};
+
+    #[test]
+    fn tempo_node_maps_pool_builder() {
+        let node = TempoNode::new(
+            &TempoNodeArgs {
+                aa_valid_after_max_secs: 12,
+                ..Default::default()
+            },
+            None,
+        )
+        .map_pool_builder(|pool| pool.with_max_tempo_authorizations(7));
+
+        assert_eq!(node.pool_builder.aa_valid_after_max_secs, 12);
+        assert_eq!(node.pool_builder.max_tempo_authorizations, 7);
+    }
+
+    #[test]
+    fn tempo_node_sets_pool_builder() {
+        let node = TempoNode::default().with_pool_builder(TempoPoolBuilder {
+            aa_valid_after_max_secs: 42,
+            ..Default::default()
+        });
+
+        assert_eq!(node.pool_builder.aa_valid_after_max_secs, 42);
+    }
+
+    #[test]
+    fn tempo_node_maps_payload_builder_builder() {
+        let node = TempoNode::new(&TempoNodeArgs::default(), None).map_payload_builder_builder(
+            |mut payload| {
+                payload.state_provider_metrics = true;
+                payload
+            },
+        );
+
+        assert!(node.payload_builder_builder.state_provider_metrics);
+        assert_eq!(
+            node.payload_builder_builder.build_time_multiplier,
+            TempoNodeArgs::default().builder_build_time_multiplier
+        );
+    }
+
+    #[test]
+    fn tempo_node_sets_payload_builder_builder() {
+        let node = TempoNode::default().with_payload_builder_builder(TempoPayloadBuilderBuilder {
+            state_provider_metrics: true,
+            ..Default::default()
+        });
+
+        assert!(node.payload_builder_builder.state_provider_metrics);
     }
 }
