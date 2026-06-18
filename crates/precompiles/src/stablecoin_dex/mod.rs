@@ -125,6 +125,21 @@ impl StablecoinDEX {
             .map(|delta| delta.max(0) as u64)
     }
 
+    /// Updates an order-record and credits `order_id`'s maker for any minted credits.
+    fn update_order_and_credit_maker(
+        &mut self,
+        order_id: u128,
+        update: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        let delta = StorageCredits::new().track_credit_delta(self.address, || update(self))?;
+        if delta > 0 {
+            let maker = self.orders[order_id].maker.read()?;
+            self.credit_dex_storage_slots(maker, delta as u64)?;
+        }
+
+        Ok(())
+    }
+
     /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
     fn delete_order_and_track_deltas(
         &mut self,
@@ -1090,7 +1105,8 @@ impl StablecoinDEX {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            self.orders[order.next()].prev.delete()?;
+            let delta = StorageCredits::new()
+                .track_credit_delta(self.address, || self.orders[order.next()].prev.delete())?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -1103,6 +1119,8 @@ impl StablecoinDEX {
                 .write(level)?;
 
             let new_order = self.orders[order.next()].read()?;
+            storage_credits.credit_slots(new_order.maker(), delta.max(0) as u64);
+
             Some((level, new_order))
         };
 
@@ -1326,20 +1344,17 @@ impl StablecoinDEX {
 
         // Update linked list
         if order.prev() != 0 {
-            let predecessor_id = order.prev();
-            let delta = StorageCredits::new().track_credit_delta(self.address, || {
-                self.orders[predecessor_id].next.write(order.next())
+            self.update_order_and_credit_maker(order.prev(), |s| {
+                s.orders[order.prev()].next.write(order.next())
             })?;
-            if delta > 0 {
-                let predecessor_maker = self.orders[predecessor_id].maker.read()?;
-                self.credit_dex_storage_slots(predecessor_maker, delta as u64)?;
-            }
         } else {
             level.head = order.next();
         }
 
         if order.next() != 0 {
-            self.orders[order.next()].prev.write(order.prev())?;
+            self.update_order_and_credit_maker(order.next(), |s| {
+                s.orders[order.next()].prev.write(order.prev())
+            })?;
         } else {
             level.tail = order.prev();
         }

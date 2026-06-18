@@ -20,7 +20,7 @@ use test_case::test_case;
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
 
-const USER_COUNT: usize = 10;
+const USER_COUNT: usize = 14;
 
 #[derive(Debug, serde::Serialize)]
 struct DexGasRow {
@@ -391,6 +391,39 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
         9,
         exchange(9).place(base_addr, fill, true, -100),
         "place bid reusing predecessor next credit failed"
+    );
+
+    send_tx!(
+        exchange(13).place(base_addr, fill, true, 120),
+        "setup head bid for successor-prev fill failed"
+    );
+    send_tx!(
+        exchange(14).place(base_addr, fill, true, 120),
+        "setup successor bid for successor-prev fill failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "swap_exact_in_full_head_bid_tracks_successor_prev",
+        13,
+        14,
+        exchange(8).swapExactAmountIn(base_addr, quote_addr, fill, 0),
+        "full head bid exact-in swap failed"
+    );
+
+    let head_cancel_order = exchange(11).nextOrderId().call().await?;
+    send_tx!(
+        exchange(11).place(base_addr, fill, true, 110),
+        "setup head bid for successor-prev cancel failed"
+    );
+    send_tx!(
+        exchange(12).place(base_addr, fill, true, 110),
+        "setup successor bid for successor-prev cancel failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "cancel_head_bid_tracks_successor_prev",
+        11,
+        12,
+        exchange(11).cancel(head_cancel_order),
+        "head bid cancel failed"
     );
 
     eprintln!(
