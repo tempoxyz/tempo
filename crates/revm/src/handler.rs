@@ -52,7 +52,6 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
-    storage_credits::{set_fee_bookkeeping_slots, set_keychain_limit_slot},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -1276,6 +1275,8 @@ where
                             FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
                         );
                     }
+
+                    keychain_fee_key = Some(key_auth.key_id);
                 }
             } else {
                 // Existing-key path:
@@ -1380,11 +1381,6 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let non_creditable_keychain_key = if cfg.spec.is_t7() && fee_payer == tx.caller {
-                keychain_fee_key
-            } else {
-                None
-            };
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
                 &block,
@@ -1442,21 +1438,18 @@ where
             };
 
             if cfg.spec.is_t7() {
-                set_fee_bookkeeping_slots(
-                    &evm.non_creditable_slots,
-                    fee_token,
+                let keychain_fee_key = if fee_payer == tx.caller {
+                    keychain_fee_key
+                } else {
+                    None
+                };
+                evm.non_creditable_slots.borrow_mut().initialize(
                     fee_payer,
+                    fee_token,
                     block.beneficiary(),
                     validator_token,
+                    keychain_fee_key,
                 );
-                if let Some(key_id) = non_creditable_keychain_key {
-                    set_keychain_limit_slot(
-                        &evm.non_creditable_slots,
-                        fee_payer,
-                        key_id,
-                        fee_token,
-                    );
-                }
             }
 
             journal.checkpoint_commit();
@@ -1650,15 +1643,6 @@ where
                                 err => FeePaymentError::Other(err.to_string()).into(),
                             })?;
 
-                        if cfg.spec.is_t7() && fee_payer == tx.caller && key_auth.limits.is_some() {
-                            set_keychain_limit_slot(
-                                &evm.non_creditable_slots,
-                                fee_payer,
-                                key_auth.key_id,
-                                fee_token,
-                            );
-                        }
-
                         Ok(())
                     },
                 )?;
@@ -1765,6 +1749,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.non_creditable_slots.borrow_mut().clear();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

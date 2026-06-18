@@ -35,7 +35,7 @@ use crate::{
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{StorageCtx, actions::StorageActions},
-    storage_credits::{NonCreditableSlot, StorageCredits, non_creditable_slots},
+    storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -138,14 +138,14 @@ pub trait Precompile {
 pub struct PrecompileEnv {
     cfg: CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
 
 impl PrecompileEnv {
     pub fn new(
         cfg: &CfgEnv<TempoHardfork>,
         actions: StorageActions,
-        non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
         Self {
             cfg: cfg.clone(),
@@ -172,14 +172,18 @@ pub fn tempo_precompiles_with_actions(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
 ) -> PrecompilesMap {
-    tempo_precompiles_with_actions_and_non_creditable_slots(cfg, actions, non_creditable_slots())
+    tempo_precompiles_with_actions_and_non_creditable_slots(
+        cfg,
+        actions,
+        Rc::new(RefCell::new(NonCreditableSlots::empty())),
+    )
 }
 
 /// Returns the full Tempo precompiles for the given config, storage actions, and storage-credit context.
 pub fn tempo_precompiles_with_actions_and_non_creditable_slots(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
@@ -200,7 +204,7 @@ pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) {
     let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
 
@@ -252,7 +256,7 @@ macro_rules! tempo_precompile {
         let env = PrecompileEnv::new(
             $cfg,
             StorageActions::disabled(),
-            non_creditable_slots(),
+            Rc::new(RefCell::new(NonCreditableSlots::empty())),
         );
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};

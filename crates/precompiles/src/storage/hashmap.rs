@@ -5,16 +5,13 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
-use std::{cell::LazyCell, collections::HashMap};
+use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    storage_credits::{
-        NonCreditableSlot, StorageCreditsBackend, contains_non_creditable_slot,
-        sstore_storage_credits,
-    },
+    storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
@@ -36,7 +33,7 @@ pub struct HashMapStorageProvider {
     gas_tracker: GasTracker,
     counter_sload: u64,
     counter_sstore: u64,
-    non_creditable_slots: NonCreditableSlot,
+    non_creditable_slots: NonCreditableSlots,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -84,12 +81,7 @@ impl HashMapStorageProvider {
             gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
             counter_sload: 0,
             counter_sstore: 0,
-            non_creditable_slots: core::array::from_fn(|_| {
-                (
-                    Address::ZERO,
-                    LazyCell::new(Box::new(|| U256::ZERO) as Box<dyn FnOnce() -> U256>),
-                )
-            }),
+            non_creditable_slots: NonCreditableSlots::empty(),
         }
     }
 
@@ -349,13 +341,13 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     }
 
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
-        contains_non_creditable_slot(&self.non_creditable_slots, owner, key)
+        self.non_creditable_slots.is_non_creditable_slot(owner, key)
     }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
-    pub fn set_non_creditable_slots(&mut self, slots: NonCreditableSlot) {
+    pub fn set_non_creditable_slots(&mut self, slots: NonCreditableSlots) {
         self.non_creditable_slots = slots;
     }
 

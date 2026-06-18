@@ -206,7 +206,7 @@ mod tests {
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
         storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
-        storage_credits::{non_creditable_slots, set_fee_bookkeeping_slots},
+        storage_credits::NonCreditableSlots,
         tip20::TIP20Token,
     };
     use alloy::primitives::{Address, U256};
@@ -222,15 +222,15 @@ mod tests {
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.set_spec(TempoHardfork::T7);
 
-        let non_creditable_slots = non_creditable_slots();
-        set_fee_bookkeeping_slots(
-            &non_creditable_slots,
-            owner,
+        let mut non_creditable_slots = NonCreditableSlots::empty();
+        non_creditable_slots.initialize(
             fee_payer,
+            owner,
             Address::repeat_byte(0x44),
             Address::repeat_byte(0x55),
+            None,
         );
-        storage.set_non_creditable_slots(non_creditable_slots.get());
+        storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
 
         StorageCtx::enter(&mut storage, || {
@@ -269,15 +269,15 @@ mod tests {
         )?;
         storage.set_spec(TempoHardfork::T7);
 
-        let non_creditable_slots = non_creditable_slots();
-        set_fee_bookkeeping_slots(
-            &non_creditable_slots,
-            owner,
+        let mut non_creditable_slots = NonCreditableSlots::empty();
+        non_creditable_slots.initialize(
             fee_payer,
+            owner,
             Address::repeat_byte(0x66),
             Address::repeat_byte(0x77),
+            None,
         );
-        storage.set_non_creditable_slots(non_creditable_slots.get());
+        storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
 

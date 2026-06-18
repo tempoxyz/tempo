@@ -12,10 +12,7 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    storage::StorageActions,
-    storage_credits::{NonCreditableSlot, non_creditable_slots},
-};
+use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -59,7 +56,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
-    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -70,7 +67,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Create a new Tempo EVM with a buffer for recording storage actions.
     pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
-        let non_creditable_slots = non_creditable_slots();
+        let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let precompiles =
             tempo_precompiles::tempo_precompiles_with_actions_and_non_creditable_slots(
                 &ctx.cfg,
@@ -103,7 +100,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
-        non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
         Self {
             inner,
@@ -176,6 +173,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
+        self.non_creditable_slots.borrow_mut().clear();
     }
 }
 
