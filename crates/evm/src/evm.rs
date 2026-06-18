@@ -718,6 +718,8 @@ mod tests {
                         fee_manager_balance_slot,
                         max_fee_spending,
                     ),
+                    // SLOAD validatorTokens[beneficiary]: user transfer re-checks default PATH_USD route.
+                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
                     // SLOAD paused: user TIP20 transfer rejects paused tokens.
                     StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
                     // SLOAD transferPolicyId: read policy word for user TIP20 transfer checks.
