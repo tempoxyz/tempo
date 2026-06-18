@@ -339,6 +339,8 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
 }
 
 impl fmt::Display for TempoTxType {
+    #[cold]
+    #[inline(never)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Legacy => write!(f, "Legacy"),
