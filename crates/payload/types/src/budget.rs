@@ -272,7 +272,7 @@ impl ValidationLatencyEstimator {
         workload: ValidationLatencyWorkload,
         elapsed: Duration,
     ) {
-        if elapsed == Duration::ZERO {
+        if elapsed == Duration::ZERO || workload == ValidationLatencyWorkload::default() {
             return;
         }
 
@@ -424,12 +424,12 @@ mod tests {
     }
 
     #[test]
-    fn validation_latency_estimate_requires_non_empty_workload_feedback() {
+    fn validation_latency_estimate_ignores_empty_workload_feedback() {
         let empty = ValidationLatencyWorkload::new(0, 0);
 
         assert_eq!(
             estimate_with_sample(empty, ValidationLatencyWorkload::new(0, 0)),
-            Some(Duration::from_millis(100))
+            None
         );
         assert_eq!(
             estimate_with_sample(empty, ValidationLatencyWorkload::new(1_000, 10)),
