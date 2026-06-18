@@ -905,6 +905,10 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
+
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
@@ -963,10 +967,6 @@ where
 
             (state_root, Arc::new(trie_updates))
         };
-
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
