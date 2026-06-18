@@ -95,24 +95,14 @@ impl AssertStaticTransitions {
             .how_many_signers(how_many)
             .epoch_length(epoch_length);
 
-        let mut epoch_reached = false;
-        let mut dkg_successful = false;
-        let _first = run(setup, move |metric, value| {
-            if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-                let value = value.parse::<u64>().unwrap();
-                assert_eq!(0, value);
-            }
+        let _first = run(setup, move |metrics| {
+            metrics.assert_no_dkg_failures();
 
-            if metric.ends_with("_epoch_manager_latest_epoch") {
-                let value = value.parse::<u64>().unwrap();
-                epoch_reached |= value >= transitions;
-            }
-            if metric.ends_with("_dkg_manager_ceremony_successes_total") {
-                let value = value.parse::<u64>().unwrap();
-                dkg_successful |= value >= transitions;
-            }
+            let dkg_successful = metrics
+                .values::<u64>("dkg_manager_ceremony_successes_total")
+                .any(|successes| successes >= transitions);
 
-            epoch_reached && dkg_successful
+            metrics.consensus_at_epoch(transitions) > 0 && dkg_successful
         });
     }
 }

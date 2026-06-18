@@ -27,7 +27,7 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -38,6 +38,7 @@ use reth_node_metrics::recorder::PrometheusRecorder;
 use tempo_consensus::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
+pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
@@ -329,7 +330,7 @@ pub async fn setup_validators(
 }
 
 /// Runs a test configured by [`Setup`].
-pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> String {
+pub fn run(setup: Setup, mut stop_condition: impl FnMut(&metrics::Metrics) -> bool) -> String {
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -338,36 +339,11 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        loop {
-            let metrics = context.encode();
-
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if stop_condition(metric, value) {
-                    success = true;
-                    break;
-                }
-            }
-
-            if success {
-                break;
-            }
-
-            context.sleep(Duration::from_secs(1)).await;
-        }
+        metrics::wait_for_metrics(&context, |metrics| {
+            metrics.assert_no_blocked_peers();
+            stop_condition(metrics)
+        })
+        .await;
 
         context.auditor().state()
     })
