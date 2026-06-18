@@ -75,6 +75,10 @@ pub enum TempoPrecompileError {
     #[error("Panic({0:?})")]
     Panic(PanicKind),
 
+    /// Internal storage delta underflow that carries the observed slot value for error mapping.
+    #[error("Storage delta underflow: current={0}")]
+    StorageDeltaUnderflow(U256),
+
     /// Error from validator config
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
@@ -163,7 +167,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::StorageCreditsError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
-            Self::Panic(_) => Panic::SELECTOR,
+            Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
@@ -173,7 +177,9 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
+            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
+                true
+            }
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -197,6 +203,11 @@ impl TempoPrecompileError {
     /// Creates an arithmetic under/overflow panic error.
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
+    }
+
+    /// Creates a storage delta underflow that carries the current slot value.
+    pub fn storage_delta_underflow(current: U256) -> Self {
+        Self::StorageDeltaUnderflow(current)
     }
 
     /// Creates an enum conversion error panic (Solidity Panic `0x21`).
@@ -229,6 +240,13 @@ impl TempoPrecompileError {
             Self::Panic(kind) => {
                 let panic = Panic {
                     code: U256::from(kind as u32),
+                };
+
+                panic.abi_encode().into()
+            }
+            Self::StorageDeltaUnderflow(_) => {
+                let panic = Panic {
+                    code: U256::from(PanicKind::UnderOverflow as u32),
                 };
 
                 panic.abi_encode().into()
