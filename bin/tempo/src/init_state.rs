@@ -58,8 +58,7 @@ const HASH_WORKER_QUEUE_DEPTH: usize = 256;
 
 /// Initialize state from a binary dump file.
 #[derive(Debug, Parser)]
-pub(crate) struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser>
-{
+pub struct InitFromBinaryDump<C: reth_cli::chainspec::ChainSpecParser = TempoChainSpecParser> {
     #[command(flatten)]
     env: EnvironmentArgs<C>,
 
