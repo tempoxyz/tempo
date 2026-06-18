@@ -470,6 +470,10 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
     }
 
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
+    let capability_args = [
+        "-p" "AmbientCapabilities=CAP_SYS_NICE"
+        "-p" "CapabilityBoundingSet=CAP_SYS_NICE"
+    ]
     mut telemetry_env_names = []
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
         $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
@@ -496,6 +500,7 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--gid" $gid
         ...$telemetry_env
         ...$memory_args
+        ...$capability_args
         "bash"
         "-lc"
         $script
