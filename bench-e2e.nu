@@ -12,9 +12,8 @@ const E2E_B_MOUNT = "/reth-bench-b"
 const BENCH_SCHELK_SCRIPT = "bench-schelk.nu"
 const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
-const E2E_A_CPUS = "0-6,16-23"
-const E2E_B_CPUS = "8-14,24-31"
-const E2E_TRACY_CAPTURE_CPUS = "7,15"
+const E2E_A_CPUS = "0-7,16-23"
+const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000"
@@ -1010,16 +1009,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let seconds_flag = if $ctx.tracy_seconds > 0 { $"-s ($ctx.tracy_seconds)" } else { "" }
         let limit_msg = if $ctx.tracy_seconds > 0 { $" \(($ctx.tracy_seconds)s limit\)" } else { "" }
         let capture_path = ($env.PATH | str join (char esep))
-        let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) taskset -c ($ctx.tracy_capture_cpus) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
+        let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
-            print $"  Tracy-capture will start on CPUs ($ctx.tracy_capture_cpus) after ($ctx.tracy_offset) seconds($limit_msg)..."
+            print $"  Tracy-capture will start after ($ctx.tracy_offset) seconds($limit_msg)..."
             $tracy_capture_job = (job spawn {
                 sleep ($"($ctx.tracy_offset)sec" | into duration)
                 let result = (sh -c $capture_cmd | complete)
                 { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
             })
         } else {
-            print $"  Starting tracy-capture on CPUs ($ctx.tracy_capture_cpus) ($limit_msg)..."
+            print $"  Starting tracy-capture ($limit_msg)..."
             $tracy_capture_job = (job spawn {
                 let result = (sh -c $capture_cmd | complete)
                 { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
@@ -1560,7 +1559,6 @@ def "main e2e" [
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
-        tracy_capture_cpus: $E2E_TRACY_CAPTURE_CPUS
         baseline_args: $baseline_args
         feature_args: $feature_args
         bench_args: $bench_args
