@@ -1012,14 +1012,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let capture_path = ($env.PATH | str join (char esep))
         let capture_cmd = $"sudo env PATH=($capture_path) TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) taskset -c ($ctx.tracy_capture_cpus) tracy-capture -f -o ($tracy_output) ($seconds_flag) >($tracy_log) 2>&1"
         if $ctx.tracy_offset > 0 {
-            print $"  Tracy-capture will start on CPU(s) ($ctx.tracy_capture_cpus) after ($ctx.tracy_offset) seconds($limit_msg)..."
+            print $"  Tracy-capture will start on CPUs ($ctx.tracy_capture_cpus) after ($ctx.tracy_offset) seconds($limit_msg)..."
             $tracy_capture_job = (job spawn {
                 sleep ($"($ctx.tracy_offset)sec" | into duration)
                 let result = (sh -c $capture_cmd | complete)
                 { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
             })
         } else {
-            print $"  Starting tracy-capture on CPU(s) ($ctx.tracy_capture_cpus) ($limit_msg)..."
+            print $"  Starting tracy-capture on CPUs ($ctx.tracy_capture_cpus) ($limit_msg)..."
             $tracy_capture_job = (job spawn {
                 let result = (sh -c $capture_cmd | complete)
                 { phase: $phase, exit_code: $result.exit_code } | job send --tag 18999 0
