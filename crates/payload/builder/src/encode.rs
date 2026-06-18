@@ -6,32 +6,13 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes};
+use alloy_primitives::Bytes;
 use alloy_rlp::Encodable;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock};
 use std::{sync::Arc, time::Instant};
 use tempo_payload_types::EncodedBlock;
 use tempo_primitives::TempoTxEnvelope;
 use tracing::{info, warn};
-
-#[derive(Debug)]
-pub(crate) struct RootsTaskResult {
-    /// The root hash of the transaction trie.
-    pub(crate) transactions_root: B256,
-    /// The root hash of the receipts trie.
-    pub(crate) receipts_root: B256,
-    /// The receipts bloom filter.
-    pub(crate) receipts_bloom: Bloom,
-    /// The transactions included in the block.
-    pub(crate) transactions: Vec<TempoTxEnvelope>,
-    /// The senders of the transactions.
-    pub(crate) senders: Vec<Address>,
-    /// The RLP encoded transaction list for the block body.
-    ///
-    /// Since roots task already encodes every transaction for the transaction trie,
-    /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
-    pub(crate) encoded_block_transactions: EncodedBlockTransactionList,
-}
 
 /// RLP transaction-list bytes for the execution block.
 ///

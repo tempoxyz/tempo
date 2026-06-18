@@ -17,7 +17,7 @@ use crate::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_decision, scaled_build_time_multiplier,
     },
-    encode::{EncodedBlockTransactionsBuilder, ExecutionBlockEncoder, RootsTaskResult},
+    encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
@@ -1397,6 +1397,25 @@ impl BuilderTx {
             Self::Owned(tx) => tx.into_parts(),
         }
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct RootsTaskResult {
+    /// The root hash of the transaction trie.
+    transactions_root: B256,
+    /// The root hash of the receipts trie.
+    receipts_root: B256,
+    /// The receipts bloom filter.
+    receipts_bloom: Bloom,
+    /// The transactions included in the block.
+    transactions: Vec<TempoTxEnvelope>,
+    /// The senders of the transactions.
+    senders: Vec<Address>,
+    /// The RLP encoded transaction list for the block body.
+    ///
+    /// Since roots task already encodes every transaction for the transaction trie,
+    /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
+    encoded_block_transactions: EncodedBlockTransactionList,
 }
 
 #[cfg(test)]
