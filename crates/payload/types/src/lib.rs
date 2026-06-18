@@ -231,7 +231,11 @@ impl PayloadTypes for TempoPayloadTypes {
     }
 }
 
-/// Cached execution layer block encoded as RLP bytes.
+/// Shared cache for an execution-layer block encoded as RLP bytes.
+///
+/// Clones share the same once-initialized slot, allowing the payload builder to hand the cache to
+/// consumers before a background task computes the encoded bytes. The first caller to encode fills
+/// the cache; later callers reuse the same byte buffer.
 #[derive(Clone, Debug, Default)]
 pub struct EncodedBlock(Arc<OnceLock<Bytes>>);
 
