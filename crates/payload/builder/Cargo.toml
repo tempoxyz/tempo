@@ -51,6 +51,9 @@ tracing.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [features]
 bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]
