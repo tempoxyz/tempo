@@ -233,7 +233,7 @@ impl PayloadTypes for TempoPayloadTypes {
 
 /// Cached execution layer block encoded as RLP bytes.
 #[derive(Clone, Debug, Default)]
-pub struct EncodedBlock(pub Arc<OnceLock<Bytes>>);
+pub struct EncodedBlock(Arc<OnceLock<Bytes>>);
 
 // The encoded bytes are a lazy cache; equality is determined by the owning payload/block fields.
 impl PartialEq for EncodedBlock {
@@ -247,5 +247,27 @@ impl Eq for EncodedBlock {}
 impl EncodedBlock {
     pub fn new(bytes: Bytes) -> Self {
         Self(Arc::new(OnceLock::from(bytes)))
+    }
+
+    /// Returns cached encoded bytes when they are already available.
+    pub fn get(&self) -> Option<&Bytes> {
+        self.0.get()
+    }
+
+    /// Returns cached encoded bytes, encoding `block` first if the cache is empty.
+    pub fn get_or_encode<T>(&self, block: &T) -> &Bytes
+    where
+        T: alloy_rlp::Encodable,
+    {
+        self.get_or_encode_with(|| {
+            let mut encoded = Vec::new();
+            block.encode(&mut encoded);
+            encoded.into()
+        })
+    }
+
+    /// Returns cached encoded bytes, filling the cache with `encode` if it is empty.
+    pub fn get_or_encode_with(&self, encode: impl FnOnce() -> Bytes) -> &Bytes {
+        self.0.get_or_init(encode)
     }
 }

@@ -13382,6 +13382,7 @@ version = "1.8.2"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "derive_more",

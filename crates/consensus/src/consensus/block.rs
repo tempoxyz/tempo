@@ -5,7 +5,6 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes, keccak256};
-use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
 #[cfg(feature = "bal")]
 use commonware_codec::RangeCfg;
@@ -211,11 +210,8 @@ impl Block {
     }
 
     fn encoded_execution_block(&self) -> &Bytes {
-        self.execution_block_encoded.0.get_or_init(|| {
-            let mut encoded = Vec::new();
-            self.execution_block.sealed_block().encode(&mut encoded);
-            encoded.into()
-        })
+        self.execution_block_encoded
+            .get_or_encode(self.execution_block.sealed_block())
     }
 }
 

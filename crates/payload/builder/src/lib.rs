@@ -1497,7 +1497,7 @@ impl ExecutionBlockEncoder {
     }
 
     fn encode_block(&self) -> &Bytes {
-        self.encoded_block.0.get_or_init(|| {
+        self.encoded_block.get_or_encode_with(|| {
             let block = self.block.sealed_block();
             let mut encoded = Vec::with_capacity(self.estimated_rlp_block_size);
             let encode_start = Instant::now();
