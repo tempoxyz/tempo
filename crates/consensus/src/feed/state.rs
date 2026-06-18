@@ -363,7 +363,7 @@ impl ConsensusFeed for FeedStateHandle {
                 Response::Success(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
-                    block: block.into_inner().into_block(),
+                    block: block.into_execution_block(),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.encode()),
                 })
