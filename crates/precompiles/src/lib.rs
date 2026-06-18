@@ -252,7 +252,7 @@ macro_rules! tempo_precompile {
         let env = PrecompileEnv::new(
             $cfg,
             StorageActions::disabled(),
-            shared_non_creditable_slots(),
+            non_creditable_slots(),
         );
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};
