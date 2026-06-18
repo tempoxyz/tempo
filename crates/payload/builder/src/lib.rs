@@ -1151,7 +1151,9 @@ where
             estimated_rlp_block_size,
             encoded_block_transactions,
         );
+        // Clone the shared cache handle into the payload before the encoder is dropped.
         let execution_block_encoded = execution_block_encoder.encoded_block();
+        // Drop the encoder off-thread so its `Drop` impl can populate the cache in the background.
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
