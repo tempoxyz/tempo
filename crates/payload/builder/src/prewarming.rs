@@ -311,7 +311,10 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
+        let mut evm = TempoEvm::new(state_provider, evm_env);
+        evm.inner_mut().skip_valid_after_check = true;
+
+        Some(evm)
     }
 
     fn is_stopped(&self) -> bool {
