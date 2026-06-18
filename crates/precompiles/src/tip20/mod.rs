@@ -23,7 +23,7 @@ pub use slots as tip20_slots;
 use crate::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
-    address_registry::AddressRegistry,
+    address_registry::{AddrRegistryError, AddressRegistry},
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
@@ -1038,7 +1038,8 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
     ) -> Result<Option<Recipient>> {
-        let to = Recipient::resolve(to)?;
+        let hardfork = self.storage.spec();
+        let to = Recipient::resolve_at(to, hardfork)?;
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
@@ -1049,7 +1050,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block_at(from, &to, amount, None, memo, hardfork)? {
             return Ok(None);
         }
 
@@ -1187,7 +1188,26 @@ impl TIP20Token {
         mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
-        if !self.storage.spec().is_t6() {
+        self.validate_inbound_or_block_at(
+            originator,
+            to,
+            amount,
+            mint_total_supply,
+            memo,
+            self.storage.spec(),
+        )
+    }
+
+    fn validate_inbound_or_block_at(
+        &mut self,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        mint_total_supply: Option<U256>,
+        memo: B256,
+        hardfork: TempoHardfork,
+    ) -> Result<bool> {
+        if !hardfork.is_t6() {
             return Ok(false);
         }
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
@@ -1410,6 +1430,27 @@ impl Recipient {
                 target: effective,
                 virtual_addr: Some(addr),
             }
+        })
+    }
+
+    /// Resolves a recipient using a hardfork value the caller has already loaded.
+    pub(crate) fn resolve_at(addr: Address, hardfork: TempoHardfork) -> Result<Self> {
+        if !hardfork.is_t3() {
+            return Ok(Self::direct(addr));
+        }
+
+        let Some((master_id, _)) = addr.decode_virtual() else {
+            return Ok(Self::direct(addr));
+        };
+
+        let effective = AddressRegistry::new()
+            .get_master(master_id)?
+            .ok_or_else(|| {
+                TempoPrecompileError::from(AddrRegistryError::virtual_address_unregistered())
+            })?;
+        Ok(Self {
+            target: effective,
+            virtual_addr: Some(addr),
         })
     }
 
