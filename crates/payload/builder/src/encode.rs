@@ -184,10 +184,193 @@ mod tests {
         eip2718::Encodable2718,
         eip4895::{Withdrawal, Withdrawals},
     };
-    use alloy_primitives::{Address, Bytes, Signature, U256};
+    use alloy_primitives::{Address, B256, Bytes, Signature, U256};
     use alloy_rlp::Encodable;
-    use reth_primitives_traits::SealedBlock;
-    use tempo_primitives::{Block, TempoHeader};
+    use proptest::prelude::*;
+    use reth_primitives_traits::{RecoveredBlock, SealedBlock};
+    use std::sync::Arc;
+    use tempo_primitives::{Block, Header, TempoHeader};
+
+    fn arb_address() -> impl Strategy<Value = Address> {
+        any::<[u8; 20]>().prop_map(Address::from)
+    }
+
+    fn arb_b256() -> impl Strategy<Value = B256> {
+        any::<[u8; 32]>().prop_map(B256::from)
+    }
+
+    fn arb_bytes(max_len: usize) -> impl Strategy<Value = Bytes> {
+        prop::collection::vec(any::<u8>(), 0..=max_len).prop_map(Bytes::from)
+    }
+
+    fn arb_u256() -> impl Strategy<Value = U256> {
+        any::<[u64; 4]>().prop_map(U256::from_limbs)
+    }
+
+    fn arb_legacy_tx() -> impl Strategy<Value = TempoTxEnvelope> {
+        (
+            prop::option::of(any::<u64>()),
+            any::<u64>(),
+            any::<u128>(),
+            any::<u64>(),
+            arb_address(),
+            arb_u256(),
+            arb_bytes(128),
+        )
+            .prop_map(
+                |(chain_id, nonce, gas_price, gas_limit, to, value, input)| {
+                    TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                        TxLegacy {
+                            chain_id,
+                            nonce,
+                            gas_price,
+                            gas_limit,
+                            to: to.into(),
+                            value,
+                            input,
+                        },
+                        Signature::test_signature(),
+                    ))
+                },
+            )
+    }
+
+    fn arb_eip1559_tx() -> impl Strategy<Value = TempoTxEnvelope> {
+        (
+            any::<u64>(),
+            any::<u64>(),
+            any::<u64>(),
+            any::<u128>(),
+            any::<u128>(),
+            arb_address(),
+            arb_u256(),
+            arb_bytes(128),
+        )
+            .prop_map(
+                |(
+                    chain_id,
+                    nonce,
+                    gas_limit,
+                    max_fee_per_gas,
+                    max_priority_fee_per_gas,
+                    to,
+                    value,
+                    input,
+                )| {
+                    TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+                        TxEip1559 {
+                            chain_id,
+                            nonce,
+                            gas_limit,
+                            max_fee_per_gas,
+                            max_priority_fee_per_gas,
+                            to: to.into(),
+                            value,
+                            access_list: Default::default(),
+                            input,
+                        },
+                        Signature::test_signature(),
+                    ))
+                },
+            )
+    }
+
+    fn arb_tx() -> impl Strategy<Value = TempoTxEnvelope> {
+        prop_oneof![arb_legacy_tx(), arb_eip1559_tx()]
+    }
+
+    fn arb_header() -> impl Strategy<Value = TempoHeader> {
+        (
+            (
+                arb_b256(),
+                arb_address(),
+                arb_b256(),
+                arb_b256(),
+                arb_b256(),
+            ),
+            (
+                any::<u64>(),
+                any::<u64>(),
+                any::<u64>(),
+                any::<u64>(),
+                arb_bytes(32),
+            ),
+            (
+                prop::option::of(any::<u64>()),
+                any::<u64>(),
+                any::<u64>(),
+                any::<u64>(),
+            ),
+        )
+            .prop_map(
+                |(
+                    (parent_hash, beneficiary, state_root, transactions_root, receipts_root),
+                    (number, gas_limit, gas_used, timestamp, extra_data),
+                    (base_fee_per_gas, general_gas_limit, shared_gas_limit, timestamp_millis_part),
+                )| TempoHeader {
+                    general_gas_limit,
+                    shared_gas_limit,
+                    timestamp_millis_part,
+                    inner: Header {
+                        parent_hash,
+                        beneficiary,
+                        state_root,
+                        transactions_root,
+                        receipts_root,
+                        number,
+                        gas_limit,
+                        gas_used,
+                        timestamp,
+                        extra_data,
+                        base_fee_per_gas,
+                        ..Default::default()
+                    },
+                    consensus_context: None,
+                },
+            )
+    }
+
+    fn arb_withdrawals() -> impl Strategy<Value = Option<Withdrawals>> {
+        prop::option::of(
+            prop::collection::vec(
+                (any::<u64>(), any::<u64>(), arb_address(), any::<u64>()),
+                0..=4,
+            )
+            .prop_map(|withdrawals| {
+                Withdrawals::new(
+                    withdrawals
+                        .into_iter()
+                        .map(|(index, validator_index, address, amount)| Withdrawal {
+                            index,
+                            validator_index,
+                            address,
+                            amount,
+                        })
+                        .collect(),
+                )
+            }),
+        )
+    }
+
+    fn arb_block() -> impl Strategy<Value = Block> {
+        (
+            arb_header(),
+            prop::collection::vec(arb_tx(), 0..=8),
+            prop::collection::vec(arb_header(), 0..=2),
+            arb_withdrawals(),
+        )
+            .prop_map(|(mut header, transactions, ommers, withdrawals)| {
+                header.inner.withdrawals_root = withdrawals.as_ref().map(|_| B256::ZERO);
+                Block {
+                    header,
+                    body: BlockBody {
+                        transactions,
+                        ommers,
+                        withdrawals,
+                    },
+                }
+            })
+    }
 
     fn legacy_tx(input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -230,6 +413,12 @@ mod tests {
             builder.push(transaction, &buf);
         }
         builder.finish()
+    }
+
+    fn full_block_encoding(block: &SealedBlock<Block>) -> Vec<u8> {
+        let mut expected = Vec::new();
+        block.encode(&mut expected);
+        expected
     }
 
     #[test]
@@ -308,5 +497,74 @@ mod tests {
         block.encode(&mut expected);
 
         assert_eq!(encoded, expected);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn proptest_encoded_block_transaction_list_matches_alloy_encoding(
+            transactions in prop::collection::vec(arb_tx(), 0..=16),
+        ) {
+            let encoded_transactions = encoded_block_transactions(&transactions);
+            let expected = alloy_rlp::encode(&transactions);
+
+            prop_assert_eq!(encoded_transactions.transaction_count, transactions.len());
+            prop_assert_eq!(encoded_transactions.rlp.as_ref(), expected.as_slice());
+        }
+
+        #[test]
+        fn proptest_cached_transaction_list_block_encoding_matches_full_block_encoding(
+            block in arb_block(),
+        ) {
+            let encoded_transactions = encoded_block_transactions(&block.body.transactions);
+            let block = SealedBlock::seal_slow(block);
+            let expected = full_block_encoding(&block);
+
+            let mut encoded = Vec::new();
+            prop_assert!(encode_block_with_transactions(
+                &block,
+                &encoded_transactions,
+                &mut encoded
+            ));
+
+            prop_assert_eq!(encoded, expected);
+        }
+
+        #[test]
+        fn proptest_cached_transaction_list_block_encoding_falls_back_to_full_block_encoding(
+            block in arb_block(),
+            cached_transactions in prop::collection::vec(arb_tx(), 0..=8),
+        ) {
+            prop_assume!(cached_transactions.len() != block.body.transactions.len());
+            let encoded_transactions = encoded_block_transactions(&cached_transactions);
+            let block = SealedBlock::seal_slow(block);
+            let expected = full_block_encoding(&block);
+
+            let mut encoded = Vec::new();
+            prop_assert!(!encode_block_with_transactions(
+                &block,
+                &encoded_transactions,
+                &mut encoded
+            ));
+
+            prop_assert_eq!(encoded, expected);
+        }
+
+        #[test]
+        fn proptest_execution_block_encoder_matches_full_block_encoding(block in arb_block()) {
+            let encoded_transactions = encoded_block_transactions(&block.body.transactions);
+            let expected_block = SealedBlock::seal_slow(block.clone());
+            let expected = full_block_encoding(&expected_block);
+            let senders = vec![Address::ZERO; block.body.transactions.len()];
+            let recovered_block = Arc::new(RecoveredBlock::new_unhashed(block, senders));
+            let encoder = ExecutionBlockEncoder::new(
+                recovered_block,
+                expected.len(),
+                encoded_transactions,
+            );
+
+            prop_assert_eq!(encoder.encode_block().as_ref(), expected.as_slice());
+        }
     }
 }

@@ -13350,6 +13350,7 @@ dependencies = [
  "alloy-rlp",
  "crossbeam-channel",
  "metrics",
+ "proptest",
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-consensus-common",
