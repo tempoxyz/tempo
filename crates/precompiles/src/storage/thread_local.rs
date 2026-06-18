@@ -421,6 +421,8 @@ impl<'evm> StorageCtx {
     }
 
     /// Entry point for a "canonical" precompile (with unique known address).
+    #[cold]
+    #[inline(never)]
     pub fn enter_precompile<J, P, R>(
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
