@@ -401,13 +401,15 @@ impl StorageCredits {
 }
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
-#[inline]
+#[cold]
+#[inline(never)]
 fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
-#[inline]
+#[cold]
+#[inline(never)]
 fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
