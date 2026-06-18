@@ -44,7 +44,7 @@ use crate::{
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
-use std::{cell::Cell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
@@ -138,14 +138,14 @@ pub trait Precompile {
 pub struct PrecompileEnv {
     cfg: CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
 }
 
 impl PrecompileEnv {
     pub fn new(
         cfg: &CfgEnv<TempoHardfork>,
         actions: StorageActions,
-        non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
     ) -> Self {
         Self {
             cfg: cfg.clone(),
@@ -179,7 +179,7 @@ pub fn tempo_precompiles_with_actions(
 pub fn tempo_precompiles_with_actions_and_non_creditable_slots(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
 ) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
@@ -200,7 +200,7 @@ pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
 ) {
     let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
 

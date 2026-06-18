@@ -10,7 +10,7 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::Cell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     storage::StorageActions,
@@ -59,7 +59,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
-    pub(crate) non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -103,7 +103,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
-        non_creditable_slots: Rc<Cell<NonCreditableSlot>>,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlot>>,
     ) -> Self {
         Self {
             inner,
@@ -176,8 +176,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
-        self.non_creditable_slots
-            .set([(Address::ZERO, U256::ZERO); 3]);
     }
 }
 

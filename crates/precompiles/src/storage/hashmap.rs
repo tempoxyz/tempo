@@ -5,7 +5,7 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
-use std::collections::HashMap;
+use std::{cell::LazyCell, collections::HashMap};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -84,7 +84,12 @@ impl HashMapStorageProvider {
             gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
             counter_sload: 0,
             counter_sstore: 0,
-            non_creditable_slots: [(Address::ZERO, U256::ZERO); 3],
+            non_creditable_slots: core::array::from_fn(|_| {
+                (
+                    Address::ZERO,
+                    LazyCell::new(Box::new(|| U256::ZERO) as Box<dyn FnOnce() -> U256>),
+                )
+            }),
         }
     }
 
@@ -344,7 +349,7 @@ impl StorageCreditsBackend for HashMapStorageProvider {
     }
 
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
-        contains_non_creditable_slot(self.non_creditable_slots, owner, key)
+        contains_non_creditable_slot(&self.non_creditable_slots, owner, key)
     }
 }
 

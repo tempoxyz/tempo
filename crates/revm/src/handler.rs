@@ -1765,8 +1765,6 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
-        evm.non_creditable_slots
-            .set([(Address::ZERO, U256::ZERO); 3]);
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

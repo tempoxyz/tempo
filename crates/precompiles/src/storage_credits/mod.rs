@@ -14,7 +14,10 @@ use crate::{
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{LazyCell, RefCell},
+    rc::Rc,
+};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -39,55 +42,64 @@ pub enum CreditMode {
 }
 
 /// Concrete transaction-local protocol bookkeeping slots whose clears must not mint storage credits.
-pub type NonCreditableSlot = [(Address, U256); 3];
+pub type NonCreditableSlot = [(Address, LazyCell<U256, Box<dyn FnOnce() -> U256>>); 3];
 
 #[inline]
-pub fn non_creditable_slots() -> Rc<Cell<NonCreditableSlot>> {
-    Rc::new(Cell::new([(Address::ZERO, U256::ZERO); 3]))
+pub fn non_creditable_slots() -> Rc<RefCell<NonCreditableSlot>> {
+    Rc::new(RefCell::new(core::array::from_fn(|_| {
+        (
+            Address::ZERO,
+            LazyCell::new(Box::new(|| U256::ZERO) as Box<dyn FnOnce() -> U256>),
+        )
+    })))
 }
 
 pub fn set_fee_bookkeeping_slots(
-    slots: &Rc<Cell<NonCreditableSlot>>,
+    slots: &Rc<RefCell<NonCreditableSlot>>,
     fee_token: Address,
     fee_payer: Address,
     beneficiary: Address,
     validator_token: Address,
 ) {
-    let mut entries = slots.get();
+    let mut entries = slots.borrow_mut();
     entries[0] = (
         fee_token,
-        TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot(),
+        LazyCell::new(Box::new(move || {
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot()
+        })),
     );
     entries[1] = (
         TIP_FEE_MANAGER_ADDRESS,
-        TipFeeManager::new().collected_fees[beneficiary][validator_token].slot(),
+        LazyCell::new(Box::new(move || {
+            TipFeeManager::new().collected_fees[beneficiary][validator_token].slot()
+        })),
     );
-    slots.set(entries);
 }
 
 pub fn set_keychain_limit_slot(
-    slots: &Rc<Cell<NonCreditableSlot>>,
+    slots: &Rc<RefCell<NonCreditableSlot>>,
     fee_payer: Address,
     key_id: Address,
     fee_token: Address,
 ) {
     let keychain = AccountKeychain::new();
     let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
-    let mut entries = slots.get();
+    let mut entries = slots.borrow_mut();
     entries[2] = (
         ACCOUNT_KEYCHAIN_ADDRESS,
-        keychain.spending_limits[limit_key][fee_token]
-            .remaining
-            .slot(),
+        LazyCell::new(Box::new(move || {
+            keychain.spending_limits[limit_key][fee_token]
+                .remaining
+                .slot()
+        })),
     );
-    slots.set(entries);
 }
 
 #[inline]
-pub fn contains_non_creditable_slot(slots: NonCreditableSlot, owner: Address, slot: U256) -> bool {
+pub fn contains_non_creditable_slot(slots: &NonCreditableSlot, owner: Address, slot: U256) -> bool {
     slots
-        .into_iter()
-        .any(|(entry_owner, entry_slot)| entry_owner == owner && entry_slot == slot)
+        .iter()
+        .any(|(entry_owner, entry_slot)| *entry_owner == owner && **entry_slot == slot)
 }
 
 /// TIP-1060 storage credits precompile, tracking each storage owner's credit balance and tx state.
