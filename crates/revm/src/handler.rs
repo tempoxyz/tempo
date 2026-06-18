@@ -150,6 +150,18 @@ struct LoadedTxAccessKey {
     key: AuthorizedKey,
 }
 
+#[cold]
+#[inline(never)]
+fn keychain_user_address_mismatch(
+    user_address: Address,
+    caller: Address,
+) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::KeychainUserAddressMismatch {
+        user_address,
+        caller,
+    }
+}
+
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
 /// T3 keeps the broader all-persisted-rows accounting from current main. T4 narrows this to rows
@@ -1229,11 +1241,7 @@ where
 
             // Sanity check: user_address should match tx.caller
             if *user_address != tx.caller {
-                return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
-                    user_address: *user_address,
-                    caller: tx.caller,
-                }
-                .into());
+                return Err(keychain_user_address_mismatch(*user_address, tx.caller).into());
             }
 
             // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
