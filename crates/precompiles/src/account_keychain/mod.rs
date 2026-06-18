@@ -79,6 +79,12 @@ pub enum StoredSignatureType {
     WebAuthn,
 }
 
+#[cold]
+#[inline(never)]
+fn invalid_stored_signature_type() -> crate::error::TempoPrecompileError {
+    AccountKeychainError::invalid_signature_type().into()
+}
+
 impl TryFrom<SignatureType> for StoredSignatureType {
     type Error = crate::error::TempoPrecompileError;
 
@@ -87,7 +93,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
-            _ => Err(AccountKeychainError::invalid_signature_type().into()),
+            _ => Err(invalid_stored_signature_type()),
         }
     }
 }
