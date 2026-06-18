@@ -235,15 +235,6 @@ impl PayloadTypes for TempoPayloadTypes {
 #[derive(Clone, Debug, Default)]
 pub struct EncodedBlock(Arc<OnceLock<Bytes>>);
 
-// The encoded bytes are a lazy cache; equality is determined by the owning payload/block fields.
-impl PartialEq for EncodedBlock {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for EncodedBlock {}
-
 impl EncodedBlock {
     pub fn new(bytes: Bytes) -> Self {
         Self(Arc::new(OnceLock::from(bytes)))
