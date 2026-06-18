@@ -211,6 +211,8 @@ where
     T: Storable + StorageKey + Hash + Eq + Clone,
     T::Handler: Handler<T>,
 {
+    #[cold]
+    #[inline(never)]
     fn load<S: StorageOps>(storage: &S, slot: U256, _ctx: LayoutCtx) -> Result<Self> {
         let values: Vec<T> = Vec::load(storage, slot, LayoutCtx::FULL)?;
         Ok(Self(values))
@@ -222,6 +224,8 @@ where
         ))
     }
 
+    #[cold]
+    #[inline(never)]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         let values: Vec<T> = Vec::load(storage, slot, LayoutCtx::FULL)?;
 
