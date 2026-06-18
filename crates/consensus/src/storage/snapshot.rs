@@ -45,7 +45,7 @@ enum ArchiveEntryKind {
         height: u64,
         finalization: FinalizationCertificate,
     },
-    Block(Block),
+    Block(Box<Block>),
 }
 
 /// Prepares consensus storage state for snapshot packaging.
@@ -159,7 +159,7 @@ where
             ArchiveEntryKind::Block(block) => {
                 let height = block.height().get();
                 let key = block.digest();
-                blocks.put(height, key, block).await.wrap_err_with(|| {
+                blocks.put(height, key, *block).await.wrap_err_with(|| {
                     format!("failed writing snapshot finalized block at height `{height}`")
                 })?;
             }
@@ -249,7 +249,7 @@ where
                 })?
             {
                 archive_entries
-                    .send(ArchiveEntry(ArchiveEntryKind::Block(block)))
+                    .send(ArchiveEntry(ArchiveEntryKind::Block(Box::new(block))))
                     .await
                     .map_err(|_| {
                         eyre!(
