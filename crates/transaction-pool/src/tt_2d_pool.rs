@@ -644,12 +644,15 @@ impl AA2dPool {
     #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.expiring_nonce_eviction_order.clone()
+            self.expiring_nonce_eviction_order.iter().cloned().collect()
         } else {
-            self.expiring_nonce_txs
+            let mut order = self
+                .expiring_nonce_txs
                 .values()
                 .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
-                .collect()
+                .collect::<Vec<_>>();
+            order.sort_unstable();
+            order
         };
         let independent = self
             .independent_transactions
@@ -1987,10 +1990,10 @@ pub(crate) struct BestAA2dTransactions {
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
     /// separately by `expiring_nonce_order`.
     by_id: HashMap<AA2dTransactionId, AA2dStoredTransaction>,
-    /// Expiring nonce pending transactions in eviction order. The best
-    /// transaction is at the back of the set, and the key carries the pending
-    /// transaction so this snapshot does not clone the pool's expiring hash map.
-    expiring_nonce_order: BTreeSet<ExpiringNonceEvictionKey>,
+    /// Expiring nonce pending transactions in ascending eviction order. The best
+    /// transaction is at the back, and the key carries the pending transaction
+    /// so this snapshot does not clone the pool's expiring hash map.
+    expiring_nonce_order: Vec<ExpiringNonceEvictionKey>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
@@ -2017,8 +2020,16 @@ impl BestAA2dTransactions {
 
     /// Removes the best expiring nonce transaction from the set.
     fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
-        let key = self.expiring_nonce_order.pop_last()?;
+        let key = self.expiring_nonce_order.pop()?;
         Some(key.into_transaction())
+    }
+
+    /// Inserts an expiring nonce transaction while preserving snapshot order.
+    fn insert_expiring_nonce(&mut self, key: ExpiringNonceEvictionKey) {
+        match self.expiring_nonce_order.binary_search(&key) {
+            Ok(_) => {}
+            Err(index) => self.expiring_nonce_order.insert(index, key),
+        }
     }
 
     /// Removes the best regular or expiring nonce transaction.
@@ -2088,8 +2099,9 @@ impl BestAA2dTransactions {
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process && can_pay_base_fee(&tx, self.base_fee) {
-                        self.expiring_nonce_order
-                            .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
+                        self.insert_expiring_nonce(ExpiringNonceEvictionKey::from_pending_owned(
+                            tx,
+                        ));
                     }
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
                     if process {
