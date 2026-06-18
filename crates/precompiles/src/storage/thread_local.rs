@@ -248,6 +248,8 @@ impl StorageCtx {
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    #[cold]
+    #[inline(never)]
     pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
         Self::try_with_storage(|s| s.keccak256(data))
     }
