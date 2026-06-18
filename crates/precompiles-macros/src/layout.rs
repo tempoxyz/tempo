@@ -171,7 +171,7 @@ pub(crate) fn gen_constructor(
                 Ok(())
             }
 
-            #[inline(always)]
+            #[inline]
             fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
                 self.storage.emit_event(self.address, event.into_log_data())
             }
