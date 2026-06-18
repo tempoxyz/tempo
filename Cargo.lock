@@ -13149,6 +13149,7 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",

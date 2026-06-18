@@ -11,9 +11,10 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
-use commonware_codec::DecodeExt;
+use alloy_sol_types::SolCall;
+use commonware_codec::{DecodeExt, ReadExt};
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
@@ -27,8 +28,9 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -171,6 +173,8 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    epoch_length: Option<u64>,
+    extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
 
@@ -196,6 +200,7 @@ where
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
+            extra_data: ctx.inner.extra_data.clone(),
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
@@ -206,6 +211,7 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
             replay_state: StorageActionReplayState::default(),
+            epoch_length: chain_spec.info.epoch_length(),
         }
     }
 
@@ -233,6 +239,52 @@ where
             let state = EvmState::from_iter([(address, account)]);
             self.inner.evm.db_mut().commit(state);
         }
+        Ok(())
+    }
+
+    fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
+        if !self.evm().cfg.spec.is_t6() {
+            return Ok(());
+        }
+
+        let Some(epoch_length) = self.epoch_length else {
+            return Ok(());
+        };
+        let block_number = self.evm().block().number.to::<u64>();
+        if block_number == 0 || block_number % epoch_length != 0 {
+            return Ok(());
+        }
+
+        let outcome =
+            tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut self.extra_data.as_ref())
+                .map_err(|err| {
+                    BlockValidationError::msg(format!(
+                        "failed decoding boundary block extra data as DKG outcome: {err}"
+                    ))
+                })?;
+        let public_keys = outcome
+            .players()
+            .iter()
+            .map(|key| B256::from_slice(key.as_ref()))
+            .collect();
+
+        let calldata = ICurrentCommittee::setCommitteeMembersCall {
+            epoch: outcome.epoch.get(),
+            publicKeys: public_keys,
+        }
+        .abi_encode()
+        .into();
+
+        let result = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, CURRENT_COMMITTEE_ADDRESS, calldata)
+            .map_err(BlockExecutionError::other)?;
+
+        if !result.result.is_success() {
+            return Err(BlockValidationError::msg("current committee system call failed").into());
+        }
+
+        self.evm_mut().db_mut().commit(result.state);
         Ok(())
     }
 
@@ -525,6 +577,7 @@ where
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
         }
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
@@ -647,7 +700,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
@@ -660,6 +713,8 @@ where
         if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
             self.validate_shared_gas(&[])?;
         }
+
+        self.apply_current_committee_system_call()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
