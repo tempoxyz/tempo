@@ -275,12 +275,7 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.collected_fees[validator][token].sinc(amount)?;
 
         Ok(())
     }

@@ -40,19 +40,21 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
+        let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
-        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
+        for (idx, tx) in block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push((idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push((idx, None));
             }
         }
 
-        Ok((transactions, RecoveredInBlock::new))
+        Ok((transactions, move |(index, expiring_nonce_idx)| {
+            RecoveredInBlock::new(block.clone(), index, expiring_nonce_idx)
+        }))
     }
 }
 
@@ -69,7 +71,9 @@ struct RecoveredInBlock {
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        block: Arc<SealedBlock<Block>>,
+        index: usize,
+        expiring_nonce_idx: Option<usize>,
     ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
