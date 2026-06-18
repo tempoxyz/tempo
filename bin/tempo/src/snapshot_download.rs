@@ -7,7 +7,7 @@ use std::{
 
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
-use reth_cli_commands::download::DownloadCommand;
+use reth_cli_commands::download::{DownloadCommand, manifest::OutputFileChecksum};
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
@@ -276,6 +276,10 @@ async fn install_consensus_archive(
     let partitions = consensus_archive_storage_partitions(&archive_bytes)?;
     clear_consensus_partitions(consensus_dir, &partitions)?;
     extract_zstd_tar_archive(&archive_bytes, consensus_dir)?;
+    verify_consensus_output_files(
+        consensus_dir,
+        &loaded.manifest.consensus_archive.output_files,
+    )?;
 
     info!("persisted consensus archive");
     Ok(())
@@ -366,6 +370,59 @@ fn extract_zstd_tar_archive(bytes: &[u8], target_dir: &Path) -> eyre::Result<()>
             .wrap_err_with(|| format!("failed to extract {}", output_path.display()))?;
     }
     Ok(())
+}
+
+fn verify_consensus_output_files(
+    consensus_dir: &Path,
+    output_files: &[OutputFileChecksum],
+) -> eyre::Result<()> {
+    ensure!(
+        !output_files.is_empty(),
+        "consensus archive output metadata is empty",
+    );
+
+    for expected in output_files {
+        let output_path = safe_output_path(consensus_dir, &expected.path)?;
+        let metadata = fs::metadata(&output_path).wrap_err_with(|| {
+            format!(
+                "failed to stat consensus archive output {}",
+                output_path.display()
+            )
+        })?;
+        ensure!(
+            metadata.is_file(),
+            "consensus archive output is not a file: {}",
+            expected.path,
+        );
+        ensure!(
+            metadata.len() == expected.size,
+            "consensus archive output size mismatch for {}: expected {}, got {}",
+            expected.path,
+            expected.size,
+            metadata.len(),
+        );
+
+        let actual = hash_file_blake3(&output_path)?;
+        ensure!(
+            actual.eq_ignore_ascii_case(&expected.blake3),
+            "consensus archive output checksum mismatch for {}: expected {}, got {}",
+            expected.path,
+            expected.blake3,
+            actual,
+        );
+    }
+
+    Ok(())
+}
+
+fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
+    let file =
+        fs::File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(file)
+        .wrap_err_with(|| format!("failed reading {}", path.display()))?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn consensus_archive_entry(
@@ -571,6 +628,91 @@ mod tests {
         let archive = encoder.finish().unwrap();
 
         assert!(extract_zstd_tar_archive(&archive, target.path()).is_err());
+    }
+
+    #[test]
+    fn verify_consensus_output_files_accepts_matching_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_path = "engine-finalized-blocks-prunable-key/nested/00";
+        let file_path = dir.path().join(output_path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, b"abc").unwrap();
+
+        verify_consensus_output_files(
+            dir.path(),
+            &[OutputFileChecksum {
+                path: output_path.to_string(),
+                size: 3,
+                blake3: blake3::hash(b"abc").to_hex().to_string(),
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_empty_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(verify_consensus_output_files(dir.path(), &[]).is_err());
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_mismatched_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_path = "engine-finalized-blocks-prunable-key/00";
+        let file_path = dir.path().join(output_path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, b"abc").unwrap();
+
+        assert!(
+            verify_consensus_output_files(
+                dir.path(),
+                &[OutputFileChecksum {
+                    path: output_path.to_string(),
+                    size: 4,
+                    blake3: blake3::hash(b"abc").to_hex().to_string(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_mismatched_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let output_path = "engine-finalized-blocks-prunable-key/00";
+        let file_path = dir.path().join(output_path);
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(&file_path, b"abc").unwrap();
+
+        assert!(
+            verify_consensus_output_files(
+                dir.path(),
+                &[OutputFileChecksum {
+                    path: output_path.to_string(),
+                    size: 3,
+                    blake3: blake3::hash(b"def").to_hex().to_string(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn verify_consensus_output_files_rejects_unsafe_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(
+            verify_consensus_output_files(
+                dir.path(),
+                &[OutputFileChecksum {
+                    path: "../engine-finalized-blocks-prunable-key/00".to_string(),
+                    size: 3,
+                    blake3: blake3::hash(b"abc").to_hex().to_string(),
+                }],
+            )
+            .is_err()
+        );
     }
 
     #[test]
