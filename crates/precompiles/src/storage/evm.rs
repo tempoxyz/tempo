@@ -371,17 +371,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         let current = self.sload_inner(address, key, false)?;
-
-        let mut sstore_action = StorageAction::Sinc(address, key, delta);
-        if current == U256::ZERO {
-            self.actions
-                .record(StorageAction::Sload(address, key, current));
-            sstore_action = StorageAction::Sstore(address, key, delta);
-        }
-
         let value = current
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+        // If the value goes from zero to non-zero, do not record it as `Sinc`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, delta)
+        } else {
+            StorageAction::Sinc(address, key, delta)
+        };
 
         self.sstore_inner(address, key, value, sstore_action)
     }
@@ -398,12 +400,15 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
 
-        let mut sstore_action = StorageAction::Sdec(address, key, delta);
-        if value == U256::ZERO {
+        // If the value goes from non-zero to zero, do not record it as `Sdec`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            sstore_action = StorageAction::Sstore(address, key, value);
-        }
+            StorageAction::Sstore(address, key, value)
+        } else {
+            StorageAction::Sdec(address, key, delta)
+        };
 
         self.sstore_inner(address, key, value, sstore_action)
     }
