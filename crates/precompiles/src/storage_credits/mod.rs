@@ -63,7 +63,7 @@ impl From<TransientState> for U256 {
 ///
 /// There are 3 storage slots that are special in terms of TIP-1060 accounting:
 ///   1. Balance of the current transaction's fee payer
-///   2. Spending limit of the current transaction's keychain fee
+///   2. Spending limit of the current transaction's keychain key
 ///   3. Collected fees of the current transaction's beneficiary
 ///
 /// Those three slots might get recreated during `collectFeePostTx` call inside of
