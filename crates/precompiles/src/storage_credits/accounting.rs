@@ -9,8 +9,8 @@
 //!   so precompile-driven storage writes honor the same accounting.
 
 use super::{
-    ACCOUNT_SPACE, CreditMode, DEFERRED_CLEAR_SLOT_SPACE, DEFERRED_CLEAR_STATUS_SPACE,
-    DeferredClear, StorageCredits, TransientState,
+    ACCOUNT_SPACE, CreditMode, DEFERRED_SLOT_SPACE, DEFERRED_STATUS_SPACE, DeferredClear,
+    StorageCredits, TransientState,
 };
 use crate::storage::FromWord;
 use alloy::primitives::{Address, U256};
@@ -135,16 +135,16 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     // Handle watched fee-restorable slots before regular TIP-1060 accounting.
     if let Some(key) = key {
-        let deferred_clear_status_slot = StorageCredits::slot(DEFERRED_CLEAR_STATUS_SPACE, owner);
-        let deferred_clear_slot = StorageCredits::slot(DEFERRED_CLEAR_SLOT_SPACE, owner);
+        let deferred_status_slot = StorageCredits::slot(DEFERRED_STATUS_SPACE, owner);
+        let deferred_slot = StorageCredits::slot(DEFERRED_SLOT_SPACE, owner);
 
         let status: DeferredClear = backend
-            .tload(STORAGE_CREDITS_ADDRESS, deferred_clear_status_slot)
+            .tload(STORAGE_CREDITS_ADDRESS, deferred_status_slot)
             .try_into()
             .map_err(|_| B::Error::fatal_external())?;
 
-        let is_watched = status != DeferredClear::Unwatched
-            && backend.tload(STORAGE_CREDITS_ADDRESS, deferred_clear_slot) == key;
+        let is_watched = status != DeferredClear::None
+            && backend.tload(STORAGE_CREDITS_ADDRESS, deferred_slot) == key;
 
         let new_status = match (is_watched, values.is_new_zero(), status) {
             // x→0 on a watched slot: defer the clear action.
@@ -158,7 +158,7 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         if let Some(status_to_write) = new_status {
             backend.tstore(
                 STORAGE_CREDITS_ADDRESS,
-                deferred_clear_status_slot,
+                deferred_status_slot,
                 status_to_write.into(),
             );
             return Ok(());
@@ -234,7 +234,7 @@ mod tests {
         storage::{
             Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
         },
-        storage_credits::DEFERRED_CLEAR_STATUS_SPACE,
+        storage_credits::DEFERRED_STATUS_SPACE,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -259,7 +259,7 @@ mod tests {
             assert_eq!(credits.balance_of(owner)?, 0);
             assert_eq!(
                 credits
-                    .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, owner)
+                    .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, owner)
                     .t_read()?,
                 DeferredClear::Pending
             );
@@ -308,7 +308,7 @@ mod tests {
             assert_eq!(credits.credit_state_of(owner)?.pending_refunds, 0);
             assert_eq!(
                 credits
-                    .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, owner)
+                    .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, owner)
                     .t_read()?,
                 DeferredClear::Watched
             );

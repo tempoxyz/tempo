@@ -16,28 +16,10 @@ use tempo_precompiles_macros::{Storable, contract};
 
 /// Storage space for per-account persistent balance and transaction-local credit state.
 pub const ACCOUNT_SPACE: u8 = 0;
-/// Storage space for the transaction-local post-tx-restorable watch status.
-pub const DEFERRED_CLEAR_STATUS_SPACE: u8 = 1;
-/// Storage space for the transaction-local post-tx-restorable watched slot key.
-pub const DEFERRED_CLEAR_SLOT_SPACE: u8 = 2;
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub(crate) enum DeferredClear {
-    #[default]
-    Unwatched,
-    Watched,
-    Pending,
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub enum CreditMode {
-    #[default]
-    Refund,
-    Preserve,
-    Direct,
-}
+/// Storage space for the transaction-local post-tx-deferred watch status.
+pub const DEFERRED_STATUS_SPACE: u8 = 1;
+/// Storage space for the transaction-local post-tx-deferred watched slot key.
+pub const DEFERRED_SLOT_SPACE: u8 = 2;
 
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,25 +32,22 @@ pub struct TransientState {
     pub pending_refunds: u64,
 }
 
-impl TryFrom<U256> for TransientState {
-    type Error = TempoPrecompileError;
-
-    #[inline]
-    fn try_from(value: U256) -> Result<Self> {
-        let limbs = value.as_limbs();
-        Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[3],
-        })
-    }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub enum CreditMode {
+    #[default]
+    Refund,
+    Preserve,
+    Direct,
 }
 
-impl From<TransientState> for U256 {
-    #[inline]
-    fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
-    }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub(crate) enum DeferredClear {
+    #[default]
+    None,
+    Watched,
+    Pending,
 }
 
 /// TIP-1060 storage credits precompile, tracking each storage owner's credit balance and tx state.
@@ -94,7 +73,7 @@ impl StorageCredits {
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
-        self.slot_handler::<u64>(ACCOUNT_SPACE, account).read()
+        self.handler::<u64>(ACCOUNT_SPACE, account).read()
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
@@ -149,7 +128,7 @@ impl StorageCredits {
 
     /// Returns a full-slot handler in the selected storage-credit namespace.
     #[inline]
-    fn slot_handler<T: StorableType>(&self, storage_space: u8, account: Address) -> T::Handler {
+    fn handler<T: StorableType>(&self, storage_space: u8, account: Address) -> T::Handler {
         T::handle(
             Self::slot(storage_space, account),
             LayoutCtx::FULL,
@@ -160,11 +139,11 @@ impl StorageCredits {
     /// Registers a storage slot whose clear credit must be finalized after post-tx fee writes.
     pub fn watch_deferred_clear_slot(&mut self, account: Address, slot: U256) -> Result<()> {
         let status = self
-            .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+            .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
             .t_read()?;
-        if status != DeferredClear::Unwatched {
+        if status != DeferredClear::None {
             let current = self
-                .slot_handler::<U256>(DEFERRED_CLEAR_SLOT_SPACE, account)
+                .handler::<U256>(DEFERRED_SLOT_SPACE, account)
                 .t_read()?;
             if current == slot {
                 return Ok(());
@@ -175,9 +154,9 @@ impl StorageCredits {
             ));
         }
 
-        self.slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+        self.handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
             .t_write(DeferredClear::Watched)?;
-        self.slot_handler::<U256>(DEFERRED_CLEAR_SLOT_SPACE, account)
+        self.handler::<U256>(DEFERRED_SLOT_SPACE, account)
             .t_write(slot)
     }
 
@@ -187,15 +166,15 @@ impl StorageCredits {
     /// If the slot is recreated post-tx, the pending clear is discarded. Returns the minted credits.
     pub fn finalize_deferred_clears(&mut self, account: Address) -> Result<u64> {
         let status = self
-            .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+            .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
             .t_read()?;
-        if status == DeferredClear::Unwatched {
+        if status == DeferredClear::None {
             return Ok(0);
         }
 
         let minted = if status == DeferredClear::Pending {
             let watched_slot = self
-                .slot_handler::<U256>(DEFERRED_CLEAR_SLOT_SPACE, account)
+                .handler::<U256>(DEFERRED_SLOT_SPACE, account)
                 .t_read()?;
             let final_value = U256::handle(watched_slot, LayoutCtx::FULL, account).read()?;
             u64::from(final_value.is_zero())
@@ -204,27 +183,48 @@ impl StorageCredits {
         };
 
         if minted > 0 {
-            let mut handler = self.slot_handler::<u64>(ACCOUNT_SPACE, account);
+            let mut handler = self.handler::<u64>(ACCOUNT_SPACE, account);
             let balance = handler.read()?;
             handler.write(balance.saturating_add(minted))?;
         }
 
-        self.slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
-            .t_write(DeferredClear::Unwatched)?;
+        self.handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
+            .t_write(DeferredClear::None)?;
         Ok(minted)
     }
 
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        self.slot_handler::<U256>(ACCOUNT_SPACE, account)
+        self.handler::<U256>(ACCOUNT_SPACE, account)
             .t_read()?
             .try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.slot_handler::<U256>(ACCOUNT_SPACE, account)
+        self.handler::<U256>(ACCOUNT_SPACE, account)
             .t_write(state.into())
+    }
+}
+
+impl TryFrom<U256> for TransientState {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn try_from(value: U256) -> Result<Self> {
+        let limbs = value.as_limbs();
+        Ok(Self {
+            budget: limbs[0],
+            mode: (limbs[1] as u8).try_into()?,
+            pending_refunds: limbs[3],
+        })
+    }
+}
+
+impl From<TransientState> for U256 {
+    #[inline]
+    fn from(value: TransientState) -> Self {
+        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
     }
 }
 
@@ -233,7 +233,7 @@ impl TryFrom<u8> for DeferredClear {
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(Self::Unwatched),
+            0 => Ok(Self::None),
             1 => Ok(Self::Watched),
             2 => Ok(Self::Pending),
             _ => Err(TempoPrecompileError::Fatal(
@@ -359,13 +359,13 @@ mod tests {
 
             assert_eq!(
                 credits
-                    .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+                    .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
                     .t_read()?,
                 DeferredClear::Watched
             );
             assert_eq!(
                 credits
-                    .slot_handler::<U256>(DEFERRED_CLEAR_SLOT_SPACE, account)
+                    .handler::<U256>(DEFERRED_SLOT_SPACE, account)
                     .t_read()?,
                 U256::ZERO
             );
@@ -390,7 +390,7 @@ mod tests {
             let mut credits = StorageCredits::new();
             credits.watch_deferred_clear_slot(account, cleared_slot)?;
             credits
-                .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+                .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
                 .t_write(DeferredClear::Pending)?;
             assert_eq!(credits.finalize_deferred_clears(account)?, 1);
             assert_eq!(credits.balance_of(account)?, 1);
@@ -398,7 +398,7 @@ mod tests {
             U256::handle(restored_slot, LayoutCtx::FULL, account).write(U256::ONE)?;
             credits.watch_deferred_clear_slot(account, restored_slot)?;
             credits
-                .slot_handler::<DeferredClear>(DEFERRED_CLEAR_STATUS_SPACE, account)
+                .handler::<DeferredClear>(DEFERRED_STATUS_SPACE, account)
                 .t_write(DeferredClear::Pending)?;
             assert_eq!(credits.finalize_deferred_clears(account)?, 0);
             assert_eq!(credits.balance_of(account)?, 1);
