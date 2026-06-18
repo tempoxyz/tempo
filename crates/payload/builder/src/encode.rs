@@ -113,7 +113,7 @@ impl EncodedBlockTransactionsBuilder {
     }
 }
 
-/// Fills the shared encoded execution block cache from a builder background task.
+/// Encodes the execution block into the shared cache when dropped.
 ///
 /// The payload builder creates this after assembling a recovered block, passes a clone of
 /// `encoded_block` into `TempoBuiltPayload`, then moves the encoder into a blocking task. Dropping
