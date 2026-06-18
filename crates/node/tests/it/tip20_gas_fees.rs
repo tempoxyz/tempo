@@ -1,11 +1,10 @@
 use alloy::{
-    network::ReceiptResponse,
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
-use alloy_network::TransactionBuilder;
+use alloy_network::{ReceiptResponse, TransactionBuilder};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
