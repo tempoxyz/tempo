@@ -16,9 +16,7 @@ pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{
-    HeaderTy, Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef,
-};
+use reth_primitives_traits::{HeaderTy, Recovered, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -497,16 +495,17 @@ where
         origin: TransactionOrigin,
         tx: WithEncoded<PoolTx<Self::Pool>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
-        let recovered = tx.value().clone_into_consensus();
-        match recovered.inner().subblock_proposer() {
+        match tx.value().consensus_ref().subblock_proposer() {
             Some(proposer) if self.matches_validator_key(&proposer) => {
                 let subblock_tx = self.subblock_transactions_tx.clone();
                 Either::Left(Either::Left(async move {
-                    let tx_hash = *recovered.tx_hash();
+                    let tx_hash = *tx.value().hash();
 
-                    subblock_tx.send(recovered).map_err(|_| {
-                        EthApiError::from(RethError::msg("subblocks service channel closed"))
-                    })?;
+                    subblock_tx
+                        .send(tx.into_value().into_consensus())
+                        .map_err(|_| {
+                            EthApiError::from(RethError::msg("subblocks service channel closed"))
+                        })?;
 
                     Ok(tx_hash)
                 }))
