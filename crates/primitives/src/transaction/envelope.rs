@@ -444,6 +444,8 @@ impl TempoTypedTransaction {
     }
 
     /// Returns a dyn mutable reference to the underlying transaction
+    #[cold]
+    #[inline(never)]
     pub fn as_dyn_signable_mut(&mut self) -> &mut dyn SignableTransaction<Signature> {
         match self {
             Self::Legacy(tx) => tx,
