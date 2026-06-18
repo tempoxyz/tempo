@@ -17,7 +17,7 @@ use reth_revm::{
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::{StorageAction, StorageActions};
+use tempo_precompiles::storage::StorageAction;
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -65,8 +65,6 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
-    /// Recorded storage actions.
-    actions: StorageActions,
     inspect: bool,
 }
 
@@ -82,10 +80,8 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        let actions = StorageActions::disabled();
         Self {
-            inner: tempo_revm::TempoEvm::new_with_actions(ctx, NoOpInspector {}, actions.clone()),
-            actions,
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
         }
     }
@@ -135,7 +131,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
-            actions: self.actions,
             inspect: true,
         }
     }
@@ -154,18 +149,18 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Enables recording of storage actions.
     pub fn with_actions(self) -> Self {
-        self.actions.enable();
+        self.inner.actions().enable();
         self
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
-        self.actions.take()
+        self.inner.actions().take()
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
-        self.actions.replace(actions)
+        self.inner.actions().replace(actions)
     }
 }
 
@@ -310,7 +305,7 @@ mod tests {
     use tempo_precompiles::{
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         TIP403_REGISTRY_ADDRESS,
-        storage::{StorageAction, StorageCtx, StorageKey},
+        storage::{StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip_fee_manager::slots as fee_manager_slots,

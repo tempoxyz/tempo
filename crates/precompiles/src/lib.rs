@@ -159,28 +159,7 @@ impl PrecompileEnv {
 ///
 /// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
 /// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
-#[cfg(test)]
-pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
-    tempo_precompiles_with_actions(cfg, StorageActions::disabled())
-}
-
-/// Returns the full Tempo precompiles for the given config and storage actions.
-///
-/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
-/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
-pub fn tempo_precompiles_with_actions(
-    cfg: &CfgEnv<TempoHardfork>,
-    actions: StorageActions,
-) -> PrecompilesMap {
-    tempo_precompiles_with_actions_and_non_creditable_slots(
-        cfg,
-        actions,
-        Rc::new(RefCell::new(NonCreditableSlots::empty())),
-    )
-}
-
-/// Returns the full Tempo precompiles for the given config, storage actions, and storage-credit context.
-pub fn tempo_precompiles_with_actions_and_non_creditable_slots(
+pub fn tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
@@ -620,6 +599,14 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+
+    fn test_tempo_precompiles(cfg_env: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+        tempo_precompiles(
+            cfg_env,
+            StorageActions::disabled(),
+            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+        )
+    }
 
     #[test]
     fn test_precompile_delegatecall() {
@@ -1209,7 +1196,7 @@ mod tests {
     fn test_extend_tempo_precompiles_registers_precompiles() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T3);
-        let precompiles = tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
         let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
@@ -1300,7 +1287,7 @@ mod tests {
     #[test]
     fn test_signature_verifier_not_registered_pre_t3() {
         let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompiles = tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(&cfg);
 
         assert!(
             precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
@@ -1312,7 +1299,7 @@ mod tests {
     fn test_channel_reserve_registered_at_t5_only() {
         let pre_t5 = CfgEnv::<TempoHardfork>::default();
         assert!(
-            tempo_precompiles(&pre_t5)
+            test_tempo_precompiles(&pre_t5)
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_none(),
             "TIP20 channel reserve should NOT be registered before T5"
@@ -1321,7 +1308,7 @@ mod tests {
         let mut t5 = CfgEnv::<TempoHardfork>::default();
         t5.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
         assert!(
-            tempo_precompiles(&t5)
+            test_tempo_precompiles(&t5)
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
@@ -1355,7 +1342,7 @@ mod tests {
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(spec);
-            tempo_precompiles(&cfg).get(&p256_addr).is_some()
+            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
         };
 
         // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)

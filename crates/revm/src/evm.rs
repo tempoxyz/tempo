@@ -62,18 +62,13 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        Self::new_with_actions(ctx, inspector, StorageActions::disabled())
-    }
-
-    /// Create a new Tempo EVM with a buffer for recording storage actions.
-    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
-        let precompiles =
-            tempo_precompiles::tempo_precompiles_with_actions_and_non_creditable_slots(
-                &ctx.cfg,
-                actions.clone(),
-                non_creditable_slots.clone(),
-            );
+        let actions = StorageActions::disabled();
+        let precompiles = tempo_precompiles::tempo_precompiles(
+            &ctx.cfg,
+            actions.clone(),
+            non_creditable_slots.clone(),
+        );
 
         Self::new_inner(
             Evm {
@@ -148,24 +143,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         )
     }
 
-    /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        let Self {
-            inner,
-            actions,
-            non_creditable_slots,
-            ..
-        } = self;
-        Self::new_inner(
-            inner.with_precompiles(precompiles),
-            actions,
-            non_creditable_slots,
-        )
-    }
-
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
+    }
+
+    /// Returns a reference to the recorded storage actions.
+    pub fn actions(&self) -> &StorageActions {
+        &self.actions
     }
 
     /// Clears all intermediate state from the EVM.
