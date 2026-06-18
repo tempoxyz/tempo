@@ -33,6 +33,10 @@ pub(crate) struct EncodedBlockTransactionsBuilder {
 }
 
 impl EncodedBlockTransactionsBuilder {
+    /// Appends one encoded transaction as a block-body transaction-list element.
+    ///
+    /// Legacy transaction bytes are already RLP list elements. Typed EIP-2718 transaction bytes are
+    /// wrapped as an RLP string so the final transaction list matches regular block encoding.
     pub(crate) fn push(&mut self, transaction: &TempoTxEnvelope, encoded_2718: &[u8]) {
         self.transaction_count += 1;
         if !transaction.is_legacy() {
