@@ -22,6 +22,9 @@ use tracing::{info, warn};
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedBlockTransactionList {
     transaction_count: usize,
+    /// Complete RLP list for the block body transactions field.
+    ///
+    /// Legacy transactions are list elements and typed EIP-2718 transactions are string elements.
     rlp: Bytes,
 }
 
