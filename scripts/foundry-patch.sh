@@ -30,10 +30,9 @@ if [[ ! -f "$FOUNDRY_CARGO" ]]; then
   exit 1
 fi
 
-# Already patched – nothing to do
+has_tempo_git_patch=false
 if grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' "$FOUNDRY_CARGO"; then
-  echo "Foundry Cargo.toml already contains tempo git patch section – skipping."
-  exit 0
+  has_tempo_git_patch=true
 fi
 
 # ── 1. Discover tempo-* workspace crates that have local paths ──────────────
@@ -54,16 +53,42 @@ if [[ -z "$PATCHES" ]]; then
   exit 1
 fi
 
-# ── 2. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
-{
-  printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
-  while IFS=$'\t' read -r crate path; do
-    [[ -n "$crate" ]] || continue
-    printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
-  done <<< "$PATCHES"
-} >> "$FOUNDRY_CARGO"
+# ── 2. Replace Foundry's direct Tempo git dependencies ──────────────────────
+# [patch] entries do not always dislodge old git-sourced lockfile packages when
+# the local checkout has a different crate version. Rewrite Foundry's direct
+# tempo-* dependencies to local paths first, preserving any feature flags.
+while IFS=$'\t' read -r crate path; do
+  [[ -n "$crate" ]] || continue
+  local_path="${TEMPO_ROOT}/${path}"
+  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+  awk -v crate="$crate" -v local_path="$local_path" '
+    index($0, crate " = {") == 1 && index($0, "git = \"https://github.com/tempoxyz/tempo\"") {
+      sub(/\{[[:space:]]*/, "{ path = \"" local_path "\", ")
+      gsub(/[[:space:]]*git = "https:\/\/github.com\/tempoxyz\/tempo",[[:space:]]*/, "")
+      gsub(/[[:space:]]*rev = "[^"]+",?[[:space:]]*/, "")
+      gsub(/,[[:space:]]*}/, " }")
+      print
+      next
+    }
+    { print }
+  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+  mv "$tmp_cargo" "$FOUNDRY_CARGO"
+done <<< "$PATCHES"
 
-# ── 3. Patch [patch.crates-io] ──────────────────────────────────────────────
+# ── 3. Patch [patch."https://github.com/tempoxyz/tempo"] ────────────────────
+if [[ "$has_tempo_git_patch" == "true" ]]; then
+  echo "Foundry Cargo.toml already contains tempo git patch section – keeping existing section."
+else
+  {
+    printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
+    while IFS=$'\t' read -r crate path; do
+      [[ -n "$crate" ]] || continue
+      printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
+    done <<< "$PATCHES"
+  } >> "$FOUNDRY_CARGO"
+fi
+
+# ── 4. Patch [patch.crates-io] ──────────────────────────────────────────────
 # Upstream foundry pins some tempo crates to git revisions in [patch.crates-io].
 # Replace those with local paths so Cargo doesn't conflict.
 while IFS=$'\t' read -r crate path; do
@@ -156,7 +181,7 @@ update_stale_tempo_git_packages() {
   cargo update "${update_args[@]}" >/dev/null
 }
 
-# ── 4. Re-resolve the lockfile without upgrading unrelated crates ──────────
+# ── 5. Re-resolve the lockfile without upgrading unrelated crates ──────────
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
 # A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
 # Keep this aligned with the CI Forge build so Optimism-only dependencies do not re-enter resolution.
