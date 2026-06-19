@@ -6,6 +6,7 @@
 mod budget;
 mod encode;
 mod metrics;
+mod parallel;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
@@ -19,7 +20,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -61,7 +62,7 @@ use reth_transaction_pool::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -134,6 +135,8 @@ pub struct TempoPayloadBuilderConfig {
     pub enable_prewarming: bool,
     /// Whether payload builds should skip state-root computation.
     pub skip_state_root: bool,
+    /// Whether to enable speculative parallel payload-builder planning.
+    pub enable_parallel: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
@@ -313,7 +316,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        mut best_txs: impl FnMut(BestTransactionsAttributes) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -547,15 +550,26 @@ where
         }
 
         let base_fee = executor.evm().block().basefee;
+        let blob_gas_price = executor
+            .evm()
+            .block()
+            .blob_gasprice()
+            .map(|gasprice| gasprice as u64);
         let pool_fetch_start = Instant::now();
-        let best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        if self.config.enable_parallel {
+            let _ = parallel::PrewarmingPlanner::new(
+                self.executor.clone(),
+                PrewarmingExecutionContext::new(
+                    self.provider.clone(),
+                    execution_cache.clone(),
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    Arc::new(AtomicBool::new(false)),
+                ),
+                best_txs(BestTransactionsAttributes::new(base_fee, blob_gas_price)),
+            );
+        }
+        let best_txs = best_txs(BestTransactionsAttributes::new(base_fee, blob_gas_price));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.config.enable_prewarming {
