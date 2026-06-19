@@ -65,8 +65,9 @@ impl From<TransientState> for U256 {
 ///   1. Balance of the current transaction's fee payer
 ///   2. Spending limit of the current transaction's keychain key
 ///   3. Collected fees of the current transaction's beneficiary
+///   4. T7-only opted-in supply of the current transaction's fee token
 ///
-/// Those three slots might get recreated during `collectFeePostTx` call inside of
+/// Those slots might get recreated during `collectFeePostTx` call inside of
 /// which we don't do gas accounting or burn storage credits, and thus allowing to
 /// mint credits for those slots during transaction execution might result in those
 /// credits being unbacked.
@@ -77,6 +78,7 @@ pub struct NonCreditableSlots {
     beneficiary: Address,
     validator_token: Address,
     keychain_fee_key: Option<Address>,
+    include_fee_token_opted_in_supply: bool,
     fee_balance_slot: OnceCell<U256>,
     collected_fees_slot: OnceCell<U256>,
     keychain_limit_slot: OnceCell<U256>,
@@ -95,12 +97,14 @@ impl NonCreditableSlots {
         beneficiary: Address,
         validator_token: Address,
         keychain_fee_key: Option<Address>,
+        include_fee_token_opted_in_supply: bool,
     ) {
         self.fee_payer = fee_payer;
         self.fee_token = fee_token;
         self.beneficiary = beneficiary;
         self.validator_token = validator_token;
         self.keychain_fee_key = keychain_fee_key;
+        self.include_fee_token_opted_in_supply = include_fee_token_opted_in_supply;
     }
 
     #[inline]
@@ -114,8 +118,14 @@ impl NonCreditableSlots {
             return false;
         }
 
-        if owner == self.fee_token && self.fee_balance_slot() == slot {
-            return true;
+        if owner == self.fee_token {
+            if self.fee_balance_slot() == slot {
+                return true;
+            }
+
+            if self.include_fee_token_opted_in_supply && slot == tip20::slots::OPTED_IN_SUPPLY {
+                return true;
+            }
         }
 
         if owner == TIP_FEE_MANAGER_ADDRESS && self.collected_fees_slot() == slot {
@@ -338,12 +348,24 @@ mod tests {
         let beneficiary = Address::repeat_byte(0x14);
         let validator_token = Address::repeat_byte(0x15);
         let mut slots = NonCreditableSlots::empty();
-        slots.initialize(fee_payer, fee_token, beneficiary, validator_token, None);
+        slots.initialize(
+            fee_payer,
+            fee_token,
+            beneficiary,
+            validator_token,
+            None,
+            true,
+        );
 
         let fee_balance_slot =
             TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
         assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
         assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot + U256::ONE));
+
+        let opted_in_supply_slot = TIP20Token::from_address_unchecked(fee_token)
+            .opted_in_supply
+            .slot();
+        assert!(slots.is_non_creditable_slot(fee_token, opted_in_supply_slot));
 
         let collected_fees_slot =
             TipFeeManager::new().collected_fees[beneficiary][validator_token].slot();
@@ -367,6 +389,7 @@ mod tests {
             beneficiary,
             validator_token,
             Some(key_id),
+            false,
         );
 
         let keychain = AccountKeychain::new();
@@ -394,6 +417,7 @@ mod tests {
             beneficiary,
             validator_token,
             Some(key_id),
+            false,
         );
 
         let fee_balance_slot =

@@ -229,6 +229,7 @@ mod tests {
             Address::repeat_byte(0x44),
             Address::repeat_byte(0x55),
             None,
+            false,
         );
         storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
@@ -276,6 +277,7 @@ mod tests {
             Address::repeat_byte(0x66),
             Address::repeat_byte(0x77),
             None,
+            false,
         );
         storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;

@@ -33,7 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
-use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
+use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -1446,6 +1446,7 @@ where
                     block.beneficiary(),
                     validator_token,
                     keychain_fee_key,
+                    matches!(cfg.spec, TempoHardfork::T7),
                 );
             }
 
