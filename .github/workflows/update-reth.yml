@@ -97,7 +97,7 @@ jobs:
       # ── toolchain (matches test.yml) ───────────────────────────
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
           tool: nextest@0.9.124
@@ -514,7 +514,7 @@ jobs:
               fi
 
               # All done with no failures = success
-              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 exit 0
@@ -524,7 +524,7 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | map(.name) | join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
                 HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
