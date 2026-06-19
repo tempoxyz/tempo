@@ -30,6 +30,7 @@ pub(crate) struct Args {
         long,
         default_value_t = true,
         default_missing_value = "true",
+        hide = true,
         num_args = 0..=1,
         require_equals = true
     )]
@@ -67,7 +68,6 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         );
 
         if args.skip_consensus {
-            info!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
@@ -140,6 +140,14 @@ fn write_bootstrap_finalization(
 mod tests {
     use super::*;
     use alloy_primitives::{B256, Bytes};
+    use clap::CommandFactory;
+
+    #[test]
+    fn help_hides_skip_consensus_override() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(!help.contains("--skip-consensus"));
+    }
 
     #[test]
     fn args_parses_mixed_reth_and_tempo_flags() {
