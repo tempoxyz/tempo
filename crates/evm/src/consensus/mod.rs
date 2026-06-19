@@ -109,24 +109,20 @@ impl TempoConsensus {
 
         let chain_spec = self.inner.chain_spec();
         if chain_spec.is_proof_root_active_at_timestamp(header.timestamp()) {
-            if !chain_spec
-                .provable_accounts_at_timestamp(header.timestamp())
-                .is_empty()
-            {
-                return Err(ConsensusError::msg(
-                    "non-empty provable account whitelist requires persisted proof-trie validation",
-                ));
-            }
-
             match header.proof_root {
-                Some(actual) if actual == EMPTY_ROOT_HASH => {}
-                Some(actual) => {
+                Some(actual)
+                    if chain_spec
+                        .provable_accounts_at_timestamp(header.timestamp())
+                        .is_empty()
+                        && actual != EMPTY_ROOT_HASH =>
+                {
                     return Err(TempoConsensusError::ProofRootMismatch {
                         expected: EMPTY_ROOT_HASH,
                         actual,
                     }
                     .into());
                 }
+                Some(_) => {}
                 None => return Err(TempoConsensusError::MissingProofRoot.into()),
             }
         } else if header.proof_root.is_some() {
