@@ -1,11 +1,16 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
+use alloy_consensus::constants::EMPTY_ROOT_HASH;
+use alloy_primitives::B256;
 use reth_consensus::ConsensusError;
-use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
+use reth_node_api::{
+    AuxiliaryStateRoot, InvalidPayloadAttributesError, NewPayloadError, PayloadValidator,
+};
 use reth_primitives_traits::{AlloyBlockHeader as _, RecoveredBlock, SealedBlock};
+use reth_revm::db::states::BundleState;
 use reth_trie_common::HashedPostState;
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::consensus::TempoConsensusError;
+use tempo_evm::{consensus::TempoConsensusError, proof_trie::proof_hashed_state_from_bundle_state};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader};
 
@@ -44,28 +49,58 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         block: &RecoveredBlock<Self::Block>,
     ) -> Result<(), ConsensusError> {
         let timestamp = block.header().timestamp();
-        let provable_accounts = self.chain_spec.provable_accounts_at_timestamp(timestamp);
-        if !provable_accounts.is_empty() {
-            return Err(ConsensusError::msg(
-                "non-empty provable account whitelist requires persisted proof-trie validation",
-            ));
+        if self.chain_spec.is_proof_root_active_at_timestamp(timestamp) {
+            block
+                .header()
+                .proof_root
+                .ok_or_else(|| TempoConsensusError::MissingProofRoot.into())
+                .map(|_| ())
+        } else if block.header().proof_root.is_some() {
+            Err(TempoConsensusError::ProofRootBeforeActivation.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn auxiliary_state_root(
+        &self,
+        parent_header: &TempoHeader,
+        block: &RecoveredBlock<Self::Block>,
+        bundle_state: &BundleState,
+    ) -> Result<Option<AuxiliaryStateRoot>, ConsensusError> {
+        let timestamp = block.header().timestamp();
+        if !self.chain_spec.is_proof_root_active_at_timestamp(timestamp) {
+            if block.header().proof_root.is_some() {
+                return Err(TempoConsensusError::ProofRootBeforeActivation.into());
+            }
+            return Ok(None);
         }
 
-        match self
-            .chain_spec
-            .proof_root_for_empty_provable_whitelist_at_timestamp(timestamp)
-        {
-            Some(expected) => match block.header().proof_root {
-                Some(actual) if actual == expected => Ok(()),
-                Some(actual) => {
-                    Err(TempoConsensusError::ProofRootMismatch { expected, actual }.into())
-                }
-                None => Err(TempoConsensusError::MissingProofRoot.into()),
-            },
-            None if block.header().proof_root.is_some() => {
-                Err(TempoConsensusError::ProofRootBeforeActivation.into())
-            }
-            None => Ok(()),
+        let expected_root = block
+            .header()
+            .proof_root
+            .ok_or(TempoConsensusError::MissingProofRoot)?;
+        let provable_accounts = self.chain_spec.provable_accounts_at_timestamp(timestamp);
+        let state_updates = proof_hashed_state_from_bundle_state(bundle_state, provable_accounts);
+        let parent_root = parent_header.proof_root.unwrap_or(EMPTY_ROOT_HASH);
+
+        Ok(Some(AuxiliaryStateRoot {
+            parent_root,
+            expected_root,
+            state_updates,
+        }))
+    }
+
+    fn validate_auxiliary_state_root(
+        &self,
+        actual: B256,
+        expected: B256,
+        _block: &RecoveredBlock<Self::Block>,
+    ) -> Result<(), ConsensusError> {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(TempoConsensusError::ProofRootMismatch { expected, actual }.into())
         }
     }
 
@@ -85,7 +120,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Header, constants::EMPTY_ROOT_HASH};
+    use alloy_consensus::Header;
     use alloy_genesis::Genesis;
     use alloy_primitives::B256;
     use tempo_primitives::BlockBody;
@@ -164,7 +199,7 @@ mod tests {
                 &state_updates,
                 &recovered_block(10, Some(EMPTY_ROOT_HASH)),
             )
-            .expect("activation proof_root must match the empty trie root");
+            .expect("activation proof_root must be present");
 
         assert!(
             validator
@@ -176,14 +211,21 @@ mod tests {
             "post-activation proof_root must be required"
         );
 
+        let parent = recovered_block(9, None);
+        let block = recovered_block(10, Some(EMPTY_ROOT_HASH));
+        let auxiliary = validator
+            .auxiliary_state_root(parent.header(), &block, &BundleState::default())
+            .expect("auxiliary proof root input is valid")
+            .expect("proof root is active");
+        assert_eq!(auxiliary.parent_root, EMPTY_ROOT_HASH);
+        assert_eq!(auxiliary.expected_root, EMPTY_ROOT_HASH);
+        assert!(auxiliary.state_updates.is_empty());
+
         assert!(
             validator
-                .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
-                    &recovered_block(10, Some(B256::repeat_byte(0x42))),
-                )
+                .validate_auxiliary_state_root(B256::repeat_byte(0x42), EMPTY_ROOT_HASH, &block,)
                 .is_err(),
-            "post-activation proof_root must match the expected root"
+            "post-activation proof_root must match the computed proof root"
         );
     }
 }

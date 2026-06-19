@@ -69,7 +69,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm,
-    proof_trie::proof_trie_input_for_provable_accounts,
+    proof_trie::proof_trie_input_from_bundle_state,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -995,6 +995,7 @@ where
 
         let proof_root = self.proof_root_for_payload_timestamp(
             &finish_provider,
+            &db.bundle_state,
             evm_env.block_env.inner.timestamp.to::<u64>(),
         )?;
 
@@ -1203,6 +1204,7 @@ where
     fn proof_root_for_payload_timestamp(
         &self,
         state_root_provider: &impl StateRootProvider,
+        bundle_state: &reth_revm::db::states::bundle_state::BundleState,
         timestamp: u64,
     ) -> Result<Option<B256>, BlockExecutionError> {
         let chain_spec = self.evm_config.chain_spec();
@@ -1211,16 +1213,10 @@ where
         }
 
         let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
-        let proof_trie_input = proof_trie_input_for_provable_accounts(provable_accounts)
-            .ok_or_else(|| {
-                BlockExecutionError::other(std::io::Error::other(
-                    "non-empty provable account whitelist requires persisted proof-trie validation",
-                ))
-            })?;
+        let proof_trie_input = proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
 
         // Compute the proof root through the same provider path used by the serial state-root
-        // fallback. With the current empty whitelist, the proof sparse MPT receives no account
-        // leaves and its trie input is empty.
+        // fallback after filtering and hashing the bundle state into proof-trie input.
         state_root_provider
             .state_root_from_nodes(proof_trie_input)
             .map(Some)
