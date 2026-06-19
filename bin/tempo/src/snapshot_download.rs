@@ -429,7 +429,7 @@ fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Res
         );
 
         let output_path = safe_output_path(target_dir, &output_relative)
-            .wrap_err_with(|| format!("path is not safe: {}", output_relative))?;
+            .wrap_err_with(|| format!("path is not safe: {output_relative}"))?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
