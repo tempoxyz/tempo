@@ -452,7 +452,7 @@ impl Inner<Init> {
             parent.digest = %verify.parent.1,
             proposer = %verify.proposer,
         ),
-        err,
+        err(level = Level::INFO),
     )]
     async fn handle_verify<TContext: Pacer>(
         self,
