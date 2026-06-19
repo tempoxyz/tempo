@@ -358,6 +358,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
     /// Compute storage slot for a mapping with this key.
     ///
     /// Left-pads the key to 32 bytes, concatenates with the slot, and hashes.
+    #[inline]
     fn mapping_slot(&self, slot: U256) -> U256 {
         let key_bytes = self.as_storage_bytes();
         let key_bytes = key_bytes.as_ref();
