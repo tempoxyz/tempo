@@ -70,7 +70,7 @@ impl From<TransientState> for U256 {
 /// which we don't do gas accounting or burn storage credits, and thus allowing to
 /// mint credits for those slots during transaction execution might result in those
 /// credits being unbacked.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NonCreditableSlots {
     fee_payer: Address,
     fee_token: Address,
@@ -85,16 +85,7 @@ pub struct NonCreditableSlots {
 impl NonCreditableSlots {
     #[inline]
     pub fn empty() -> Self {
-        Self {
-            fee_payer: Address::ZERO,
-            fee_token: Address::ZERO,
-            beneficiary: Address::ZERO,
-            validator_token: Address::ZERO,
-            keychain_fee_key: None,
-            fee_balance_slot: OnceCell::new(),
-            collected_fees_slot: OnceCell::new(),
-            keychain_limit_slot: OnceCell::new(),
-        }
+        Self::default()
     }
 
     pub fn initialize(
@@ -110,9 +101,6 @@ impl NonCreditableSlots {
         self.beneficiary = beneficiary;
         self.validator_token = validator_token;
         self.keychain_fee_key = keychain_fee_key;
-        self.fee_balance_slot = OnceCell::new();
-        self.collected_fees_slot = OnceCell::new();
-        self.keychain_limit_slot = OnceCell::new();
     }
 
     #[inline]
@@ -122,7 +110,7 @@ impl NonCreditableSlots {
 
     #[inline]
     pub(crate) fn is_non_creditable_slot(&self, owner: Address, slot: U256) -> bool {
-        if self.fee_token == Address::ZERO {
+        if self.fee_token.is_zero() {
             return false;
         }
 
