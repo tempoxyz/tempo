@@ -109,12 +109,6 @@ done <<< "$PATCHES"
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
-FOUNDRY_TEMPO_EVM="$FOUNDRY_ROOT/crates/evm/core/src/evm/tempo.rs"
-if [[ -f "$FOUNDRY_TEMPO_EVM" ]] && grep -q 'extend_tempo_precompiles(tempo_evm.precompiles_mut(), &cfg, StorageActions::disabled());' "$FOUNDRY_TEMPO_EVM"; then
-  perl -0pi -e 's/use tempo_precompiles::\{\n    extend_tempo_precompiles,\n    storage::\{StorageActions, StorageCtx\},\n\};/use tempo_precompiles::{\n    extend_tempo_precompiles,\n    storage::{StorageActions, StorageCtx},\n    storage_credits::NonCreditableSlots,\n};/' "$FOUNDRY_TEMPO_EVM"
-  perl -0pi -e 's/extend_tempo_precompiles\(tempo_evm\.precompiles_mut\(\), &cfg, StorageActions::disabled\(\)\);/extend_tempo_precompiles(\n            tempo_evm.precompiles_mut(),\n            \&cfg,\n            StorageActions::disabled(),\n            std::rc::Rc::new(std::cell::RefCell::new(NonCreditableSlots::empty())),\n        );/' "$FOUNDRY_TEMPO_EVM"
-fi
-
 # Foundry's lockfile can still contain packages sourced from old
 # tempoxyz/tempo git revisions after the Cargo.toml patches above are written.
 # `cargo metadata` may fail before it can rewrite those entries if an old Tempo
