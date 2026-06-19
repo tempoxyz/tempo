@@ -13,7 +13,7 @@ pub enum StorageAction {
     Sstore(Address, U256, U256),
     /// Records an increment of a storage slot by delta.
     ///
-    /// If the slot **was** zero as a result of incrementing,
+    /// If the slot **was** zero before incrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
     Sinc(Address, U256, U256),
     /// Records a decrement of a storage slot by delta.
