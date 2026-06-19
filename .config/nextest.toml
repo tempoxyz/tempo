@@ -2,6 +2,11 @@
 fail-fast = false
 retries = 2
 test-threads = "num-cpus"
+# Safety net so a hung test (e.g. a live-network test polling for a receipt that
+# never arrives, or an integration test deadlocked on a stalled node) is killed
+# and reported instead of silently stalling the job until its 30m wall timeout.
+# More specific per-package overrides below take precedence over this default.
+slow-timeout = { period = "60s", terminate-after = 5 }
 
 # Treat timeout as success while debugging snapshot-restart flakiness.
 [[profile.ci.overrides]]
