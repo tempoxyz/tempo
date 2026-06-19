@@ -576,9 +576,11 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let idle_poll_interval = Duration::from_millis(1);
         let block_build_stop_reason = loop {
             check_cancel!();
 
+            let mut idle_sleep_duration = idle_poll_interval;
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
                 let current_workload = ValidationLatencyWorkload::new(
@@ -614,6 +616,9 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
+                idle_sleep_duration = build_budget
+                    .saturating_sub(budget_decision.total_reserved)
+                    .min(idle_poll_interval);
             }
 
             let Some(pool_tx) = best_txs.next() else {
@@ -621,8 +626,8 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    std::thread::sleep(idle_sleep_duration);
+                    normal_transaction_fill_idle_elapsed += idle_sleep_duration;
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
