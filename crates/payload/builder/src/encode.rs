@@ -5,13 +5,11 @@
 //! byte-for-byte compatibility with regular RLP block encoding.
 
 use alloy_consensus::BlockHeader as _;
-use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::Bytes;
 use alloy_rlp::Encodable;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock};
 use std::sync::Arc;
 use tempo_payload_types::EncodedBlock;
-use tempo_primitives::TempoTxEnvelope;
 use tracing::warn;
 
 /// RLP transaction-list bytes for the execution block.
@@ -86,9 +84,9 @@ impl EncodedBlockTransactionsBuilder {
     ///
     /// Legacy transaction bytes are already RLP list elements. Typed EIP-2718 transaction bytes are
     /// wrapped as an RLP string so the final transaction list matches regular block encoding.
-    pub(crate) fn push(&mut self, transaction: &TempoTxEnvelope, encoded_2718: &[u8]) {
+    pub(crate) fn push(&mut self, encoded_2718: &[u8]) {
         self.transaction_count += 1;
-        if !transaction.is_legacy() {
+        if is_typed_2718(encoded_2718) {
             alloy_rlp::Header {
                 list: false,
                 payload_length: encoded_2718.len(),
@@ -111,6 +109,12 @@ impl EncodedBlockTransactionsBuilder {
             rlp: rlp.into(),
         }
     }
+}
+
+fn is_typed_2718(encoded_2718: &[u8]) -> bool {
+    encoded_2718
+        .first()
+        .is_some_and(|first| *first <= 0x7f)
 }
 
 /// Encodes the execution block into the shared cache when dropped.
@@ -176,7 +180,7 @@ mod tests {
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
-    use tempo_primitives::{Block, Header, TempoHeader};
+    use tempo_primitives::{Block, Header, TempoHeader, TempoTxEnvelope};
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -397,7 +401,7 @@ mod tests {
         for transaction in transactions {
             buf.clear();
             transaction.encode_2718(&mut buf);
-            builder.push(transaction, &buf);
+            builder.push(&buf);
         }
         builder.finish()
     }

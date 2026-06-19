@@ -1218,7 +1218,7 @@ where
                     buf.clear();
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
-                    encoded_block_transactions.push(&tx, &buf);
+                    encoded_block_transactions.push(&buf);
                     transactions.push(tx);
                     senders.push(sender);
 
