@@ -42,6 +42,8 @@ use crate::{
     utils::OptionFuture,
 };
 
+const PAYLOAD_JOB_PACE_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Tracks the latest forkchoice state accepted by the execution layer.
 ///
 /// Also tracks the corresponding heights corresponding to
@@ -749,7 +751,7 @@ async fn run_payload_job<TContext: Pacer>(
         payload = execution_node
             .payload_builder_handle
             .resolve_kind(payload_id, PayloadKind::WaitForPending)
-            .pace(&context, Duration::from_millis(20))
+            .pace(&context, PAYLOAD_JOB_PACE_INTERVAL)
         => payload,
 
         // Drops the in-flight payload-resolution, killing payload build.
