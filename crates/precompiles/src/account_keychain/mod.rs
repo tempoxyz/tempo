@@ -1428,6 +1428,14 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
+
+        if self.storage.spec().is_t7()
+            && limit_state.period != 0
+            && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL
+        {
+            limit_state.remaining = U256::ZERO;
+        }
+
         let refunded = limit_state.remaining.saturating_add(amount);
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
