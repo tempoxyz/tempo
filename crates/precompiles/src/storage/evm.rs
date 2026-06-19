@@ -375,8 +375,17 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
 
-        let action = StorageAction::Sinc(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        // If the value goes from zero to non-zero, do not record it as `Sinc`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, delta)
+        } else {
+            StorageAction::Sinc(address, key, delta)
+        };
+
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
@@ -391,8 +400,17 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
 
-        let action = StorageAction::Sdec(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        // If the value goes from non-zero to zero, do not record it as `Sdec`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, value)
+        } else {
+            StorageAction::Sdec(address, key, delta)
+        };
+
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
