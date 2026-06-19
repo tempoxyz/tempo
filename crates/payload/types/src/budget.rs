@@ -6,7 +6,7 @@ use std::{
 use tracing::debug;
 
 /// How quickly the learned marshal persistence rate decays when blocks get cheaper.
-const RATE_DECAY: u64 = 8;
+const RATE_DECAY: u64 = 4;
 /// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
 const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 /// Number of recent successful EL validation timings to retain.
@@ -343,6 +343,13 @@ mod tests {
         assert_eq!(
             marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
             Duration::from_nanos(13_107_200)
+        );
+
+        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(6));
+
+        assert_eq!(
+            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
+            Duration::from_nanos(11_403_264)
         );
     }
 
