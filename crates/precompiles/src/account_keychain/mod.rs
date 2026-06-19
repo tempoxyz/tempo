@@ -1361,7 +1361,7 @@ impl AccountKeychain {
         let mut new_remaining = remaining - amount;
         if is_periodic {
             if self.storage.spec().is_t7() && new_remaining.is_zero() {
-                new_remaining = U256::MAX;
+                new_remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
             }
             limit_state.remaining = new_remaining;
             self.spending_limits[limit_key][token].write(limit_state)?;
