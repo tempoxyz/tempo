@@ -88,6 +88,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
             parent_root,
             expected_root,
             state_updates,
+            retain_trie_data: true,
         }))
     }
 
@@ -220,6 +221,7 @@ mod tests {
         assert_eq!(auxiliary.parent_root, EMPTY_ROOT_HASH);
         assert_eq!(auxiliary.expected_root, EMPTY_ROOT_HASH);
         assert!(auxiliary.state_updates.is_empty());
+        assert!(auxiliary.retain_trie_data);
 
         assert!(
             validator
