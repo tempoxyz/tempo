@@ -75,10 +75,26 @@ impl EncodedBlockTransactionList {
 }
 
 /// Incrementally builds the RLP transaction-list bytes used inside the execution block body.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct EncodedBlockTransactionsBuilder {
     transaction_count: usize,
+    /// Transaction-list payload prefixed by temporary RLP header headroom.
+    ///
+    /// The final list payload length is unknown while transactions stream in from the roots task.
+    /// Reserving the maximum possible list header width lets `finish` reuse this allocation for the
+    /// final `Bytes` instead of allocating a second large buffer and copying the full payload.
     payload: Vec<u8>,
+}
+
+const TRANSACTION_LIST_HEADER_HEADROOM: usize = 9;
+
+impl Default for EncodedBlockTransactionsBuilder {
+    fn default() -> Self {
+        Self {
+            transaction_count: 0,
+            payload: vec![0; TRANSACTION_LIST_HEADER_HEADROOM],
+        }
+    }
 }
 
 impl EncodedBlockTransactionsBuilder {
@@ -98,17 +114,31 @@ impl EncodedBlockTransactionsBuilder {
         self.payload.extend_from_slice(encoded_2718);
     }
 
-    pub(crate) fn finish(self) -> EncodedBlockTransactionList {
+    pub(crate) fn finish(mut self) -> EncodedBlockTransactionList {
+        let payload_length = self
+            .payload
+            .len()
+            .saturating_sub(TRANSACTION_LIST_HEADER_HEADROOM);
         let header = alloy_rlp::Header {
             list: true,
-            payload_length: self.payload.len(),
+            payload_length,
         };
-        let mut rlp = Vec::with_capacity(header.length_with_payload());
-        header.encode(&mut rlp);
-        rlp.extend_from_slice(&self.payload);
+        let header_length = header.length();
+        debug_assert!(header_length <= TRANSACTION_LIST_HEADER_HEADROOM);
+
+        if header_length != TRANSACTION_LIST_HEADER_HEADROOM {
+            self.payload
+                .copy_within(TRANSACTION_LIST_HEADER_HEADROOM.., header_length);
+            self.payload.truncate(header_length + payload_length);
+        }
+
+        let mut header_bytes = Vec::with_capacity(TRANSACTION_LIST_HEADER_HEADROOM);
+        header.encode(&mut header_bytes);
+        self.payload[..header_length].copy_from_slice(&header_bytes);
+
         EncodedBlockTransactionList {
             transaction_count: self.transaction_count,
-            rlp: rlp.into(),
+            rlp: self.payload.into(),
         }
     }
 }
