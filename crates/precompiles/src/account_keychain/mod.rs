@@ -1267,7 +1267,7 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, key_id);
-        let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+        let mut remaining = self.spending_limits[limit_key][token].remaining.read()?;
 
         if !self.storage.spec().is_t3() {
             return Ok((remaining, 0));
@@ -1276,6 +1276,10 @@ impl AccountKeychain {
         let period = self.spending_limits[limit_key][token].period.read()?;
         if period == 0 {
             return Ok((remaining, 0));
+        }
+
+        if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            remaining = U256::ZERO;
         }
 
         let period_end = self.spending_limits[limit_key][token].period_end.read()?;
