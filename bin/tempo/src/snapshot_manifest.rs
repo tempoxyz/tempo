@@ -55,6 +55,7 @@ pub(crate) struct Args {
         long,
         default_value_t = true,
         default_missing_value = "true",
+        hide = true,
         num_args = 0..=1,
         require_equals = true
     )]
@@ -115,7 +116,6 @@ impl Args {
         );
 
         if skip_consensus {
-            eprintln!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
@@ -239,6 +239,14 @@ fn execution_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn help_hides_skip_consensus_override() {
+        let help = Args::command().render_long_help().to_string();
+
+        assert!(!help.contains("--skip-consensus"));
+    }
 
     #[test]
     fn args_defaults_to_skip_consensus() {
