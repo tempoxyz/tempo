@@ -27,6 +27,18 @@ pub enum TempoConsensusError {
     /// End-of-block system transactions are in the wrong order.
     #[error("invalid end-of-block system tx order: expected {expected}, got {actual}")]
     InvalidEndOfBlockSystemTxOrder { expected: Address, actual: Address },
+
+    /// Proof root was present before the TIP-1082 activation fork.
+    #[error("proof root must be omitted before TIP-1082 activation")]
+    ProofRootBeforeActivation,
+
+    /// Proof root was missing after the TIP-1082 activation fork.
+    #[error("proof root must be present after TIP-1082 activation")]
+    MissingProofRoot,
+
+    /// Proof root does not match the expected Provable Contract Trie root.
+    #[error("proof root {actual} does not match expected {expected}")]
+    ProofRootMismatch { expected: B256, actual: B256 },
 }
 
 impl From<TempoConsensusError> for ConsensusError {

@@ -13011,6 +13011,7 @@ dependencies = [
 name = "tempo-chainspec"
 version = "1.8.2"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
  "alloy-genesis",
@@ -13216,6 +13217,7 @@ dependencies = [
  "reth-rpc-eth-api",
  "reth-storage-api",
  "reth-trie",
+ "reth-trie-common",
  "revm",
  "serde_json",
  "tempo-chainspec",
@@ -13274,8 +13276,10 @@ name = "tempo-node"
 version = "1.8.2"
 dependencies = [
  "alloy",
+ "alloy-consensus",
  "alloy-eips",
  "alloy-evm",
+ "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
@@ -13297,6 +13301,7 @@ dependencies = [
  "rand 0.9.4",
  "reqwest 0.13.3",
  "reth-chainspec",
+ "reth-consensus",
  "reth-e2e-test-utils",
  "reth-errors",
  "reth-ethereum",
@@ -13317,6 +13322,7 @@ dependencies = [
  "reth-storage-api",
  "reth-tracing",
  "reth-transaction-pool",
+ "reth-trie-common",
  "serde",
  "serde_json",
  "sha2 0.10.9",

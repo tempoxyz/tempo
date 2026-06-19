@@ -8,15 +8,19 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
+use alloy_eips::BlockId;
 use alloy_primitives::B256;
-use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
+use alloy_rpc_types_eth::{EIP1186AccountProofResponse, Log, ReceiptWithBloom};
+use alloy_serde::JsonStorageKey;
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{HeaderTy, Recovered, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{
+    AlloyBlockHeader as _, HeaderTy, Recovered, TransactionMeta, WithEncoded,
+};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -60,6 +64,7 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use reth_storage_api::BlockReaderIdExt;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction};
 use tempo_primitives::{
@@ -359,6 +364,7 @@ where
 impl<N> EthState for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
+    <TempoEthApi<N> as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
 {
     #[inline]
     async fn balance(
@@ -372,6 +378,51 @@ where
     #[inline]
     fn max_proof_window(&self) -> u64 {
         self.inner.eth_proof_window()
+    }
+
+    fn get_proof(
+        &self,
+        address: alloy_primitives::Address,
+        keys: Vec<JsonStorageKey>,
+        block_id: Option<BlockId>,
+    ) -> Result<
+        impl std::future::Future<Output = Result<EIP1186AccountProofResponse, Self::Error>> + Send,
+        Self::Error,
+    >
+    where
+        Self: EthApiSpec,
+    {
+        let this = self.clone();
+
+        Ok(async move {
+            let block_id = block_id.unwrap_or_default();
+            this.ensure_within_proof_window(block_id)?;
+
+            let chain_spec = this.provider().chain_spec();
+            let header = this
+                .provider()
+                .header_by_id(block_id)
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or_else(|| Self::Error::from_eth_err(EthApiError::HeaderNotFound(block_id)))?;
+            let timestamp = header.timestamp();
+
+            if chain_spec.is_proof_root_active_at_timestamp(timestamp) {
+                let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
+                if !provable_accounts.contains(&address) {
+                    return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
+                        "account is not in the active TIP-1082 provable account whitelist".into(),
+                    )));
+                }
+
+                return Err(Self::Error::from_eth_err(EthApiError::Unsupported(
+                    "TIP-1082 proof_root RPC serving requires persisted provable trie data".into(),
+                )));
+            }
+
+            let proof = EthState::get_proof(&this.inner, address, keys, Some(block_id))
+                .map_err(Self::Error::from_eth_err)?;
+            proof.await.map_err(Self::Error::from_eth_err)
+        })
     }
 }
 

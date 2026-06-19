@@ -472,8 +472,8 @@ where
 {
     type Validator = TempoEngineValidator;
 
-    async fn build(self, _ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
-        Ok(TempoEngineValidator::new())
+    async fn build(self, ctx: &AddOnsContext<'_, Node>) -> eyre::Result<Self::Validator> {
+        Ok(TempoEngineValidator::new(ctx.config.chain.clone()))
     }
 }
 

@@ -19,6 +19,7 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+pub mod proof_trie;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{

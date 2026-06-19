@@ -125,3 +125,45 @@ impl AsRef<TempoHeader> for TempoHeaderResponse {
         &self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::Header as ConsensusHeader;
+    use alloy_rpc_types_eth::Header as RpcHeader;
+
+    fn response_with_proof_root(proof_root: Option<B256>) -> TempoHeaderResponse {
+        let header = TempoHeader {
+            proof_root,
+            inner: ConsensusHeader {
+                number: 1,
+                timestamp: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        TempoHeaderResponse {
+            inner: RpcHeader::new(header),
+            timestamp_millis: 2_000,
+        }
+    }
+
+    #[test]
+    fn rpc_header_serializes_proof_root_when_present() {
+        let proof_root = B256::repeat_byte(0x42);
+        let value = serde_json::to_value(response_with_proof_root(Some(proof_root))).unwrap();
+
+        assert_eq!(
+            value.get("proofRoot"),
+            Some(&serde_json::Value::String(format!("{proof_root:#x}")))
+        );
+    }
+
+    #[test]
+    fn rpc_header_omits_proof_root_when_absent() {
+        let value = serde_json::to_value(response_with_proof_root(None)).unwrap();
+
+        assert!(value.get("proofRoot").is_none());
+    }
+}
