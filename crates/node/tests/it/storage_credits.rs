@@ -1,7 +1,7 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 use alloy::{
     network::ReceiptResponse,
-    primitives::{Address, U256},
+    primitives::{Address, Signature, U256},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -14,14 +14,15 @@ use alloy_rpc_types_eth::TransactionRequest;
 use std::sync::{Arc, Mutex};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStorageCredits, ITIP20,
+    DEFAULT_FEE_TOKEN, IFeeManager, IStorageCredits, ITIP20, ITIPFeeAMM,
     account_keychain::IAccountKeychain::{
         IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
     },
     authorizeKeyCall,
 };
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    tip_fee_manager::amm::PoolKey,
 };
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
@@ -392,6 +393,423 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
         credit_before,
         "post-tx fee refund recreates the payer balance slot, so the same-tx clear credit must be canceled"
+    );
+
+    Ok(())
+}
+
+/// Regression: #6206's non-creditable slot set must also protect the FeeManager's AMM custody
+/// balance. A fee paid in custom token `T` recreates `TIP20(T).balances[TIP_FEE_MANAGER_ADDRESS]`
+/// with TIP-1060 disabled; a later public `rebalanceSwap` must not clear that same slot under
+/// normal accounting and leave a stale credit.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_credit()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let root_provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url.clone());
+
+    let attacker = PrivateKeySigner::random();
+    let attacker_addr = attacker.address();
+    let attacker_provider = ProviderBuilder::new()
+        .wallet(attacker.clone())
+        .connect_http(setup.http_url);
+
+    let fee_token = setup_test_token(root_provider.clone(), root_addr).await?;
+    let fee_token_addr = *fee_token.address();
+    let validator_token = ITIP20::new(PATH_USD_ADDRESS, root_provider.clone());
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, root_provider.clone());
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, root_provider.clone());
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
+
+    let liquidity = U256::from(1_000_000_000_000_000_000u128);
+    assert!(
+        fee_token
+            .mint(root_addr, liquidity)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+
+    // Seed the rebalance recipient's `T` balance so the FeeManager -> attacker transfer does not
+    // create a new token balance slot that could consume the credit minted by clearing custody.
+    assert!(
+        fee_token
+            .mint(attacker_addr, U256::ONE)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+
+    // The attacker pays the rebalance tx fees and validator-token input in PATH_USD, not `T`.
+    assert!(
+        validator_token
+            .transfer(attacker_addr, liquidity)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+
+    assert!(
+        fee_amm
+            .mint(fee_token_addr, PATH_USD_ADDRESS, liquidity, root_addr)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    assert!(
+        fee_manager
+            .setUserToken(fee_token_addr)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+
+    let custody_before_fee = fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let pool_before_fee = fee_amm
+        .getPool(fee_token_addr, PATH_USD_ADDRESS)
+        .call()
+        .await?;
+    assert_eq!(
+        U256::from(pool_before_fee.reserveUserToken),
+        custody_before_fee,
+        "any setup-time custom-token fees should already be reflected in AMM custody"
+    );
+    let credit_before = credits.balanceOf(fee_token_addr).call().await?;
+
+    let gas_limit = 500_000u64;
+    let gas_price = 1_000_000_000_000u128;
+    let fee_tx = TempoTransaction {
+        chain_id: root_provider.get_chain_id().await?,
+        nonce: root_provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: STORAGE_CREDITS_ADDRESS.into(),
+            value: U256::ZERO,
+            input: IStorageCredits::balanceOfCall {
+                account: fee_token_addr,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(fee_token_addr),
+        ..Default::default()
+    };
+    let sig = root.sign_hash_sync(&fee_tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = fee_tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+    let fee_tx_hash = root_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let fee_tx_receipt = root_provider
+        .raw_request::<_, TempoTransactionReceipt>(
+            "eth_getTransactionReceipt".into(),
+            (fee_tx_hash,),
+        )
+        .await?;
+    assert!(fee_tx_receipt.status());
+
+    let custody_balance = fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    assert!(custody_balance > custody_before_fee);
+    let pool_after_fee = fee_amm
+        .getPool(fee_token_addr, PATH_USD_ADDRESS)
+        .call()
+        .await?;
+    assert_eq!(
+        U256::from(pool_after_fee.reserveUserToken),
+        custody_balance,
+        "post-tx fee swap should leave FeeManager custody matching the AMM user-token reserve"
+    );
+    assert_eq!(
+        credits.balanceOf(fee_token_addr).call().await?,
+        credit_before,
+        "disabled fee collection should not itself mint token storage credits"
+    );
+
+    let attacker_fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, attacker_provider.clone());
+    let rebalance_receipt = attacker_fee_amm
+        .rebalanceSwap(
+            fee_token_addr,
+            PATH_USD_ADDRESS,
+            custody_balance,
+            attacker_addr,
+        )
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(rebalance_receipt.status());
+
+    assert_eq!(
+        fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?,
+        U256::ZERO,
+        "rebalanceSwap should drain the FeeManager's custom-token custody balance"
+    );
+    let credit_after_rebalance = credits.balanceOf(fee_token_addr).call().await?;
+    assert_eq!(
+        credit_after_rebalance, credit_before,
+        "rebalanceSwap must not mint a storage credit for clearing FeeManager custody that fee collection can recreate with accounting disabled"
+    );
+
+    let recreate_tx = TempoTransaction {
+        chain_id: root_provider.get_chain_id().await?,
+        nonce: root_provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: STORAGE_CREDITS_ADDRESS.into(),
+            value: U256::ZERO,
+            input: IStorageCredits::balanceOfCall {
+                account: fee_token_addr,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(fee_token_addr),
+        ..Default::default()
+    };
+    let sig = root.sign_hash_sync(&recreate_tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = recreate_tx
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+    let recreate_hash = root_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let recreate_receipt = root_provider
+        .raw_request::<_, TempoTransactionReceipt>(
+            "eth_getTransactionReceipt".into(),
+            (recreate_hash,),
+        )
+        .await?;
+    assert!(recreate_receipt.status());
+    assert!(
+        fee_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await? > U256::ZERO,
+        "later disabled fee collection should recreate FeeManager custody"
+    );
+    assert_eq!(
+        credits.balanceOf(fee_token_addr).call().await?,
+        credit_before,
+        "disabled fee collection recreates custody without consuming the stale credit"
+    );
+
+    let fresh_recipient = Address::repeat_byte(0xf7);
+    assert!(
+        fee_token
+            .mint(fresh_recipient, U256::ONE)
+            .nonce(root_provider.get_transaction_count(root_addr).await?)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    assert_eq!(
+        credits.balanceOf(fee_token_addr).call().await?,
+        credit_before,
+        "a normal Refund-mode token storage creation must not get subsidized by FeeManager custody churn"
+    );
+
+    Ok(())
+}
+
+/// Regression: burning the caller's full AMM LP balance clears a FeeManager-owned
+/// `liquidity_balances[pool][caller]` slot and mints a FeeManager storage credit. A later disabled
+/// fee-collection write to a fresh `collected_fees[beneficiary][validator_token]` slot must consume
+/// or cancel that credit before another FeeManager storage creation can redeem it.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_burn_lp_credit_not_redeemed_by_later_set_user_token() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let active_beneficiary = Arc::new(Mutex::new(root_addr));
+    let setup = TestNodeBuilder::new()
+        .with_dynamic_validator(active_beneficiary.clone())
+        .build_http_only()
+        .await?;
+    let root_provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url.clone());
+
+    let redeemer = PrivateKeySigner::random();
+    let redeemer_addr = redeemer.address();
+    let redeemer_provider = ProviderBuilder::new()
+        .wallet(redeemer.clone())
+        .connect_http(setup.http_url);
+
+    let user_token = setup_test_token(root_provider.clone(), root_addr).await?;
+    let user_token_addr = *user_token.address();
+    let default_fee_token = ITIP20::new(DEFAULT_FEE_TOKEN, root_provider.clone());
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, root_provider.clone());
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, root_provider.clone());
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &root_provider);
+
+    let liquidity = U256::from(1_000_000_000_000_000_000u128);
+    assert!(
+        user_token
+            .mint(root_addr, liquidity)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    assert!(
+        fee_amm
+            .mint(user_token_addr, PATH_USD_ADDRESS, liquidity, root_addr)
+            .send()
+            .await?
+            .get_receipt()
+            .await?
+            .status()
+    );
+    let pool_id = PoolKey::new(user_token_addr, PATH_USD_ADDRESS).get_id();
+    let lp_balance = fee_amm.liquidityBalances(pool_id, root_addr).call().await?;
+    assert!(lp_balance > U256::ZERO);
+
+    let collected_root = fee_manager
+        .collectedFees(root_addr, PATH_USD_ADDRESS)
+        .call()
+        .await?;
+    assert!(
+        collected_root > U256::ZERO,
+        "setup transactions should make the root beneficiary collected-fees slot nonzero before burn"
+    );
+
+    let credit_before_burn = credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let burn_receipt = fee_amm
+        .burn(user_token_addr, PATH_USD_ADDRESS, lp_balance, root_addr)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(burn_receipt.status());
+    assert_eq!(
+        fee_amm.liquidityBalances(pool_id, root_addr).call().await?,
+        U256::ZERO,
+        "burning the full LP balance should clear the FeeManager liquidity balance slot"
+    );
+    let credit_after_burn = credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    assert_eq!(
+        credit_after_burn,
+        credit_before_burn + 1,
+        "clearing the FeeManager liquidity balance slot should mint one backed FeeManager credit"
+    );
+
+    let fresh_beneficiary = Address::repeat_byte(0x8b);
+    *active_beneficiary.lock().unwrap() = fresh_beneficiary;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    assert_eq!(
+        fee_manager
+            .collectedFees(fresh_beneficiary, PATH_USD_ADDRESS)
+            .call()
+            .await?,
+        U256::ZERO,
+        "the next fee tx should create a fresh collected_fees slot"
+    );
+
+    let fee_tx_receipt = default_fee_token
+        .transfer(Address::repeat_byte(0x9c), U256::ONE)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(fee_tx_receipt.status());
+    assert!(
+        fee_manager
+            .collectedFees(fresh_beneficiary, PATH_USD_ADDRESS)
+            .call()
+            .await?
+            > U256::ZERO,
+        "disabled collect_fee_post_tx should create collected_fees for the fresh beneficiary"
+    );
+    let credit_after_collected_fees = credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+
+    assert_ne!(
+        fee_manager.userTokens(redeemer_addr).call().await?,
+        user_token_addr,
+        "the redeemer must not already have this user token set"
+    );
+    let gas_limit = 2_000_000u64;
+    let gas_price = 1_000_000_000_000u128;
+    let mut set_user_token_tx = TempoTransaction {
+        chain_id: root_provider.get_chain_id().await?,
+        nonce: redeemer_provider
+            .get_transaction_count(redeemer_addr)
+            .await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: TIP_FEE_MANAGER_ADDRESS.into(),
+            value: U256::ZERO,
+            input: IFeeManager::setUserTokenCall {
+                token: user_token_addr,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_payer_signature: Some(Signature::new(
+            Default::default(),
+            Default::default(),
+            false,
+        )),
+        ..Default::default()
+    };
+    let sig_hash = set_user_token_tx.signature_hash();
+    let redeemer_signature = redeemer.sign_hash_sync(&sig_hash)?;
+    let fee_payer_signature =
+        root.sign_hash_sync(&set_user_token_tx.fee_payer_signature_hash(redeemer_addr))?;
+    set_user_token_tx.fee_payer_signature = Some(fee_payer_signature);
+    let envelope: TempoTxEnvelope = set_user_token_tx
+        .into_signed(redeemer_signature.into())
+        .into();
+    let set_user_token_hash = root_provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let set_user_token_receipt = root_provider
+        .raw_request::<_, TempoTransactionReceipt>(
+            "eth_getTransactionReceipt".into(),
+            (set_user_token_hash,),
+        )
+        .await?;
+    assert!(set_user_token_receipt.status());
+
+    assert_eq!(
+        credits.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?,
+        credit_after_collected_fees,
+        "setUserToken must not redeem a FeeManager credit made stale by disabled collected_fees creation"
     );
 
     Ok(())
