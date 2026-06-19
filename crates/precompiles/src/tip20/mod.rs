@@ -231,12 +231,12 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances[call.account].read()
+        self.balances.at(&call.account).read()
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
-        self.allowances[call.owner][call.spender].read()
+        self.allowances.at(&call.owner).at(&call.spender).read()
     }
 
     /// Updates the [`TIP403Registry`] transfer policy governing this token's transfers.
@@ -683,7 +683,7 @@ impl TIP20Token {
 
     /// Returns the current nonce for an address (EIP-2612)
     pub fn nonces(&self, call: ITIP20::noncesCall) -> Result<U256> {
-        self.permit_nonces[call.owner].read()
+        self.permit_nonces.at(&call.owner).read()
     }
 
     /// Returns the EIP-712 domain separator, computed dynamically from the token name and chain ID.
@@ -719,7 +719,7 @@ impl TIP20Token {
         }
 
         // 2. Construct EIP-712 struct hash
-        let nonce = self.permit_nonces[call.owner].read()?;
+        let nonce = self.permit_nonces.at(&call.owner).read()?;
         let struct_hash = self.storage.keccak256(
             &(
                 *PERMIT_TYPEHASH,
@@ -754,7 +754,7 @@ impl TIP20Token {
         }
 
         // 5. Increment nonce
-        self.permit_nonces[call.owner].write(
+        self.permit_nonces.at_mut(&call.owner).write(
             nonce
                 .checked_add(U256::from(1))
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -991,15 +991,15 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances[account].read()
+        self.balances.at(&account).read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].write(amount)
+        self.balances.at_mut(&account).write(amount)
     }
 
     fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].sinc(amount).map_err(|err| {
+        self.balances.at_mut(&account).sinc(amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
             } else {
@@ -1009,7 +1009,8 @@ impl TIP20Token {
     }
 
     fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account]
+        self.balances
+            .at_mut(&account)
             .sdec(amount)
             .map_err(|err| match err {
                 TempoPrecompileError::StorageDeltaUnderflow(current) => {
@@ -1020,11 +1021,11 @@ impl TIP20Token {
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
-        self.allowances[owner][spender].read()
+        self.allowances.at(&owner).at(&spender).read()
     }
 
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
-        self.allowances[owner][spender].write(amount)
+        self.allowances.at_mut(&owner).at_mut(&spender).write(amount)
     }
 
     fn set_total_supply(&mut self, amount: U256) -> Result<()> {
