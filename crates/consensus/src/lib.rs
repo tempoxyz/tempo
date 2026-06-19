@@ -22,11 +22,9 @@ pub(crate) mod validators;
 
 use std::sync::Arc;
 
-use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
-use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -177,11 +175,6 @@ pub async fn run_follow_stack(
 ) -> eyre::Result<()> {
     let chain_spec = execution_node.chain_spec();
 
-    let epoch_length = chain_spec
-        .info
-        .epoch_length()
-        .ok_or_eyre("chainspec did not contain epochLength")?;
-
     let chain_spec_network_identity = chain_spec
         .network_identity
         .clone()
@@ -205,7 +198,7 @@ pub async fn run_follow_stack(
         upstream_mailbox,
         network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
-        epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
+        epoch_strategy: chain_spec.epoch_strategy()?,
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,

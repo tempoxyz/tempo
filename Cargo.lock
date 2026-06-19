@@ -13017,6 +13017,7 @@ dependencies = [
  "alloy-hardforks",
  "alloy-primitives",
  "commonware-codec",
+ "commonware-consensus",
  "commonware-cryptography",
  "eyre",
  "once_cell",

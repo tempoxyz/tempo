@@ -10,6 +10,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
+use commonware_consensus::types::FixedEpocher;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
 use once_cell::sync::Lazy as LazyLock;
@@ -195,6 +196,18 @@ impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
+    }
+
+    /// Returns the fixed epoch strategy configured by this chainspec.
+    pub fn epoch_strategy(&self) -> eyre::Result<FixedEpocher> {
+        let epoch_length = self
+            .info
+            .epoch_length()
+            .ok_or_else(|| eyre::eyre!("chainspec did not contain epochLength"))?;
+        let epoch_length = core::num::NonZeroU64::new(epoch_length)
+            .ok_or_else(|| eyre::eyre!("chainspec epochLength must be non-zero"))?;
+
+        Ok(FixedEpocher::new(epoch_length))
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].

@@ -36,6 +36,7 @@ serde.workspace = true
 serde_json.workspace = true
 paste.workspace = true
 commonware-codec = { workspace = true, optional = true }
+commonware-consensus = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -65,6 +66,7 @@ reth = [
     "std",
     "evm",
     "dep:commonware-codec",
+    "dep:commonware-consensus",
     "dep:commonware-cryptography",
     "dep:eyre",
     "dep:reth-chainspec",

@@ -5,10 +5,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{
-    Reporters, marshal,
-    types::{FixedEpocher, ViewDelta},
-};
+use commonware_consensus::{Reporters, marshal, types::ViewDelta};
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::group::Share,
@@ -19,7 +16,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZU64, NZUsize};
+use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -119,13 +116,10 @@ where
             .clone()
             .ok_or_eyre("execution_node must be set using with_execution_node()")?;
 
-        let epoch_length = execution_node
+        let epoch_strategy = execution_node
             .chain_spec()
-            .info
-            .epoch_length()
-            .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
-
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+            .epoch_strategy()
+            .wrap_err("cannot go on without a valid chainspec epoch strategy")?;
 
         info!(
             identity = %self.signer.public_key(),
