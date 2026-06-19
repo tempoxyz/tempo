@@ -39,6 +39,14 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
+/// To avoid clearing periodic spending limit's `remaining` field
+/// and charging state creation gas on its next initialization,
+/// we use sentinel value as alias for zero remaining limit.
+///
+/// This is safe because periodic spending limits can only have `remaining` field be set
+/// to [`u128::MAX`] at most.
+const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
+
 #[inline]
 pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     matches!(
@@ -1331,12 +1339,18 @@ impl AccountKeychain {
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
-        if is_periodic && current_timestamp >= limit_state.period_end {
-            let next_end = limit_state.compute_next_period_end(current_timestamp);
+        if is_periodic {
+            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+                remaining = U256::ZERO;
+            }
 
-            remaining = U256::from(limit_state.max);
-            limit_state.remaining = remaining;
-            limit_state.period_end = next_end;
+            if current_timestamp >= limit_state.period_end {
+                let next_end = limit_state.compute_next_period_end(current_timestamp);
+
+                remaining = U256::from(limit_state.max);
+                limit_state.remaining = remaining;
+                limit_state.period_end = next_end;
+            }
         }
 
         if amount > remaining {
@@ -1344,8 +1358,11 @@ impl AccountKeychain {
         }
 
         // Update remaining limit
-        let new_remaining = remaining - amount;
+        let mut new_remaining = remaining - amount;
         if is_periodic {
+            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+                new_remaining = U256::MAX;
+            }
             limit_state.remaining = new_remaining;
             self.spending_limits[limit_key][token].write(limit_state)?;
         } else {
