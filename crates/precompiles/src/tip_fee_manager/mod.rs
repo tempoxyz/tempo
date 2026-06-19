@@ -161,7 +161,7 @@ impl TipFeeManager {
         max_amount: U256,
         beneficiary: Address,
         skip_liquidity_check: bool,
-    ) -> Result<(Address, Address)> {
+    ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -177,8 +177,8 @@ impl TipFeeManager {
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
-        // Return both the user's fee token and the validator token already loaded for this block.
-        Ok((user_token, validator_token))
+        // Return the user's token preference
+        Ok(user_token)
     }
 
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
@@ -503,14 +503,10 @@ mod tests {
             )?;
 
             // Call collect_fee_pre_tx directly
-            let (user_token, _) = fee_manager.collect_fee_pre_tx(
-                user,
-                token.address(),
-                max_amount,
-                validator,
-                false,
-            )?;
-            assert_eq!(user_token, token.address());
+            let result =
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
+            assert!(result.is_ok());
+            assert_eq!(result?, token.address());
 
             Ok(())
         })
@@ -868,14 +864,15 @@ mod tests {
             );
 
             // Skip liquidity check = true should pass
-            let (token, _) = fee_manager.collect_fee_pre_tx(
+            let result = fee_manager.collect_fee_pre_tx(
                 user,
                 user_token.address(),
                 U256::from(1000),
                 validator,
                 true,
-            )?;
-            assert_eq!(token, user_token.address());
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, user_token.address());
 
             Ok(())
         })
