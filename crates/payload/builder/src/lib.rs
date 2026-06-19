@@ -67,7 +67,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm,
+    proof_trie::proof_trie_input_for_provable_accounts,
+};
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
@@ -990,6 +993,11 @@ where
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
+        let proof_root = self.proof_root_for_payload_timestamp(
+            &finish_provider,
+            evm_env.block_env.inner.timestamp.to::<u64>(),
+        )?;
+
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
                 evm_env,
@@ -1005,6 +1013,7 @@ where
             Some(transactions_root),
             Some(receipts_root),
             Some(receipts_bloom),
+            proof_root,
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
@@ -1189,6 +1198,33 @@ where
                 cached_reads,
             })
         }
+    }
+
+    fn proof_root_for_payload_timestamp(
+        &self,
+        state_root_provider: &impl StateRootProvider,
+        timestamp: u64,
+    ) -> Result<Option<B256>, BlockExecutionError> {
+        let chain_spec = self.evm_config.chain_spec();
+        if !chain_spec.is_proof_root_active_at_timestamp(timestamp) {
+            return Ok(None);
+        }
+
+        let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
+        let proof_trie_input = proof_trie_input_for_provable_accounts(provable_accounts)
+            .ok_or_else(|| {
+                BlockExecutionError::other(std::io::Error::other(
+                    "non-empty provable account whitelist requires persisted proof-trie validation",
+                ))
+            })?;
+
+        // Compute the proof root through the same provider path used by the serial state-root
+        // fallback. With the current empty whitelist, the proof sparse MPT receives no account
+        // leaves and its trie input is empty.
+        state_root_provider
+            .state_root_from_nodes(proof_trie_input)
+            .map(Some)
+            .map_err(BlockExecutionError::other)
     }
 
     fn spawn_roots_task(

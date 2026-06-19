@@ -29,6 +29,7 @@ impl TempoBlockAssembler {
         transactions_root: Option<B256>,
         receipts_root: Option<B256>,
         receipts_bloom: Option<Bloom>,
+        proof_root: Option<B256>,
     ) -> Result<tempo_primitives::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
@@ -81,6 +82,7 @@ impl TempoBlockAssembler {
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
+            proof_root,
         }))
     }
 }
@@ -92,7 +94,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
     ) -> Result<Self::Block, BlockExecutionError> {
-        self.assemble_block(input, None, None, None)
+        self.assemble_block(input, None, None, None, None)
     }
 }
 
@@ -237,6 +239,7 @@ mod tests {
         assert_eq!(block.header.general_gas_limit, general_gas_limit);
         assert_eq!(block.header.shared_gas_limit, shared_gas_limit);
         assert_eq!(block.header.timestamp_millis_part, timestamp_millis_part);
+        assert!(block.header.proof_root.is_none());
 
         // Verify body
         assert_eq!(block.body.transactions.len(), 1);
