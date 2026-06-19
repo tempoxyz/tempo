@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{Handler, StorageCtx},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -185,6 +185,8 @@ impl TipFeeManager {
             amount_in,
         )?;
 
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
         TIP20Token::from_address(user_token)?.transfer(
             self.address,
             ITIP20::transferCall {
@@ -432,6 +434,9 @@ impl TipFeeManager {
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
         self.pools[pool_id].write(pool)?;
+
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
 
         // Transfer tokens to user
         let _ = TIP20Token::from_address(user_token)?.transfer(
