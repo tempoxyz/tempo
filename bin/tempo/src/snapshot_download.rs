@@ -1,17 +1,19 @@
 use std::{
     collections::BTreeSet,
-    fs,
-    io::{Read, Write},
+    fs, io,
     path::{Component, Path, PathBuf},
     time::Instant,
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
+use futures::TryStreamExt;
 use reth_cli_commands::download::{DownloadCommand, manifest::OutputFileChecksum};
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_telemetry_util::display_duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::io::StreamReader;
 use tracing::info;
 use url::Url;
 
@@ -249,6 +251,7 @@ async fn install_consensus_archive(
         write_consensus_archive_to_temp(&loaded.archive_source).await?;
 
     if let Some(expected) = &loaded.manifest.consensus_archive.blake3 {
+        let actual_archive_hash = actual_archive_hash.to_hex().to_string();
         ensure!(
             &actual_archive_hash == expected,
             "consensus archive checksum mismatch: expected {expected}, got {actual_archive_hash}",
@@ -271,21 +274,27 @@ async fn install_consensus_archive(
 
 async fn write_consensus_archive_to_temp(
     source: &ConsensusArchiveSource,
-) -> eyre::Result<(tempfile::NamedTempFile, String)> {
-    let mut archive_file =
+) -> eyre::Result<(tempfile::NamedTempFile, blake3::Hash)> {
+    let archive_file =
         tempfile::NamedTempFile::new().wrap_err("failed to create temporary consensus archive")?;
-    let mut hasher = blake3::Hasher::new();
+    let writer = archive_file
+        .as_file()
+        .try_clone()
+        .wrap_err("failed to open temporary consensus archive")?;
+    let writer = tokio::fs::File::from_std(writer);
 
-    match source {
+    let hash = match source {
         ConsensusArchiveSource::Path(path) => {
-            let mut source_file = fs::File::open(path)
+            let reader = tokio::fs::File::open(path)
+                .await
                 .wrap_err_with(|| format!("failed to open consensus archive {}", path.display()))?;
-            write_reader_to_temp(&mut source_file, &mut archive_file, &mut hasher)
-                .wrap_err_with(|| format!("failed to copy consensus archive {}", path.display()))?;
+            hash_and_write_stream(reader, writer)
+                .await
+                .wrap_err_with(|| format!("failed to copy consensus archive {}", path.display()))?
         }
         ConsensusArchiveSource::Url(url) => {
             let client = reqwest::Client::new();
-            let mut resp = client
+            let resp = client
                 .get(url)
                 .send()
                 .await
@@ -293,49 +302,51 @@ async fn write_consensus_archive_to_temp(
                 .error_for_status()
                 .wrap_err("invalid response from consensus archive url")?;
 
-            while let Some(chunk) = resp
-                .chunk()
+            let reader = StreamReader::new(resp.bytes_stream().map_err(io::Error::other));
+            hash_and_write_stream(reader, writer)
                 .await
                 .wrap_err("failed reading consensus archive body")?
-            {
-                hasher.update(&chunk);
-                archive_file
-                    .as_file_mut()
-                    .write_all(&chunk)
-                    .wrap_err("failed writing temporary consensus archive")?;
-            }
         }
-    }
+    };
 
-    archive_file
-        .as_file_mut()
-        .flush()
-        .wrap_err("failed to flush temporary consensus archive")?;
-
-    Ok((archive_file, hasher.finalize().to_hex().to_string()))
+    Ok((archive_file, hash))
 }
 
-fn write_reader_to_temp<R: Read>(
-    reader: &mut R,
-    archive_file: &mut tempfile::NamedTempFile,
-    hasher: &mut blake3::Hasher,
-) -> eyre::Result<()> {
+async fn hash_and_write_stream<R, W>(reader: R, writer: W) -> eyre::Result<blake3::Hash>
+where
+    R: AsyncRead,
+    W: AsyncWrite,
+{
+    tokio::pin!(reader);
+    tokio::pin!(writer);
+
+    let mut hasher = blake3::Hasher::new();
     let mut buf = [0_u8; 64 * 1024];
     loop {
         let n = reader
+            .as_mut()
             .read(&mut buf)
+            .await
             .wrap_err("failed reading consensus archive")?;
         if n == 0 {
             break;
         }
 
         hasher.update(&buf[..n]);
-        archive_file
-            .as_file_mut()
+        writer
+            .as_mut()
             .write_all(&buf[..n])
+            .await
             .wrap_err("failed writing temporary consensus archive")?;
     }
-    Ok(())
+
+    writer
+        .as_mut()
+        .flush()
+        .await
+        .wrap_err("failed to flush temporary consensus archive")?;
+
+    Ok(hasher.finalize())
 }
 
 fn clear_consensus_partitions(
@@ -434,6 +445,11 @@ fn verify_consensus_output_files(
     consensus_dir: &Path,
     output_files: &[OutputFileChecksum],
 ) -> eyre::Result<()> {
+    ensure!(
+        !output_files.is_empty(),
+        "consensus archive output metadata is empty",
+    );
+
     for expected in output_files {
         let output_path = safe_output_path(consensus_dir, &expected.path)
             .wrap_err_with(|| format!("path is not safe: {}", expected.path))?;
@@ -689,19 +705,19 @@ mod tests {
         assert!(extract_zstd_tar_archive(archive_file.path(), target.path()).is_err());
     }
 
-    #[test]
-    fn write_consensus_archive_to_temp_copies_path_source_while_hashing() {
+    #[tokio::test]
+    async fn write_consensus_archive_to_temp_copies_path_source_while_hashing() {
         let dir = tempfile::tempdir().unwrap();
         let source_path = dir.path().join("consensus.tar.zst");
         fs::write(&source_path, b"archive").unwrap();
 
-        let (archive_file, hash) = futures::executor::block_on(write_consensus_archive_to_temp(
-            &ConsensusArchiveSource::Path(source_path),
-        ))
-        .unwrap();
+        let (archive_file, hash) =
+            write_consensus_archive_to_temp(&ConsensusArchiveSource::Path(source_path))
+                .await
+                .unwrap();
 
         assert_eq!(fs::read(archive_file.path()).unwrap(), b"archive");
-        assert_eq!(hash, blake3::hash(b"archive").to_hex().to_string());
+        assert_eq!(hash, blake3::hash(b"archive"));
     }
 
     #[test]

@@ -100,10 +100,10 @@ reth-trie.workspace = true
 reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 tempfile.workspace = true
 opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
