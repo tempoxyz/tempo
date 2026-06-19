@@ -613,10 +613,6 @@ where
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // DbStorageOverlay does not run TIP-1060 accounting.
     }
-
-    fn tip1060_storage_credits_enabled(&self) -> bool {
-        false
-    }
 }
 
 fn read_private_genesis_outcome(manifest_dir: &Path) -> eyre::Result<OnchainDkgOutcome> {
