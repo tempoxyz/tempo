@@ -68,7 +68,6 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
         );
 
         if args.skip_consensus {
-            info!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 

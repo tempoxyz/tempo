@@ -116,7 +116,6 @@ impl Args {
         );
 
         if skip_consensus {
-            eprintln!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
