@@ -24,6 +24,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     is_static: bool,
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
+    tip1060_storage_credit_minting_enabled: bool,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -50,6 +51,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credit_minting_enabled: true,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -269,6 +271,11 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
+    }
+
+    #[inline]
+    fn tip1060_storage_credit_minting_enabled(&self) -> bool {
+        self.tip1060_storage_credit_minting_enabled
     }
 }
 
@@ -530,6 +537,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn set_tip1060_storage_credits(&mut self, enabled: bool) {
         self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
+    }
+
+    #[inline]
+    fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        self.tip1060_storage_credit_minting_enabled = enabled;
     }
 }
 

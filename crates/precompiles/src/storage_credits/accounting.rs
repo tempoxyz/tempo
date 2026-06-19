@@ -75,6 +75,12 @@ pub trait StorageCreditsBackend {
 
     /// TSTORE `address[key] = value`.
     fn tstore(&mut self, address: Address, key: U256, value: U256);
+
+    /// Returns whether x→0 storage clears should mint a persistent storage credit.
+    #[inline]
+    fn tip1060_storage_credit_minting_enabled(&self) -> bool {
+        true
+    }
 }
 
 #[inline]
@@ -128,8 +134,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     let mut was_changed = false;
     if values.is_new_zero() {
         // x→0: storage deletion always mints a new credit.
-        credit = credit.saturating_add(1);
-        was_changed = true;
+        if backend.tip1060_storage_credit_minting_enabled() {
+            credit = credit.saturating_add(1);
+            was_changed = true;
+        }
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.

@@ -159,6 +159,13 @@ pub trait PrecompileStorageProvider {
     /// activate storage credits early.
     fn set_tip1060_storage_credits(&mut self, enabled: bool);
 
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    ///
+    /// This leaves storage-credit accounting active for storage creation charges, redemptions, and
+    /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
+    /// as a no-op.
+    fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
+
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
