@@ -727,7 +727,7 @@ impl TIP403Registry {
         let data = self.get_policy_data(policy_id)?;
 
         if data.is_compound() {
-            let compound = self.policy_records[policy_id].compound.read()?;
+            let compound = self.policy_records.at(&policy_id).compound.read()?;
             return match role {
                 AuthRole::Sender => {
                     self.is_authorized_simple(compound.sender_policy_id, user, None)
@@ -795,7 +795,7 @@ impl TIP403Registry {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
-        let is_in_set = self.policy_set[policy_id][user].read()?;
+        let is_in_set = self.policy_set.at(&policy_id).at(&user).read()?;
 
         match data.policy_type()? {
             PolicyType::WHITELIST => Ok(is_in_set),
@@ -847,7 +847,7 @@ impl TIP403Registry {
     /// Returns policy data for the given policy ID.
     /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        let data = self.policy_records[policy_id].base.read()?;
+        let data = self.policy_records.at(&policy_id).base.read()?;
 
         // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
@@ -866,11 +866,14 @@ impl TIP403Registry {
     /// IMPORTANT: callers must not change `policy_type` for an existing policy. TIP-1028 receive
     /// policies cache `policy_type` and rely on it being immutable after creation.
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_records[policy_id].base.write(data)
+        self.policy_records.at_mut(&policy_id).base.write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
-        self.policy_set[policy_id][account].write(value)
+        self.policy_set
+            .at_mut(&policy_id)
+            .at_mut(&account)
+            .write(value)
     }
 }
 
