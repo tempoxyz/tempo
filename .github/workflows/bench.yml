@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   tempo-bench-ack:
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '@decofe bench') || startsWith(github.event.comment.body, 'derek bench'))
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     name: tempo-bench-ack
     runs-on: ubuntu-latest
     outputs:
@@ -71,8 +71,16 @@ jobs:
       pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
       pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
+      - name: Check bench trigger
+        id: trigger
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const body = context.payload.comment.body.trim();
+            core.setOutput('matched', String(body.startsWith('@decofe bench') || body.startsWith('derek bench')));
+
       - name: Check org membership
-        if: github.event_name == 'issue_comment'
+        if: steps.trigger.outputs.matched == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_BENCH_ACK_TOKEN }}
@@ -104,6 +112,7 @@ jobs:
             }
 
       - name: Parse arguments
+        if: steps.trigger.outputs.matched == 'true'
         id: args
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -435,6 +444,7 @@ jobs:
             core.setOutput('run-pairs', runPairs);
 
       - name: Acknowledge request
+        if: steps.trigger.outputs.matched == 'true'
         id: ack
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
