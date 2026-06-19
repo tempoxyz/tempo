@@ -1398,41 +1398,38 @@ where
                 },
             );
 
-            let validator_token = match result {
-                Ok((_, validator_token)) => validator_token,
-                Err(err) => {
-                    // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                    journal.checkpoint_revert(checkpoint);
+            if let Err(err) = result {
+                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+                journal.checkpoint_revert(checkpoint);
 
-                    // Map fee collection errors to transaction validation errors since they
-                    // indicate the transaction cannot be included (e.g., insufficient liquidity
-                    // in FeeAMM pool for fee swaps)
-                    return Err(match err {
-                        TempoPrecompileError::TIPFeeAMMError(
-                            TIPFeeAMMError::InsufficientLiquidity(_),
-                        ) => FeePaymentError::InsufficientAmmLiquidity {
-                            fee: gas_balance_spending,
-                        }
-                        .into(),
+                // Map fee collection errors to transaction validation errors since they
+                // indicate the transaction cannot be included (e.g., insufficient liquidity
+                // in FeeAMM pool for fee swaps)
+                return Err(match err {
+                    TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_),
+                    ) => FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
+                    }
+                    .into(),
 
-                        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                            InsufficientBalance { available, .. },
-                        )) => FeePaymentError::InsufficientFeeTokenBalance {
-                            fee: gas_balance_spending,
-                            balance: available,
-                        }
-                        .into(),
+                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                        InsufficientBalance { available, .. },
+                    )) => FeePaymentError::InsufficientFeeTokenBalance {
+                        fee: gas_balance_spending,
+                        balance: available,
+                    }
+                    .into(),
 
-                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                            TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                        }
+                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                    }
 
-                        TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                        _ => FeePaymentError::Other(err.to_string()).into(),
-                    });
-                }
-            };
+                    _ => FeePaymentError::Other(err.to_string()).into(),
+                });
+            }
 
             if cfg.spec.is_t7() {
                 let keychain_fee_key = if fee_payer == tx.caller {
@@ -1443,8 +1440,6 @@ where
                 evm.non_creditable_slots.borrow_mut().initialize(
                     fee_payer,
                     fee_token,
-                    block.beneficiary(),
-                    validator_token,
                     keychain_fee_key,
                 );
             }

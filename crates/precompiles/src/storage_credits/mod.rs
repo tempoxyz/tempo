@@ -6,11 +6,10 @@ pub mod dispatch;
 pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
 
 use crate::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType},
-    tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
@@ -64,7 +63,6 @@ impl From<TransientState> for U256 {
 /// There are 3 storage slots that are special in terms of TIP-1060 accounting:
 ///   1. Balance of the current transaction's fee payer
 ///   2. Spending limit of the current transaction's keychain key
-///   3. Collected fees of the current transaction's beneficiary
 ///
 /// Those three slots might get recreated during `collectFeePostTx` call inside of
 /// which we don't do gas accounting or burn storage credits, and thus allowing to
@@ -74,11 +72,8 @@ impl From<TransientState> for U256 {
 pub struct NonCreditableSlots {
     fee_payer: Address,
     fee_token: Address,
-    beneficiary: Address,
-    validator_token: Address,
     keychain_fee_key: Option<Address>,
     fee_balance_slot: OnceCell<U256>,
-    collected_fees_slot: OnceCell<U256>,
     keychain_limit_slot: OnceCell<U256>,
 }
 
@@ -92,14 +87,10 @@ impl NonCreditableSlots {
         &mut self,
         fee_payer: Address,
         fee_token: Address,
-        beneficiary: Address,
-        validator_token: Address,
         keychain_fee_key: Option<Address>,
     ) {
         self.fee_payer = fee_payer;
         self.fee_token = fee_token;
-        self.beneficiary = beneficiary;
-        self.validator_token = validator_token;
         self.keychain_fee_key = keychain_fee_key;
     }
 
@@ -118,10 +109,6 @@ impl NonCreditableSlots {
             return true;
         }
 
-        if owner == TIP_FEE_MANAGER_ADDRESS && self.collected_fees_slot() == slot {
-            return true;
-        }
-
         if owner == ACCOUNT_KEYCHAIN_ADDRESS
             && self
                 .keychain_limit_slot()
@@ -137,13 +124,6 @@ impl NonCreditableSlots {
     fn fee_balance_slot(&self) -> U256 {
         *self.fee_balance_slot.get_or_init(|| {
             TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
-        })
-    }
-
-    #[inline]
-    fn collected_fees_slot(&self) -> U256 {
-        *self.collected_fees_slot.get_or_init(|| {
-            TipFeeManager::new().collected_fees[self.beneficiary][self.validator_token].slot()
         })
     }
 
@@ -335,22 +315,13 @@ mod tests {
     fn non_creditable_slots_match_fee_bookkeeping_slots() {
         let fee_token = crate::PATH_USD_ADDRESS;
         let fee_payer = Address::repeat_byte(0x13);
-        let beneficiary = Address::repeat_byte(0x14);
-        let validator_token = Address::repeat_byte(0x15);
         let mut slots = NonCreditableSlots::empty();
-        slots.initialize(fee_payer, fee_token, beneficiary, validator_token, None);
+        slots.initialize(fee_payer, fee_token, None);
 
         let fee_balance_slot =
             TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
         assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
         assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot + U256::ONE));
-
-        let collected_fees_slot =
-            TipFeeManager::new().collected_fees[beneficiary][validator_token].slot();
-        assert!(slots.is_non_creditable_slot(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot));
-        assert!(
-            !slots.is_non_creditable_slot(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot + U256::ONE)
-        );
     }
 
     #[test]
@@ -358,16 +329,8 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x16);
         let key_id = Address::repeat_byte(0x17);
         let fee_token = crate::PATH_USD_ADDRESS;
-        let beneficiary = Address::repeat_byte(0x18);
-        let validator_token = Address::repeat_byte(0x19);
         let mut slots = NonCreditableSlots::empty();
-        slots.initialize(
-            fee_payer,
-            fee_token,
-            beneficiary,
-            validator_token,
-            Some(key_id),
-        );
+        slots.initialize(fee_payer, fee_token, Some(key_id));
 
         let keychain = AccountKeychain::new();
         let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
@@ -385,16 +348,8 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x20);
         let key_id = Address::repeat_byte(0x21);
         let fee_token = crate::PATH_USD_ADDRESS;
-        let beneficiary = Address::repeat_byte(0x22);
-        let validator_token = Address::repeat_byte(0x23);
         let mut slots = NonCreditableSlots::empty();
-        slots.initialize(
-            fee_payer,
-            fee_token,
-            beneficiary,
-            validator_token,
-            Some(key_id),
-        );
+        slots.initialize(fee_payer, fee_token, Some(key_id));
 
         let fee_balance_slot =
             TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
