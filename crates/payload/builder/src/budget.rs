@@ -46,6 +46,10 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
 }
 
 fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
+    if elapsed == Duration::ZERO || multiplier == BUILD_TIME_MULTIPLIER_SCALE {
+        return elapsed;
+    }
+
     Duration::from_nanos(
         (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
             / u128::from(BUILD_TIME_MULTIPLIER_SCALE))
@@ -278,6 +282,20 @@ mod tests {
         assert_eq!(
             scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
+        );
+    }
+
+    #[test]
+    fn scaled_duration_fast_paths_zero_and_identity() {
+        assert_eq!(
+            scaled_duration(Duration::ZERO, DEFAULT_BUILD_TIME_MULTIPLIER_SCALED),
+            Duration::ZERO
+        );
+
+        let elapsed = Duration::from_nanos(123_456_789);
+        assert_eq!(
+            scaled_duration(elapsed, BUILD_TIME_MULTIPLIER_SCALE),
+            elapsed
         );
     }
 }
