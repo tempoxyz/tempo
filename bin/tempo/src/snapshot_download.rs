@@ -417,7 +417,8 @@ fn extract_zstd_tar_archive(archive_path: &Path, target_dir: &Path) -> eyre::Res
             "consensus archive contains a non-file entry",
         );
 
-        let output_path = safe_output_path(target_dir, &output_relative)?;
+        let output_path = safe_output_path(target_dir, &output_relative)
+            .wrap_err_with(|| format!("path is not safe: {}", output_relative))?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
@@ -433,13 +434,9 @@ fn verify_consensus_output_files(
     consensus_dir: &Path,
     output_files: &[OutputFileChecksum],
 ) -> eyre::Result<()> {
-    ensure!(
-        !output_files.is_empty(),
-        "consensus archive output metadata is empty",
-    );
-
     for expected in output_files {
-        let output_path = safe_output_path(consensus_dir, &expected.path)?;
+        let output_path = safe_output_path(consensus_dir, &expected.path)
+            .wrap_err_with(|| format!("path is not safe: {}", expected.path))?;
         let metadata = fs::metadata(&output_path).wrap_err_with(|| {
             format!(
                 "failed to stat consensus archive output {}",
@@ -530,25 +527,21 @@ fn consensus_archive_entry(
 }
 
 fn safe_output_path(root: &Path, relative: &str) -> eyre::Result<PathBuf> {
-    Ok(root.join(safe_relative_path(relative)?))
+    Ok(root.join(safe_relative_path(relative).wrap_err("path is not safe")?))
 }
 
 fn safe_relative_path(relative: &str) -> eyre::Result<PathBuf> {
     let path = Path::new(relative);
+    ensure!(path.is_relative(), "path must be relative");
+
+    let mut components = path.components().peekable();
+    ensure!(components.peek().is_some(), "path must not be empty");
+
     ensure!(
-        path.is_relative(),
-        "consensus archive output path must be relative: {relative}"
+        components.all(|comp| matches!(comp, Component::Normal(_))),
+        "all path components must be normal (no root, ., .., etc)",
     );
-    ensure!(
-        path.components().next().is_some(),
-        "consensus archive output path must not be empty"
-    );
-    for component in path.components() {
-        ensure!(
-            matches!(component, Component::Normal(_)),
-            "invalid consensus archive output path: {relative}",
-        );
-    }
+
     Ok(path.to_path_buf())
 }
 
