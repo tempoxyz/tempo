@@ -81,6 +81,11 @@ pub trait StorageCreditsBackend {
     fn tip1060_storage_credit_minting_enabled(&self) -> bool {
         true
     }
+
+    /// Returns true when `owner[key]` is a tx-local slot whose clear must not mint a credit.
+    fn is_non_creditable_slot(&mut self, _owner: Address, _key: U256) -> bool {
+        false
+    }
 }
 
 #[inline]
@@ -95,10 +100,12 @@ fn store_credit_state<B: StorageCreditsBackend>(
 
 /// Applies TIP-1060 storage credits after a single SSTORE has been journaled.
 ///
-/// Returns whether to skip normal dynamic/state gas and/or refund accounting.
+/// When provided, `key` lets the hook skip minting a credit for a transaction-local slot
+/// whose clear must not mint a credit for the storage-owning account.
 pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
+    key: Option<U256>,
     caller_state_load: &StateLoad<SStoreResult>,
 ) -> Result<(), B::Error> {
     let values = &caller_state_load.data;
@@ -133,8 +140,14 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
 
     let mut was_changed = false;
     if values.is_new_zero() {
-        // x→0: storage deletion always mints a new credit.
+        // x→0: storage deletion mints a new credit on regular slots when minting is enabled.
         if backend.tip1060_storage_credit_minting_enabled() {
+            if let Some(key) = key
+                && backend.is_non_creditable_slot(owner, key)
+            {
+                return Ok(());
+            }
+
             credit = credit.saturating_add(1);
             was_changed = true;
         }
