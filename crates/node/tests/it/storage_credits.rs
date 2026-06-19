@@ -11,6 +11,7 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::TransactionRequest;
+use std::sync::{Arc, Mutex};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager,
@@ -672,6 +673,255 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         credits.balanceOf(DEFAULT_FEE_TOKEN).call().await?,
         credit_before,
         "post-tx fee refund recreates the payer balance slot, so the same-tx clear credit must be canceled"
+    );
+
+    Ok(())
+}
+
+/// A periodic keychain limit that reaches zero should not clear storage, so a later fee-token
+/// recreation cannot leave a stale AccountKeychain-owned TIP-1060 credit to redeem.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1060_cross_token_keychain_fee_recreation_does_not_redeem_stale_credit()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root.address();
+    let validator = Arc::new(Mutex::new(root_addr));
+    let setup = TestNodeBuilder::new()
+        .with_dynamic_validator(validator.clone())
+        .build_http_only()
+        .await?;
+    let provider = ProviderBuilder::new()
+        .wallet(root.clone())
+        .connect_http(setup.http_url);
+
+    let access_key = PrivateKeySigner::random();
+    let token_b = setup_test_token(provider.clone(), root_addr).await?;
+    let token_b_addr = *token_b.address();
+    let recipient = Address::repeat_byte(0xbb);
+
+    let gas_limit = 500_000u64;
+    let gas_price = 1_000_000_000_000u128;
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let token_b_spend = U256::from(1_000_000u64);
+
+    let seed_root_receipt = token_b
+        .mint(root_addr, token_b_spend + max_fee * U256::from(8))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(seed_root_receipt.status());
+    let seed_recipient_receipt = token_b
+        .mint(recipient, U256::ONE)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(seed_recipient_receipt.status());
+
+    let authorize = authorizeKeyCall {
+        keyId: access_key.address(),
+        signatureType: SignatureType::Secp256k1,
+        config: KeyRestrictions {
+            expiry: u64::MAX,
+            enforceLimits: true,
+            limits: vec![
+                TokenLimit {
+                    token: DEFAULT_FEE_TOKEN,
+                    amount: max_fee,
+                    period: 0,
+                },
+                TokenLimit {
+                    token: token_b_addr,
+                    amount: token_b_spend,
+                    period: 1,
+                },
+            ],
+            allowAnyCalls: true,
+            allowedCalls: vec![],
+        },
+    };
+    let authorize_hash = provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(ACCOUNT_KEYCHAIN_ADDRESS)
+                .input(authorize.abi_encode().into())
+                .gas_limit(2_000_000),
+        )
+        .await?
+        .watch()
+        .await?;
+    let authorize_receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>(
+            "eth_getTransactionReceipt".into(),
+            (authorize_hash,),
+        )
+        .await?;
+    assert!(authorize_receipt.status());
+
+    let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+    let credit_before = credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?;
+
+    // Tx1 pays fees in the default token and exhausts token B's keychain limit under enabled
+    // execution accounting. The zero sentinel keeps the periodic limit slot allocated, so token B
+    // must not mint an AccountKeychain-owned storage credit.
+    let tx1 = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: token_b_addr.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: token_b_spend,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+    let keychain_hash = KeychainSignature::signing_hash(tx1.signature_hash(), root_addr);
+    let access_signature = access_key.sign_hash_sync(&keychain_hash)?;
+    let envelope: TempoTxEnvelope = tx1
+        .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            root_addr,
+            PrimitiveSignature::Secp256k1(access_signature),
+        )))
+        .into();
+    let tx1_hash = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let tx1_receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx1_hash,))
+        .await?;
+    assert!(tx1_receipt.status());
+
+    let credit_after_clear = credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?;
+    assert_eq!(
+        credit_after_clear, credit_before,
+        "exhausting token B's keychain spending-limit slot must not mint an AccountKeychain credit"
+    );
+
+    *validator.lock().unwrap() = Address::repeat_byte(0x77);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let set_validator_token_receipt = fee_manager
+        .setValidatorToken(token_b_addr)
+        .nonce(provider.get_transaction_count(root_addr).await?)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(set_validator_token_receipt.status());
+
+    *validator.lock().unwrap() = root_addr;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Tx2 pays fees in token B after the periodic limit expires. Fee pre-collection runs with
+    // TIP-1060 disabled and resets the same keychain limit slot without creating a stale credit.
+    let tx2 = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit,
+        calls: vec![Call {
+            to: STORAGE_CREDITS_ADDRESS.into(),
+            value: U256::ZERO,
+            input: IStorageCredits::balanceOfCall {
+                account: ACCOUNT_KEYCHAIN_ADDRESS,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        fee_token: Some(token_b_addr),
+        ..Default::default()
+    };
+    let keychain_hash = KeychainSignature::signing_hash(tx2.signature_hash(), root_addr);
+    let access_signature = access_key.sign_hash_sync(&keychain_hash)?;
+    let envelope: TempoTxEnvelope = tx2
+        .into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            root_addr,
+            PrimitiveSignature::Secp256k1(access_signature),
+        )))
+        .into();
+    let tx2_hash = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let tx2_receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx2_hash,))
+        .await?;
+    assert!(tx2_receipt.status());
+
+    let credit_after_disabled_recreate = credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?;
+    assert_eq!(
+        credit_after_disabled_recreate, credit_after_clear,
+        "disabled fee pre-collection must not create or burn AccountKeychain credits"
+    );
+
+    // Tx3 creates ordinary AccountKeychain storage in Refund mode. There should be no stale credit
+    // for end-of-transaction settlement to consume.
+    let redeem_key = PrivateKeySigner::random();
+    let redeem = authorizeKeyCall {
+        keyId: redeem_key.address(),
+        signatureType: SignatureType::Secp256k1,
+        config: KeyRestrictions {
+            expiry: u64::MAX,
+            enforceLimits: true,
+            limits: vec![TokenLimit {
+                token: DEFAULT_FEE_TOKEN,
+                amount: U256::ONE,
+                period: 0,
+            }],
+            allowAnyCalls: true,
+            allowedCalls: vec![],
+        },
+    };
+    let tx3 = TempoTransaction {
+        chain_id: provider.get_chain_id().await?,
+        nonce: provider.get_transaction_count(root_addr).await?,
+        max_priority_fee_per_gas: gas_price,
+        max_fee_per_gas: gas_price,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: redeem.abi_encode().into(),
+        }],
+        fee_token: Some(token_b_addr),
+        ..Default::default()
+    };
+    let sig = root.sign_hash_sync(&tx3.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx3
+        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )))
+        .into();
+    let tx3_hash = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?
+        .watch()
+        .await?;
+    let tx3_receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx3_hash,))
+        .await?;
+    assert!(tx3_receipt.status());
+
+    assert_eq!(
+        credits.balanceOf(ACCOUNT_KEYCHAIN_ADDRESS).call().await?,
+        credit_after_disabled_recreate,
+        "a later AccountKeychain Refund-mode creation must not redeem a stale credit"
     );
 
     Ok(())
