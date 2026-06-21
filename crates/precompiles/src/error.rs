@@ -189,9 +189,7 @@ impl TempoPrecompileError {
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_)
-            | Self::StateChangeInStaticCall => {
-                true
-            }
+            | Self::StateChangeInStaticCall => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
