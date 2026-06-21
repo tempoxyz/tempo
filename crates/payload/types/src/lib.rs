@@ -154,11 +154,54 @@ impl BuiltPayload for TempoBuiltPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoExecutionData {
     /// The built block.
+    #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
     /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
+}
+
+pub mod serde_sealed_block {
+    use reth_primitives_traits::SealedBlock;
+    use serde::{Deserialize, Serialize};
+    use tempo_primitives::Block;
+
+    pub fn serialize<S>(block: &SealedBlock<Block>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        block.clone_block().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedBlock<Block>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Block::deserialize(deserializer).map(SealedBlock::seal_slow)
+    }
+}
+
+pub mod serde_sealed_or_recovered_block {
+    use reth_primitives_traits::SealedOrRecoveredBlock;
+    use tempo_primitives::Block;
+
+    pub fn serialize<S>(
+        block: &SealedOrRecoveredBlock<Block>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        super::serde_sealed_block::serialize(block.sealed_block(), serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedOrRecoveredBlock<Block>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::serde_sealed_block::deserialize(deserializer).map(SealedOrRecoveredBlock::from)
+    }
 }
 
 impl ExecutionPayload for TempoExecutionData {
@@ -264,5 +307,58 @@ impl EncodedBlock {
     /// Returns cached encoded bytes, filling the cache with `encode` if it is empty.
     pub fn get_or_encode_with(&self, encode: impl FnOnce() -> Bytes) -> &Bytes {
         self.0.get_or_init(encode)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    struct WrappedBlock<'a> {
+        #[serde(with = "crate::serde_sealed_or_recovered_block")]
+        block: &'a SealedOrRecoveredBlock<Block>,
+    }
+
+    #[derive(Deserialize)]
+    struct OwnedWrappedBlock {
+        #[serde(with = "crate::serde_sealed_or_recovered_block")]
+        block: SealedOrRecoveredBlock<Block>,
+    }
+
+    #[test]
+    fn sealed_or_recovered_block_serializes_as_plain_block() {
+        let plain_block = Block::default();
+        let sealed_block = SealedBlock::seal_slow(plain_block.clone());
+        let block = SealedOrRecoveredBlock::from(sealed_block);
+
+        let wrapped = serde_json::to_value(WrappedBlock { block: &block }).unwrap();
+
+        assert_eq!(wrapped["block"], serde_json::to_value(plain_block).unwrap());
+        assert!(wrapped["block"]["header"]["parentHash"].is_string());
+        assert!(wrapped["block"]["header"]["header"].is_null());
+    }
+
+    #[test]
+    fn recovered_block_serializes_as_plain_block() {
+        let plain_block = Block::default();
+        let recovered_block = SealedBlock::seal_slow(plain_block.clone()).with_senders(Vec::new());
+        let block = SealedOrRecoveredBlock::from(recovered_block);
+
+        let wrapped = serde_json::to_value(WrappedBlock { block: &block }).unwrap();
+
+        assert_eq!(wrapped["block"], serde_json::to_value(plain_block).unwrap());
+        assert!(wrapped["block"]["header"]["parentHash"].is_string());
+        assert!(wrapped["block"]["header"]["header"].is_null());
+    }
+
+    #[test]
+    fn sealed_or_recovered_block_deserializes_from_plain_block() {
+        let plain_block = Block::default();
+        let value = serde_json::json!({ "block": plain_block });
+
+        let wrapped: OwnedWrappedBlock = serde_json::from_value(value).unwrap();
+
+        assert_eq!(wrapped.block.sealed_block().clone_block(), Block::default());
     }
 }

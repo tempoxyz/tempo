@@ -7,6 +7,7 @@ use futures::Future;
 use reth_primitives_traits::SealedOrRecoveredBlock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_payload_types::serde_sealed_or_recovered_block;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
@@ -22,6 +23,7 @@ pub struct CertifiedBlock {
     pub certificate: String,
 
     /// The Tempo block.
+    #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
 }
 
