@@ -164,21 +164,39 @@ pub struct TempoExecutionData {
 
 pub mod serde_sealed_block {
     use reth_primitives_traits::SealedBlock;
-    use serde::{Deserialize, Serialize};
     use tempo_primitives::Block;
 
     pub fn serialize<S>(block: &SealedBlock<Block>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        block.clone_block().serialize(serializer)
+        #[derive(serde::Serialize)]
+        struct BlockRef<'a> {
+            header: &'a tempo_primitives::TempoHeader,
+            body: &'a tempo_primitives::BlockBody,
+        }
+
+        serde::Serialize::serialize(
+            &BlockRef {
+                header: block.header(),
+                body: block.body(),
+            },
+            serializer,
+        )
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedBlock<Block>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        Block::deserialize(deserializer).map(SealedBlock::seal_slow)
+        #[derive(serde::Deserialize)]
+        struct BlockParts {
+            header: tempo_primitives::TempoHeader,
+            body: tempo_primitives::BlockBody,
+        }
+
+        let BlockParts { header, body } = serde::Deserialize::deserialize(deserializer)?;
+        Ok(SealedBlock::seal_slow(Block { header, body }))
     }
 }
 
