@@ -162,6 +162,11 @@ pub struct TempoExecutionData {
     pub validator_set: Option<Vec<B256>>,
 }
 
+/// Serde helper for preserving the legacy plain block JSON shape.
+///
+/// `SealedOrRecoveredBlock` normally serializes through `SealedBlock`, which exposes the
+/// `SealedHeader` wrapper as an extra nested `header`. Consensus RPC and execution payload JSON
+/// historically used `tempo_primitives::Block`, so this keeps those wire formats stable.
 pub mod serde_sealed_or_recovered_block {
     use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
     use tempo_primitives::Block;
