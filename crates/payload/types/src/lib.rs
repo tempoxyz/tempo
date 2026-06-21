@@ -154,11 +154,58 @@ impl BuiltPayload for TempoBuiltPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoExecutionData {
     /// The built block.
+    #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
     /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
+}
+
+/// Serde helper for preserving the legacy plain block JSON shape.
+///
+/// `SealedOrRecoveredBlock` normally serializes through `SealedBlock`, which exposes the
+/// `SealedHeader` wrapper as an extra nested `header`. Consensus RPC and execution payload JSON
+/// historically used `tempo_primitives::Block`, so this keeps those wire formats stable.
+pub mod serde_sealed_or_recovered_block {
+    use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
+    use tempo_primitives::Block;
+
+    pub fn serialize<S>(
+        block: &SealedOrRecoveredBlock<Block>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(serde::Serialize)]
+        struct BlockRef<'a> {
+            header: &'a tempo_primitives::TempoHeader,
+            body: &'a tempo_primitives::BlockBody,
+        }
+
+        serde::Serialize::serialize(
+            &BlockRef {
+                header: block.header(),
+                body: block.body(),
+            },
+            serializer,
+        )
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedOrRecoveredBlock<Block>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct BlockParts {
+            header: tempo_primitives::TempoHeader,
+            body: tempo_primitives::BlockBody,
+        }
+
+        let BlockParts { header, body } = serde::Deserialize::deserialize(deserializer)?;
+        Ok(SealedBlock::seal_slow(Block { header, body }).into())
+    }
 }
 
 impl ExecutionPayload for TempoExecutionData {
@@ -264,5 +311,50 @@ impl EncodedBlock {
     /// Returns cached encoded bytes, filling the cache with `encode` if it is empty.
     pub fn get_or_encode_with(&self, encode: impl FnOnce() -> Bytes) -> &Bytes {
         self.0.get_or_init(encode)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_data_roundtrips_legacy_plain_block_json() {
+        let fixture = serde_json::json!({
+            "block": {
+                "body": {
+                    "ommers": [],
+                    "transactions": [],
+                    "withdrawals": null
+                },
+                "header": {
+                    "difficulty": "0x0",
+                    "extraData": "0x",
+                    "gasLimit": "0x0",
+                    "gasUsed": "0x0",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "mainBlockGeneralGasLimit": "0x0",
+                    "miner": "0x0000000000000000000000000000000000000000",
+                    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "nonce": "0x0000000000000000",
+                    "number": "0x0",
+                    "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "sharedGasLimit": "0x0",
+                    "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "timestamp": "0x0",
+                    "timestampMillisPart": "0x0",
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+                }
+            },
+            "block_access_list": null,
+            "validator_set": null
+        });
+
+        let execution_data: TempoExecutionData = serde_json::from_value(fixture.clone()).unwrap();
+        let roundtripped = serde_json::to_value(execution_data).unwrap();
+
+        assert_eq!(roundtripped, fixture);
     }
 }
