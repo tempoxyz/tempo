@@ -162,11 +162,14 @@ pub struct TempoExecutionData {
     pub validator_set: Option<Vec<B256>>,
 }
 
-pub mod serde_sealed_block {
-    use reth_primitives_traits::SealedBlock;
+pub mod serde_sealed_or_recovered_block {
+    use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
     use tempo_primitives::Block;
 
-    pub fn serialize<S>(block: &SealedBlock<Block>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(
+        block: &SealedOrRecoveredBlock<Block>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -185,7 +188,7 @@ pub mod serde_sealed_block {
         )
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedBlock<Block>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedOrRecoveredBlock<Block>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -196,29 +199,7 @@ pub mod serde_sealed_block {
         }
 
         let BlockParts { header, body } = serde::Deserialize::deserialize(deserializer)?;
-        Ok(SealedBlock::seal_slow(Block { header, body }))
-    }
-}
-
-pub mod serde_sealed_or_recovered_block {
-    use reth_primitives_traits::SealedOrRecoveredBlock;
-    use tempo_primitives::Block;
-
-    pub fn serialize<S>(
-        block: &SealedOrRecoveredBlock<Block>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        super::serde_sealed_block::serialize(block.sealed_block(), serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<SealedOrRecoveredBlock<Block>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        super::serde_sealed_block::deserialize(deserializer).map(SealedOrRecoveredBlock::from)
+        Ok(SealedBlock::seal_slow(Block { header, body }).into())
     }
 }
 
@@ -332,51 +313,56 @@ impl EncodedBlock {
 mod tests {
     use super::*;
 
-    #[derive(Serialize)]
-    struct WrappedBlock<'a> {
-        #[serde(with = "crate::serde_sealed_or_recovered_block")]
-        block: &'a SealedOrRecoveredBlock<Block>,
-    }
-
     #[derive(Deserialize)]
     struct OwnedWrappedBlock {
         #[serde(with = "crate::serde_sealed_or_recovered_block")]
         block: SealedOrRecoveredBlock<Block>,
     }
 
-    #[test]
-    fn sealed_or_recovered_block_serializes_as_plain_block() {
-        let plain_block = Block::default();
-        let sealed_block = SealedBlock::seal_slow(plain_block.clone());
-        let block = SealedOrRecoveredBlock::from(sealed_block);
-
-        let wrapped = serde_json::to_value(WrappedBlock { block: &block }).unwrap();
-
-        assert_eq!(wrapped["block"], serde_json::to_value(plain_block).unwrap());
-        assert!(wrapped["block"]["header"]["parentHash"].is_string());
-        assert!(wrapped["block"]["header"]["header"].is_null());
+    #[derive(Serialize)]
+    struct BorrowedWrappedBlock<'a> {
+        #[serde(with = "crate::serde_sealed_or_recovered_block")]
+        block: &'a SealedOrRecoveredBlock<Block>,
     }
 
     #[test]
-    fn recovered_block_serializes_as_plain_block() {
-        let plain_block = Block::default();
-        let recovered_block = SealedBlock::seal_slow(plain_block.clone()).with_senders(Vec::new());
-        let block = SealedOrRecoveredBlock::from(recovered_block);
+    fn sealed_or_recovered_block_roundtrips_legacy_plain_block_json() {
+        let fixture = serde_json::json!({
+            "block": {
+                "body": {
+                    "ommers": [],
+                    "transactions": [],
+                    "withdrawals": null
+                },
+                "header": {
+                    "difficulty": "0x0",
+                    "extraData": "0x",
+                    "gasLimit": "0x0",
+                    "gasUsed": "0x0",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "mainBlockGeneralGasLimit": "0x0",
+                    "miner": "0x0000000000000000000000000000000000000000",
+                    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "nonce": "0x0000000000000000",
+                    "number": "0x0",
+                    "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "sharedGasLimit": "0x0",
+                    "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "timestamp": "0x0",
+                    "timestampMillisPart": "0x0",
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+                }
+            }
+        });
 
-        let wrapped = serde_json::to_value(WrappedBlock { block: &block }).unwrap();
+        let wrapped: OwnedWrappedBlock = serde_json::from_value(fixture.clone()).unwrap();
+        let roundtripped = serde_json::to_value(BorrowedWrappedBlock {
+            block: &wrapped.block,
+        })
+        .unwrap();
 
-        assert_eq!(wrapped["block"], serde_json::to_value(plain_block).unwrap());
-        assert!(wrapped["block"]["header"]["parentHash"].is_string());
-        assert!(wrapped["block"]["header"]["header"].is_null());
-    }
-
-    #[test]
-    fn sealed_or_recovered_block_deserializes_from_plain_block() {
-        let plain_block = Block::default();
-        let value = serde_json::json!({ "block": plain_block });
-
-        let wrapped: OwnedWrappedBlock = serde_json::from_value(value).unwrap();
-
-        assert_eq!(wrapped.block.sealed_block().clone_block(), Block::default());
+        assert_eq!(roundtripped, fixture);
     }
 }
