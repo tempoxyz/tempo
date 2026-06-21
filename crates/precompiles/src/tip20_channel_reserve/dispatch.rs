@@ -3,7 +3,7 @@
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
 use crate::{
     Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    view,
+    preserve_storage_credits, view,
 };
 use alloy::{
     primitives::Address,
@@ -36,23 +36,39 @@ impl Precompile for TIP20ChannelReserve {
                 ITIP20ChannelReserveCalls::VOUCHER_TYPEHASH(_) => {
                     metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(*VOUCHER_TYPEHASH))
                 }
-                ITIP20ChannelReserveCalls::open(call) => {
-                    mutate(call, msg_sender, |sender, c| self.open(sender, c))
-                }
+                ITIP20ChannelReserveCalls::open(call) => mutate(call, msg_sender, |sender, c| {
+                    preserve_storage_credits(self.address)?;
+                    self.open(sender, c)
+                }),
                 ITIP20ChannelReserveCalls::settle(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.settle(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.settle(sender, c)
+                    })
                 }
                 ITIP20ChannelReserveCalls::topUp(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.top_up(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.top_up(sender, c)
+                    })
                 }
                 ITIP20ChannelReserveCalls::close(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.close(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.close(sender, c)
+                    })
                 }
                 ITIP20ChannelReserveCalls::requestClose(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.request_close(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.request_close(sender, c)
+                    })
                 }
                 ITIP20ChannelReserveCalls::withdraw(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.withdraw(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        preserve_storage_credits(self.address)?;
+                        self.withdraw(sender, c)
+                    })
                 }
                 ITIP20ChannelReserveCalls::getChannel(call) => view(call, |c| self.get_channel(c)),
                 ITIP20ChannelReserveCalls::getChannelState(call) => {

@@ -27,10 +27,10 @@ pub enum CreditMode {
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    /// Remaining number of credits that may be spent directly in `Direct` mode.
-    pub budget: u64,
     /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Remaining number of credits that may be spent directly in `Direct` mode.
+    pub budget: u64,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
@@ -42,8 +42,8 @@ impl TryFrom<U256> for TransientState {
     fn try_from(value: U256) -> Result<Self> {
         let limbs = value.as_limbs();
         Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
+            mode: (limbs[0] as u8).try_into()?,
+            budget: limbs[1],
             pending_refunds: limbs[3],
         })
     }
@@ -52,7 +52,7 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, 0, value.pending_refunds])
+        Self::from_limbs([value.mode as u64, value.budget, 0, value.pending_refunds])
     }
 }
 
@@ -106,6 +106,7 @@ impl StorageCredits {
         self.credit_state_of(account).map(|state| state.budget)
     }
 
+    /// Sets the transaction-local storage-creation mode for the caller.
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mode = CreditMode::try_from(mode)?;
         let budget = if matches!(mode, CreditMode::Direct) {
@@ -179,6 +180,7 @@ impl StorageCredits {
         let after = self.balance_of(credit_owner)?;
         let delta = i128::from(after) - i128::from(before);
 
+        // After `f` has been applied and accounting is done, reset to `Preserve`.
         let current_state = self.credit_state_of(credit_owner)?;
         let state = TransientState {
             budget: 0,
@@ -202,7 +204,7 @@ impl StorageCreditDeltas {
     /// Adds `slots` reusable-storage credits earned by `user`.
     ///
     /// This intentionally records only a delta. The persisted counter is loaded once during
-    /// [`Self::flush`], outside the fill loop and only if the enclosing operation succeeds.
+    /// [`Self::flush`], outside the fill loop and only if the enclosing DEX operation succeeds.
     pub fn credit_slots(&mut self, user: Address, slots: u64) {
         if slots == 0 {
             return;
