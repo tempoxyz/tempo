@@ -313,20 +313,8 @@ impl EncodedBlock {
 mod tests {
     use super::*;
 
-    #[derive(Deserialize)]
-    struct OwnedWrappedBlock {
-        #[serde(with = "crate::serde_sealed_or_recovered_block")]
-        block: SealedOrRecoveredBlock<Block>,
-    }
-
-    #[derive(Serialize)]
-    struct BorrowedWrappedBlock<'a> {
-        #[serde(with = "crate::serde_sealed_or_recovered_block")]
-        block: &'a SealedOrRecoveredBlock<Block>,
-    }
-
     #[test]
-    fn sealed_or_recovered_block_roundtrips_legacy_plain_block_json() {
+    fn execution_data_roundtrips_legacy_plain_block_json() {
         let fixture = serde_json::json!({
             "block": {
                 "body": {
@@ -354,14 +342,13 @@ mod tests {
                     "timestampMillisPart": "0x0",
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
-            }
+            },
+            "block_access_list": null,
+            "validator_set": null
         });
 
-        let wrapped: OwnedWrappedBlock = serde_json::from_value(fixture.clone()).unwrap();
-        let roundtripped = serde_json::to_value(BorrowedWrappedBlock {
-            block: &wrapped.block,
-        })
-        .unwrap();
+        let execution_data: TempoExecutionData = serde_json::from_value(fixture.clone()).unwrap();
+        let roundtripped = serde_json::to_value(execution_data).unwrap();
 
         assert_eq!(roundtripped, fixture);
     }
