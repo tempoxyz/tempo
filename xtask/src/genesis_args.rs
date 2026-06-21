@@ -36,8 +36,8 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_commonware_node_config::{SigningKey, SigningShare};
+use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
@@ -54,7 +54,7 @@ use tempo_precompiles::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{ContractStorage, StorageCtx},
+    storage::{ContractStorage, StorageActions, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -189,6 +189,10 @@ pub(crate) struct GenesisArgs {
     /// T7 hardfork activation time.
     #[arg(long, default_value = "0")]
     t7_time: u64,
+
+    /// T8 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t8_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +239,37 @@ impl Validator {
 }
 
 impl GenesisArgs {
+    pub(crate) fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub(crate) fn set_chain_id(&mut self, chain_id: u64) {
+        self.chain_id = chain_id;
+    }
+
+    pub(crate) fn validator_onchain_addresses(&self) -> eyre::Result<Vec<Address>> {
+        if self.validator_addresses.is_empty() {
+            let validator_count = u32::try_from(self.validators.len())
+                .map_err(|_| eyre!("too many validators to derive account addresses"))?;
+            if self.accounts < validator_count.saturating_add(1) {
+                return Err(eyre!("not enough accounts created for validators"));
+            }
+
+            (1..=validator_count)
+                .map(|worker_id| {
+                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
+                    Ok(secret_key_to_address(signer.credential()))
+                })
+                .collect()
+        } else {
+            if self.validator_addresses.len() < self.validators.len() {
+                return Err(eyre!("not enough addresses provided for validators"));
+            }
+
+            Ok(self.validator_addresses[0..self.validators.len()].to_vec())
+        }
+    }
+
     /// Generates a genesis json file.
     ///
     /// It creates a new genesis allocation for the configured accounts.
@@ -567,6 +602,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t7Time".to_string(), self.t7_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t8Time".to_string(), self.t8_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -583,9 +621,9 @@ impl GenesisArgs {
 
         // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
         let base_fee: u128 = if self.t1_time == 0 {
-            TempoHardfork::T1.base_fee().into()
+            u128::from(TEMPO_T1_BASE_FEE)
         } else {
-            TempoHardfork::T0.base_fee().into()
+            u128::from(TEMPO_T0_BASE_FEE)
         };
 
         let mut genesis = Genesis::default()
@@ -660,6 +698,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || TIP20Factory::new().initialize(),
     )?;
     Ok(())
@@ -679,6 +718,7 @@ fn create_path_usd_token(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             TIP20Factory::new().create_token_reserved_address(
                 PATH_USD_ADDRESS,
@@ -736,6 +776,7 @@ fn create_and_mint_token(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             let mut factory = TIP20Factory::new();
             assert!(
@@ -824,6 +865,7 @@ fn initialize_fee_manager(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             let mut fee_manager = TipFeeManager::new();
             fee_manager
@@ -870,6 +912,7 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || TIP403Registry::new().initialize(),
     )?;
 
@@ -883,6 +926,7 @@ fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resu
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || StablecoinDEX::new().initialize(),
     )?;
 
@@ -896,6 +940,7 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || NonceManager::new().initialize(),
     )?;
 
@@ -910,6 +955,7 @@ fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || AccountKeychain::new().initialize(),
     )?;
 
@@ -923,6 +969,7 @@ fn initialize_address_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Re
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || AddressRegistry::new().initialize(),
     )?;
 
@@ -936,6 +983,7 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || SignatureVerifier::new().initialize(),
     )?;
 
@@ -949,6 +997,7 @@ fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || ReceivePolicyGuard::new().initialize(),
     )?;
 
@@ -973,6 +1022,7 @@ fn initialize_validator_config_v2(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             let mut v2 = ValidatorConfigV2::new();
             v2.initialize(admin)
@@ -1110,6 +1160,7 @@ fn mint_pairwise_liquidity(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             let mut fee_manager = TipFeeManager::new();
 

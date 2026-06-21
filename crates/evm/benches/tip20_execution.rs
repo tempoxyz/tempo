@@ -61,7 +61,7 @@ use tempo_precompiles::{
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::StorageCtx,
+    storage::{StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -72,6 +72,10 @@ use tempo_primitives::{
     transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
 };
 use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 const CHAIN_ID: u64 = 1337;
 const TXGEN_MNEMONIC: &str = "test test test test test test test test test test test junk";
@@ -358,6 +362,7 @@ fn seed_in_memory_cache_db(
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             TIP403Registry::new().initialize()?;
             TIP20Factory::new().initialize()?;

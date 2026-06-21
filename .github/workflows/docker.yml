@@ -163,13 +163,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sign_image() {
+            local image="$1"
+            local attempt
+
+            for attempt in 1 2 3; do
+              if cosign sign --yes --recursive "$image"; then
+                return 0
+              fi
+
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to sign $image after $attempt attempts" >&2
+                return 1
+              fi
+
+              sleep_seconds=$((attempt * 15))
+              echo "cosign sign failed for $image; retrying in ${sleep_seconds}s (attempt $((attempt + 1))/3)" >&2
+              sleep "$sleep_seconds"
+            done
+          }
+
           images=(
             "${{ steps.meta-tempo.outputs.tags }}"
             "${{ steps.meta-tempo-sidecar.outputs.tags }}"
             "${{ steps.meta-tempo-xtask.outputs.tags }}"
           )
           for tags in "${images[@]}"; do
-            echo "$tags" | xargs -n1 cosign sign --yes --recursive
+            while IFS= read -r image; do
+              [ -n "$image" ] || continue
+              sign_image "$image"
+            done <<< "$tags"
           done
 
       - name: Publish event (sha tag)

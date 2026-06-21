@@ -427,6 +427,10 @@ run_single() {
   if [ -n "${CLICKHOUSE_URL:-}" ]; then
     clickhouse_report=(--report "clickhouse:$CLICKHOUSE_URL")
   fi
+  local victoriametrics_report=()
+  if [ "${BENCH_METRICS:-false}" = "true" ] && [ -n "${BENCH_VICTORIAMETRICS_URL:-}" ]; then
+    victoriametrics_report=(--report "victoriametrics:$BENCH_VICTORIAMETRICS_URL")
+  fi
 
   "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
     | "$TXGEN_BENCH_BIN" send-blocks \
@@ -435,6 +439,7 @@ run_single() {
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" \
       "${clickhouse_report[@]}" \
+      "${victoriametrics_report[@]}" \
       -m "git-sha=$git_sha" \
       -m "git-ref=$git_ref" \
       -m "platform=tempo" \

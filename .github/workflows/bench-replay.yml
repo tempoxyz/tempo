@@ -124,6 +124,10 @@ on:
         type: string
         required: false
         default: "2"
+      metrics:
+        type: string
+        required: false
+        default: "false"
       comment-id:
         type: string
         required: false
@@ -168,6 +172,8 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
+      BENCH_VICTORIAMETRICS_URL:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -196,6 +202,7 @@ jobs:
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
+      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -357,7 +364,7 @@ jobs:
             });
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         continue-on-error: true
 
       - name: Install uv
@@ -454,6 +461,7 @@ jobs:
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
           BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
@@ -535,20 +543,39 @@ jobs:
           fi
           CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
 
-          TMP_DIR=$(mktemp -d)
-          if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-            true
-          else
-            git init "${TMP_DIR}"
-            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-          fi
+          TMP_DIR=""
+          prepare_charts() {
+            if [ -n "${TMP_DIR}" ]; then
+              rm -rf "${TMP_DIR}"
+            fi
 
-          mkdir -p "${TMP_DIR}/${CHART_DIR}"
-          cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
-          git -C "${TMP_DIR}" add "${CHART_DIR}"
-          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
-          git -C "${TMP_DIR}" push origin HEAD:main
+            TMP_DIR=$(mktemp -d)
+            if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+              true
+            else
+              git init "${TMP_DIR}"
+              git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+            fi
+
+            mkdir -p "${TMP_DIR}/${CHART_DIR}"
+            cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
+            git -C "${TMP_DIR}" add "${CHART_DIR}"
+          }
+
+          for attempt in 1 2 3 4 5; do
+            prepare_charts
+            git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+              commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
+            if git -C "${TMP_DIR}" push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to push charts after ${attempt} attempts"
+              rm -rf "${TMP_DIR}"
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"

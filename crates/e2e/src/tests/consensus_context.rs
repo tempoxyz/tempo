@@ -1,14 +1,12 @@
-use std::time::Duration;
-
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _,
+    Runner as _,
     deterministic::{self, Runner},
 };
 use futures::future::join_all;
 use reth_ethereum::provider::BlockReader as _;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{Setup, metrics::wait_for_height, setup_validators};
 
 #[test_traced]
 fn blocks_have_consensus_context() {
@@ -24,28 +22,9 @@ fn blocks_have_consensus_context() {
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        let uid = nodes[0].uid();
         let provider = nodes[0].execution_provider();
 
-        'setup: loop {
-            for line in context.encode().lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-                if metric.contains(uid) && metric.ends_with("_marshal_processed_height") {
-                    let height = value.parse::<u64>().unwrap();
-                    if height >= 5 {
-                        break 'setup;
-                    }
-                }
-            }
-
-            context.sleep(Duration::from_secs(1)).await;
-        }
+        wait_for_height(&context, &nodes[0], 5).await;
 
         // Genesis block should not have a consensus context.
         let genesis = provider.block_by_number(0).ok().flatten().unwrap();

@@ -1,3 +1,4 @@
+use crate::ValidationLatencyEstimate;
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -27,6 +28,12 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Validation latency estimate for a consensus payload build.
+    ///
+    /// Consensus snapshots this from recent locally validated blocks. `None`
+    /// means the builder should use its conservative fallback.
+    #[serde(skip)]
+    validation_latency_estimate: Option<ValidationLatencyEstimate>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -74,8 +81,10 @@ impl TempoPayloadAttributes {
                 withdrawals: Some(Default::default()),
                 parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
+                target_gas_limit: None,
             },
             payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -113,6 +122,20 @@ impl TempoPayloadAttributes {
         self.payload_build_budget
     }
 
+    /// Sets the validation latency estimate for a consensus payload build.
+    pub fn with_validation_latency_estimate(
+        mut self,
+        estimate: Option<ValidationLatencyEstimate>,
+    ) -> Self {
+        self.validation_latency_estimate = estimate;
+        self
+    }
+
+    /// Returns the consensus-provided validation latency estimate.
+    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
+        self.validation_latency_estimate
+    }
+
     /// Returns the milliseconds portion of the timestamp.
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
@@ -145,6 +168,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -367,6 +391,7 @@ mod tests {
             withdrawals: Some(Default::default()),
             parent_beacon_block_root: Some(B256::random()),
             slot_number: None,
+            target_gas_limit: None,
         };
 
         let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
@@ -407,6 +432,7 @@ mod tests {
                 withdrawals: Some(vec![]),
                 parent_beacon_block_root: Some(B256::random()),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part,
             ..Default::default()
@@ -447,6 +473,7 @@ mod tests {
                 }]),
                 parent_beacon_block_root: Some(beacon_root),
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 123,
             ..Default::default()
@@ -467,6 +494,7 @@ mod tests {
                 withdrawals: None,
                 parent_beacon_block_root: None,
                 slot_number: None,
+                target_gas_limit: None,
             },
             timestamp_millis_part: 0,
             ..Default::default()
