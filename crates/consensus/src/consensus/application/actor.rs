@@ -557,6 +557,7 @@ impl Inner<Init> {
             Round::new(round.epoch(), parent_view),
             parent_digest,
             &self.marshal,
+            BlockResolution::Any,
         )
         .await?;
 
@@ -831,12 +832,19 @@ impl Inner<Init> {
         round: Round,
     ) -> eyre::Result<VerifyResult> {
         let (block, parent) = try_join(
-            subscribe(&self.execution_node, round, payload, &self.marshal),
+            subscribe(
+                &self.execution_node,
+                round,
+                payload,
+                &self.marshal,
+                BlockResolution::RequireConsensusSidecars,
+            ),
             subscribe(
                 &self.execution_node,
                 Round::new(round.epoch(), parent_view),
                 parent_digest,
                 &self.marshal,
+                BlockResolution::Any,
             ),
         )
         .await
@@ -913,24 +921,40 @@ impl Inner<Init> {
                 match reconcile_ssmr_transcript(&block, &stream.transcript) {
                     Ok(true) => {
                         self.metrics.ssmr_final_reconciliations.inc();
-                        if let Some(payload) = stream
-                            .optimistic_payload
-                            .filter(|payload| reconcile_ssmr_optimistic_payload(&block, payload))
-                        {
-                            optimistic_payload = Some(payload);
-                            debug!(
-                                block.digest = %block.digest(),
-                                block.height = %block.height(),
-                                "final proposal matches complete SSMR transcript and optimistic artifact"
-                            );
-                        } else {
-                            self.metrics.ssmr_fallback_validation_count.inc();
-                            debug!(
-                                block.digest = %block.digest(),
-                                block.height = %block.height(),
-                                optimistic.finalizing = stream.optimistic_execution_finalizing,
-                                "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
-                            );
+                        match stream.optimistic_payload {
+                            Some(payload) => {
+                                match reconcile_ssmr_optimistic_payload(&block, &payload) {
+                                    Ok(()) => {
+                                        optimistic_payload = Some(payload);
+                                        debug!(
+                                            block.digest = %block.digest(),
+                                            block.height = %block.height(),
+                                            "final proposal matches complete SSMR transcript and optimistic artifact"
+                                        );
+                                    }
+                                    Err(mismatch) => {
+                                        self.metrics.ssmr_fallback_validation_count.inc();
+                                        warn!(
+                                            ?mismatch,
+                                            block.digest = %block.digest(),
+                                            block.height = %block.height(),
+                                            proposal.has_required_sidecars = !block.missing_required_sidecars(),
+                                            proposal.has_block_access_list = block.block_access_list().is_some(),
+                                            optimistic.has_block_access_list = payload.block_access_list().is_some(),
+                                            "SSMR optimistic artifact does not match final proposal; falling back to normal validation"
+                                        );
+                                    }
+                                }
+                            }
+                            None => {
+                                self.metrics.ssmr_fallback_validation_count.inc();
+                                debug!(
+                                    block.digest = %block.digest(),
+                                    block.height = %block.height(),
+                                    optimistic.finalizing = stream.optimistic_execution_finalizing,
+                                    "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
+                                );
+                            }
                         }
                     }
                     Ok(false) => {
@@ -1225,8 +1249,23 @@ fn reconcile_ssmr_transcript(block: &Block, transcript: &SsmrTranscript) -> eyre
     Ok(true)
 }
 
-fn reconcile_ssmr_optimistic_payload(block: &Block, payload: &TempoBuiltPayload) -> bool {
-    payload.block() == block.block() && payload.block_access_list() == block.block_access_list()
+fn reconcile_ssmr_optimistic_payload(
+    block: &Block,
+    payload: &TempoBuiltPayload,
+) -> Result<(), SsmrOptimisticPayloadMismatch> {
+    if payload.block() != block.block() {
+        return Err(SsmrOptimisticPayloadMismatch::ExecutionBlock);
+    }
+    if payload.block_access_list() != block.block_access_list() {
+        return Err(SsmrOptimisticPayloadMismatch::BlockAccessList);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum SsmrOptimisticPayloadMismatch {
+    ExecutionBlock,
+    BlockAccessList,
 }
 
 fn ssmr_snapshot_waiting_for_optimistic_payload(snapshot: &SsmrStreamSnapshot) -> bool {
@@ -1328,30 +1367,49 @@ async fn verify_header(
 
 /// Resolves a block by digest.
 ///
-/// Checks the EL first. If the block is not available there, subscribes to the
-/// CL and waits until the block becomes available.
+/// Checks the EL first. If the block is not available there, or if the caller
+/// needs sidecars that EL storage does not retain, subscribes to the CL and
+/// waits until the complete consensus block becomes available.
 #[instrument(skip_all, fields(%round, %digest), err, ret(Display))]
 async fn subscribe(
     execution_node: &TempoFullNode,
     round: Round,
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
+    resolution: BlockResolution,
 ) -> eyre::Result<Block> {
-    let block = if let Some(block) = execution_node
+    let block_from_el = execution_node
         .provider
         .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
-        .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
-    {
-        // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block, None)
-    } else {
-        marshal
-            .subscribe_by_digest(Some(round), digest)
-            .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
-    };
-    Ok(block)
+        .wrap_err_with(|| format!("failed querying execution layer for block `{digest}`"))?
+        .map(|block| {
+            // EL database reads do not include commonware sidecars.
+            Block::from_execution_block_unchecked(block, None)
+        });
+
+    if let Some(block) = block_from_el {
+        if resolution == BlockResolution::Any || !block.missing_required_sidecars() {
+            return Ok(block);
+        }
+
+        if block.missing_required_sidecars() {
+            debug!(
+                "execution layer block is missing required consensus sidecars; waiting for marshal block"
+            );
+        }
+    }
+
+    marshal
+        .subscribe_by_digest(Some(round), digest)
+        .await
+        .await
+        .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockResolution {
+    Any,
+    RequireConsensusSidecars,
 }
 
 #[derive(Clone)]

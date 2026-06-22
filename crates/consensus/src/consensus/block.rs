@@ -231,6 +231,19 @@ impl Block {
         }
     }
 
+    /// Returns whether this block commits to consensus sidecar data that is not present locally.
+    pub(crate) fn missing_required_sidecars(&self) -> bool {
+        #[cfg(feature = "bal")]
+        {
+            self.execution_block.block_access_list_hash().is_some()
+                && self.block_access_list.is_none()
+        }
+        #[cfg(not(feature = "bal"))]
+        {
+            false
+        }
+    }
+
     fn encoded_execution_block(&self) -> &Bytes {
         self.execution_block_encoded
             .get_or_encode(self.execution_block.sealed_block())
@@ -728,6 +741,20 @@ mod tests {
                 expected: B256::ZERO
             }
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn detects_missing_required_sidecars() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let missing = Block::from_execution_block_unchecked(execution_block.clone(), None);
+        let complete = Block::from_execution_block(execution_block, Some(block_access_list))
+            .expect("block access list matches header");
+
+        assert!(missing.missing_required_sidecars());
+        assert!(!complete.missing_required_sidecars());
     }
 
     #[cfg(feature = "bal")]
