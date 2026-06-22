@@ -220,6 +220,13 @@ pub(crate) struct SsmrCompleteStream {
     pub(crate) optimistic_execution_finalizing: bool,
 }
 
+/// Current SSMR state for one block stream.
+#[derive(Clone, Debug)]
+pub(crate) struct SsmrStreamSnapshot {
+    pub(crate) started: bool,
+    pub(crate) complete: Option<SsmrCompleteStream>,
+}
+
 impl SsmrTranscript {
     pub(crate) fn new(start: SsmrStart) -> Result<Self, SsmrError> {
         start.validate_shape()?;

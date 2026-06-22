@@ -24,7 +24,7 @@ use crate::{consensus::Digest, epoch::SchemeProvider, utils::public_key_to_tempo
 
 use super::{
     SsmrCompleteStream, SsmrEnd, SsmrError, SsmrFlags, SsmrMessage, SsmrShardPayload, SsmrStart,
-    SsmrTranscript, SsmrTxShard, StreamKey,
+    SsmrStreamSnapshot, SsmrTranscript, SsmrTxShard, StreamKey,
 };
 
 /// Runtime configuration for the SSMR side-channel actor.
@@ -190,11 +190,8 @@ impl Actor {
                 self.broadcast_builder_event(stream, event, network_tx)
                     .await;
             }
-            Message::GetCompleteTranscript { key, response } => {
-                let stream = self
-                    .streams
-                    .get(&key)
-                    .and_then(StreamBuffer::complete_stream);
+            Message::GetStreamSnapshot { key, response } => {
+                let stream = self.streams.get(&key).map(StreamBuffer::snapshot);
                 let _ = response.send(stream);
             }
             Message::OptimisticPayloadReady { key, payload } => match payload {
@@ -508,10 +505,10 @@ impl Mailbox {
         })
     }
 
-    pub(crate) async fn get_complete_stream(&self, key: StreamKey) -> Option<SsmrCompleteStream> {
+    pub(crate) async fn get_stream_snapshot(&self, key: StreamKey) -> Option<SsmrStreamSnapshot> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .unbounded_send(Message::GetCompleteTranscript { key, response: tx })
+            .unbounded_send(Message::GetStreamSnapshot { key, response: tx })
             .ok()?;
         rx.await.ok().flatten()
     }
@@ -522,9 +519,9 @@ enum Message {
         stream: ProposalStream,
         event: SsmrBuilderEvent,
     },
-    GetCompleteTranscript {
+    GetStreamSnapshot {
         key: StreamKey,
-        response: oneshot::Sender<Option<SsmrCompleteStream>>,
+        response: oneshot::Sender<Option<SsmrStreamSnapshot>>,
     },
     OptimisticPayloadReady {
         key: StreamKey,
@@ -555,6 +552,13 @@ enum ReplaySend {
 }
 
 impl StreamBuffer {
+    fn snapshot(&self) -> SsmrStreamSnapshot {
+        SsmrStreamSnapshot {
+            started: self.transcript.is_some(),
+            complete: self.complete_stream(),
+        }
+    }
+
     fn complete_stream(&self) -> Option<SsmrCompleteStream> {
         self.complete_transcript()
             .cloned()

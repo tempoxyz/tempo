@@ -58,7 +58,9 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
-    ssmr::{self, ProposalStream, SsmrCompleteStream, SsmrTranscript, StreamKey},
+    ssmr::{
+        self, ProposalStream, SsmrCompleteStream, SsmrStreamSnapshot, SsmrTranscript, StreamKey,
+    },
     subblocks,
     utils::OptionFuture,
 };
@@ -245,37 +247,37 @@ struct Inner<TState> {
 }
 
 impl<TState> Inner<TState> {
-    async fn complete_ssmr_stream(&self, block: &Block) -> Option<SsmrCompleteStream> {
+    async fn ssmr_stream_snapshot(&self, block: &Block) -> Option<SsmrStreamSnapshot> {
         let key = ssmr_stream_key_for_block(block)?;
-        self.ssmr.as_ref()?.get_complete_stream(key).await
+        self.ssmr.as_ref()?.get_stream_snapshot(key).await
     }
 }
 
 impl Inner<Init> {
-    async fn wait_for_finalizing_ssmr_stream<TContext>(
+    async fn wait_for_started_ssmr_stream<TContext>(
         &self,
         context: &TContext,
         block: &Block,
-        mut stream: SsmrCompleteStream,
-    ) -> SsmrCompleteStream
+        mut snapshot: SsmrStreamSnapshot,
+    ) -> Option<SsmrCompleteStream>
     where
         TContext: commonware_runtime::Clock,
     {
-        if stream.optimistic_payload.is_some() || !stream.optimistic_execution_finalizing {
-            return stream;
+        if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
+            return snapshot.complete;
         }
 
         for _ in 0..5 {
             context.sleep(Duration::from_millis(10)).await;
-            let Some(updated) = self.complete_ssmr_stream(block).await else {
-                return stream;
+            let Some(updated) = self.ssmr_stream_snapshot(block).await else {
+                return snapshot.complete;
             };
-            stream = updated;
-            if stream.optimistic_payload.is_some() || !stream.optimistic_execution_finalizing {
+            snapshot = updated;
+            if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
                 break;
             }
         }
-        stream
+        snapshot.complete
     }
 
     #[instrument(
@@ -902,51 +904,64 @@ impl Inner<Init> {
         }
 
         let mut optimistic_payload = None;
-        if let Some(stream) = self.complete_ssmr_stream(&block).await {
-            let stream = self
-                .wait_for_finalizing_ssmr_stream(&context, &block, stream)
-                .await;
-            match reconcile_ssmr_transcript(&block, &stream.transcript) {
-                Ok(true) => {
-                    self.metrics.ssmr_final_reconciliations.inc();
-                    if let Some(payload) = stream
-                        .optimistic_payload
-                        .filter(|payload| reconcile_ssmr_optimistic_payload(&block, payload))
-                    {
-                        optimistic_payload = Some(payload);
-                        debug!(
-                            block.digest = %block.digest(),
-                            block.height = %block.height(),
-                            "final proposal matches complete SSMR transcript and optimistic artifact"
-                        );
-                    } else {
+        if let Some(snapshot) = self.ssmr_stream_snapshot(&block).await {
+            let stream_started = snapshot.started;
+            if let Some(stream) = self
+                .wait_for_started_ssmr_stream(&context, &block, snapshot)
+                .await
+            {
+                match reconcile_ssmr_transcript(&block, &stream.transcript) {
+                    Ok(true) => {
+                        self.metrics.ssmr_final_reconciliations.inc();
+                        if let Some(payload) = stream
+                            .optimistic_payload
+                            .filter(|payload| reconcile_ssmr_optimistic_payload(&block, payload))
+                        {
+                            optimistic_payload = Some(payload);
+                            debug!(
+                                block.digest = %block.digest(),
+                                block.height = %block.height(),
+                                "final proposal matches complete SSMR transcript and optimistic artifact"
+                            );
+                        } else {
+                            self.metrics.ssmr_fallback_validation_count.inc();
+                            debug!(
+                                block.digest = %block.digest(),
+                                block.height = %block.height(),
+                                optimistic.finalizing = stream.optimistic_execution_finalizing,
+                                "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
+                            );
+                        }
+                    }
+                    Ok(false) => {
+                        self.metrics.ssmr_final_reconciliation_mismatches.inc();
                         self.metrics.ssmr_fallback_validation_count.inc();
-                        debug!(
+                        warn!(
                             block.digest = %block.digest(),
                             block.height = %block.height(),
-                            "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
+                            "complete SSMR transcript did not match final proposal; falling back to normal validation"
+                        );
+                    }
+                    Err(error) => {
+                        self.metrics.ssmr_final_reconciliation_mismatches.inc();
+                        self.metrics.ssmr_fallback_validation_count.inc();
+                        warn!(
+                            %error,
+                            block.digest = %block.digest(),
+                            block.height = %block.height(),
+                            "failed reconciling SSMR transcript; falling back to normal validation"
                         );
                     }
                 }
-                Ok(false) => {
-                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
-                    self.metrics.ssmr_fallback_validation_count.inc();
-                    warn!(
-                        block.digest = %block.digest(),
-                        block.height = %block.height(),
-                        "complete SSMR transcript did not match final proposal; falling back to normal validation"
-                    );
-                }
-                Err(error) => {
-                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
-                    self.metrics.ssmr_fallback_validation_count.inc();
-                    warn!(
-                        %error,
-                        block.digest = %block.digest(),
-                        block.height = %block.height(),
-                        "failed reconciling SSMR transcript; falling back to normal validation"
-                    );
-                }
+            } else {
+                self.metrics.ssmr_missing_shards_at_proposal.inc();
+                self.metrics.ssmr_fallback_validation_count.inc();
+                debug!(
+                    block.digest = %block.digest(),
+                    block.height = %block.height(),
+                    stream.started = stream_started,
+                    "SSMR stream has no optimistic artifact at proposal; using normal validation"
+                );
             }
         } else {
             self.metrics.ssmr_missing_shards_at_proposal.inc();
@@ -954,7 +969,7 @@ impl Inner<Init> {
             debug!(
                 block.digest = %block.digest(),
                 block.height = %block.height(),
-                "no complete SSMR transcript for proposal; using normal validation"
+                "no SSMR stream for proposal; using normal validation"
             );
         }
 
@@ -1212,6 +1227,17 @@ fn reconcile_ssmr_transcript(block: &Block, transcript: &SsmrTranscript) -> eyre
 
 fn reconcile_ssmr_optimistic_payload(block: &Block, payload: &TempoBuiltPayload) -> bool {
     payload.block() == block.block() && payload.block_access_list() == block.block_access_list()
+}
+
+fn ssmr_snapshot_waiting_for_optimistic_payload(snapshot: &SsmrStreamSnapshot) -> bool {
+    if !snapshot.started {
+        return false;
+    }
+
+    match snapshot.complete.as_ref() {
+        Some(stream) => stream.optimistic_payload.is_none(),
+        None => true,
+    }
 }
 
 #[instrument(skip_all, err(Display))]
