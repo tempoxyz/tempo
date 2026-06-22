@@ -406,6 +406,52 @@ mod tests {
     }
 
     #[test]
+    fn test_evict_timed_out() {
+        use std::time::Duration;
+
+        let mut pool = PausedFeeTokenPool::new();
+
+        // A token paused longer ago than the timeout should be evicted wholesale.
+        let stale_token = Address::random();
+        let stale_at = Instant::now()
+            .checked_sub(PAUSED_TX_TIMEOUT + Duration::from_secs(1))
+            .expect("monotonic clock has enough history for the test");
+        pool.by_token.insert(
+            stale_token,
+            PausedTokenMeta {
+                paused_at: stale_at,
+                entries: vec![
+                    PausedEntry {
+                        tx: create_valid_tx(Address::random()),
+                        valid_before: None,
+                    },
+                    PausedEntry {
+                        tx: create_valid_tx(Address::random()),
+                        valid_before: None,
+                    },
+                ],
+            },
+        );
+
+        // A freshly paused token is within the timeout and must be retained.
+        let fresh_token = Address::random();
+        pool.insert_batch(
+            fresh_token,
+            vec![PausedEntry {
+                tx: create_valid_tx(Address::random()),
+                valid_before: None,
+            }],
+        );
+
+        let removed = pool.evict_timed_out();
+
+        assert_eq!(removed, 2, "both stale entries should be evicted");
+        assert_eq!(pool.count_for_token(&stale_token), 0);
+        assert_eq!(pool.count_for_token(&fresh_token), 1);
+        assert!(!pool.is_empty());
+    }
+
+    #[test]
     fn test_global_cap_evicts_oldest() {
         let mut pool = PausedFeeTokenPool::new();
 
