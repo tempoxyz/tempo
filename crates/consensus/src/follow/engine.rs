@@ -105,7 +105,9 @@ impl<TUpstream> Config<TUpstream> {
         let alias::marshal::Initialized {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
-            last_finalized_height,
+            finalized_tip,
+            finalized_backfill_start,
+            latest_observed_finalized_tip,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref,
@@ -123,12 +125,8 @@ impl<TUpstream> Config<TUpstream> {
         .await
         .wrap_err("failed to initialize marshal")?;
 
-        info_span!("follow_engine").in_scope(|| {
-            info!(
-                last_finalized_height = last_finalized_height.get(),
-                "initialized marshal"
-            )
-        });
+        info_span!("follow_engine")
+            .in_scope(|| info!(finalized_tip = finalized_tip.get(), "initialized marshal"));
 
         let (resolver, resolver_mailbox, resolver_rx) = resolver::try_init(
             context.with_label("resolver"),
@@ -151,7 +149,9 @@ impl<TUpstream> Config<TUpstream> {
             context.with_label("executor"),
             executor::Config {
                 execution_node: self.execution_node.clone(),
-                last_finalized_height,
+                finalized_tip,
+                finalized_backfill_start,
+                latest_observed_finalized_tip: Some(latest_observed_finalized_tip),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: None,
@@ -168,7 +168,7 @@ impl<TUpstream> Config<TUpstream> {
                 execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
-                last_finalized_height,
+                last_finalized_height: finalized_tip,
                 marshal: marshal_mailbox,
                 feed: feed_mailbox,
                 epoch_strategy: epoch_strategy.clone(),

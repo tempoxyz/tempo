@@ -143,7 +143,9 @@ where
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
-            last_finalized_height,
+            finalized_tip,
+            finalized_backfill_start,
+            latest_observed_finalized_tip,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref.clone(),
@@ -168,7 +170,9 @@ where
             context.with_label("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
-                last_finalized_height,
+                finalized_tip,
+                finalized_backfill_start,
+                latest_observed_finalized_tip: Some(latest_observed_finalized_tip),
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
@@ -182,7 +186,7 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                last_finalized_height,
+                last_finalized_height: finalized_tip,
             },
         );
 

@@ -14,6 +14,8 @@ use futures::channel::mpsc;
 pub(crate) use ingress::Mailbox;
 use tempo_node::TempoFullNode;
 
+use crate::consensus::Digest;
+
 pub(crate) fn init<TContext>(
     context: TContext,
     config: Config,
@@ -32,11 +34,17 @@ pub(crate) struct Config {
     /// and to update the canonical chain by sending forkchoice updates.
     pub(crate) execution_node: Arc<TempoFullNode>,
 
-    /// The last finalized height according to the consensus layer.
+    /// The known finalized tip according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the
-    /// consensus, then the node will fill the gap by backfilling blocks to
-    /// the execution layer until `last_finalized_height` is reached.
-    pub(crate) last_finalized_height: Height,
+    /// consensus layer, the node will fill the gap by backfilling blocks to
+    /// the execution layer until `finalized_tip` is reached.
+    pub(crate) finalized_tip: Height,
+
+    /// The local consensus height after which startup backfill should resume.
+    pub(crate) finalized_backfill_start: Height,
+
+    /// The finalized tip known at startup, if any.
+    pub(crate) latest_observed_finalized_tip: Option<(Height, Digest)>,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: crate::alias::marshal::Mailbox,

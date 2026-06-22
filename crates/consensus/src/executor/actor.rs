@@ -104,7 +104,8 @@ pub(crate) struct Actor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: Arc<TempoFullNode>,
 
-    last_consensus_finalized_height: Height,
+    finalized_tip: Height,
+    finalized_backfill_start: Height,
     last_execution_finalized_height: Height,
 
     /// The channel over which the agent will receive new commands from the
@@ -189,7 +190,9 @@ where
     ) -> eyre::Result<Self> {
         let Config {
             execution_node,
-            last_finalized_height,
+            finalized_tip,
+            finalized_backfill_start,
+            latest_observed_finalized_tip,
             marshal,
             fcu_heartbeat_interval,
             public_key,
@@ -203,12 +206,13 @@ where
 
         let fcu_heartbeat_timer = OptionFuture::some(context.sleep(fcu_heartbeat_interval).boxed());
         let last_execution_finalized_height = Height::new(finalized_num_hash.number);
-        let finalized_heights_to_backfill =
-            (last_execution_finalized_height.get() + 1)..=last_finalized_height.get();
+        let backfill_floor = last_execution_finalized_height.max(finalized_backfill_start);
+        let finalized_heights_to_backfill = (backfill_floor.get() + 1)..=finalized_tip.get();
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
-            last_consensus_finalized_height: last_finalized_height,
+            finalized_tip,
+            finalized_backfill_start,
             last_execution_finalized_height,
             mailbox,
             marshal,
@@ -230,7 +234,7 @@ where
             execution_task: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
-            latest_observed_finalized_tip: None,
+            latest_observed_finalized_tip,
 
             public_key,
             metrics,
@@ -244,9 +248,10 @@ where
     async fn run(mut self) {
         info_span!("start").in_scope(|| {
             info!(
-                last_finalized_consensus_height = %self.last_consensus_finalized_height,
+                finalized_tip = %self.finalized_tip,
+                finalized_backfill_start = %self.finalized_backfill_start,
                 last_finalized_execution_height = %self.last_execution_finalized_height,
-                "consensus and execution layers reported last finalized heights; \
+                "consensus layer reported finalized tip and startup backfill start; \
                 backfilling blocks from consensus to execution if necessary",
             );
         });
