@@ -37,7 +37,7 @@ templates:
     from:
       pool: users
       select: random
-    gas_limit: 3000000
+    gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
