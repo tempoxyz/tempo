@@ -1,0 +1,41 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+templates:
+  keychain_auth_noop:
+    type: tempo
+    auth:
+      mode: key_authorization
+      access_key:
+        derive: per_tx
+      key_type: secp256k1
+      limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
+      allowed_calls:
+        - target: "0x0000000000000000000000000000000000000000"
+          selectors: []
+      witness:
+        random_bytes: 32
+    from:
+      pool: users
+      select: random
+    gas_limit: 3000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    to: "0x0000000000000000000000000000000000000000"
+
+mix:
+  - template: keychain_auth_noop
+    weight: 100
