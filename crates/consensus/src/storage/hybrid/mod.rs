@@ -174,10 +174,10 @@ where
         // `Canonical` (not `Any`) so the marshal can never be served a
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
-        match self.find_block_by_hash(hash, BlockSource::Canonical) {
-            Ok(maybe_block) => Ok(maybe_block.map(|block| {
-                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-            })),
+        match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
+            Ok(maybe_block) => {
+                Ok(maybe_block.map(|block| Block::from_execution_block_unchecked(block, None)))
+            }
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)

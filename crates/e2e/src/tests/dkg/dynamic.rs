@@ -3,15 +3,12 @@ use std::time::Duration;
 use alloy::transports::http::reqwest::Url;
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _,
+    Clock as _, Runner as _,
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, setup_validators,
-    tests::dkg::common::{assert_no_dkg_failure, target_epoch},
-};
+use crate::{Setup, metrics::MetricsExt, setup_validators, tests::dkg::common::target_epoch};
 
 #[test_traced]
 fn validator_is_added_to_a_set_of_two() {
@@ -73,20 +70,13 @@ impl AssertValidatorIsAdded {
         executor.start(|mut context| async move {
             let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
-            let added_uid = validators
-                .iter()
-                .find(|v| v.is_verifier())
-                .unwrap()
-                .uid
-                .clone();
+            let added_index = validators.iter().position(|v| v.is_verifier()).unwrap();
+            let signer_index = validators.iter().position(|v| v.is_signer()).unwrap();
             join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
-            let http_url = validators
-                .iter()
-                .find(|v| v.is_signer())
-                .unwrap()
+            let http_url = validators[signer_index]
                 .execution()
                 .rpc_server_handle()
                 .http_url()
@@ -95,10 +85,7 @@ impl AssertValidatorIsAdded {
                 .unwrap();
 
             let receipt = execution_runtime
-                .add_validator_v2(
-                    http_url.clone(),
-                    validators.iter().find(|v| v.is_verifier()).unwrap(),
-                )
+                .add_validator_v2(http_url.clone(), &validators[added_index])
                 .await
                 .unwrap();
 
@@ -113,58 +100,27 @@ impl AssertValidatorIsAdded {
             'becomes_signer: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut added_epoch = None;
-                let mut added_signer= None;
-                let mut dealers = None;
-                let mut network_epoch = None;
-                let mut players = None;
+                let metrics = context.to_metrics();
+                metrics.assert_no_dkg_failures();
 
-                for line in context.encode().lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue;
-                    }
+                let added_metrics = metrics.for_scope(&validators[added_index]);
+                let network_metrics = metrics.for_scope(&validators[signer_index]);
 
-                    let mut parts = line.split_whitespace();
-                    let key = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-
-                    assert_no_dkg_failure(key, value);
-
-                    if key.ends_with("_epoch_manager_latest_epoch")
-                    {
-                        let epoch = value.parse::<u64>().unwrap();
-                        if key.contains(&added_uid) {
-                            added_epoch.replace(epoch);
-                        } else {
-                            network_epoch.replace(epoch);
-                        }
-                    }
-
-                    if key.ends_with("_dkg_manager_ceremony_players")
-                    && key.contains(&added_uid)
-                    {
-                        players.replace(value.parse::<u32>().unwrap());
-                    }
-                    if key.ends_with("_dkg_manager_ceremony_dealers")
-                    && key.contains(&added_uid)
-                    {
-                        dealers.replace(value.parse::<u32>().unwrap());
-                    }
-                    if key.ends_with("_epoch_manager_how_often_signer_total")
-                    && key.contains(&added_uid) {
-                        added_signer.replace(value.parse::<u64>().unwrap());
-                    }
-                }
-
-                let added_epoch = added_epoch.unwrap();
-                let added_signer = added_signer.unwrap();
-                let dealers = dealers.unwrap();
-                let network_epoch = network_epoch.unwrap();
-                let players = players.unwrap();
+                let added_epoch = added_metrics.latest_consensus_epoch().unwrap();
+                let added_signer = added_metrics
+                    .value::<u64>("_epoch_manager_how_often_signer_total")
+                    .unwrap();
+                let dealers = added_metrics
+                    .value::<u64>("_dkg_manager_ceremony_dealers")
+                    .unwrap() as u32;
+                let network_epoch = network_metrics.latest_consensus_epoch().unwrap();
+                let players = added_metrics
+                    .value::<u64>("_dkg_manager_ceremony_players")
+                    .unwrap() as u32;
 
                 if added_epoch >= player_epoch.get() && added_epoch < dealer_epoch.get() {
-                        assert_eq!(how_many_initial + 1, players);
-                        assert_eq!(how_many_initial, dealers);
+                    assert_eq!(how_many_initial + 1, players);
+                    assert_eq!(how_many_initial, dealers);
                 }
 
                 if added_epoch >= dealer_epoch.get() {
@@ -241,41 +197,17 @@ impl AssertValidatorIsRemoved {
             'is_removed: loop {
                 context.sleep(Duration::from_secs(1)).await;
 
-                let mut dealers = None;
-                let mut network_epoch = None;
-                let mut players = None;
-                for line in context.encode().lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue;
-                    }
+                let metrics = context.to_metrics();
+                metrics.assert_no_dkg_failures();
 
-                    let mut parts = line.split_whitespace();
-                    let key = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-
-                    assert_no_dkg_failure(key, value);
-
-                    if key.ends_with("_epoch_manager_latest_epoch")
-                        && !key.contains(&removed_validator.uid)
-                    {
-                        network_epoch.replace(value.parse::<u64>().unwrap());
-                    }
-
-                    if key.ends_with("_dkg_manager_ceremony_players")
-                        && !key.contains(&removed_validator.uid)
-                    {
-                        players.replace(value.parse::<u32>().unwrap());
-                    }
-                    if key.ends_with("_dkg_manager_ceremony_dealers")
-                        && !key.contains(&removed_validator.uid)
-                    {
-                        dealers.replace(value.parse::<u32>().unwrap());
-                    }
-                }
-
-                let dealers = dealers.unwrap();
-                let network_epoch = network_epoch.unwrap();
-                let players = players.unwrap();
+                let network_metrics = metrics.for_scope(&validators[0]);
+                let dealers = network_metrics
+                    .value::<u64>("_dkg_manager_ceremony_dealers")
+                    .unwrap() as u32;
+                let network_epoch = network_metrics.latest_consensus_epoch().unwrap();
+                let players = network_metrics
+                    .value::<u64>("_dkg_manager_ceremony_players")
+                    .unwrap() as u32;
                 if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
                     assert_eq!(how_many_initial - 1, players);
                     assert_eq!(how_many_initial, dealers);

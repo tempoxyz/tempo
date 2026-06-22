@@ -80,6 +80,12 @@ pub trait StorageCreditsBackend {
     fn is_non_creditable_slot(&mut self, _owner: Address, _key: U256) -> bool {
         false
     }
+
+    /// Returns whether x→0 storage clears should mint a persistent storage credit.
+    #[inline]
+    fn tip1060_storage_credit_minting_enabled(&self) -> bool {
+        true
+    }
 }
 
 #[inline]
@@ -142,8 +148,10 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
         }
 
         // x→0: storage deletion mints a new credit on regular slots.
-        credit = credit.saturating_add(1);
-        was_changed = true;
+        if backend.tip1060_storage_credit_minting_enabled() {
+            credit = credit.saturating_add(1);
+            was_changed = true;
+        }
     } else {
         // 0→x: storage creation.
         // This hook manages the 245k creditable gas, independent of the original value.

@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   tempo-bench-ack:
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '@decofe bench') || startsWith(github.event.comment.body, 'derek bench'))
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
     name: tempo-bench-ack
     runs-on: ubuntu-latest
     outputs:
@@ -71,8 +71,17 @@ jobs:
       pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
       pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
+      - name: Detect bench command
+        id: command
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const body = context.payload.comment.body.trim();
+            const isBenchCommand = body.startsWith('@decofe bench') || body.startsWith('derek bench');
+            core.setOutput('is-bench-command', String(isBenchCommand));
+
       - name: Check org membership
-        if: github.event_name == 'issue_comment'
+        if: steps.command.outputs.is-bench-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_BENCH_ACK_TOKEN }}
@@ -105,6 +114,7 @@ jobs:
 
       - name: Parse arguments
         id: args
+        if: steps.command.outputs.is-bench-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
@@ -115,6 +125,7 @@ jobs:
             let explicitWarmup = false;
             let explicitDuration = false;
             let explicitRunPairs = false;
+            let explicitTracyOffset = false;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
@@ -122,11 +133,11 @@ jobs:
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
-            const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics']);
+            const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
+            const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics']);
             const bloatValues = new Set(['1', '10', '100']);
             const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6']);
-            const defaults = { mode: 'e2e', preset: 'tip20_existing_recipients', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'true', valscope: 'false', metrics: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -181,6 +192,7 @@ jobs:
                   if (key === 'warmup') explicitWarmup = true;
                   if (key === 'duration') explicitDuration = true;
                   if (key === 'run-pairs') explicitRunPairs = true;
+                  if (key === 'tracy-offset') explicitTracyOffset = true;
                 }
               } else if (refArgs.has(key)) {
                 if (!value) {
@@ -208,7 +220,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -234,7 +246,7 @@ jobs:
             featureFeatures = defaults['feature-features'];
             txgenRef = defaults['txgen-ref'];
             samply = defaults.samply;
-            tracy = defaults.tracy;
+            tracy = defaults.tracy === 'true' ? 'tracy' : 'off';
             tracySeconds = defaults['tracy-seconds'];
             tracyOffset = defaults['tracy-offset'];
             otlp = defaults.otlp;
@@ -262,8 +274,11 @@ jobs:
             if (!explicitWarmup) {
               warmup = defaultWarmup(blocks);
             }
+            if (!explicitTracyOffset) {
+              tracyOffset = String(Math.floor(Number(duration) / 2));
+            }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [otlp] [valscope] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [token-count=N] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [baseline-features="FEATURES"] [feature-features="FEATURES"] [txgen-ref=REF] [samply] [tracy] [otlp] [metrics[=true|false]] [valscope] [force-bloat] [no-cache] [no-slack] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -331,8 +346,8 @@ jobs:
             }
 
             // Validate tracy value
-            if (!['off', 'on', 'full'].includes(tracy)) {
-              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\`, \`on\`, or \`full\`.\n\n${usageStr}`;
+            if (!['off', 'tracy'].includes(tracy)) {
+              const msg = `❌ **Invalid bench command**\n\n\`tracy=${tracy}\` is not valid. Must be \`off\` or \`tracy\`.\n\n${usageStr}`;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -431,6 +446,7 @@ jobs:
 
       - name: Acknowledge request
         id: ack
+        if: steps.command.outputs.is-bench-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ACK_PR: ${{ steps.args.outputs.pr }}
