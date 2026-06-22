@@ -170,7 +170,12 @@ pub fn tempo_precompiles(
         SpecId::PRAGUE
     };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
-    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
+    extend_tempo_precompiles_with_non_creditable_slots(
+        &mut precompiles,
+        cfg,
+        actions,
+        non_creditable_slots,
+    );
     precompiles
 }
 
@@ -180,6 +185,21 @@ pub fn tempo_precompiles(
 /// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
 pub fn extend_tempo_precompiles(
+    precompiles: &mut PrecompilesMap,
+    cfg: &CfgEnv<TempoHardfork>,
+    actions: StorageActions,
+) {
+    extend_tempo_precompiles_with_non_creditable_slots(
+        precompiles,
+        cfg,
+        actions,
+        Rc::new(RefCell::new(NonCreditableSlots::empty())),
+    );
+}
+
+/// Registers Tempo-specific precompiles with shared transaction-local non-creditable storage slot
+/// state.
+pub fn extend_tempo_precompiles_with_non_creditable_slots(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
