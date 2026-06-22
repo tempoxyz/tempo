@@ -75,19 +75,13 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
-use std::sync::Arc;
-
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Storage,
-    telemetry::metrics::histogram::{self, Timed},
-};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
 use commonware_storage::{
     archive::{self, Identifier, prunable},
     translator::TwoCap,
 };
-use prometheus_client::metrics::histogram::Histogram;
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{
     BlockReader, BlockSource, ProviderError, ProviderResult,
@@ -96,6 +90,8 @@ use reth_provider::{
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
+
+use super::measured::OperationDurations;
 
 #[cfg(test)]
 mod test;
@@ -274,7 +270,7 @@ where
             prunable,
             execution_block_provider: provider,
             retention_blocks,
-            durations: OperationDurations::init(metrics_context),
+            durations: OperationDurations::init(metrics_context, "marshal finalized block store"),
         }
     }
 
@@ -431,50 +427,5 @@ where
         // EL here would mask gaps the marshal needs to fill via the
         // resolver.
         archive::Archive::last_index(&self.prunable).map(Height::new)
-    }
-}
-
-/// Duration histograms for marshal-facing finalized block store calls.
-struct OperationDurations<TContext>
-where
-    TContext: Clock,
-{
-    put: Timed<TContext>,
-    sync: Timed<TContext>,
-    prune: Timed<TContext>,
-}
-
-impl<TContext> OperationDurations<TContext>
-where
-    TContext: Clock + Metrics,
-{
-    fn init(context: TContext) -> Self {
-        let put = Histogram::new(histogram::Buckets::LOCAL);
-        context.register(
-            "put_duration",
-            "Histogram of marshal finalized block store put calls, in seconds",
-            put.clone(),
-        );
-
-        let sync = Histogram::new(histogram::Buckets::LOCAL);
-        context.register(
-            "sync_duration",
-            "Histogram of marshal finalized block store sync calls, in seconds",
-            sync.clone(),
-        );
-
-        let prune = Histogram::new(histogram::Buckets::LOCAL);
-        context.register(
-            "prune_duration",
-            "Histogram of marshal finalized block store prune calls, in seconds",
-            prune.clone(),
-        );
-
-        let clock = Arc::new(context);
-        Self {
-            put: Timed::new(put, Arc::clone(&clock)),
-            sync: Timed::new(sync, Arc::clone(&clock)),
-            prune: Timed::new(prune, clock),
-        }
     }
 }

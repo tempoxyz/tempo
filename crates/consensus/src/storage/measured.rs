@@ -1,4 +1,4 @@
-//! Tempo-side metrics wrappers for certificate stores passed to Commonware marshal.
+//! Tempo-side metrics helpers for stores passed to Commonware marshal.
 
 use std::sync::Arc;
 
@@ -13,23 +13,20 @@ use commonware_storage::archive::Identifier;
 use prometheus_client::metrics::histogram::Histogram;
 
 /// Duration histograms for one marshal store.
-struct OperationDurations<TContext>
+pub(in crate::storage) struct OperationDurations<TContext>
 where
     TContext: Clock,
 {
-    put: Timed<TContext>,
-    sync: Timed<TContext>,
-    prune: Timed<TContext>,
+    pub(in crate::storage) put: Timed<TContext>,
+    pub(in crate::storage) sync: Timed<TContext>,
+    pub(in crate::storage) prune: Timed<TContext>,
 }
 
 impl<TContext> OperationDurations<TContext>
 where
     TContext: Clock + RuntimeMetrics,
 {
-    fn init(context: TContext, store: &str) -> Self
-    where
-        TContext: RuntimeMetrics,
-    {
+    pub(in crate::storage) fn init(context: TContext, store: &str) -> Self {
         let put = Histogram::new(histogram::Buckets::LOCAL);
         context.register(
             "put_duration",
@@ -60,13 +57,49 @@ where
     }
 }
 
+/// Duration histograms for certificate store calls where only sync/prune matter.
+struct CertificateDurations<TContext>
+where
+    TContext: Clock,
+{
+    sync: Timed<TContext>,
+    prune: Timed<TContext>,
+}
+
+impl<TContext> CertificateDurations<TContext>
+where
+    TContext: Clock + RuntimeMetrics,
+{
+    fn init(context: TContext, store: &str) -> Self {
+        let sync = Histogram::new(histogram::Buckets::LOCAL);
+        context.register(
+            "sync_duration",
+            format!("Histogram of {store} sync calls, in seconds"),
+            sync.clone(),
+        );
+
+        let prune = Histogram::new(histogram::Buckets::LOCAL);
+        context.register(
+            "prune_duration",
+            format!("Histogram of {store} prune calls, in seconds"),
+            prune.clone(),
+        );
+
+        let clock = Arc::new(context);
+        Self {
+            sync: Timed::new(sync, Arc::clone(&clock)),
+            prune: Timed::new(prune, clock),
+        }
+    }
+}
+
 /// Measured wrapper for marshal finalization certificate stores.
 pub(crate) struct MeasuredCertificates<TContext, TStore>
 where
     TContext: Clock,
 {
     inner: TStore,
-    durations: OperationDurations<TContext>,
+    durations: CertificateDurations<TContext>,
 }
 
 impl<TContext, TStore> MeasuredCertificates<TContext, TStore>
@@ -80,7 +113,7 @@ where
     {
         Self {
             inner,
-            durations: OperationDurations::init(context, store),
+            durations: CertificateDurations::init(context, store),
         }
     }
 }
@@ -101,10 +134,7 @@ where
         digest: Self::BlockDigest,
         finalization: Finalization<Self::Scheme, Self::Commitment>,
     ) -> Result<(), Self::Error> {
-        let mut timer = self.durations.put.timer();
-        let result = self.inner.put(height, digest, finalization).await;
-        timer.observe();
-        result
+        self.inner.put(height, digest, finalization).await
     }
 
     async fn sync(&mut self) -> Result<(), Self::Error> {
