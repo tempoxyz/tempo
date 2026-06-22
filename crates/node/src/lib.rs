@@ -3,9 +3,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub use tempo_payload_builder::{
-    SsmrExecutedPayload, SsmrExecutionCommand, SsmrExecutionInput, execute_ssmr_payload_stream,
-};
 pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 

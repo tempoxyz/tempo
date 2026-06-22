@@ -36,17 +36,17 @@ use commonware_utils::SystemTimeExt;
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
-use reth_node_builder::ConsensusEngineHandle;
+use reth_node_builder::{BuiltPayload, ConsensusEngineHandle};
 use reth_primitives_traits::BlockBody as _;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{SsmrExecutedPayload, TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
-    marshal_persist_estimate, observe_marshal_persist,
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyEstimator,
+    ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -1106,7 +1106,7 @@ async fn verify_block<TContext: Pacer>(
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
-    optimistic_payload: Option<SsmrExecutedPayload>,
+    optimistic_payload: Option<TempoBuiltPayload>,
 ) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
@@ -1141,7 +1141,7 @@ async fn verify_block<TContext: Pacer>(
         block: block.execution_block().clone(),
         block_access_list: block.block_access_list().cloned(),
         validator_set,
-        executed_block: optimistic_payload.map(|payload| payload.executed_block),
+        executed_block: optimistic_payload.and_then(|payload| payload.executed_block()),
     };
     let validation_start = Instant::now();
     let payload_status = engine
@@ -1210,9 +1210,8 @@ fn reconcile_ssmr_transcript(block: &Block, transcript: &SsmrTranscript) -> eyre
     Ok(true)
 }
 
-fn reconcile_ssmr_optimistic_payload(block: &Block, payload: &SsmrExecutedPayload) -> bool {
-    payload.executed_block.recovered_block.sealed_block() == block.block()
-        && payload.block_access_list.as_ref() == block.block_access_list()
+fn reconcile_ssmr_optimistic_payload(block: &Block, payload: &TempoBuiltPayload) -> bool {
+    payload.block() == block.block() && payload.block_access_list() == block.block_access_list()
 }
 
 #[instrument(skip_all, err(Display))]

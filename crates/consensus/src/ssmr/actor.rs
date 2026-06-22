@@ -4,25 +4,23 @@ use std::{
 };
 
 use alloy_primitives::{B256, Bytes};
-use commonware_consensus::types::Epoch;
+use commonware_consensus::types::{Epoch, Height};
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::IoBuf;
-use eyre::{OptionExt as _, WrapErr as _};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
 use prometheus_client::metrics::counter::Counter;
-use reth_provider::HeaderProvider as _;
-use tempo_node::{
-    SsmrExecutedPayload, SsmrExecutionCommand, SsmrExecutionInput, TempoFullNode,
-    execute_ssmr_payload_stream,
+use tempo_node::TempoFullNode;
+use tempo_payload_types::{
+    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplaySender, SsmrReplaySource,
+    TempoBuiltPayload, TempoPayloadAttributes,
 };
-use tempo_payload_types::{SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink};
 use tracing::{Level, debug, instrument, warn};
 
-use crate::{epoch::SchemeProvider, utils::public_key_to_tempo_primitive};
+use crate::{consensus::Digest, epoch::SchemeProvider, utils::public_key_to_tempo_primitive};
 
 use super::{
     SsmrCompleteStream, SsmrEnd, SsmrError, SsmrFlags, SsmrMessage, SsmrShardPayload, SsmrStart,
@@ -35,6 +33,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) public_key: PublicKey,
     pub(crate) scheme_provider: SchemeProvider,
     pub(crate) node: Arc<TempoFullNode>,
+    pub(crate) executor: crate::executor::Mailbox,
     pub(crate) shard_target_bytes: usize,
     pub(crate) max_inflight_streams: usize,
     pub(crate) max_buffered_bytes: usize,
@@ -112,6 +111,7 @@ pub(crate) struct Actor {
     actions_rx: mpsc::UnboundedReceiver<Message>,
     streams: HashMap<StreamKey, StreamBuffer>,
     node: Arc<TempoFullNode>,
+    executor: crate::executor::Mailbox,
     buffered_bytes: usize,
     shard_target_bytes: usize,
     max_inflight_streams: usize,
@@ -126,6 +126,7 @@ impl Actor {
             public_key,
             scheme_provider,
             node,
+            executor,
             shard_target_bytes,
             max_inflight_streams,
             max_buffered_bytes,
@@ -142,6 +143,7 @@ impl Actor {
             actions_rx,
             streams: HashMap::new(),
             node,
+            executor,
             buffered_bytes: 0,
             shard_target_bytes,
             max_inflight_streams,
@@ -362,21 +364,26 @@ impl Actor {
             .map(|transcript| transcript.start().clone());
 
         if let Some(start) = maybe_start {
-            match ssmr_execution_input(&self.node, &start) {
-                Ok(input) => {
-                    let (command_tx, command_rx) = std::sync::mpsc::channel();
+            let (replay_tx, replay_source) = SsmrReplaySource::channel();
+            let attrs = ssmr_replay_attributes(&start, replay_source);
+            match self.executor.canonicalize_and_build(
+                Height::new(start.parent_height),
+                Digest(start.stream_key.parent_hash),
+                attrs,
+            ) {
+                Ok(payload_rx) => {
                     let mut should_spawn = false;
                     if let Some(stream) = self.streams.get_mut(&key)
                         && stream.optimistic_execution.is_none()
                     {
                         stream.optimistic_execution = Some(OptimisticExecutionState {
-                            tx: command_tx,
+                            tx: replay_tx,
                             finalizing: false,
                         });
                         should_spawn = true;
                     }
                     if should_spawn {
-                        self.spawn_optimistic_execution(key, input, command_rx);
+                        self.spawn_optimistic_execution(key, payload_rx);
                     }
                 }
                 Err(error) => {
@@ -404,9 +411,7 @@ impl Actor {
             let mut commands = Vec::new();
 
             while let Some(shard) = transcript.shard(stream.next_execution_shard) {
-                commands.push(SsmrExecutionCommand::Shard {
-                    transactions: shard.transactions.clone(),
-                });
+                commands.push(ReplaySend::Shard(shard.transactions.clone()));
                 stream.next_execution_shard += 1;
             }
 
@@ -415,7 +420,7 @@ impl Actor {
                 && stream.next_execution_shard == transcript.shard_count()
             {
                 execution.finalizing = true;
-                commands.push(SsmrExecutionCommand::Finish);
+                commands.push(ReplaySend::Finish);
             }
 
             (!commands.is_empty()).then(|| (execution.tx.clone(), commands))
@@ -424,7 +429,11 @@ impl Actor {
         };
 
         for command in commands {
-            if tx.send(command).is_err() {
+            let sent = match command {
+                ReplaySend::Shard(transactions) => tx.send_shard(transactions),
+                ReplaySend::Finish => tx.finish(),
+            };
+            if !sent {
                 self.metrics.optimistic_payload_failures.inc();
                 if let Some(stream) = self.streams.get_mut(&key) {
                     stream.optimistic_execution = None;
@@ -443,51 +452,39 @@ impl Actor {
     fn spawn_optimistic_execution(
         &self,
         key: StreamKey,
-        input: SsmrExecutionInput,
-        commands: std::sync::mpsc::Receiver<SsmrExecutionCommand>,
+        payload_rx: oneshot::Receiver<TempoBuiltPayload>,
     ) {
-        let node = self.node.clone();
         let tx = self.actions_tx.clone();
         let metrics = self.metrics.clone();
+        let build_start = std::time::Instant::now();
         self.node
             .task_executor
-            .spawn_blocking_named("ssmr-optimistic-execution", move || {
-                let payload = execute_ssmr_payload_stream(
-                    node.provider.clone(),
-                    node.task_executor.clone(),
-                    node.evm_config.clone(),
-                    input,
-                    commands,
-                )
-                .map_err(|error| error.to_string());
-                if let Ok(payload) = &payload {
+            .spawn_critical_task("ssmr-replay-payload", async move {
+                let payload = payload_rx.await.map_err(|error| error.to_string());
+                if payload.is_ok() {
                     metrics.optimistic_payloads_ready.inc();
                     metrics
                         .optimistic_execution_millis_total
-                        .inc_by(payload.execution_duration.as_millis() as u64);
+                        .inc_by(build_start.elapsed().as_millis() as u64);
                 }
                 let _ = tx.unbounded_send(Message::OptimisticPayloadReady { key, payload });
             });
     }
 }
 
-fn ssmr_execution_input(
-    node: &TempoFullNode,
+fn ssmr_replay_attributes(
     start: &SsmrStart,
-) -> eyre::Result<SsmrExecutionInput> {
-    let parent_header = node
-        .provider
-        .sealed_header_by_hash(start.stream_key.parent_hash)
-        .wrap_err("failed loading SSMR parent header")?
-        .ok_or_eyre("SSMR parent header is unavailable")?;
-    Ok(SsmrExecutionInput {
-        parent_header,
-        proposer_public_key: Some(B256::from(&start.proposer)),
-        timestamp: start.stream_key.timestamp,
-        timestamp_millis_part: start.stream_key.timestamp_millis_part,
-        extra_data: start.extra_data.clone(),
-        consensus_context: Some(start.stream_key.consensus_context),
-    })
+    replay_source: SsmrReplaySource,
+) -> TempoPayloadAttributes {
+    TempoPayloadAttributes::new(
+        Some(B256::from(&start.proposer)),
+        start.stream_key.timestamp,
+        start.stream_key.timestamp_millis_part,
+        start.extra_data.clone(),
+        Some(start.stream_key.consensus_context),
+        Vec::new,
+    )
+    .with_ssmr_replay_source(replay_source)
 }
 
 /// Handle to the SSMR actor.
@@ -532,7 +529,7 @@ enum Message {
     },
     OptimisticPayloadReady {
         key: StreamKey,
-        payload: Result<SsmrExecutedPayload, String>,
+        payload: Result<TempoBuiltPayload, String>,
     },
 }
 
@@ -542,15 +539,20 @@ struct StreamBuffer {
     pending_shards: BTreeMap<u64, SsmrTxShard>,
     pending_end: Option<SsmrEnd>,
     optimistic_execution: Option<OptimisticExecutionState>,
-    optimistic_payload: Option<SsmrExecutedPayload>,
+    optimistic_payload: Option<TempoBuiltPayload>,
     optimistic_failed: bool,
     next_execution_shard: u64,
     buffered_bytes: usize,
 }
 
 struct OptimisticExecutionState {
-    tx: std::sync::mpsc::Sender<SsmrExecutionCommand>,
+    tx: SsmrReplaySender,
     finalizing: bool,
+}
+
+enum ReplaySend {
+    Shard(Vec<Bytes>),
+    Finish,
 }
 
 impl StreamBuffer {

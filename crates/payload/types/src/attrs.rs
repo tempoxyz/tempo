@@ -5,7 +5,10 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
 /// Builder-side SSMR shard event.
@@ -39,6 +42,70 @@ pub enum SsmrBuilderEvent {
 
 /// Nonblocking sink for SSMR builder events.
 pub type SsmrBuilderSink = Arc<dyn Fn(SsmrBuilderEvent) + Send + Sync + 'static>;
+
+/// Ordered SSMR replay command consumed by the payload builder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsmrReplayCommand {
+    /// Next in-order tx-only shard.
+    Shard {
+        /// EIP-2718 encoded transactions in final block order.
+        transactions: Vec<Bytes>,
+    },
+    /// No more shards will be sent; finish and assemble the replayed payload.
+    Finish,
+}
+
+/// Sender side for an SSMR replay transaction stream.
+#[derive(Clone)]
+pub struct SsmrReplaySender {
+    tx: mpsc::Sender<SsmrReplayCommand>,
+}
+
+impl SsmrReplaySender {
+    /// Sends the next in-order shard.
+    pub fn send_shard(&self, transactions: Vec<Bytes>) -> bool {
+        self.tx
+            .send(SsmrReplayCommand::Shard { transactions })
+            .is_ok()
+    }
+
+    /// Closes the replay stream.
+    pub fn finish(&self) -> bool {
+        self.tx.send(SsmrReplayCommand::Finish).is_ok()
+    }
+}
+
+/// Receiver side for an SSMR replay transaction stream.
+///
+/// This is carried in [`TempoPayloadAttributes`] only inside one node process.
+#[derive(Clone)]
+pub struct SsmrReplaySource {
+    rx: Arc<Mutex<mpsc::Receiver<SsmrReplayCommand>>>,
+}
+
+impl SsmrReplaySource {
+    /// Creates a new SSMR replay stream.
+    pub fn channel() -> (SsmrReplaySender, Self) {
+        let (tx, rx) = mpsc::channel();
+        (
+            SsmrReplaySender { tx },
+            Self {
+                rx: Arc::new(Mutex::new(rx)),
+            },
+        )
+    }
+
+    /// Receives the next replay command, timing out so callers can observe cancellation.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<SsmrReplayCommand, mpsc::RecvTimeoutError> {
+        self.rx
+            .lock()
+            .expect("SSMR replay receiver lock is not poisoned")
+            .recv_timeout(timeout)
+    }
+}
 
 /// Container type for all components required to build a payload.
 ///
@@ -87,6 +154,10 @@ pub struct TempoPayloadAttributes {
     #[debug(skip)]
     #[serde(skip)]
     ssmr_builder_sink: Option<SsmrBuilderSink>,
+    /// Optional SSMR replay source used by validators to build from streamed shards.
+    #[debug(skip)]
+    #[serde(skip)]
+    ssmr_replay_source: Option<SsmrReplaySource>,
     /// Target SSMR shard size in bytes.
     #[serde(skip)]
     ssmr_shard_target_bytes: Option<usize>,
@@ -130,6 +201,7 @@ impl TempoPayloadAttributes {
             consensus_context,
             subblocks: Arc::new(subblocks),
             ssmr_builder_sink: None,
+            ssmr_replay_source: None,
             ssmr_shard_target_bytes: None,
         }
     }
@@ -216,6 +288,17 @@ impl TempoPayloadAttributes {
         self.ssmr_builder_sink.clone()
     }
 
+    /// Sets the SSMR replay source for validator-side streamed payload builds.
+    pub fn with_ssmr_replay_source(mut self, source: SsmrReplaySource) -> Self {
+        self.ssmr_replay_source = Some(source);
+        self
+    }
+
+    /// Returns the SSMR replay source, if this payload build replays streamed shards.
+    pub fn ssmr_replay_source(&self) -> Option<SsmrReplaySource> {
+        self.ssmr_replay_source.clone()
+    }
+
     /// Returns the target SSMR shard size, if enabled.
     pub fn ssmr_shard_target_bytes(&self) -> Option<usize> {
         self.ssmr_shard_target_bytes
@@ -237,6 +320,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             consensus_context: None,
             subblocks: Arc::new(Vec::new),
             ssmr_builder_sink: None,
+            ssmr_replay_source: None,
             ssmr_shard_target_bytes: None,
         }
     }
@@ -255,7 +339,11 @@ impl PayloadAttributes for TempoPayloadAttributes {
         // mixed into the ID so that distinct consensus rounds proposing on
         // the same parent block produce distinct payload IDs and do not
         // collide in the payload builder cache.
-        payload_id_from_parent_and_context(parent_hash, self.consensus_context.as_ref())
+        payload_id_from_parent_and_context(
+            parent_hash,
+            self.consensus_context.as_ref(),
+            self.ssmr_replay_source.is_some(),
+        )
     }
 
     fn timestamp(&self) -> u64 {
@@ -293,8 +381,19 @@ fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
 fn payload_id_from_parent_and_context(
     parent_hash: &B256,
     consensus_context: Option<&TempoConsensusContext>,
+    is_ssmr_replay: bool,
 ) -> PayloadId {
     let Some(ctx) = consensus_context else {
+        if is_ssmr_replay {
+            let mut hasher = Keccak256::new();
+            hasher.update(parent_hash);
+            hasher.update(b"ssmr-replay");
+            let digest = hasher.finalize();
+            return PayloadId::new(
+                <[u8; 8]>::try_from(&digest[0..8])
+                    .expect("a 32 byte array always has more than 8 bytes"),
+            );
+        }
         return payload_id_from_block_hash(parent_hash);
     };
 
@@ -304,6 +403,9 @@ fn payload_id_from_parent_and_context(
     hasher.update(ctx.view.to_be_bytes());
     hasher.update(ctx.parent_view.to_be_bytes());
     hasher.update(B256::from(&ctx.proposer));
+    if is_ssmr_replay {
+        hasher.update(b"ssmr-replay");
+    }
     let digest = hasher.finalize();
 
     PayloadId::new(
@@ -635,5 +737,15 @@ mod tests {
             proposer,
         });
         assert_ne!(attrs.payload_id(&parent), attrs.payload_id(&other_parent));
+    }
+
+    #[test]
+    fn payload_id_marks_ssmr_replay_builds() {
+        let parent = B256::random();
+        let attrs = TempoPayloadAttributes::random();
+        let (_tx, replay_source) = SsmrReplaySource::channel();
+        let replay_attrs = attrs.clone().with_ssmr_replay_source(replay_source);
+
+        assert_ne!(attrs.payload_id(&parent), replay_attrs.payload_id(&parent));
     }
 }

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-use tempo_node::SsmrExecutedPayload;
+use tempo_payload_types::TempoBuiltPayload;
 use tempo_primitives::{TempoConsensusContext, ed25519::PublicKey};
 
 mod actor;
@@ -216,7 +216,7 @@ pub(crate) struct SsmrTranscript {
 #[derive(Clone, Debug)]
 pub(crate) struct SsmrCompleteStream {
     pub(crate) transcript: SsmrTranscript,
-    pub(crate) optimistic_payload: Option<SsmrExecutedPayload>,
+    pub(crate) optimistic_payload: Option<TempoBuiltPayload>,
     pub(crate) optimistic_execution_finalizing: bool,
 }
 

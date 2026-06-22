@@ -19,7 +19,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, SsmrShardPrewarmer},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -46,8 +46,7 @@ use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{
-    Recovered, RecoveredBlock, SealedHeader, SignedTransaction as _,
-    transaction::error::InvalidTransactionError,
+    Recovered, RecoveredBlock, SignedTransaction as _, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
@@ -70,13 +69,12 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
-    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, TempoBuiltPayload, TempoPayloadAttributes,
-    ValidationLatencyWorkload, marshal_persist_estimate,
+    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplayCommand, TempoBuiltPayload,
+    TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoConsensusContext, TempoHeader, TempoPrimitives,
-    TempoReceipt, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -94,46 +92,7 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
-
-/// Inputs needed to start executing an SSMR transaction stream.
-#[derive(Debug, Clone)]
-pub struct SsmrExecutionInput {
-    /// Sealed parent header the stream builds on.
-    pub parent_header: SealedHeader<TempoHeader>,
-    /// Proposer public key used for fee-recipient lookup.
-    pub proposer_public_key: Option<B256>,
-    /// Block timestamp in seconds.
-    pub timestamp: u64,
-    /// Millisecond portion of the block timestamp.
-    pub timestamp_millis_part: u64,
-    /// Exact block extra-data bytes announced in `SsmrStart`.
-    pub extra_data: Bytes,
-    /// Consensus context announced in `SsmrStart`.
-    pub consensus_context: Option<TempoConsensusContext>,
-}
-
-/// Command sent to an SSMR optimistic execution worker.
-#[derive(Debug)]
-pub enum SsmrExecutionCommand {
-    /// Next in-order tx-only shard.
-    Shard {
-        /// EIP-2718 encoded transactions in final block order.
-        transactions: Vec<Bytes>,
-    },
-    /// No more shards will be sent; finish and assemble the block artifact.
-    Finish,
-}
-
-/// Already-executed SSMR artifact ready for final-proposal reconciliation.
-#[derive(Debug, Clone)]
-pub struct SsmrExecutedPayload {
-    /// Already-executed block artifact accepted by Reth's engine-tree fast path.
-    pub executed_block: BuiltPayloadExecutedBlock<TempoPrimitives>,
-    /// RLP-encoded EIP-7928 block access list, when BAL is enabled.
-    pub block_access_list: Option<Bytes>,
-    /// Wall-clock time spent executing and assembling the streamed payload.
-    pub execution_duration: Duration,
-}
+const SSMR_PREWARM_MIN_SHARD_BYTES: usize = DEFAULT_SSMR_SHARD_TARGET_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -373,11 +332,15 @@ where
             payload_id,
             ..
         } = config;
+        let ssmr_replay_source = attributes.ssmr_replay_source();
+        let is_ssmr_replay = ssmr_replay_source.is_some();
         let build_once_with_shared_trie =
+            // SSMR replay sources are one-shot streams, so the job must not try to rebuild.
+            is_ssmr_replay ||
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
-            trie_handle.is_some()
+            (trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
-            && !self.is_dev;
+            && !self.is_dev);
 
         macro_rules! check_cancel {
             () => {
@@ -461,6 +424,7 @@ where
         // Also don't include any subblocks if we've seen an invalid subblock
         // at this height or above.
         let mut subblocks = if empty
+            || is_ssmr_replay
             || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
         {
             vec![]
@@ -567,7 +531,11 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
+        let system_txs = if is_ssmr_replay {
+            Vec::new()
+        } else {
+            self.build_seal_block_txs(executor.evm(), &subblocks)
+        };
         for tx in &system_txs {
             estimated_rlp_block_size += tx.inner().length();
         }
@@ -583,34 +551,6 @@ where
             }));
         }
 
-        let base_fee = executor.evm().block().basefee;
-        let pool_fetch_start = Instant::now();
-        let best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
-        // Wrap best transactions into state-aware wrapper to skip transactions that
-        // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
-                self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
-        } else {
-            Box::new(best_txs)
-        });
-        self.metrics
-            .pool_fetch_duration_seconds
-            .record(pool_fetch_start.elapsed());
-
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
@@ -623,195 +563,363 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
-        let block_build_stop_reason = loop {
-            check_cancel!();
+        let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
+            let mut expiring_nonce_count = 0usize;
+            let mut prewarmer = self.enable_prewarming.then(|| {
+                SsmrShardPrewarmer::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache.clone(),
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    SSMR_PREWARM_MIN_SHARD_BYTES,
+                )
+            });
 
-            if let Some(build_budget) = payload_build_budget {
-                let elapsed = start.elapsed();
-                let current_workload = ValidationLatencyWorkload::new(
-                    cumulative_gas_used,
-                    pool_transactions_included as usize,
-                );
-                let budget_decision = payload_budget_decision(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    marshal_persist,
-                    estimated_rlp_block_size,
-                    validation_latency,
-                    current_workload,
-                );
-                if budget_decision.total_reserved >= build_budget {
-                    debug!(
-                        target: "payload_builder",
-                        ?elapsed,
-                        ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
-                        predicted_builder_work = ?budget_decision.predicted_builder_work,
-                        predicted_validator_work = ?budget_decision.predicted_validator_work,
-                        total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
-                        ?current_workload,
-                        gas_used = cumulative_gas_used,
-                        transactions = pool_transactions_included,
-                        estimated_rlp_block_size,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                        "stopping pool transaction execution before payload build budget is exhausted"
-                    );
-                    break BlockBuildStopReason::BuildBudget;
+            loop {
+                check_cancel!();
+
+                let wait_start = Instant::now();
+                match replay_source.recv_timeout(Duration::from_millis(1)) {
+                    Ok(SsmrReplayCommand::Shard {
+                        transactions: encoded_transactions,
+                    }) => {
+                        let shard_bytes =
+                            encoded_transactions.iter().map(|bytes| bytes.len()).sum();
+                        let mut decoded = Vec::with_capacity(encoded_transactions.len());
+                        let mut expiring_nonce_offsets =
+                            Vec::with_capacity(encoded_transactions.len());
+                        for encoded in &encoded_transactions {
+                            let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
+                                .map_err(PayloadBuilderError::other)?;
+                            let expiring_nonce_offset = tx.is_expiring_nonce().then(|| {
+                                let offset = expiring_nonce_count;
+                                expiring_nonce_count += 1;
+                                offset
+                            });
+                            let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
+                            expiring_nonce_offsets.push(expiring_nonce_offset);
+                            decoded.push(Recovered::new_unchecked(tx, sender));
+                        }
+
+                        if let Some(prewarmer) = &mut prewarmer {
+                            prewarmer.prewarm_shard(&decoded, &expiring_nonce_offsets, shard_bytes);
+                        }
+
+                        for (encoded, recovered) in encoded_transactions.into_iter().zip(decoded) {
+                            check_cancel!();
+                            let max_regular_gas_used = core::cmp::min(
+                                recovered.inner().gas_limit(),
+                                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                            );
+                            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                                return Err(PayloadBuilderError::evm(
+                                        BlockExecutionError::Validation(
+                                            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                                                transaction_gas_limit: recovered.inner().gas_limit(),
+                                                block_available_gas: non_shared_gas_limit
+                                                    - cumulative_gas_used,
+                                            },
+                                        ),
+                                    ));
+                            }
+
+                            let is_payment = if hardfork.is_t5() {
+                                recovered.inner().is_payment_v2()
+                            } else {
+                                recovered.inner().is_payment_v1()
+                            };
+                            if !is_payment
+                                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
+                            {
+                                return Err(PayloadBuilderError::other(
+                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                                ));
+                            }
+
+                            if is_payment {
+                                payment_transactions += 1;
+                            }
+
+                            let tx_rlp_length = encoded.len();
+                            let estimated_block_size_with_tx =
+                                estimated_rlp_block_size + tx_rlp_length;
+                            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                                return Err(PayloadBuilderError::other(
+                                    ConsensusError::BlockTooLarge {
+                                        rlp_length: estimated_block_size_with_tx,
+                                        max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                                    },
+                                ));
+                            }
+
+                            executor
+                                .execute_transaction_with_result_closure(
+                                    recovered.clone(),
+                                    |result| {
+                                        cumulative_gas_used += result.block_gas_used();
+                                        cumulative_state_gas_used += result.state_gas_used();
+                                        if !is_payment {
+                                            non_payment_gas_used += result.block_gas_used();
+                                        }
+                                        total_fees += result.validator_fee();
+                                    },
+                                )
+                                .map_err(PayloadBuilderError::evm)?;
+                            trace!("SSMR replay transaction executed");
+                            if let Some(bal_task_handle) = &bal_task_handle {
+                                bal_task_handle.bump_bal_index();
+                            }
+
+                            pool_transactions_yielded += 1;
+                            pool_transactions_included += 1;
+                            estimated_rlp_block_size += tx_rlp_length;
+                            let _ = roots_tx.send((
+                                BuilderTx::Owned(Box::new(recovered)),
+                                executor.receipts().last().unwrap().clone(),
+                            ));
+                        }
+                    }
+                    Ok(SsmrReplayCommand::Finish) => {
+                        if let Some(prewarmer) = prewarmer {
+                            prewarmer.stop_and_wait();
+                        }
+                        break if cumulative_gas_used >= non_shared_gas_limit {
+                            BlockBuildStopReason::GasLimit
+                        } else {
+                            BlockBuildStopReason::TxPoolEmpty
+                        };
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        normal_transaction_fill_idle_elapsed += wait_start.elapsed();
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(PayloadBuilderError::other(std::io::Error::other(
+                            "SSMR replay source closed before finish",
+                        )));
+                    }
                 }
             }
+        } else {
+            let base_fee = executor.evm().block().basefee;
+            let pool_fetch_start = Instant::now();
+            let best_txs = best_txs(BestTransactionsAttributes::new(
+                base_fee,
+                executor
+                    .evm()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            ));
+            // Wrap best transactions into state-aware wrapper to skip transactions that
+            // get invalidated by already-executed ones.
+            let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+                Box::new(BestTransactionsPrewarming::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache.clone(),
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    best_txs,
+                )) as Box<dyn BestTransactions<Item = _>>
+            } else {
+                Box::new(best_txs)
+            });
+            self.metrics
+                .pool_fetch_duration_seconds
+                .record(pool_fetch_start.elapsed());
 
-            let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+            let stop_reason = loop {
+                check_cancel!();
+
+                if let Some(build_budget) = payload_build_budget {
+                    let elapsed = start.elapsed();
+                    let current_workload = ValidationLatencyWorkload::new(
+                        cumulative_gas_used,
+                        pool_transactions_included as usize,
+                    );
+                    let budget_decision = payload_budget_decision(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        marshal_persist,
+                        estimated_rlp_block_size,
+                        validation_latency,
+                        current_workload,
+                    );
+                    if budget_decision.total_reserved >= build_budget {
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            predicted_builder_work = ?budget_decision.predicted_builder_work,
+                            predicted_validator_work = ?budget_decision.predicted_validator_work,
+                            total_reserved = ?budget_decision.total_reserved,
+                            marshal_persist = ?budget_decision.marshal_persist,
+                            ?current_workload,
+                            gas_used = cumulative_gas_used,
+                            transactions = pool_transactions_included,
+                            estimated_rlp_block_size,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping pool transaction execution before payload build budget is exhausted"
+                        );
+                        break BlockBuildStopReason::BuildBudget;
+                    }
+                }
+
+                let Some(pool_tx) = best_txs.next() else {
+                    if build_once_with_shared_trie
+                        && payload_build_budget.is_some()
+                        && cumulative_gas_used < non_shared_gas_limit
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
+                };
+                pool_transactions_yielded += 1;
+
+                let max_regular_gas_used = core::cmp::min(
+                    pool_tx.gas_limit(),
+                    executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                );
+
+                // Ensure we still have capacity for this transaction within the non-shared gas limit.
+                // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+                // be consumed by proposer's pool transactions.
+                if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                    // Mark this transaction as invalid since it doesn't fit
+                    // The iterator will handle lane switching internally when appropriate
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            non_shared_gas_limit - cumulative_gas_used,
+                        ),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                     continue;
                 }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
+
+                let is_payment = if hardfork.is_t5() {
+                    pool_tx.transaction.is_payment()
                 } else {
-                    BlockBuildStopReason::TxPoolEmpty
+                    pool_tx.transaction.inner().is_payment_v1()
                 };
-                break stop_reason;
-            };
-            pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+                // If the tx is not a payment and will exceed the general gas limit
+                // mark the tx as invalid and continue
+                if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::Other(Box::new(
+                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                        )),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                    continue;
+                }
 
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                continue;
-            }
+                check_cancel!();
+                if is_payment {
+                    payment_transactions += 1;
+                }
 
-            let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.is_payment()
-            } else {
-                pool_tx.transaction.inner().is_payment_v1()
-            };
+                let tx_rlp_length = pool_tx.transaction.encoded_length();
+                let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                continue;
-            }
+                if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    self.metrics.inc_pool_tx_skipped("oversized_block");
+                    skipped_oversized_block = true;
+                    continue;
+                }
 
-            check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
+                let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                    .then(|| format!("{:?}", pool_tx.transaction))
+                    .unwrap_or_default();
 
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
+                let execution_result = executor.execute_transaction_with_result_closure(
+                    pool_tx.transaction.executable(),
+                    |result| {
+                        cumulative_gas_used += result.block_gas_used();
+                        cumulative_state_gas_used += result.state_gas_used();
+                        if !is_payment {
+                            non_payment_gas_used += result.block_gas_used();
+                        }
 
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
+                        // Score payload value by the validator-credited fee amount that the
+                        // FeeManager precompile actually wrote during this transaction.
+                        total_fees += result.validator_fee();
+
+                        // Notify transactions iterator about the new state.
+                        best_txs.on_new_result(result);
                     },
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
-            }
+                if let Err(err) = execution_result {
+                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    }) = &err
+                    {
+                        invalid_pool_transaction_execution_attempts += 1;
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
-                |result| {
-                    cumulative_gas_used += result.block_gas_used();
-                    cumulative_state_gas_used += result.state_gas_used();
-                    if !is_payment {
-                        non_payment_gas_used += result.block_gas_used();
-                    }
-
-                    // Score payload value by the validator-credited fee amount that the
-                    // FeeManager precompile actually wrote during this transaction.
-                    total_fees += result.validator_fee();
-
-                    // Notify transactions iterator about the new state.
-                    best_txs.on_new_result(result);
-                },
-            );
-            if let Err(err) = execution_result {
-                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                }) = &err
-                {
-                    invalid_pool_transaction_execution_attempts += 1;
-
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        }
+                        continue;
                     } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        return Err(PayloadBuilderError::evm(err));
                     }
-                    continue;
-                } else {
-                    return Err(PayloadBuilderError::evm(err));
+                };
+                trace!("Transaction executed");
+                if let Some(bal_task_handle) = &bal_task_handle {
+                    bal_task_handle.bump_bal_index();
                 }
+
+                pool_transactions_included += 1;
+                estimated_rlp_block_size += tx_rlp_length;
+                let _ = roots_tx.send((
+                    BuilderTx::Pooled(pool_tx),
+                    executor.receipts().last().unwrap().clone(),
+                ));
             };
-            trace!("Transaction executed");
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
 
-            pool_transactions_included += 1;
-            estimated_rlp_block_size += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+            // cancel pre-warming, if any, by dropping the iter
+            drop(best_txs);
+            stop_reason
         };
-
-        // cancel pre-warming, if any, by dropping the iter
-        drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
@@ -836,7 +944,8 @@ where
         check_cancel!();
 
         // check if we have a better block or received more subblocks
-        if !is_better_payload(best_payload.as_ref(), total_fees)
+        if !is_ssmr_replay
+            && !is_better_payload(best_payload.as_ref(), total_fees)
             && !is_more_subblocks(best_payload.as_ref(), &subblocks)
         {
             // Release db
@@ -1307,208 +1416,6 @@ where
             state_root_task_hook.map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
         )
     }
-}
-
-/// Executes an SSMR transaction stream as shards arrive and builds the same
-/// artifact shape that local payload building hands to the engine tree.
-pub fn execute_ssmr_payload_stream<Provider>(
-    provider: Provider,
-    task_executor: TaskExecutor,
-    evm_config: TempoEvmConfig,
-    input: SsmrExecutionInput,
-    commands: mpsc::Receiver<SsmrExecutionCommand>,
-) -> Result<SsmrExecutedPayload, PayloadBuilderError>
-where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
-{
-    let execution_start = Instant::now();
-    let SsmrExecutionInput {
-        parent_header,
-        proposer_public_key,
-        timestamp,
-        timestamp_millis_part,
-        extra_data,
-        consensus_context,
-    } = input;
-
-    let state_provider = provider.state_by_block_hash(parent_header.hash())?;
-    let finish_provider = InstrumentedFinishProvider {
-        inner: &*state_provider,
-        metrics: TempoPayloadBuilderMetrics::default(),
-    };
-    let state = StateProviderDatabase::new(&state_provider);
-    let mut db = State::builder()
-        .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
-        .with_bundle_update()
-        .build();
-
-    let chain_spec = provider.chain_spec();
-    let block_gas_limit = parent_header.gas_limit();
-    let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
-    let general_gas_limit =
-        chain_spec.general_gas_limit_at(timestamp, block_gas_limit, shared_gas_limit);
-    let next_attributes = TempoNextBlockEnvAttributes {
-        inner: NextBlockEnvAttributes {
-            timestamp,
-            suggested_fee_recipient: Address::ZERO,
-            prev_randao: B256::ZERO,
-            gas_limit: block_gas_limit,
-            parent_beacon_block_root: Some(B256::ZERO),
-            withdrawals: Some(Default::default()),
-            extra_data: extra_data.clone(),
-            slot_number: None,
-        },
-        general_gas_limit,
-        shared_gas_limit,
-        timestamp_millis_part,
-        consensus_context,
-        subblock_fee_recipients: Default::default(),
-    };
-    let evm_env = evm_config
-        .next_evm_env(&parent_header, &next_attributes)
-        .map_err(PayloadBuilderError::other)?;
-    let ctx = evm_config
-        .context_for_next_block(&parent_header, next_attributes)
-        .map_err(PayloadBuilderError::other)?;
-    let evm = evm_config.evm_with_env(&mut db, evm_env);
-    let mut executor = evm_config.create_executor(evm, ctx.clone());
-
-    let attrs = TempoPayloadAttributes::new(
-        proposer_public_key,
-        timestamp,
-        timestamp_millis_part,
-        extra_data,
-        consensus_context,
-        Vec::new,
-    );
-    maybe_override_fee_recipient(&mut executor, &attrs);
-
-    let bal_task_handle = if cfg!(feature = "bal") {
-        let bal_task_handle = spawn_bal_task(&task_executor, None);
-        executor
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
-        Some(bal_task_handle)
-    } else {
-        None
-    };
-
-    executor
-        .apply_pre_execution_changes()
-        .map_err(PayloadBuilderError::evm)?;
-    if let Some(bal_task_handle) = &bal_task_handle {
-        bal_task_handle.bump_bal_index();
-    }
-
-    let mut transactions = Vec::new();
-    let mut senders = Vec::new();
-    let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-    let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-    let mut receipts_bloom = Bloom::ZERO;
-    let mut buf = Vec::new();
-    let mut finished = false;
-
-    while let Ok(command) = commands.recv() {
-        match command {
-            SsmrExecutionCommand::Shard {
-                transactions: encoded_transactions,
-            } => {
-                for encoded in encoded_transactions {
-                    let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
-                        .map_err(PayloadBuilderError::other)?;
-                    let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
-                    let recovered = Recovered::new_unchecked(tx, sender);
-
-                    executor
-                        .execute_transaction(&recovered)
-                        .map_err(PayloadBuilderError::evm)?;
-                    if let Some(bal_task_handle) = &bal_task_handle {
-                        bal_task_handle.bump_bal_index();
-                    }
-
-                    transactions_root.push_next(encoded.as_ref());
-                    let receipt = executor
-                        .receipts()
-                        .last()
-                        .expect("executor records a receipt for each transaction")
-                        .clone();
-                    let receipt = receipt.with_bloom_ref();
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
-
-                    let (tx, sender) = recovered.into_parts();
-                    transactions.push(tx);
-                    senders.push(sender);
-                }
-            }
-            SsmrExecutionCommand::Finish => {
-                finished = true;
-                break;
-            }
-        }
-    }
-    if !finished {
-        return Err(PayloadBuilderError::other(std::io::Error::other(
-            "SSMR execution command stream closed before finish",
-        )));
-    }
-
-    let (evm, execution_result) = executor.finish()?;
-    let evm_env = evm.into_env();
-    db.merge_transitions(BundleRetention::Reverts);
-    db.set_state_hook(None);
-
-    let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
-    let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
-    let (state_root, trie_updates) = finish_provider
-        .state_root_with_updates(hashed_state.clone())
-        .map_err(BlockExecutionError::other)?;
-    let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
-        let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
-        (Some(bal), Some(bal_hash))
-    } else {
-        (None, None)
-    };
-
-    let block = evm_config.block_assembler.assemble_block(
-        BlockAssemblerInput::new(
-            evm_env,
-            ctx,
-            &parent_header,
-            transactions,
-            &execution_result,
-            &db.bundle_state,
-            &finish_provider,
-            state_root,
-            block_access_list_hash,
-        ),
-        Some(transactions_root.finalize()),
-        Some(receipts_root.finalize()),
-        Some(receipts_bloom),
-    )?;
-    let recovered_block = Arc::new(RecoveredBlock::new_unhashed(block, senders));
-    let execution_output = Arc::new(BlockExecutionOutput {
-        result: execution_result,
-        state: db.take_bundle(),
-    });
-    drop(db);
-    drop(finish_provider);
-    task_executor.spawn_drop(state_provider);
-
-    Ok(SsmrExecutedPayload {
-        executed_block: BuiltPayloadExecutedBlock {
-            recovered_block,
-            execution_output,
-            hashed_state: Arc::new(hashed_state),
-            trie_updates: Arc::new(trie_updates),
-        },
-        block_access_list,
-        execution_duration: execution_start.elapsed(),
-    })
 }
 
 fn spawn_bal_task(

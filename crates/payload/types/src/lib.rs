@@ -7,7 +7,10 @@ mod attrs;
 mod budget;
 
 use alloy_primitives::{B256, Bytes};
-pub use attrs::{SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, TempoPayloadAttributes};
+pub use attrs::{
+    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplayCommand, SsmrReplaySender,
+    SsmrReplaySource, TempoPayloadAttributes,
+};
 pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
