@@ -12,6 +12,6 @@ crate::sol! {
             view
             returns (uint64 epoch, bytes32[] memory publicKeys);
 
-        function setCommitteeMembers(uint64 epoch, bytes32[] calldata publicKeys) external;
+        function setCommitteeMembers(bytes32[] calldata publicKeys) external;
     }
 }

@@ -269,7 +269,6 @@ where
             .collect();
 
         let calldata = ICurrentCommittee::setCommitteeMembersCall {
-            epoch: outcome.epoch.get(),
             publicKeys: public_keys,
         }
         .abi_encode()

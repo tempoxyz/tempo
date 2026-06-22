@@ -61,11 +61,10 @@ mod tests {
 
     #[test]
     fn test_set_committee_members_is_system_only() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(42431).with_block_number(43_200);
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
             let call = ICurrentCommittee::setCommitteeMembersCall {
-                epoch: 7,
                 publicKeys: vec![B256::repeat_byte(0x11), B256::repeat_byte(0x22)],
             };
 
@@ -76,7 +75,7 @@ mod tests {
             assert!(system.is_ok_and(|output| output.is_success()));
 
             let ret = committee.get_committee_members()?;
-            assert_eq!(ret.epoch, 7);
+            assert_eq!(ret.epoch, 2);
             assert_eq!(ret.publicKeys, call.publicKeys);
             Ok(())
         })
