@@ -194,6 +194,27 @@ def df-available-mib [path: string] {
     $row | get 3 | into int
 }
 
+def e2e-db-size-bytes [datadir: string] {
+    let paths = [
+        $"($datadir)/db"
+        $"($datadir)/static_files"
+    ] | where { |path| $path | path exists }
+    if ($paths | is-empty) {
+        return 0
+    }
+
+    let result = (^du -sb ...$paths | complete)
+    if $result.exit_code != 0 {
+        if $result.stderr != "" { print $result.stderr }
+        return 0
+    }
+
+    $result.stdout
+        | lines
+        | each { |line| $line | split row --regex '\s+' | first | into int }
+        | math sum
+}
+
 def ensure-bloat-space [bloat: int] {
     if $bloat <= 0 {
         return
@@ -1041,6 +1062,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
+        let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -1069,6 +1091,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --bloat-mib $ctx.bloat
                 --tip20-token-count $ctx.token_count
                 --bloat-token-count ($TIP20_TOKEN_IDS | length)
+                --initial-db-size-bytes $initial_db_size_bytes
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
