@@ -32,11 +32,7 @@ pub(crate) struct BestTransactionsPrewarming {
 impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
-        executor: TaskExecutor,
-        provider: Provider,
-        cache: Option<SavedCache>,
-        parent_hash: B256,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
+        prewarm: PrewarmingExecutionContext<Provider>,
         best_txs: Txs,
     ) -> Self
     where
@@ -45,30 +41,28 @@ impl BestTransactionsPrewarming {
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let prewarm =
-            PrewarmingExecutionContext::new(provider, cache, parent_hash, evm_env, stop.clone());
-
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
-            stop,
+            stop: prewarm.stop.clone(),
         };
 
-        let prewarm_executor = executor.clone();
-        executor.spawn_blocking_named("builder-prewarm", move || {
-            Self::start_prewarming(
-                prewarm_executor,
-                BestTransactionsPrewarmingContext {
-                    best_txs,
-                    transactions_tx,
-                    commands_rx,
-                    commands_tx,
-                    prewarm,
-                    next_expiring_nonce_offset: 0,
-                },
-            );
-        });
+        let prewarm_executor = prewarm.executor();
+        prewarm
+            .executor()
+            .spawn_blocking_named("builder-prewarm", move || {
+                Self::start_prewarming(
+                    prewarm_executor,
+                    BestTransactionsPrewarmingContext {
+                        best_txs,
+                        transactions_tx,
+                        commands_rx,
+                        commands_tx,
+                        prewarm,
+                        next_expiring_nonce_offset: 0,
+                    },
+                );
+            });
 
         this
     }
@@ -270,6 +264,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 #[derive(Clone)]
 pub(crate) struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
+    executor: TaskExecutor,
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
@@ -292,6 +287,7 @@ where
 {
     pub(crate) fn new(
         provider: Provider,
+        executor: TaskExecutor,
         cache: Option<SavedCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
@@ -299,6 +295,7 @@ where
     ) -> Self {
         Self {
             provider,
+            executor,
             parent_hash,
             cache,
             evm_env,
@@ -333,6 +330,10 @@ where
         evm_env.cfg_env.disable_balance_check = true;
 
         Some(TempoEvm::new(state_provider, evm_env))
+    }
+
+    pub(crate) fn executor(&self) -> TaskExecutor {
+        self.executor.clone()
     }
 }
 
@@ -568,11 +569,14 @@ mod tests {
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
         let prewarming = BestTransactionsPrewarming::new(
-            executor.clone(),
-            provider,
-            None,
-            parent_header.hash(),
-            evm_env,
+            PrewarmingExecutionContext {
+                provider,
+                executor: executor.clone(),
+                parent_hash: parent_header.hash(),
+                cache: None,
+                evm_env,
+                stop: Arc::default(),
+            },
             TestBestTransactions::new(txs, log),
         );
         TestPrewarming {
