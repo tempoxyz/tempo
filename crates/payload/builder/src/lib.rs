@@ -90,6 +90,7 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+const NONEMPTY_POOL_STARVATION_POLLS: u8 = 8;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -569,6 +570,7 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut nonempty_pool_starvation_polls = 0u8;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -621,6 +623,13 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    if pool_transactions_included > 0 {
+                        nonempty_pool_starvation_polls =
+                            nonempty_pool_starvation_polls.saturating_add(1);
+                        if nonempty_pool_starvation_polls >= NONEMPTY_POOL_STARVATION_POLLS {
+                            break BlockBuildStopReason::TxPoolEmpty;
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -634,6 +643,7 @@ where
                 };
                 break stop_reason;
             };
+            nonempty_pool_starvation_polls = 0;
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
