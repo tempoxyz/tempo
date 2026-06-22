@@ -138,6 +138,26 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         .await
     }
 
+    async fn close_unrecorded(
+        &self,
+        submitter: &mut TempoTxSender<P>,
+        payer: &PrivateKeySigner,
+        amount: u64,
+    ) -> eyre::Result<Receipt> {
+        let signature = self.voucher_signature(payer, amount).await?;
+        submitter
+            .send_call(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor: self.descriptor.clone(),
+                    cumulativeAmount: U96::from(amount),
+                    captureAmount: U96::from(amount),
+                    signature,
+                },
+            )
+            .await
+    }
+
     async fn request_close(
         &self,
         gas: &mut GasSnapshot,
@@ -306,6 +326,17 @@ async fn test_tip20_channel_reserve_gas_snapshots() -> eyre::Result<()> {
             100_000,
         )
         .await?;
+
+    let credit_seed = ChannelEnv::open(&mut payer, payee.address(), 7).await?;
+    credit_seed
+        .close_unrecorded(&mut payee, &payer.signer, 500_000)
+        .await?;
+
+    let credited_reopen = ChannelEnv::open(&mut payer, payee.address(), 8).await?;
+    gas.record(
+        "open_new_channel_with_storage_credit",
+        credited_reopen.gas_used(),
+    );
 
     print_gas_snapshot("TIP20ChannelReserve gas snapshot", &gas);
 

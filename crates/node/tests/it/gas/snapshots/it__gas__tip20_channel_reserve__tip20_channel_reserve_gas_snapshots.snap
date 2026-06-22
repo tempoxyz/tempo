@@ -6,6 +6,7 @@ close_existing_channel_after_settlement: 67313
 close_existing_channel_no_prior_settlement: 67313
 open_new_channel_existing_reserve_balance: 292025
 open_new_channel_first_reserve_balance: 791325
+open_new_channel_with_storage_credit: 53425
 request_close_existing_channel: 30323
 settle_existing_channel_existing_payee_balance: 295031
 settle_existing_channel_new_payee_balance: 549371
