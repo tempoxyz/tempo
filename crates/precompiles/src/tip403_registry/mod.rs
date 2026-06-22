@@ -39,6 +39,11 @@ pub const ALLOW_ALL_POLICY_ID: u64 = 1;
 pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
     &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
 
+#[inline]
+fn is_always_authorized(user: Address, hardfork: TempoHardfork) -> bool {
+    hardfork.is_t6() && user == RECEIVE_POLICY_GUARD_ADDRESS
+}
+
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
 ///
@@ -713,10 +718,7 @@ impl TIP403Registry {
         let hardfork = self.storage.spec();
 
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
+        if is_always_authorized(user, hardfork) {
             return Ok(true);
         }
 
