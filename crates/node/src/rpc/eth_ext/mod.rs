@@ -19,7 +19,7 @@ pub trait TempoEthExtApi {
     ) -> RpcResult<TransactionsResponse>;
 }
 
-/// The JSON-RPC handlers for the `dex_` namespace.
+/// The JSON-RPC handlers for the `eth` namespace.
 #[derive(Debug, Clone, Default)]
 pub struct TempoEthExt<EthApi> {
     eth_api: EthApi,
