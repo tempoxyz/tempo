@@ -572,7 +572,7 @@ fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
 mod tests {
     use super::*;
 
-    use alloy_primitives::{B256, Bytes};
+    use alloy_primitives::B256;
     use clap::CommandFactory;
 
     #[test]
