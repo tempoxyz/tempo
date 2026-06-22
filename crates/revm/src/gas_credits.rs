@@ -41,7 +41,6 @@ pub fn apply_refund<DB: Database, I>(
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.
-    // This is safe cause refunds are applied in post-execution.
     let Some(slots) = journal.transient_storage.remove(&STORAGE_CREDITS_ADDRESS) else {
         return Ok(());
     };
@@ -154,6 +153,7 @@ pub(crate) fn sstore<DB: Database>(
                     gas_tracker: interpreter.gas.tracker_mut(),
                 },
                 owner,
+                None,
                 values,
             )?;
         }

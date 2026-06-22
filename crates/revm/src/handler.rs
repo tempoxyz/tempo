@@ -1219,6 +1219,8 @@ where
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
         // are collected, so fee-limit validation uses the inline authorization payload instead.
         let mut loaded_tx_access_key = None;
+        // Access key whose fee-token spending limit was debited during fee collection, if any.
+        let mut keychain_fee_key = None;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1273,6 +1275,8 @@ where
                             FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
                         );
                     }
+
+                    keychain_fee_key = Some(key_auth.key_id);
                 }
             } else {
                 // Existing-key path:
@@ -1328,6 +1332,7 @@ where
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
+                keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1424,6 +1429,19 @@ where
 
                     _ => FeePaymentError::Other(err.to_string()).into(),
                 });
+            }
+
+            if cfg.spec.is_t7() {
+                let keychain_fee_key = if fee_payer == tx.caller {
+                    keychain_fee_key
+                } else {
+                    None
+                };
+                evm.non_creditable_slots.borrow_mut().initialize(
+                    fee_payer,
+                    fee_token,
+                    keychain_fee_key,
+                );
             }
 
             journal.checkpoint_commit();
@@ -1720,6 +1738,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.non_creditable_slots.borrow_mut().clear();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
