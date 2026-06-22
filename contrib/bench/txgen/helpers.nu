@@ -267,6 +267,7 @@ def txgen-run-preset-pipeline [
     --bloat-mib: int = 0
     --tip20-token-count: int = 0
     --bloat-token-count: int = 4
+    --initial-db-size-bytes: int = 0
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -278,6 +279,14 @@ def txgen-run-preset-pipeline [
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
+    let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
+    let recipient_accounts = if $existing_recipient_end > $existing_recipient_start {
+        $existing_recipient_end - $existing_recipient_start
+    } else {
+        0
+    }
+    let total_accounts = $accounts + $recipient_accounts
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -315,8 +324,11 @@ def txgen-run-preset-pipeline [
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
-        "-m" $"accounts=($accounts)"
+        "-m" $"accounts=($total_accounts)"
         "-m" $"total_connections=($max_concurrent_requests)"
+        "-m" $"bloat_mib=($bloat_mib)"
+        "-m" $"tip20_token_count=($tx_token_count)"
+        "-m" $"bloat_token_count=($bloat_token_count)"
         "-m" "tip20_weight=1.0"
         "-m" "place_order_weight=0.0"
         "-m" "swap_weight=0.0"
@@ -333,6 +345,7 @@ def txgen-run-preset-pipeline [
         | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
         | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
+        | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
