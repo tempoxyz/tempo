@@ -282,6 +282,29 @@ pub struct Args {
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: PositiveDuration,
 
+    /// Enable Streamed State Machine Replication tx-shard propagation.
+    #[arg(long = "consensus.ssmr", default_value_t = false)]
+    pub ssmr: bool,
+
+    /// Target SSMR tx shard size in bytes.
+    #[arg(
+        long = "consensus.ssmr-shard-size",
+        default_value_t = crate::ssmr::DEFAULT_SHARD_TARGET_BYTES
+    )]
+    pub ssmr_shard_size: usize,
+
+    /// Maximum SSMR messages buffered by the network channel.
+    #[arg(long = "consensus.ssmr-channel-quota", default_value_t = 16_384)]
+    pub ssmr_channel_quota: usize,
+
+    /// Maximum number of in-memory SSMR streams tracked at once.
+    #[arg(long = "consensus.ssmr-max-inflight-streams", default_value_t = 8)]
+    pub ssmr_max_inflight_streams: usize,
+
+    /// Maximum SSMR shard bytes buffered in memory.
+    #[arg(long = "consensus.ssmr-max-buffered-bytes", default_value_t = 64 * 1024 * 1024)]
+    pub ssmr_max_buffered_bytes: usize,
+
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer. This is sent periodically even when there are no new
     /// blocks to ensure the execution layer stays in sync with the consensus

@@ -141,6 +141,18 @@ pub struct Setup {
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
 
+    /// Whether to activate SSMR transaction streaming.
+    pub with_ssmr: bool,
+
+    /// Target SSMR transaction shard size.
+    pub ssmr_shard_target_bytes: usize,
+
+    /// Maximum in-flight SSMR streams retained by consensus.
+    pub ssmr_max_inflight_streams: usize,
+
+    /// Maximum buffered SSMR bytes retained by consensus.
+    pub ssmr_max_buffered_bytes: usize,
+
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
 }
@@ -159,6 +171,10 @@ impl Setup {
             epoch_length: 20,
             proposal_return_budget: Duration::from_millis(300),
             with_subblocks: false,
+            with_ssmr: false,
+            ssmr_shard_target_bytes: 10 * 1024,
+            ssmr_max_inflight_streams: 8,
+            ssmr_max_buffered_bytes: 16 * 1024 * 1024,
             fee_recipient: Address::ZERO,
         }
     }
@@ -206,6 +222,17 @@ impl Setup {
         }
     }
 
+    pub fn ssmr(self, with_ssmr: bool) -> Self {
+        Self { with_ssmr, ..self }
+    }
+
+    pub fn ssmr_shard_target_bytes(self, ssmr_shard_target_bytes: usize) -> Self {
+        Self {
+            ssmr_shard_target_bytes,
+            ..self
+        }
+    }
+
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
@@ -235,6 +262,10 @@ pub async fn setup_validators(
         linkage,
         proposal_return_budget,
         with_subblocks,
+        with_ssmr,
+        ssmr_shard_target_bytes,
+        ssmr_max_inflight_streams,
+        ssmr_max_buffered_bytes,
         fee_recipient,
         ..
     }: Setup,
@@ -307,6 +338,10 @@ pub async fn setup_validators(
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state,
             with_subblocks,
+            with_ssmr,
+            ssmr_shard_target_bytes,
+            ssmr_max_inflight_streams,
+            ssmr_max_buffered_bytes,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,

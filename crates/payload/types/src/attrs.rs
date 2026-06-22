@@ -8,6 +8,38 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
+/// Builder-side SSMR shard event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsmrBuilderShard {
+    /// Shard index, starting at zero.
+    pub shard_index: u64,
+    /// Index of the first transaction in the final block body.
+    pub first_tx_index: u64,
+    /// EIP-2718 encoded transactions in final block order.
+    pub transactions: Vec<Bytes>,
+    /// Cumulative transaction bytes observed through this shard.
+    pub cumulative_tx_bytes: u64,
+    /// Cumulative gas estimate observed through this shard.
+    pub cumulative_gas_estimate: u64,
+}
+
+/// Builder-side SSMR event emitted from the roots task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsmrBuilderEvent {
+    /// A non-empty tx-only shard.
+    Shard(SsmrBuilderShard),
+    /// End of the ordered transaction stream.
+    End {
+        /// Total emitted shards.
+        total_shards: u64,
+        /// Total emitted transactions.
+        total_transactions: u64,
+    },
+}
+
+/// Nonblocking sink for SSMR builder events.
+pub type SsmrBuilderSink = Arc<dyn Fn(SsmrBuilderEvent) + Send + Sync + 'static>;
+
 /// Container type for all components required to build a payload.
 ///
 /// It also carries DKG data to be included in the block's extra_data field.
@@ -51,6 +83,13 @@ pub struct TempoPayloadAttributes {
     #[debug(skip)]
     #[serde(skip, default = "default_subblocks")]
     subblocks: Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static>,
+    /// Optional SSMR event sink.
+    #[debug(skip)]
+    #[serde(skip)]
+    ssmr_builder_sink: Option<SsmrBuilderSink>,
+    /// Target SSMR shard size in bytes.
+    #[serde(skip)]
+    ssmr_shard_target_bytes: Option<usize>,
 }
 
 impl Default for TempoPayloadAttributes {
@@ -90,6 +129,8 @@ impl TempoPayloadAttributes {
             proposer_public_key,
             consensus_context,
             subblocks: Arc::new(subblocks),
+            ssmr_builder_sink: None,
+            ssmr_shard_target_bytes: None,
         }
     }
 
@@ -158,6 +199,27 @@ impl TempoPayloadAttributes {
     pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
         (self.subblocks)()
     }
+
+    /// Sets the SSMR builder event sink and target shard size.
+    pub fn with_ssmr_builder_sink(
+        mut self,
+        sink: SsmrBuilderSink,
+        shard_target_bytes: usize,
+    ) -> Self {
+        self.ssmr_builder_sink = Some(sink);
+        self.ssmr_shard_target_bytes = Some(shard_target_bytes);
+        self
+    }
+
+    /// Returns the SSMR builder sink, if enabled.
+    pub fn ssmr_builder_sink(&self) -> Option<SsmrBuilderSink> {
+        self.ssmr_builder_sink.clone()
+    }
+
+    /// Returns the target SSMR shard size, if enabled.
+    pub fn ssmr_shard_target_bytes(&self) -> Option<usize> {
+        self.ssmr_shard_target_bytes
+    }
 }
 
 // Required by reth's e2e-test-utils for integration tests.
@@ -174,6 +236,8 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             proposer_public_key: None,
             consensus_context: None,
             subblocks: Arc::new(Vec::new),
+            ssmr_builder_sink: None,
+            ssmr_shard_target_bytes: None,
         }
     }
 }

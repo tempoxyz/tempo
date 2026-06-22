@@ -23,7 +23,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
@@ -46,7 +46,8 @@ use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{
-    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
+    Recovered, RecoveredBlock, SealedHeader, SignedTransaction as _,
+    transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
@@ -69,11 +70,13 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, TempoBuiltPayload, TempoPayloadAttributes,
+    ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoConsensusContext, TempoHeader, TempoPrimitives,
+    TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -90,6 +93,47 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
+
+/// Inputs needed to start executing an SSMR transaction stream.
+#[derive(Debug, Clone)]
+pub struct SsmrExecutionInput {
+    /// Sealed parent header the stream builds on.
+    pub parent_header: SealedHeader<TempoHeader>,
+    /// Proposer public key used for fee-recipient lookup.
+    pub proposer_public_key: Option<B256>,
+    /// Block timestamp in seconds.
+    pub timestamp: u64,
+    /// Millisecond portion of the block timestamp.
+    pub timestamp_millis_part: u64,
+    /// Exact block extra-data bytes announced in `SsmrStart`.
+    pub extra_data: Bytes,
+    /// Consensus context announced in `SsmrStart`.
+    pub consensus_context: Option<TempoConsensusContext>,
+}
+
+/// Command sent to an SSMR optimistic execution worker.
+#[derive(Debug)]
+pub enum SsmrExecutionCommand {
+    /// Next in-order tx-only shard.
+    Shard {
+        /// EIP-2718 encoded transactions in final block order.
+        transactions: Vec<Bytes>,
+    },
+    /// No more shards will be sent; finish and assemble the block artifact.
+    Finish,
+}
+
+/// Already-executed SSMR artifact ready for final-proposal reconciliation.
+#[derive(Debug, Clone)]
+pub struct SsmrExecutedPayload {
+    /// Already-executed block artifact accepted by Reth's engine-tree fast path.
+    pub executed_block: BuiltPayloadExecutedBlock<TempoPrimitives>,
+    /// RLP-encoded EIP-7928 block access list, when BAL is enabled.
+    pub block_access_list: Option<Bytes>,
+    /// Wall-clock time spent executing and assembling the streamed payload.
+    pub execution_duration: Duration,
+}
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -516,7 +560,10 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let (roots_tx, roots_rx) = self.spawn_roots_task(
+            attributes.ssmr_builder_sink(),
+            attributes.ssmr_shard_target_bytes(),
+        );
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -1193,6 +1240,8 @@ where
 
     fn spawn_roots_task(
         &self,
+        ssmr_sink: Option<SsmrBuilderSink>,
+        ssmr_shard_target_bytes: Option<usize>,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -1202,7 +1251,7 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1210,6 +1259,8 @@ where
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
+                let mut ssmr_packer = ssmr_sink
+                    .map(|sink| SsmrShardPacker::new(sink, ssmr_shard_target_bytes.unwrap_or(0)));
 
                 let mut buf = Vec::new();
 
@@ -1219,6 +1270,9 @@ where
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     encoded_block_transactions.push(&tx, &buf);
+                    if let Some(packer) = &mut ssmr_packer {
+                        packer.push(Bytes::copy_from_slice(&buf), tx.gas_limit());
+                    }
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1228,6 +1282,9 @@ where
                     receipt.encode_2718(&mut buf);
                     receipts_root.push_next(&buf);
                     receipts_bloom |= receipt.bloom();
+                }
+                if let Some(packer) = ssmr_packer {
+                    packer.finish();
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
@@ -1244,39 +1301,250 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-        let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
+    fn spawn_bal_task(&self, state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+        spawn_bal_task(
+            &self.executor,
+            state_root_task_hook.map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
+        )
+    }
+}
+
+/// Executes an SSMR transaction stream as shards arrive and builds the same
+/// artifact shape that local payload building hands to the engine tree.
+pub fn execute_ssmr_payload_stream<Provider>(
+    provider: Provider,
+    task_executor: TaskExecutor,
+    evm_config: TempoEvmConfig,
+    input: SsmrExecutionInput,
+    commands: mpsc::Receiver<SsmrExecutionCommand>,
+) -> Result<SsmrExecutedPayload, PayloadBuilderError>
+where
+    Provider:
+        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+{
+    let execution_start = Instant::now();
+    let SsmrExecutionInput {
+        parent_header,
+        proposer_public_key,
+        timestamp,
+        timestamp_millis_part,
+        extra_data,
+        consensus_context,
+    } = input;
+
+    let state_provider = provider.state_by_block_hash(parent_header.hash())?;
+    let finish_provider = InstrumentedFinishProvider {
+        inner: &*state_provider,
+        metrics: TempoPayloadBuilderMetrics::default(),
+    };
+    let state = StateProviderDatabase::new(&state_provider);
+    let mut db = State::builder()
+        .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
+        .with_bundle_update()
+        .build();
+
+    let chain_spec = provider.chain_spec();
+    let block_gas_limit = parent_header.gas_limit();
+    let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
+    let general_gas_limit =
+        chain_spec.general_gas_limit_at(timestamp, block_gas_limit, shared_gas_limit);
+    let next_attributes = TempoNextBlockEnvAttributes {
+        inner: NextBlockEnvAttributes {
+            timestamp,
+            suggested_fee_recipient: Address::ZERO,
+            prev_randao: B256::ZERO,
+            gas_limit: block_gas_limit,
+            parent_beacon_block_root: Some(B256::ZERO),
+            withdrawals: Some(Default::default()),
+            extra_data: extra_data.clone(),
+            slot_number: None,
+        },
+        general_gas_limit,
+        shared_gas_limit,
+        timestamp_millis_part,
+        consensus_context,
+        subblock_fee_recipients: Default::default(),
+    };
+    let evm_env = evm_config
+        .next_evm_env(&parent_header, &next_attributes)
+        .map_err(PayloadBuilderError::other)?;
+    let ctx = evm_config
+        .context_for_next_block(&parent_header, next_attributes)
+        .map_err(PayloadBuilderError::other)?;
+    let evm = evm_config.evm_with_env(&mut db, evm_env);
+    let mut executor = evm_config.create_executor(evm, ctx.clone());
+
+    let attrs = TempoPayloadAttributes::new(
+        proposer_public_key,
+        timestamp,
+        timestamp_millis_part,
+        extra_data,
+        consensus_context,
+        Vec::new,
+    );
+    maybe_override_fee_recipient(&mut executor, &attrs);
+
+    let bal_task_handle = if cfg!(feature = "bal") {
+        let bal_task_handle = spawn_bal_task(&task_executor, None);
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
+        Some(bal_task_handle)
+    } else {
+        None
+    };
+
+    executor
+        .apply_pre_execution_changes()
+        .map_err(PayloadBuilderError::evm)?;
+    if let Some(bal_task_handle) = &bal_task_handle {
+        bal_task_handle.bump_bal_index();
+    }
+
+    let mut transactions = Vec::new();
+    let mut senders = Vec::new();
+    let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
+    let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+    let mut receipts_bloom = Bloom::ZERO;
+    let mut buf = Vec::new();
+    let mut finished = false;
+
+    while let Ok(command) = commands.recv() {
+        match command {
+            SsmrExecutionCommand::Shard {
+                transactions: encoded_transactions,
+            } => {
+                for encoded in encoded_transactions {
+                    let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
+                        .map_err(PayloadBuilderError::other)?;
+                    let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
+                    let recovered = Recovered::new_unchecked(tx, sender);
+
+                    executor
+                        .execute_transaction(&recovered)
+                        .map_err(PayloadBuilderError::evm)?;
+                    if let Some(bal_task_handle) = &bal_task_handle {
+                        bal_task_handle.bump_bal_index();
                     }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
-                        }
+
+                    transactions_root.push_next(encoded.as_ref());
+                    let receipt = executor
+                        .receipts()
+                        .last()
+                        .expect("executor records a receipt for each transaction")
+                        .clone();
+                    let receipt = receipt.with_bloom_ref();
+                    buf.clear();
+                    receipt.encode_2718(&mut buf);
+                    receipts_root.push_next(&buf);
+                    receipts_bloom |= receipt.bloom();
+
+                    let (tx, sender) = recovered.into_parts();
+                    transactions.push(tx);
+                    senders.push(sender);
+                }
+            }
+            SsmrExecutionCommand::Finish => {
+                finished = true;
+                break;
+            }
+        }
+    }
+    if !finished {
+        return Err(PayloadBuilderError::other(std::io::Error::other(
+            "SSMR execution command stream closed before finish",
+        )));
+    }
+
+    let (evm, execution_result) = executor.finish()?;
+    let evm_env = evm.into_env();
+    db.merge_transitions(BundleRetention::Reverts);
+    db.set_state_hook(None);
+
+    let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
+    let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
+    let (state_root, trie_updates) = finish_provider
+        .state_root_with_updates(hashed_state.clone())
+        .map_err(BlockExecutionError::other)?;
+    let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
+        let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
+        (Some(bal), Some(bal_hash))
+    } else {
+        (None, None)
+    };
+
+    let block = evm_config.block_assembler.assemble_block(
+        BlockAssemblerInput::new(
+            evm_env,
+            ctx,
+            &parent_header,
+            transactions,
+            &execution_result,
+            &db.bundle_state,
+            &finish_provider,
+            state_root,
+            block_access_list_hash,
+        ),
+        Some(transactions_root.finalize()),
+        Some(receipts_root.finalize()),
+        Some(receipts_bloom),
+    )?;
+    let recovered_block = Arc::new(RecoveredBlock::new_unhashed(block, senders));
+    let execution_output = Arc::new(BlockExecutionOutput {
+        result: execution_result,
+        state: db.take_bundle(),
+    });
+    drop(db);
+    drop(finish_provider);
+    task_executor.spawn_drop(state_provider);
+
+    Ok(SsmrExecutedPayload {
+        executed_block: BuiltPayloadExecutedBlock {
+            recovered_block,
+            execution_output,
+            hashed_state: Arc::new(hashed_state),
+            trie_updates: Arc::new(trie_updates),
+        },
+        block_access_list,
+        execution_duration: execution_start.elapsed(),
+    })
+}
+
+fn spawn_bal_task(
+    executor: &TaskExecutor,
+    mut state_root_task_hook: Option<Box<dyn OnStateHook>>,
+) -> BalTaskHandle {
+    let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+    let (bal_tx, bal_rx) = oneshot::channel();
+    executor.spawn_blocking_named("builder-bal-task", || {
+        let mut bal_state = reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+        for msg in task_rx {
+            match msg {
+                BalMessage::BumpIndex => {
+                    bal_state.bump_bal_index();
+                }
+                BalMessage::State(state) => {
+                    bal_state.commit(&state);
+                    if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                        state_root_task_hook.on_state(state);
                     }
                 }
             }
-
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
-
-        BalTaskHandle {
-            msg_tx: task_tx,
-            bal_rx,
         }
+
+        drop(state_root_task_hook);
+        let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+        let mut encoded = Vec::new();
+        bal.encode(&mut encoded);
+        let bal_hash = keccak256(&encoded);
+
+        let _ = bal_tx.send((encoded.into(), bal_hash));
+    });
+
+    BalTaskHandle {
+        msg_tx: task_tx,
+        bal_rx,
     }
 }
 
@@ -1305,6 +1573,79 @@ impl BalTaskHandle {
 enum BalMessage {
     State(EvmState),
     BumpIndex,
+}
+
+struct SsmrShardPacker {
+    sink: SsmrBuilderSink,
+    target_bytes: usize,
+    shard_index: u64,
+    first_tx_index: u64,
+    next_tx_index: u64,
+    cumulative_tx_bytes: u64,
+    cumulative_gas_estimate: u64,
+    pending_bytes: usize,
+    pending_transactions: Vec<Bytes>,
+}
+
+impl SsmrShardPacker {
+    fn new(sink: SsmrBuilderSink, target_bytes: usize) -> Self {
+        Self {
+            sink,
+            target_bytes: if target_bytes == 0 {
+                DEFAULT_SSMR_SHARD_TARGET_BYTES
+            } else {
+                target_bytes
+            },
+            shard_index: 0,
+            first_tx_index: 0,
+            next_tx_index: 0,
+            cumulative_tx_bytes: 0,
+            cumulative_gas_estimate: 0,
+            pending_bytes: 0,
+            pending_transactions: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, tx: Bytes, gas_estimate: u64) {
+        self.pending_bytes += tx.as_ref().len();
+        self.cumulative_tx_bytes += tx.as_ref().len() as u64;
+        self.cumulative_gas_estimate = self.cumulative_gas_estimate.saturating_add(gas_estimate);
+        self.pending_transactions.push(tx);
+        self.next_tx_index += 1;
+
+        if self.pending_bytes >= self.target_bytes {
+            self.flush();
+        }
+    }
+
+    fn finish(mut self) {
+        self.flush();
+        if self.shard_index > 0 {
+            (self.sink)(SsmrBuilderEvent::End {
+                total_shards: self.shard_index,
+                total_transactions: self.next_tx_index,
+            });
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.pending_transactions.is_empty() {
+            return;
+        }
+
+        let shard = SsmrBuilderShard {
+            shard_index: self.shard_index,
+            first_tx_index: self.first_tx_index,
+            transactions: std::mem::take(&mut self.pending_transactions),
+            cumulative_tx_bytes: self.cumulative_tx_bytes,
+            cumulative_gas_estimate: self.cumulative_gas_estimate,
+        };
+        (self.sink)(SsmrBuilderEvent::Shard(shard));
+
+        self.shard_index += 1;
+        self.first_tx_index = self.next_tx_index;
+        self.pending_bytes = 0;
+    }
 }
 
 pub fn is_more_subblocks(
@@ -1425,6 +1766,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::Block as _;
+    use std::sync::Mutex;
     use tempo_payload_types::EncodedBlock;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
@@ -1433,6 +1775,51 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
+    #[test]
+    fn ssmr_packer_flushes_ordered_shards_and_end() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: SsmrBuilderSink = Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event);
+        });
+
+        let mut packer = SsmrShardPacker::new(sink, 5);
+        packer.push(Bytes::from_static(b"aa"), 10);
+        packer.push(Bytes::from_static(b"bbb"), 20);
+        packer.push(Bytes::from_static(b"c"), 30);
+        packer.finish();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.shard_index, 0);
+                assert_eq!(shard.first_tx_index, 0);
+                assert_eq!(shard.transactions.len(), 2);
+                assert_eq!(shard.cumulative_tx_bytes, 5);
+                assert_eq!(shard.cumulative_gas_estimate, 30);
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+        match &events[1] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.shard_index, 1);
+                assert_eq!(shard.first_tx_index, 2);
+                assert_eq!(shard.transactions.len(), 1);
+                assert_eq!(shard.cumulative_tx_bytes, 6);
+                assert_eq!(shard.cumulative_gas_estimate, 60);
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+        assert_eq!(
+            events[2],
+            SsmrBuilderEvent::End {
+                total_shards: 2,
+                total_transactions: 3,
+            }
+        );
     }
 
     trait TestExt {

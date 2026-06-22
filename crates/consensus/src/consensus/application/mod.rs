@@ -19,7 +19,7 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::{epoch::SchemeProvider, subblocks};
+use crate::{epoch::SchemeProvider, ssmr, subblocks};
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
@@ -56,6 +56,9 @@ pub(super) struct Config<TContext> {
 
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: Option<subblocks::Mailbox>,
+
+    /// A handle to the SSMR side-channel service.
+    pub(crate) ssmr: Option<ssmr::Mailbox>,
 
     /// Local proposal return budget, excluding the network propagation allowance.
     ///

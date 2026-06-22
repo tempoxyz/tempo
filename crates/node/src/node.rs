@@ -1,6 +1,6 @@
 use crate::{
     TempoPayloadTypes,
-    engine::TempoEngineValidator,
+    engine::{SsmrEngineValidatorBuilder, TempoEngineValidator},
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
@@ -20,8 +20,8 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
@@ -243,7 +243,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        SsmrEngineValidatorBuilder,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -260,7 +260,7 @@ where
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                SsmrEngineValidatorBuilder::default(),
                 Identity::default(),
                 Default::default(),
             ),
@@ -331,7 +331,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = SsmrEngineValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()

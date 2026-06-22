@@ -15,6 +15,7 @@ pub mod follow;
 pub mod metrics;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
+pub(crate) mod ssmr;
 pub mod storage;
 pub(crate) mod subblocks;
 pub(crate) mod utils;
@@ -35,8 +36,8 @@ use tracing::info;
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, NAMESPACE,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
-    VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SSMR_CHANNEL_IDENT, SSMR_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
 pub use args::{Args, PositiveDuration};
@@ -70,6 +71,16 @@ pub async fn run_consensus_stack(
         .await?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
+    if config.ssmr {
+        eyre::ensure!(
+            (crate::ssmr::LOW_TRAFFIC_SHARD_TARGET_BYTES..=crate::ssmr::MAX_SHARD_TARGET_BYTES)
+                .contains(&config.ssmr_shard_size),
+            "consensus.ssmr-shard-size must be between {} and {} bytes",
+            crate::ssmr::LOW_TRAFFIC_SHARD_TARGET_BYTES,
+            crate::ssmr::MAX_SHARD_TARGET_BYTES,
+        );
+    }
+
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
 
     let (mut network, oracle) =
@@ -96,6 +107,17 @@ pub async fn run_consensus_stack(
     // sure that we don't ban peers that activate subblocks and send messages
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
+    // Same rationale as subblocks: peers may enable SSMR independently while
+    // the local node keeps the feature disabled.
+    let ssmr = network.register(
+        SSMR_CHANNEL_IDENT,
+        SSMR_LIMIT,
+        if config.ssmr {
+            config.ssmr_channel_quota
+        } else {
+            message_backlog
+        },
+    );
 
     let target_block_time = config.target_block_time.into_duration();
     // Consensus owns the end-to-end local proposal window. The network budget
@@ -128,6 +150,10 @@ pub async fn run_consensus_stack(
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         with_subblocks: false,
+        with_ssmr: config.ssmr,
+        ssmr_shard_target_bytes: config.ssmr_shard_size,
+        ssmr_max_inflight_streams: config.ssmr_max_inflight_streams,
+        ssmr_max_buffered_bytes: config.ssmr_max_buffered_bytes,
 
         feed_state,
 
@@ -147,6 +173,7 @@ pub async fn run_consensus_stack(
             marshal,
             dkg,
             subblocks,
+            ssmr,
         ),
     );
 

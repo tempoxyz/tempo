@@ -31,7 +31,7 @@ use crate::{
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    peer_manager, storage, subblocks,
+    peer_manager, ssmr, storage, subblocks,
 };
 
 use super::block::Block;
@@ -80,6 +80,10 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
     pub with_subblocks: bool,
+    pub with_ssmr: bool,
+    pub ssmr_shard_target_bytes: usize,
+    pub ssmr_max_inflight_streams: usize,
+    pub ssmr_max_buffered_bytes: usize,
 
     pub feed_state: crate::feed::FeedStateHandle,
 
@@ -228,6 +232,17 @@ where
                 epoch_strategy: epoch_strategy.clone(),
             })
         });
+        let ssmr = self.with_ssmr.then(|| {
+            ssmr::Actor::new(ssmr::Config {
+                context: context.clone(),
+                public_key: self.signer.public_key(),
+                scheme_provider: scheme_provider.clone(),
+                node: execution_node.clone(),
+                shard_target_bytes: self.ssmr_shard_target_bytes,
+                max_inflight_streams: self.ssmr_max_inflight_streams,
+                max_buffered_bytes: self.ssmr_max_buffered_bytes,
+            })
+        });
 
         let (feed, feed_mailbox) = crate::feed::init(
             context.with_label("feed"),
@@ -246,6 +261,7 @@ where
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
+            ssmr: ssmr.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
         })
@@ -317,6 +333,7 @@ where
             feed,
 
             subblocks,
+            ssmr,
         })
     }
 }
@@ -372,6 +389,7 @@ where
     feed: crate::feed::Actor<TContext>,
 
     subblocks: Option<subblocks::Actor<TContext>>,
+    ssmr: Option<ssmr::Actor>,
 }
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
@@ -423,6 +441,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        ssmr_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
             self.context,
@@ -434,6 +456,7 @@ where
                 marshal_network,
                 dkg_channel,
                 subblocks_channel,
+                ssmr_channel,
             )
         )
     }
@@ -469,6 +492,10 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
         subblocks_channel: (
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        ),
+        ssmr_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -514,9 +541,19 @@ where
         ];
 
         if let Some(subblocks) = self.subblocks {
-            tasks.push(self.context.spawn(|_| subblocks.run(subblocks_channel)));
+            tasks.push(
+                self.context
+                    .clone()
+                    .spawn(|_| subblocks.run(subblocks_channel)),
+            );
         } else {
             drop(subblocks_channel);
+        }
+
+        if let Some(ssmr) = self.ssmr {
+            tasks.push(self.context.clone().spawn(|_| ssmr.run(ssmr_channel)));
+        } else {
+            drop(ssmr_channel);
         }
 
         try_join_all(tasks)

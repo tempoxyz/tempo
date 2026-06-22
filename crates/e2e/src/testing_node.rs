@@ -33,8 +33,8 @@ use std::{
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
-    consensus,
+    RESOLVER_LIMIT, SSMR_CHANNEL_IDENT, SSMR_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    VOTES_CHANNEL_IDENT, VOTES_LIMIT, consensus,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::node::TempoNode;
@@ -329,6 +329,12 @@ where
             .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
             .await
             .unwrap();
+        let ssmr = self
+            .oracle
+            .control(self.public_key())
+            .register(SSMR_CHANNEL_IDENT, SSMR_LIMIT)
+            .await
+            .unwrap();
 
         let consensus_handle = engine.start(
             votes,
@@ -338,6 +344,7 @@ where
             marshal,
             dkg,
             subblocks,
+            ssmr,
         );
 
         self.consensus_handle = Some(consensus_handle);

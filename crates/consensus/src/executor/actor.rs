@@ -887,6 +887,7 @@ async fn forward_finalized<TContext: Pacer>(
             block_access_list,
             // can be omitted for finalized blocks
             validator_set: None,
+            executed_block: None,
         })
         .pace(context, Duration::from_millis(20))
         .await

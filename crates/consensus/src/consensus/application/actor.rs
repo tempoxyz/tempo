@@ -16,6 +16,7 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
+use alloy_eips::Encodable2718;
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
@@ -37,8 +38,9 @@ use futures::{StreamExt as _, channel::mpsc, future::try_join};
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::BlockBody as _;
+use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
+use tempo_node::{SsmrExecutedPayload, TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
@@ -56,6 +58,7 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
+    ssmr::{self, ProposalStream, SsmrCompleteStream, SsmrTranscript, StreamKey},
     subblocks,
     utils::OptionFuture,
 };
@@ -98,6 +101,7 @@ impl<TContext> Actor<TContext, Uninit>
 where
     TContext: Pacer
         + governor::clock::Clock
+        + commonware_runtime::Clock
         + Rng
         + CryptoRng
         + Spawner
@@ -127,6 +131,7 @@ where
                 executor: config.executor,
 
                 subblocks: config.subblocks,
+                ssmr: config.ssmr,
 
                 scheme_provider: config.scheme_provider,
                 validation_latency_estimator: Default::default(),
@@ -173,6 +178,7 @@ impl<TContext> Actor<TContext, Init>
 where
     TContext: Pacer
         + governor::clock::Clock
+        + commonware_runtime::Clock
         + Rng
         + CryptoRng
         + Spawner
@@ -229,6 +235,7 @@ struct Inner<TState> {
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
+    ssmr: Option<ssmr::Mailbox>,
     scheme_provider: SchemeProvider,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
@@ -237,7 +244,40 @@ struct Inner<TState> {
     state: TState,
 }
 
+impl<TState> Inner<TState> {
+    async fn complete_ssmr_stream(&self, block: &Block) -> Option<SsmrCompleteStream> {
+        let key = ssmr_stream_key_for_block(block)?;
+        self.ssmr.as_ref()?.get_complete_stream(key).await
+    }
+}
+
 impl Inner<Init> {
+    async fn wait_for_finalizing_ssmr_stream<TContext>(
+        &self,
+        context: &TContext,
+        block: &Block,
+        mut stream: SsmrCompleteStream,
+    ) -> SsmrCompleteStream
+    where
+        TContext: commonware_runtime::Clock,
+    {
+        if stream.optimistic_payload.is_some() || !stream.optimistic_execution_finalizing {
+            return stream;
+        }
+
+        for _ in 0..5 {
+            context.sleep(Duration::from_millis(10)).await;
+            let Some(updated) = self.complete_ssmr_stream(block).await else {
+                return stream;
+            };
+            stream = updated;
+            if stream.optimistic_payload.is_some() || !stream.optimistic_execution_finalizing {
+                break;
+            }
+        }
+        stream
+    }
+
     #[instrument(
         skip_all,
         fields(%digest),
@@ -459,7 +499,7 @@ impl Inner<Init> {
         ),
         err,
     )]
-    async fn handle_verify<TContext: Pacer>(
+    async fn handle_verify<TContext: Pacer + commonware_runtime::Clock>(
         self,
         verify: Verify,
         context: TContext,
@@ -578,6 +618,7 @@ impl Inner<Init> {
                 // It is safe to not verify the parent of the parent because this block is already notarized.
                 parent.parent_digest(),
                 &self.scheme_provider,
+                None,
             )
             .await
             .wrap_err("failed verifying block against execution layer")?
@@ -648,12 +689,12 @@ impl Inner<Init> {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
-        let consensus_context = Some(TempoConsensusContext {
+        let consensus_context = TempoConsensusContext {
             epoch: round.epoch().get(),
             view: round.view().get(),
             parent_view: parent_view.get(),
             proposer: crate::utils::public_key_to_tempo_primitive(&leader),
-        });
+        };
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
@@ -669,14 +710,41 @@ impl Inner<Init> {
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate());
-        let attrs = TempoPayloadAttributes::new(
+        let block_gas_limit = parent.header().gas_limit();
+        let chain_spec = self.execution_node.chain_spec();
+        let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
+        let general_gas_limit =
+            chain_spec.general_gas_limit_at(timestamp, block_gas_limit, shared_gas_limit);
+        let ssmr_stream = self.ssmr.as_ref().map(|ssmr| {
+            let shard_target_bytes = ssmr.shard_target_bytes();
+            let stream_key = StreamKey::new(
+                parent_digest.0,
+                parent.height().next().get(),
+                timestamp,
+                timestamp_millis_part,
+                consensus_context,
+            );
+            let stream = ProposalStream {
+                stream_key,
+                parent_height: parent.height().get(),
+                extra_data: extra_data.clone(),
+                gas_limit: block_gas_limit,
+                general_gas_limit,
+                shared_gas_limit,
+                shard_target_bytes: shard_target_bytes as u64,
+                bal_enabled: cfg!(feature = "bal"),
+            };
+            (ssmr.builder_sink(stream), shard_target_bytes)
+        });
+        let subblocks = self.subblocks.clone();
+        let mut attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
             timestamp_millis_part,
             extra_data,
-            consensus_context,
+            Some(consensus_context),
             move || {
-                self.subblocks
+                subblocks
                     .as_ref()
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
@@ -684,6 +752,9 @@ impl Inner<Init> {
         )
         .with_payload_build_budget(build_budget)
         .with_validation_latency_estimate(validation_latency_estimate);
+        if let Some((sink, shard_target_bytes)) = ssmr_stream {
+            attrs = attrs.with_ssmr_builder_sink(sink, shard_target_bytes);
+        }
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example
@@ -830,6 +901,63 @@ impl Inner<Init> {
             );
         }
 
+        let mut optimistic_payload = None;
+        if let Some(stream) = self.complete_ssmr_stream(&block).await {
+            let stream = self
+                .wait_for_finalizing_ssmr_stream(&context, &block, stream)
+                .await;
+            match reconcile_ssmr_transcript(&block, &stream.transcript) {
+                Ok(true) => {
+                    self.metrics.ssmr_final_reconciliations.inc();
+                    if let Some(payload) = stream
+                        .optimistic_payload
+                        .filter(|payload| reconcile_ssmr_optimistic_payload(&block, payload))
+                    {
+                        optimistic_payload = Some(payload);
+                        debug!(
+                            block.digest = %block.digest(),
+                            block.height = %block.height(),
+                            "final proposal matches complete SSMR transcript and optimistic artifact"
+                        );
+                    } else {
+                        self.metrics.ssmr_fallback_validation_count.inc();
+                        debug!(
+                            block.digest = %block.digest(),
+                            block.height = %block.height(),
+                            "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
+                        );
+                    }
+                }
+                Ok(false) => {
+                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
+                    self.metrics.ssmr_fallback_validation_count.inc();
+                    warn!(
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        "complete SSMR transcript did not match final proposal; falling back to normal validation"
+                    );
+                }
+                Err(error) => {
+                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
+                    self.metrics.ssmr_fallback_validation_count.inc();
+                    warn!(
+                        %error,
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        "failed reconciling SSMR transcript; falling back to normal validation"
+                    );
+                }
+            }
+        } else {
+            self.metrics.ssmr_missing_shards_at_proposal.inc();
+            self.metrics.ssmr_fallback_validation_count.inc();
+            debug!(
+                block.digest = %block.digest(),
+                block.height = %block.height(),
+                "no complete SSMR transcript for proposal; using normal validation"
+            );
+        }
+
         let validation_duration = verify_block(
             context,
             round.epoch(),
@@ -841,6 +969,7 @@ impl Inner<Init> {
             &block,
             parent_digest,
             &self.scheme_provider,
+            optimistic_payload,
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
@@ -914,6 +1043,7 @@ impl Inner<Uninit> {
                 executor: self.executor.clone(),
             },
             subblocks: self.subblocks,
+            ssmr: self.ssmr,
             scheme_provider: self.scheme_provider,
             validation_latency_estimator: self.validation_latency_estimator,
             metrics: self.metrics,
@@ -976,6 +1106,7 @@ async fn verify_block<TContext: Pacer>(
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
+    optimistic_payload: Option<SsmrExecutedPayload>,
 ) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
@@ -1010,6 +1141,7 @@ async fn verify_block<TContext: Pacer>(
         block: block.execution_block().clone(),
         block_access_list: block.block_access_list().cloned(),
         validator_set,
+        executed_block: optimistic_payload.map(|payload| payload.executed_block),
     };
     let validation_start = Instant::now();
     let payload_status = engine
@@ -1040,6 +1172,47 @@ async fn verify_block<TContext: Pacer>(
             )
         }
     }
+}
+
+fn ssmr_stream_key_for_block(block: &Block) -> Option<StreamKey> {
+    let header = block.header();
+    Some(StreamKey::new(
+        block.parent_digest().0,
+        block.height().get(),
+        header.timestamp(),
+        header.timestamp_millis_part,
+        header.consensus_context?,
+    ))
+}
+
+fn reconcile_ssmr_transcript(block: &Block, transcript: &SsmrTranscript) -> eyre::Result<bool> {
+    if Some(transcript.key()) != ssmr_stream_key_for_block(block) {
+        return Ok(false);
+    }
+
+    let streamed_transactions = transcript
+        .ordered_transactions()
+        .wrap_err("SSMR transcript was incomplete")?;
+    let block_transactions = &block.block().body().transactions;
+    if streamed_transactions.len() != block_transactions.len() {
+        return Ok(false);
+    }
+
+    let mut encoded = Vec::new();
+    for (streamed, transaction) in streamed_transactions.iter().zip(block_transactions) {
+        encoded.clear();
+        transaction.encode_2718(&mut encoded);
+        if streamed.as_ref() != encoded.as_slice() {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn reconcile_ssmr_optimistic_payload(block: &Block, payload: &SsmrExecutedPayload) -> bool {
+    payload.executed_block.recovered_block.sealed_block() == block.block()
+        && payload.block_access_list.as_ref() == block.block_access_list()
 }
 
 #[instrument(skip_all, err(Display))]
@@ -1159,6 +1332,10 @@ async fn subscribe(
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    ssmr_missing_shards_at_proposal: Counter,
+    ssmr_final_reconciliations: Counter,
+    ssmr_final_reconciliation_mismatches: Counter,
+    ssmr_fallback_validation_count: Counter,
 }
 
 impl Metrics {
@@ -1172,9 +1349,37 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time",
             parent_ahead_of_local_time.clone(),
         );
+        let ssmr_missing_shards_at_proposal = Counter::default();
+        context.register(
+            "ssmr_missing_shards_at_proposal",
+            "number of proposal verifications without a complete SSMR transcript",
+            ssmr_missing_shards_at_proposal.clone(),
+        );
+        let ssmr_final_reconciliations = Counter::default();
+        context.register(
+            "ssmr_final_reconciliations",
+            "number of final proposals that matched a complete SSMR transcript",
+            ssmr_final_reconciliations.clone(),
+        );
+        let ssmr_final_reconciliation_mismatches = Counter::default();
+        context.register(
+            "ssmr_final_reconciliation_mismatches",
+            "number of complete SSMR transcripts that did not match the final proposal",
+            ssmr_final_reconciliation_mismatches.clone(),
+        );
+        let ssmr_fallback_validation_count = Counter::default();
+        context.register(
+            "ssmr_fallback_validation_count",
+            "number of proposal verifications that used the normal execution validation path",
+            ssmr_fallback_validation_count.clone(),
+        );
 
         Self {
             parent_ahead_of_local_time,
+            ssmr_missing_shards_at_proposal,
+            ssmr_final_reconciliations,
+            ssmr_final_reconciliation_mismatches,
+            ssmr_fallback_validation_count,
         }
     }
 }

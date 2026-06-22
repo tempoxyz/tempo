@@ -7,7 +7,7 @@ mod attrs;
 mod budget;
 
 use alloy_primitives::{B256, Bytes};
-pub use attrs::TempoPayloadAttributes;
+pub use attrs::{SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, TempoPayloadAttributes};
 pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
@@ -122,6 +122,7 @@ impl TempoBuiltPayload {
             block,
             block_access_list,
             validator_set: None,
+            executed_block: None,
         }
     }
 }
@@ -160,6 +161,9 @@ pub struct TempoExecutionData {
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
+    /// Already-executed payload artifact for Tempo-internal fast paths.
+    #[serde(skip)]
+    pub executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
 }
 
 /// Serde helper for preserving the legacy plain block JSON shape.
@@ -274,6 +278,7 @@ impl PayloadTypes for TempoPayloadTypes {
             block: block.into(),
             block_access_list: bal,
             validator_set: None,
+            executed_block: None,
         }
     }
 }

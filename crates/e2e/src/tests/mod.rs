@@ -18,6 +18,7 @@ mod payload_builder;
 mod restart;
 mod simple;
 mod snapshot;
+mod ssmr;
 // FIXME: subblocks are currently flaky.
 // mod subblocks;
 mod blocked_transfers;
