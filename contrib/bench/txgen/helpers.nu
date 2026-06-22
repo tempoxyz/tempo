@@ -14,6 +14,10 @@ const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
 ]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
+const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT = 3000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
 const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 
@@ -69,6 +73,18 @@ def txgen-keychain-tip20-allowed-calls [token_count: int] {
         | to json -r
 }
 
+def txgen-key-authorization-gas-limit [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "key authorization token count must be greater than zero" }
+    }
+
+    if $token_count == 1 {
+        return ($TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT | into string)
+    }
+
+    ($TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT + ($token_count * $TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT)) | into string
+}
+
 def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
     if $accounts <= 0 {
         error make { msg: "keychain account count must be greater than zero" }
@@ -79,6 +95,8 @@ def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
     $env.TXGEN_KEYCHAIN_ACCESS_KEYS_END = ($access_keys_end | into string)
     $env.TXGEN_KEYCHAIN_TIP20_LIMITS = (txgen-keychain-tip20-limits $token_count)
     $env.TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS = (txgen-keychain-tip20-allowed-calls $token_count)
+    $env.TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = ($TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT | into string)
+    $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
 }
 
 def txgen-shell-quote [value: any] {
