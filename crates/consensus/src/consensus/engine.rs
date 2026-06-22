@@ -237,7 +237,7 @@ where
                 context: context.clone(),
                 public_key: self.signer.public_key(),
                 scheme_provider: scheme_provider.clone(),
-                node: execution_node.clone(),
+                task_executor: execution_node.task_executor.clone(),
                 executor: executor_mailbox.clone(),
                 shard_target_bytes: self.ssmr_shard_target_bytes,
                 max_inflight_streams: self.ssmr_max_inflight_streams,

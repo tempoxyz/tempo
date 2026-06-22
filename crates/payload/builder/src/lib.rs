@@ -1380,48 +1380,39 @@ where
         (transactions_tx, result_rx)
     }
 
-    fn spawn_bal_task(&self, state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        spawn_bal_task(
-            &self.executor,
-            state_root_task_hook.map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
-        )
-    }
-}
-
-fn spawn_bal_task(
-    executor: &TaskExecutor,
-    mut state_root_task_hook: Option<Box<dyn OnStateHook>>,
-) -> BalTaskHandle {
-    let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-    let (bal_tx, bal_rx) = oneshot::channel();
-    executor.spawn_blocking_named("builder-bal-task", || {
-        let mut bal_state = reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-        for msg in task_rx {
-            match msg {
-                BalMessage::BumpIndex => {
-                    bal_state.bump_bal_index();
-                }
-                BalMessage::State(state) => {
-                    bal_state.commit(&state);
-                    if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                        state_root_task_hook.on_state(state);
+    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
+        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
+        let (bal_tx, bal_rx) = oneshot::channel();
+        self.executor.spawn_blocking_named("builder-bal-task", || {
+            let mut bal_state =
+                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+            for msg in task_rx {
+                match msg {
+                    BalMessage::BumpIndex => {
+                        bal_state.bump_bal_index();
+                    }
+                    BalMessage::State(state) => {
+                        bal_state.commit(&state);
+                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                            state_root_task_hook.on_state(state);
+                        }
                     }
                 }
             }
+
+            drop(state_root_task_hook);
+            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
+            let mut encoded = Vec::new();
+            bal.encode(&mut encoded);
+            let bal_hash = keccak256(&encoded);
+
+            let _ = bal_tx.send((encoded.into(), bal_hash));
+        });
+
+        BalTaskHandle {
+            msg_tx: task_tx,
+            bal_rx,
         }
-
-        drop(state_root_task_hook);
-        let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-        let mut encoded = Vec::new();
-        bal.encode(&mut encoded);
-        let bal_hash = keccak256(&encoded);
-
-        let _ = bal_tx.send((encoded.into(), bal_hash));
-    });
-
-    BalTaskHandle {
-        msg_tx: task_tx,
-        bal_rx,
     }
 }
 

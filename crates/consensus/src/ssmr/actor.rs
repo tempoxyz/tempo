@@ -13,7 +13,7 @@ use futures::{
     channel::{mpsc, oneshot},
 };
 use prometheus_client::metrics::counter::Counter;
-use tempo_node::TempoFullNode;
+use reth_tasks::TaskExecutor;
 use tempo_payload_types::{
     SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplaySender, SsmrReplaySource,
     TempoBuiltPayload, TempoPayloadAttributes,
@@ -32,7 +32,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) public_key: PublicKey,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) node: Arc<TempoFullNode>,
+    pub(crate) task_executor: TaskExecutor,
     pub(crate) executor: crate::executor::Mailbox,
     pub(crate) shard_target_bytes: usize,
     pub(crate) max_inflight_streams: usize,
@@ -110,7 +110,7 @@ pub(crate) struct Actor {
     actions_tx: mpsc::UnboundedSender<Message>,
     actions_rx: mpsc::UnboundedReceiver<Message>,
     streams: HashMap<StreamKey, StreamBuffer>,
-    node: Arc<TempoFullNode>,
+    task_executor: TaskExecutor,
     executor: crate::executor::Mailbox,
     buffered_bytes: usize,
     shard_target_bytes: usize,
@@ -125,7 +125,7 @@ impl Actor {
             context,
             public_key,
             scheme_provider,
-            node,
+            task_executor,
             executor,
             shard_target_bytes,
             max_inflight_streams,
@@ -142,7 +142,7 @@ impl Actor {
             actions_tx,
             actions_rx,
             streams: HashMap::new(),
-            node,
+            task_executor,
             executor,
             buffered_bytes: 0,
             shard_target_bytes,
@@ -457,8 +457,7 @@ impl Actor {
         let tx = self.actions_tx.clone();
         let metrics = self.metrics.clone();
         let build_start = std::time::Instant::now();
-        self.node
-            .task_executor
+        self.task_executor
             .spawn_critical_task("ssmr-replay-payload", async move {
                 let payload = payload_rx.await.map_err(|error| error.to_string());
                 if payload.is_ok() {
