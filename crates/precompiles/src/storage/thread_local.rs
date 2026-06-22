@@ -157,6 +157,16 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
+    /// Increments a persistent storage slot by `delta`.
+    pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sinc(address, key, delta))
+    }
+
+    /// Decrements a persistent storage slot by `delta`.
+    pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sdec(address, key, delta))
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
@@ -216,6 +226,11 @@ impl StorageCtx {
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
+    }
+
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

@@ -70,9 +70,12 @@ reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["arbitrary"] }
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
 tokio.workspace = true
 test-case.workspace = true
