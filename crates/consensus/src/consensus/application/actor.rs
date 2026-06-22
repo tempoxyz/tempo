@@ -80,6 +80,8 @@ struct BuildProposalArgs {
     leader: PublicKey,
 }
 
+const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 struct ProposalReturn {
     /// Earliest time the built proposal may be returned to consensus.
     ///
@@ -91,6 +93,27 @@ struct ProposalReturn {
     /// This is a reasonably close estimate derived during payload building, not the exact final
     /// encoded block size.
     block_size_estimate_bytes: usize,
+}
+
+struct SsmrStreamRetirement {
+    ssmr: Option<ssmr::Mailbox>,
+    key: Option<StreamKey>,
+}
+
+impl SsmrStreamRetirement {
+    fn retire_now(&mut self) {
+        if let Some(key) = self.key.take()
+            && let Some(ssmr) = &self.ssmr
+        {
+            ssmr.retire_stream(key);
+        }
+    }
+}
+
+impl Drop for SsmrStreamRetirement {
+    fn drop(&mut self) {
+        self.retire_now();
+    }
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -251,6 +274,19 @@ impl<TState> Inner<TState> {
         let key = ssmr_stream_key_for_block(block)?;
         self.ssmr.as_ref()?.get_stream_snapshot(key).await
     }
+
+    fn evict_ssmr_streams_through_height(&self, height: Height) {
+        if let Some(ssmr) = &self.ssmr {
+            ssmr.evict_streams_through_height(height.get());
+        }
+    }
+
+    fn retire_ssmr_stream_on_drop(&self, block: &Block) -> SsmrStreamRetirement {
+        SsmrStreamRetirement {
+            ssmr: self.ssmr.clone(),
+            key: ssmr_stream_key_for_block(block),
+        }
+    }
 }
 
 impl Inner<Init> {
@@ -263,18 +299,21 @@ impl Inner<Init> {
     where
         TContext: commonware_runtime::Clock,
     {
+        if !snapshot.started {
+            return None;
+        }
         if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
             return snapshot.complete;
         }
 
-        for _ in 0..5 {
-            context.sleep(Duration::from_millis(10)).await;
+        while ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
+            context.sleep(SSMR_SNAPSHOT_POLL_INTERVAL).await;
             let Some(updated) = self.ssmr_stream_snapshot(block).await else {
-                return snapshot.complete;
+                return None;
             };
             snapshot = updated;
-            if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
-                break;
+            if !snapshot.started {
+                return None;
             }
         }
         snapshot.complete
@@ -468,6 +507,7 @@ impl Inner<Init> {
             proposal.digest = %proposal_digest,
             "constructed proposal",
         );
+        self.evict_ssmr_streams_through_height(proposal_block.height());
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
@@ -849,6 +889,7 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed getting required blocks")?;
+        let mut ssmr_retirement = self.retire_ssmr_stream_on_drop(&block);
 
         // Can only repropose at the end of an epoch.
         //
@@ -862,6 +903,7 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
+                ssmr_retirement.retire_now();
                 if !self.marshal.verified(round, block).await {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
@@ -871,6 +913,7 @@ impl Inner<Init> {
                     parent: Some(parent),
                 });
             } else {
+                ssmr_retirement.retire_now();
                 return Ok(VerifyResult {
                     result: false,
                     block: Some(block),
@@ -890,6 +933,7 @@ impl Inner<Init> {
         .await
         {
             warn!(%reason, "header could not be verified; failing block");
+            ssmr_retirement.retire_now();
             return Ok(VerifyResult {
                 result: false,
                 block: Some(block),
@@ -952,6 +996,7 @@ impl Inner<Init> {
                                     block.digest = %block.digest(),
                                     block.height = %block.height(),
                                     optimistic.finalizing = stream.optimistic_execution_finalizing,
+                                    optimistic.failed = stream.optimistic_execution_failed,
                                     "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
                                 );
                             }
@@ -996,6 +1041,7 @@ impl Inner<Init> {
                 "no SSMR stream for proposal; using normal validation"
             );
         }
+        ssmr_retirement.retire_now();
 
         let validation_duration = verify_block(
             context,
@@ -1274,7 +1320,7 @@ fn ssmr_snapshot_waiting_for_optimistic_payload(snapshot: &SsmrStreamSnapshot) -
     }
 
     match snapshot.complete.as_ref() {
-        Some(stream) => stream.optimistic_payload.is_none(),
+        Some(stream) => stream.optimistic_payload.is_none() && !stream.optimistic_execution_failed,
         None => true,
     }
 }

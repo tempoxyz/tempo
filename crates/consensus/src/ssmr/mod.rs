@@ -218,6 +218,7 @@ pub(crate) struct SsmrCompleteStream {
     pub(crate) transcript: SsmrTranscript,
     pub(crate) optimistic_payload: Option<TempoBuiltPayload>,
     pub(crate) optimistic_execution_finalizing: bool,
+    pub(crate) optimistic_execution_failed: bool,
 }
 
 /// Current SSMR state for one block stream.

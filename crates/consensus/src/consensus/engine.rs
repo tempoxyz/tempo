@@ -82,7 +82,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub with_subblocks: bool,
     pub with_ssmr: bool,
     pub ssmr_shard_target_bytes: usize,
-    pub ssmr_max_inflight_streams: usize,
     pub ssmr_max_buffered_bytes: usize,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -240,7 +239,6 @@ where
                 task_executor: execution_node.task_executor.clone(),
                 executor: executor_mailbox.clone(),
                 shard_target_bytes: self.ssmr_shard_target_bytes,
-                max_inflight_streams: self.ssmr_max_inflight_streams,
                 max_buffered_bytes: self.ssmr_max_buffered_bytes,
             })
         });

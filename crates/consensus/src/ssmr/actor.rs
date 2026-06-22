@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -35,7 +35,6 @@ pub(crate) struct Config<TContext> {
     pub(crate) task_executor: TaskExecutor,
     pub(crate) executor: crate::executor::Mailbox,
     pub(crate) shard_target_bytes: usize,
-    pub(crate) max_inflight_streams: usize,
     pub(crate) max_buffered_bytes: usize,
 }
 
@@ -110,11 +109,11 @@ pub(crate) struct Actor {
     actions_tx: mpsc::UnboundedSender<Message>,
     actions_rx: mpsc::UnboundedReceiver<Message>,
     streams: HashMap<StreamKey, StreamBuffer>,
+    retired_streams: HashSet<StreamKey>,
     task_executor: TaskExecutor,
     executor: crate::executor::Mailbox,
     buffered_bytes: usize,
     shard_target_bytes: usize,
-    max_inflight_streams: usize,
     max_buffered_bytes: usize,
     metrics: Metrics,
 }
@@ -128,7 +127,6 @@ impl Actor {
             task_executor,
             executor,
             shard_target_bytes,
-            max_inflight_streams,
             max_buffered_bytes,
         }: Config<TContext>,
     ) -> Self
@@ -142,11 +140,11 @@ impl Actor {
             actions_tx,
             actions_rx,
             streams: HashMap::new(),
+            retired_streams: HashSet::new(),
             task_executor,
             executor,
             buffered_bytes: 0,
             shard_target_bytes,
-            max_inflight_streams,
             max_buffered_bytes,
             metrics: Metrics::init(&context),
         }
@@ -193,6 +191,12 @@ impl Actor {
             Message::GetStreamSnapshot { key, response } => {
                 let stream = self.streams.get(&key).map(StreamBuffer::snapshot);
                 let _ = response.send(stream);
+            }
+            Message::RetireStream { key } => {
+                self.retire_stream(key);
+            }
+            Message::EvictStreamsThroughHeight { block_height } => {
+                self.evict_streams_through_height(block_height);
             }
             Message::OptimisticPayloadReady { key, payload } => match payload {
                 Ok(payload) => {
@@ -283,11 +287,11 @@ impl Actor {
 
     fn insert_stream_message(&mut self, message: SsmrMessage) {
         let key = message.stream_key();
-        if !self.streams.contains_key(&key) && self.streams.len() >= self.max_inflight_streams {
-            warn!(
+        if self.stream_retired(key) {
+            debug!(
                 stream.parent = %key.parent_hash,
                 stream.height = key.block_height,
-                "discarding SSMR message because inflight stream limit is reached"
+                "discarding retired SSMR stream message"
             );
             return;
         }
@@ -346,6 +350,34 @@ impl Actor {
                 "completed SSMR transcript"
             );
         }
+    }
+
+    fn evict_stream(&mut self, key: StreamKey) {
+        if let Some(stream) = self.streams.remove(&key) {
+            self.buffered_bytes = self.buffered_bytes.saturating_sub(stream.buffered_bytes);
+        }
+    }
+
+    fn evict_streams_through_height(&mut self, block_height: u64) {
+        let mut evicted_bytes = 0usize;
+        self.streams.retain(|key, stream| {
+            if key.block_height <= block_height {
+                evicted_bytes = evicted_bytes.saturating_add(stream.buffered_bytes);
+                false
+            } else {
+                true
+            }
+        });
+        self.buffered_bytes = self.buffered_bytes.saturating_sub(evicted_bytes);
+    }
+
+    fn retire_stream(&mut self, key: StreamKey) {
+        self.evict_stream(key);
+        self.retired_streams.insert(key);
+    }
+
+    fn stream_retired(&self, key: StreamKey) -> bool {
+        self.retired_streams.contains(&key)
     }
 
     fn drive_optimistic_execution(&mut self, key: StreamKey) {
@@ -512,6 +544,16 @@ impl Mailbox {
             .ok()?;
         rx.await.ok().flatten()
     }
+
+    pub(crate) fn retire_stream(&self, key: StreamKey) {
+        let _ = self.tx.unbounded_send(Message::RetireStream { key });
+    }
+
+    pub(crate) fn evict_streams_through_height(&self, block_height: u64) {
+        let _ = self
+            .tx
+            .unbounded_send(Message::EvictStreamsThroughHeight { block_height });
+    }
 }
 
 enum Message {
@@ -522,6 +564,12 @@ enum Message {
     GetStreamSnapshot {
         key: StreamKey,
         response: oneshot::Sender<Option<SsmrStreamSnapshot>>,
+    },
+    RetireStream {
+        key: StreamKey,
+    },
+    EvictStreamsThroughHeight {
+        block_height: u64,
     },
     OptimisticPayloadReady {
         key: StreamKey,
@@ -569,6 +617,7 @@ impl StreamBuffer {
                     .optimistic_execution
                     .as_ref()
                     .is_some_and(|execution| execution.finalizing),
+                optimistic_execution_failed: self.optimistic_failed,
             })
     }
 

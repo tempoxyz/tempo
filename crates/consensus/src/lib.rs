@@ -152,7 +152,6 @@ pub async fn run_consensus_stack(
         with_subblocks: false,
         with_ssmr: config.ssmr,
         ssmr_shard_target_bytes: config.ssmr_shard_size,
-        ssmr_max_inflight_streams: config.ssmr_max_inflight_streams,
         ssmr_max_buffered_bytes: config.ssmr_max_buffered_bytes,
 
         feed_state,

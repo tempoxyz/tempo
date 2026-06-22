@@ -297,10 +297,6 @@ pub struct Args {
     #[arg(long = "consensus.ssmr-channel-quota", default_value_t = 16_384)]
     pub ssmr_channel_quota: usize,
 
-    /// Maximum number of in-memory SSMR streams tracked at once.
-    #[arg(long = "consensus.ssmr-max-inflight-streams", default_value_t = 8)]
-    pub ssmr_max_inflight_streams: usize,
-
     /// Maximum SSMR shard bytes buffered in memory.
     #[arg(long = "consensus.ssmr-max-buffered-bytes", default_value_t = 64 * 1024 * 1024)]
     pub ssmr_max_buffered_bytes: usize,

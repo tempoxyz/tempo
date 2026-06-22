@@ -147,9 +147,6 @@ pub struct Setup {
     /// Target SSMR transaction shard size.
     pub ssmr_shard_target_bytes: usize,
 
-    /// Maximum in-flight SSMR streams retained by consensus.
-    pub ssmr_max_inflight_streams: usize,
-
     /// Maximum buffered SSMR bytes retained by consensus.
     pub ssmr_max_buffered_bytes: usize,
 
@@ -173,7 +170,6 @@ impl Setup {
             with_subblocks: false,
             with_ssmr: false,
             ssmr_shard_target_bytes: 10 * 1024,
-            ssmr_max_inflight_streams: 8,
             ssmr_max_buffered_bytes: 16 * 1024 * 1024,
             fee_recipient: Address::ZERO,
         }
@@ -264,7 +260,6 @@ pub async fn setup_validators(
         with_subblocks,
         with_ssmr,
         ssmr_shard_target_bytes,
-        ssmr_max_inflight_streams,
         ssmr_max_buffered_bytes,
         fee_recipient,
         ..
@@ -340,7 +335,6 @@ pub async fn setup_validators(
             with_subblocks,
             with_ssmr,
             ssmr_shard_target_bytes,
-            ssmr_max_inflight_streams,
             ssmr_max_buffered_bytes,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
