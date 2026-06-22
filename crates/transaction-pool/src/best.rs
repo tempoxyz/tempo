@@ -183,6 +183,10 @@ where
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.decreased_balances.is_empty() {
+            return self.inner.next();
+        }
+
         loop {
             let tx = self.inner.next()?;
 
