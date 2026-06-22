@@ -263,7 +263,8 @@ check_installer_up_to_date() {
     fi
 
     # Fetch the remote version
-    local remote_version=$(curl -fsSL "$TEMPOUP_BIN_URL" 2>/dev/null | \
+    local remote_version
+    remote_version=$(curl -fsSL "$TEMPOUP_BIN_URL" 2>/dev/null | \
         grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
 
     if [[ -z "$remote_version" ]]; then
@@ -289,8 +290,9 @@ update_tempoup() {
     fi
 
     # Create temporary file
-    local tmp_file=$(mktemp)
-    trap "rm -f $tmp_file" EXIT
+    local tmp_file
+    tmp_file=$(mktemp)
+    trap 'rm -f "$tmp_file"' EXIT
 
     # Download latest tempoup script
     info "Downloading latest tempoup..."
@@ -300,7 +302,8 @@ update_tempoup() {
     fi
 
     # Extract remote version
-    local remote_version=$(grep '^TEMPOUP_INSTALLER_VERSION=' "$tmp_file" | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+    local remote_version
+    remote_version=$(grep '^TEMPOUP_INSTALLER_VERSION=' "$tmp_file" | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
 
     if [[ -z "$remote_version" ]]; then
         error "Failed to determine remote version"
@@ -372,7 +375,8 @@ done
 
 # Detect platform
 detect_platform() {
-    local platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local platform
+    platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
     case "$platform" in
         linux*)
@@ -392,7 +396,8 @@ detect_platform() {
 
 # Detect architecture
 detect_arch() {
-    local arch="$(uname -m)"
+    local arch
+    arch="$(uname -m)"
 
     case "$arch" in
         x86_64 | x64 | amd64)
@@ -500,9 +505,7 @@ main() {
         fi
     fi
 
-    # Strip 'v' prefix if present for consistency
     VERSION_TAG="$VERSION"
-    VERSION_NUMBER="${VERSION#v}"
 
     info "Installing tempo $VERSION_TAG"
 
@@ -517,7 +520,7 @@ main() {
 
     # Create temporary directory
     TMP_DIR=$(mktemp -d)
-    trap "rm -rf $TMP_DIR" EXIT
+    trap 'rm -rf "$TMP_DIR"' EXIT
 
     # Download archive
     info "Downloading tempo binary..."
@@ -615,7 +618,7 @@ main() {
     info "Installing to $BIN_DIR/$BINARY_NAME..."
     local OLD_BINARY="$BIN_DIR/$BINARY_NAME.old"
     mv -f "$BIN_DIR/$BINARY_NAME" "$OLD_BINARY" 2>/dev/null || true
-    trap 'mv -f "$OLD_BINARY" "$BIN_DIR/$BINARY_NAME" 2>/dev/null || true' ERR EXIT
+    trap 'if [[ -e "$OLD_BINARY" ]]; then mv -f "$OLD_BINARY" "$BIN_DIR/$BINARY_NAME" 2>/dev/null || true; else rm -f "$BIN_DIR/$BINARY_NAME" 2>/dev/null || true; fi' ERR EXIT
     if cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
         chmod 755 "$BIN_DIR/$BINARY_NAME"
     elif sudo cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then

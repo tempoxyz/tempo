@@ -38,6 +38,27 @@ verify_tempo_binary() {
     exit 1
 }
 
+should_verify_tempo_after_tempoup() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help|-v|--version|-U|--update)
+                return 1
+                ;;
+            -i|--install)
+                return 0
+                ;;
+            --unsafe-skip-verify)
+                shift
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done
+
+    return 0
+}
+
 # Install a file to BIN_DIR, using sudo if necessary
 install_bin() {
     local src="$1"
@@ -65,7 +86,7 @@ main() {
     # Download tempoup script to a temp file
     local tmp_file
     tmp_file="$(mktemp 2>/dev/null || mktemp -t tempoup)"
-    trap "rm -f '$tmp_file'" EXIT
+    trap 'rm -f "$tmp_file"' EXIT
 
     info "Downloading tempoup script..."
     if command -v curl >/dev/null 2>&1; then
@@ -104,10 +125,12 @@ ENVEOF
     echo ""
 
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" "$@"
-    if [[ -x "$BIN_DIR/tempo" ]]; then
-        verify_tempo_binary "$BIN_DIR/tempo"
-    elif [[ -x "$BIN_DIR/tempo.exe" ]]; then
-        verify_tempo_binary "$BIN_DIR/tempo.exe"
+    if should_verify_tempo_after_tempoup "$@"; then
+        if [[ -x "$BIN_DIR/tempo" ]]; then
+            verify_tempo_binary "$BIN_DIR/tempo"
+        elif [[ -x "$BIN_DIR/tempo.exe" ]]; then
+            verify_tempo_binary "$BIN_DIR/tempo.exe"
+        fi
     fi
 
     echo ""
@@ -173,9 +196,11 @@ configure_shell() {
             continue
         fi
 
-        echo >> "$cfg"
-        echo "# Added by tempoup installer" >> "$cfg"
-        echo "$source_line" >> "$cfg"
+        {
+            echo
+            echo "# Added by tempoup installer"
+            echo "$source_line"
+        } >> "$cfg"
         info "Added tempo to PATH in $cfg"
         modified=1
     done
