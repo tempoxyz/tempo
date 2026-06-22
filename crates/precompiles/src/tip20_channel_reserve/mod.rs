@@ -609,7 +609,6 @@ impl TIP20ChannelReserve {
             return self.channel_states[channel_id].write(state);
         }
 
-        let checkpoint = self.storage.checkpoint();
         self.channel_storage_credits[payer].delete()?;
 
         let mut storage_credits = StorageCredits::new();
@@ -625,7 +624,6 @@ impl TIP20ChannelReserve {
         }
 
         self.credit_channel_storage_slots(payer, current.saturating_sub(spent_credits))?;
-        checkpoint.commit();
         Ok(())
     }
 
