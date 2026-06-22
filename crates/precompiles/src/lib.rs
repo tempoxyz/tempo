@@ -453,7 +453,7 @@ fn mutate_void<T: SolCall>(
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
 fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
-    if StorageCtx.spec().is_t7() {
+    if StorageCtx.spec().is_t8() {
         StorageCredits::new().set_mode(
             credit_owner,
             tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
