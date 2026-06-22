@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 tempo-primitives.workspace = true
+tempo-contracts.workspace = true
 
 reth-cli = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
@@ -25,7 +26,6 @@ reth-network-peers = { workspace = true, optional = true }
 tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
 alloy-evm = { workspace = true, optional = true }
-alloy-consensus.workspace = true
 alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true

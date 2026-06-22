@@ -6,7 +6,6 @@ use crate::{
     network_identity::NetworkIdentity,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use alloy_consensus::EMPTY_ROOT_HASH;
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
@@ -22,18 +21,20 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::TempoHeader;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
-/// Accounts committed to by the Provable Contract Trie in this implementation slice.
+/// Initial accounts committed to by the Provable Contract Trie.
 ///
-/// TIP-1082 initial non-empty account imports require the migration build, which is out of scope
-/// here. Until that migration lands, the active whitelist is intentionally empty: no account
-/// objects are inserted and the post-activation trie root is the canonical empty-trie root.
-pub const INITIAL_PROVABLE_ACCOUNTS: &[Address] = &[];
+/// TIP-1082 initial account state imports require the migration build, which is out of scope here.
+/// The whitelist is active at the proof-root fork; account leaves are inserted only when migration
+/// data or post-execution updates provide account state.
+pub const INITIAL_PROVABLE_ACCOUNTS: &[Address] =
+    &[ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS];
 
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -217,20 +218,6 @@ impl TempoChainSpec {
         } else {
             &[]
         }
-    }
-
-    /// Returns the TIP-1082 proof root for an active empty provable-account whitelist.
-    ///
-    /// This implementation slice intentionally has no migrated accounts. With an empty
-    /// whitelist, the sparse MPT has no account leaves and its root is the canonical
-    /// Ethereum empty-trie root.
-    pub fn proof_root_for_empty_provable_whitelist_at_timestamp(
-        &self,
-        timestamp: u64,
-    ) -> Option<B256> {
-        (self.is_proof_root_active_at_timestamp(timestamp)
-            && self.provable_accounts_at_timestamp(timestamp).is_empty())
-        .then_some(EMPTY_ROOT_HASH)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -442,7 +429,6 @@ mod tests {
         hardfork::{TempoHardfork, TempoHardforks},
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
     };
-    use alloy_consensus::EMPTY_ROOT_HASH;
     use alloy_genesis::Genesis;
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
@@ -451,6 +437,7 @@ mod tests {
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
+    use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::Header;
 
     #[test]
@@ -606,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_root_activates_at_t8_with_empty_root() {
+    fn provable_accounts_activate_at_t8() {
         let genesis = serde_json::json!({
             "config": {
                 "chainId": 99999,
@@ -636,17 +623,18 @@ mod tests {
         let genesis: Genesis = serde_json::from_value(genesis).unwrap();
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
 
+        assert_eq!(
+            super::INITIAL_PROVABLE_ACCOUNTS,
+            &[ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS,]
+        );
+
         assert!(!chainspec.is_proof_root_active_at_timestamp(9));
         assert!(chainspec.provable_accounts_at_timestamp(9).is_empty());
-        assert_eq!(
-            chainspec.proof_root_for_empty_provable_whitelist_at_timestamp(9),
-            None
-        );
+
         assert!(chainspec.is_proof_root_active_at_timestamp(10));
-        assert!(chainspec.provable_accounts_at_timestamp(10).is_empty());
         assert_eq!(
-            chainspec.proof_root_for_empty_provable_whitelist_at_timestamp(10),
-            Some(EMPTY_ROOT_HASH)
+            chainspec.provable_accounts_at_timestamp(10),
+            super::INITIAL_PROVABLE_ACCOUNTS
         );
     }
 

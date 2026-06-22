@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_proof_root_against_empty_provable_whitelist() {
+    fn validates_proof_root_against_empty_provable_state_updates() {
         let validator = TempoEngineValidator::new(chainspec_with_t8_at(10));
         let state_updates = HashedPostState::default();
 
