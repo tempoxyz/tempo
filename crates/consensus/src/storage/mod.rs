@@ -27,9 +27,11 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
+mod measured;
 pub mod snapshot;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
+pub(crate) use measured::{MeasuredBlocks, MeasuredCertificates};
 
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
