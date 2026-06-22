@@ -60,11 +60,11 @@ impl From<TransientState> for U256 {
 
 /// Container for slots which are not eligible for storage credits mints.
 ///
-/// There are 3 storage slots that are special in terms of TIP-1060 accounting:
+/// There are 2 storage slots that are special in terms of TIP-1060 accounting:
 ///   1. Balance of the current transaction's fee payer
 ///   2. Spending limit of the current transaction's keychain key
 ///
-/// Those three slots might get recreated during `collectFeePostTx` call inside of
+/// Those two slots might get recreated during `collectFeePostTx` call inside of
 /// which we don't do gas accounting or burn storage credits, and thus allowing to
 /// mint credits for those slots during transaction execution might result in those
 /// credits being unbacked.
