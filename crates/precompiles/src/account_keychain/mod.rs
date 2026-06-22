@@ -1327,11 +1327,31 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        let period = self.spending_limits[limit_key][token].period.read()?;
+        if period == 0 {
+            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+            if amount > remaining {
+                return Err(AccountKeychainError::spending_limit_exceeded().into());
+            }
+
+            let new_remaining = remaining - amount;
+            self.spending_limits[limit_key][token]
+                .remaining
+                .write(new_remaining)?;
+            self.emit_event(AccountKeychainEvent::access_key_spend(
+                account,
+                key_id,
+                token,
+                amount,
+                new_remaining,
+            ))?;
+            return Ok(());
+        }
+
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
-        let is_periodic = limit_state.period != 0;
 
-        if is_periodic && current_timestamp >= limit_state.period_end {
+        if current_timestamp >= limit_state.period_end {
             let next_end = limit_state.compute_next_period_end(current_timestamp);
 
             remaining = U256::from(limit_state.max);
@@ -1345,14 +1365,8 @@ impl AccountKeychain {
 
         // Update remaining limit
         let new_remaining = remaining - amount;
-        if is_periodic {
-            limit_state.remaining = new_remaining;
-            self.spending_limits[limit_key][token].write(limit_state)?;
-        } else {
-            self.spending_limits[limit_key][token]
-                .remaining
-                .write(new_remaining)?;
-        }
+        limit_state.remaining = new_remaining;
+        self.spending_limits[limit_key][token].write(limit_state)?;
 
         self.emit_event(AccountKeychainEvent::access_key_spend(
             account,
