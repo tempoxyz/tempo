@@ -1410,18 +1410,21 @@ impl AccountKeychain {
                 .write(refunded);
         }
 
-        let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        let refunded = limit_state.remaining.saturating_add(amount);
+        let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+        let max = self.spending_limits[limit_key][token].max.read()?;
+        let refunded = remaining.saturating_add(amount);
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
         // with a real T3 max.
-        limit_state.remaining = if limit_state.max == 0 {
+        let remaining = if max == 0 {
             refunded
         } else {
-            refunded.min(U256::from(limit_state.max))
+            refunded.min(U256::from(max))
         };
 
-        self.spending_limits[limit_key][token].write(limit_state)
+        self.spending_limits[limit_key][token]
+            .remaining
+            .write(remaining)
     }
 
     /// Authorize a token transfer with access key spending limits.
