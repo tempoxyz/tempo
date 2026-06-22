@@ -97,32 +97,38 @@ impl StablecoinDEX {
         let current = self.dex_storage_credits[user].read()?;
         let updated = current.saturating_add(slots);
 
-        if current == 0 {
-            // Store the full logical balance even though creating this counter slot spends one
-            // real DEX-owned TIP-1060 credit. The real balance is temporarily one lower while the
-            // counter exists, and the credit is minted back when the counter is cleared to zero.
-            let mut storage_credits = StorageCredits::new();
-            let (_, delta) = storage_credits.with_budget(self.address, 1, || {
-                self.dex_storage_credits[user].write(updated)
-            })?;
-
-            if delta != -1 {
-                return Err(TempoPrecompileError::Fatal(format!(
-                    "DEX storage credit bookkeeping spend mismatch: reserved 1, delta {delta}"
-                )));
-            }
-
-            Ok(())
-        } else {
-            self.dex_storage_credits[user].write(updated)
+        if current != 0 {
+            return self.dex_storage_credits[user].write(updated);
         }
+
+        // Initializing this counter spends one DEX-owned credit from the newly granted slots.
+        // We still store the full logical balance: the DEX balance is one credit short while the
+        // counter exists, then gets that credit back when the counter is cleared.
+        let mut storage_credits = StorageCredits::new();
+        let (_, delta) = storage_credits.with_budget(self.address, 1, || {
+            self.dex_storage_credits[user].write(updated)
+        })?;
+
+        if delta != -1 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "DEX storage credit bookkeeping spend mismatch: reserved 1, delta {delta}"
+            )));
+        }
+
+        Ok(())
     }
 
     /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
     fn delete_order(&mut self, order: &Order) -> Result<u64> {
-        StorageCredits::new()
-            .track_credit_delta(self.address, || self.orders[order.order_id()].delete())
-            .map(|delta| delta.max(0) as u64)
+        let delta = StorageCredits::new()
+            .track_credit_delta(self.address, || self.orders[order.order_id()].delete())?;
+        if delta < 0 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "DEX order delete spent storage credits: delta {delta}"
+            )));
+        }
+
+        Ok(delta as u64)
     }
 
     /// Updates an order-record and credits `order_id`'s maker for any minted credits.
@@ -132,12 +138,16 @@ impl StablecoinDEX {
         update: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
         let delta = StorageCredits::new().track_credit_delta(self.address, || update(self))?;
-        if delta > 0 {
-            let maker = self.orders[order_id].maker.read()?;
-            self.credit_dex_storage_slots(maker, delta as u64)?;
+        if delta < 0 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "DEX order update spent storage credits: order {order_id}, delta {delta}"
+            )));
+        } else if delta == 0 {
+            return Ok(());
         }
 
-        Ok(())
+        let maker = self.orders[order_id].maker.read()?;
+        self.credit_dex_storage_slots(maker, delta as u64)
     }
 
     /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
