@@ -100,56 +100,25 @@ gh_authenticated() {
     check_cmd gh && gh auth status >/dev/null 2>&1
 }
 
-homebrew_libusb_dylib() {
+ensure_runtime_dependencies() {
+    local platform="$1"
+    local binary_path="${2:-}"
+    local dylib=""
     local prefix
-    prefix="$(brew --prefix libusb 2>/dev/null || true)"
-    if [[ -n "$prefix" ]]; then
-        echo "$prefix/lib/libusb-1.0.0.dylib"
-    fi
-}
 
-darwin_required_libusb_dylib() {
-    local binary_path="$1"
+    [[ "$platform" == "darwin" ]] || return 0
 
     if [[ -n "$binary_path" ]] && check_cmd otool; then
-        otool -L "$binary_path" 2>/dev/null | awk '/libusb-1\.0\.0\.dylib/ {print $1; exit}'
-    fi
-}
-
-darwin_libusb_required() {
-    local binary_path="$1"
-
-    if [[ -n "$binary_path" ]] && check_cmd otool; then
-        [[ -n "$(darwin_required_libusb_dylib "$binary_path")" ]]
-        return
+        dylib="$(otool -L "$binary_path" 2>/dev/null | awk '/libusb-1\.0\.0\.dylib/ {print $1; exit}')"
+        [[ -n "$dylib" ]] || return 0
     fi
 
-    # If otool is unavailable, assume the current macOS release needs libusb.
-    return 0
-}
-
-darwin_libusb_installed() {
-    local binary_path="$1"
-    local required_dylib
-    local dylib_path
-
-    required_dylib="$(darwin_required_libusb_dylib "$binary_path")"
-    if [[ "$required_dylib" == /* ]]; then
-        [[ -r "$required_dylib" ]]
-        return
+    if [[ -z "$dylib" || "$dylib" != /* ]]; then
+        prefix="$(brew --prefix libusb 2>/dev/null || true)"
+        [[ -n "$prefix" ]] && dylib="$prefix/lib/libusb-1.0.0.dylib"
     fi
 
-    dylib_path="$(homebrew_libusb_dylib)"
-    [[ -n "$dylib_path" && -r "$dylib_path" ]]
-}
-
-ensure_darwin_libusb() {
-    local binary_path="$1"
-    if ! darwin_libusb_required "$binary_path"; then
-        return
-    fi
-
-    if darwin_libusb_installed "$binary_path"; then
+    if [[ -n "$dylib" && -r "$dylib" ]]; then
         info "macOS runtime dependency found: libusb"
         return
     fi
@@ -163,34 +132,20 @@ ensure_darwin_libusb() {
 
     warn "macOS runtime dependency libusb not found; installing with Homebrew..."
     if brew list --versions libusb >/dev/null 2>&1; then
-        if ! brew reinstall libusb; then
-            error "Failed to reinstall libusb with Homebrew."
-        fi
+        brew reinstall libusb || error "Failed to reinstall libusb with Homebrew."
     else
-        if ! brew install libusb; then
-            error "Failed to install libusb with Homebrew."
-        fi
+        brew install libusb || error "Failed to install libusb with Homebrew."
     fi
 
-    if ! darwin_libusb_installed "$binary_path"; then
-        error "Homebrew did not install libusb where tempo can load it.
+    if [[ -z "$dylib" || "$dylib" != /* ]]; then
+        dylib="$(brew --prefix libusb 2>/dev/null)/lib/libusb-1.0.0.dylib"
+    fi
+    [[ -r "$dylib" ]] || error "Homebrew did not install libusb where tempo can load it.
   Try running:
     brew install libusb
   Then re-run tempoup."
-    fi
 
     info "macOS runtime dependency installed: libusb"
-}
-
-ensure_runtime_dependencies() {
-    local platform="$1"
-    local binary_path="${2:-}"
-
-    case "$platform" in
-        darwin)
-            ensure_darwin_libusb "$binary_path"
-            ;;
-    esac
 }
 
 verify_tempo_binary() {

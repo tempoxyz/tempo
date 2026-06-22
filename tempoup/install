@@ -22,35 +22,13 @@ warn() {
     echo -e "${YELLOW}warn${NC}: $1"
 }
 
-verify_tempo_binary() {
-    local binary_path="$1"
-    local output
-
-    if output="$("$binary_path" --version 2>&1)"; then
-        local first_line
-        first_line="$(printf '%s\n' "$output" | head -n 1)"
-        info "Tempo ready: $first_line"
-        return
-    fi
-
-    echo "$output" >&2
-    echo "error: tempo failed to launch after installation" >&2
-    exit 1
-}
-
 should_verify_tempo_after_tempoup() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
+    for arg in "$@"; do
+        case "$arg" in
             -h|--help|-v|--version|-U|--update)
                 return 1
                 ;;
             -i|--install)
-                return 0
-                ;;
-            --unsafe-skip-verify)
-                shift
-                ;;
-            *)
                 return 0
                 ;;
         esac
@@ -126,10 +104,17 @@ ENVEOF
 
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" "$@"
     if should_verify_tempo_after_tempoup "$@"; then
-        if [[ -x "$BIN_DIR/tempo" ]]; then
-            verify_tempo_binary "$BIN_DIR/tempo"
-        elif [[ -x "$BIN_DIR/tempo.exe" ]]; then
-            verify_tempo_binary "$BIN_DIR/tempo.exe"
+        local tempo_bin="$BIN_DIR/tempo"
+        [[ -x "$tempo_bin" ]] || tempo_bin="$BIN_DIR/tempo.exe"
+        if [[ -x "$tempo_bin" ]]; then
+            local output
+            if output="$("$tempo_bin" --version 2>&1)"; then
+                info "Tempo ready: $(printf '%s\n' "$output" | head -n 1)"
+            else
+                echo "$output" >&2
+                echo "error: tempo failed to launch after installation" >&2
+                exit 1
+            fi
         fi
     fi
 
