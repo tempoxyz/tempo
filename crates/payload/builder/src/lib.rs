@@ -10,7 +10,7 @@ mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
-use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use reth_trie_common::{Nibbles, ordered_root::OrderedTrieRootEncodedBuilder};
 
 use crate::{
     budget::{
@@ -995,6 +995,7 @@ where
 
         let proof_root = self.proof_root_for_payload_timestamp(
             &finish_provider,
+            &parent_header,
             &db.bundle_state,
             evm_env.block_env.inner.timestamp.to::<u64>(),
         )?;
@@ -1204,6 +1205,7 @@ where
     fn proof_root_for_payload_timestamp(
         &self,
         state_root_provider: &impl StateRootProvider,
+        parent_header: &TempoHeader,
         bundle_state: &reth_revm::db::states::bundle_state::BundleState,
         timestamp: u64,
     ) -> Result<Option<B256>, BlockExecutionError> {
@@ -1213,7 +1215,21 @@ where
         }
 
         let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
-        let proof_trie_input = proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
+        let mut proof_trie_input =
+            proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
+
+        if proof_trie_input.state.is_empty() {
+            if let Some(parent_root) = parent_header.proof_root {
+                return Ok(Some(parent_root));
+            }
+
+            for address in provable_accounts {
+                proof_trie_input
+                    .prefix_sets
+                    .account_prefix_set
+                    .insert(Nibbles::unpack(keccak256(address)));
+            }
+        }
 
         // Compute the proof root through the same provider path used by the serial state-root
         // fallback after filtering and hashing the bundle state into proof-trie input.
