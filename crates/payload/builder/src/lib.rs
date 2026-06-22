@@ -19,7 +19,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::{BestTransactionsPrewarming, SsmrShardPrewarmer},
+    prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -92,7 +92,6 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
-const SSMR_PREWARM_MIN_SHARD_BYTES: usize = DEFAULT_SSMR_SHARD_TARGET_BYTES;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -564,18 +563,6 @@ where
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
-            let mut expiring_nonce_count = 0usize;
-            let mut prewarmer = self.enable_prewarming.then(|| {
-                SsmrShardPrewarmer::new(
-                    self.executor.clone(),
-                    self.provider.clone(),
-                    execution_cache.clone(),
-                    parent_header.hash(),
-                    executor.evm().evm_env(),
-                    SSMR_PREWARM_MIN_SHARD_BYTES,
-                )
-            });
-
             loop {
                 check_cancel!();
 
@@ -584,26 +571,12 @@ where
                     Ok(SsmrReplayCommand::Shard {
                         transactions: encoded_transactions,
                     }) => {
-                        let shard_bytes =
-                            encoded_transactions.iter().map(|bytes| bytes.len()).sum();
                         let mut decoded = Vec::with_capacity(encoded_transactions.len());
-                        let mut expiring_nonce_offsets =
-                            Vec::with_capacity(encoded_transactions.len());
                         for encoded in &encoded_transactions {
                             let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
                                 .map_err(PayloadBuilderError::other)?;
-                            let expiring_nonce_offset = tx.is_expiring_nonce().then(|| {
-                                let offset = expiring_nonce_count;
-                                expiring_nonce_count += 1;
-                                offset
-                            });
                             let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
-                            expiring_nonce_offsets.push(expiring_nonce_offset);
                             decoded.push(Recovered::new_unchecked(tx, sender));
-                        }
-
-                        if let Some(prewarmer) = &mut prewarmer {
-                            prewarmer.prewarm_shard(&decoded, &expiring_nonce_offsets, shard_bytes);
                         }
 
                         for (encoded, recovered) in encoded_transactions.into_iter().zip(decoded) {
@@ -681,9 +654,6 @@ where
                         }
                     }
                     Ok(SsmrReplayCommand::Finish) => {
-                        if let Some(prewarmer) = prewarmer {
-                            prewarmer.stop_and_wait();
-                        }
                         break if cumulative_gas_used >= non_shared_gas_limit {
                             BlockBuildStopReason::GasLimit
                         } else {

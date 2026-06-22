@@ -1,34 +1,23 @@
-use std::{
-    cell::RefCell,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, Sender},
 };
 
-use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
-use reth_primitives_traits::Recovered;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::TaskExecutor;
+use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
-use tempo_primitives::TempoTxEnvelope;
-use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
-
-thread_local! {
-    static PREWARM_EVM: RefCell<Option<(usize, PrewarmEvmState)>> = const { RefCell::new(None) };
-}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -104,9 +93,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.broadcast(pool.current_num_threads(), |_| {
-                    prewarm.install_thread_local_evm();
-                });
+                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -174,9 +161,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.broadcast(pool.current_num_threads(), |_| {
-            clear_thread_local_prewarm_evm()
-        });
+        pool.clear();
     }
 
     fn prewarm_transaction<Provider>(
@@ -190,118 +175,38 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        let tx_hash = *tx.hash();
-        let mut tx_env = tx.transaction.clone_tx_env();
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-        }
+        WorkerPool::with_worker_mut(|worker| {
+            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+                return;
+            };
 
-        prewarm.prewarm_tx_env(tx_env, Some(tx_hash));
-    }
-}
+            let tx_hash = *tx.hash();
 
-/// Prewarms already-ordered SSMR shard transactions using the same cached EVM
-/// setup as builder transaction prewarming.
-pub(crate) struct SsmrShardPrewarmer<Provider> {
-    executor: TaskExecutor,
-    prewarm: PrewarmingExecutionContext<Provider>,
-    min_shard_bytes: usize,
-    pending: usize,
-    done_tx: Sender<()>,
-    done_rx: Receiver<()>,
-}
-
-impl<Provider> SsmrShardPrewarmer<Provider>
-where
-    Provider: StateProviderFactory + Clone + 'static,
-{
-    pub(crate) fn new(
-        executor: TaskExecutor,
-        provider: Provider,
-        cache: Option<SavedCache>,
-        parent_hash: B256,
-        evm_env: EvmEnvFor<TempoEvmConfig>,
-        min_shard_bytes: usize,
-    ) -> Self {
-        let (done_tx, done_rx) = mpsc::channel();
-        Self {
-            executor,
-            prewarm: PrewarmingExecutionContext {
-                provider,
-                parent_hash,
-                cache,
-                evm_env,
-                stop: Arc::new(AtomicBool::new(false)),
-            },
-            min_shard_bytes,
-            pending: 0,
-            done_tx,
-            done_rx,
-        }
-    }
-
-    pub(crate) fn prewarm_shard(
-        &mut self,
-        transactions: &[Recovered<TempoTxEnvelope>],
-        expiring_nonce_offsets: &[Option<usize>],
-        shard_bytes: usize,
-    ) {
-        self.drain_finished();
-        if self.prewarm.is_stopped()
-            || shard_bytes < self.min_shard_bytes
-            || transactions.is_empty()
-        {
-            return;
-        }
-
-        for (tx, expiring_nonce_offset) in transactions.iter().zip(expiring_nonce_offsets) {
-            let tx = tx.clone();
-            let expiring_nonce_offset = *expiring_nonce_offset;
-            let prewarm = self.prewarm.clone();
-            let done_tx = self.done_tx.clone();
-            self.pending += 1;
-            self.executor.prewarming_pool().spawn(move || {
-                Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
-                let _ = done_tx.send(());
-            });
-        }
-    }
-
-    pub(crate) fn stop_and_wait(mut self) {
-        self.prewarm.stop();
-        while self.pending > 0 {
-            if self.done_rx.recv().is_err() {
-                break;
+            if prewarm.is_stopped() {
+                return;
             }
-            self.pending -= 1;
-        }
-        let pool = self.executor.prewarming_pool();
-        pool.broadcast(pool.current_num_threads(), |_| {
-            clear_thread_local_prewarm_evm()
+
+            let mut tx_env = tx.transaction.clone_tx_env();
+            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+            }
+
+            if let Err(err) = evm.transact_raw(tx_env) {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    ?tx_hash,
+                    "Failed to prewarm transaction by execution"
+                );
+                return;
+            }
+
+            trace!(
+                target: "payload_builder",
+                ?tx_hash,
+                "Prewarmed transaction"
+            );
         });
-    }
-
-    fn drain_finished(&mut self) {
-        while self.pending > 0 && self.done_rx.try_recv().is_ok() {
-            self.pending -= 1;
-        }
-    }
-
-    fn prewarm_transaction(
-        prewarm: PrewarmingExecutionContext<Provider>,
-        tx: Recovered<TempoTxEnvelope>,
-        expiring_nonce_offset: Option<usize>,
-    ) {
-        if prewarm.is_stopped() {
-            return;
-        }
-
-        let mut tx_env = TempoTxEnv::from_recovered_tx(tx.inner(), Address(*tx.signer()));
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-        }
-
-        prewarm.prewarm_tx_env(tx_env, None);
     }
 }
 
@@ -409,55 +314,6 @@ where
         Some(TempoEvm::new(state_provider, evm_env))
     }
 
-    fn prewarm_tx_env(&self, tx_env: TempoTxEnv, tx_hash: Option<B256>) {
-        if self.is_stopped() {
-            return;
-        }
-
-        PREWARM_EVM.with_borrow_mut(|slot| {
-            if !slot
-                .as_ref()
-                .is_some_and(|(context_id, _)| *context_id == self.context_id())
-            {
-                *slot = Some((self.context_id(), self.evm_for_ctx()));
-            }
-
-            let Some((_, Some(evm))) = slot.as_mut() else {
-                return;
-            };
-
-            if self.is_stopped() {
-                return;
-            }
-
-            if let Err(err) = evm.transact_raw(tx_env) {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    ?tx_hash,
-                    "Failed to prewarm transaction by execution"
-                );
-                return;
-            }
-
-            trace!(
-                target: "payload_builder",
-                ?tx_hash,
-                "Prewarmed transaction"
-            );
-        });
-    }
-
-    fn install_thread_local_evm(&self) {
-        PREWARM_EVM.with_borrow_mut(|slot| {
-            *slot = Some((self.context_id(), self.evm_for_ctx()));
-        });
-    }
-
-    fn context_id(&self) -> usize {
-        Arc::as_ptr(&self.stop) as usize
-    }
-
     fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -465,12 +321,6 @@ where
     fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
-}
-
-fn clear_thread_local_prewarm_evm() {
-    PREWARM_EVM.with_borrow_mut(|slot| {
-        *slot = None;
-    });
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
@@ -820,24 +670,6 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
-    }
-
-    #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 }
