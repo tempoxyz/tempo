@@ -10,6 +10,7 @@ ignore = [
     "tempo-commonware-node",
     "tempo-commonware-node-config",
     "tempo-consensus",
+    "tempo-consensus-config",
     "tempo-dkg-onchain-artifacts",
     "tempo-e2e",
     "tempo-evm",
