@@ -228,6 +228,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
     }
 
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
     /// Creates a journal checkpoint and returns a RAII guard.
     ///
     /// All state mutations after this call will be atomically
