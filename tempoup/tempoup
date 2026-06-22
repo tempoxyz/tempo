@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.12"
+TEMPOUP_INSTALLER_VERSION="0.0.13"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -98,6 +98,124 @@ check_cmd() {
 # Returns true only when gh is installed and can access GitHub APIs.
 gh_authenticated() {
     check_cmd gh && gh auth status >/dev/null 2>&1
+}
+
+homebrew_libusb_dylib() {
+    local prefix
+    prefix="$(brew --prefix libusb 2>/dev/null || true)"
+    if [[ -n "$prefix" ]]; then
+        echo "$prefix/lib/libusb-1.0.0.dylib"
+    fi
+}
+
+darwin_required_libusb_dylib() {
+    local binary_path="$1"
+
+    if [[ -n "$binary_path" ]] && check_cmd otool; then
+        otool -L "$binary_path" 2>/dev/null | awk '/libusb-1\.0\.0\.dylib/ {print $1; exit}'
+    fi
+}
+
+darwin_libusb_required() {
+    local binary_path="$1"
+
+    if [[ -n "$binary_path" ]] && check_cmd otool; then
+        [[ -n "$(darwin_required_libusb_dylib "$binary_path")" ]]
+        return
+    fi
+
+    # If otool is unavailable, assume the current macOS release needs libusb.
+    return 0
+}
+
+darwin_libusb_installed() {
+    local binary_path="$1"
+    local required_dylib
+    local dylib_path
+
+    required_dylib="$(darwin_required_libusb_dylib "$binary_path")"
+    if [[ "$required_dylib" == /* ]]; then
+        [[ -r "$required_dylib" ]]
+        return
+    fi
+
+    dylib_path="$(homebrew_libusb_dylib)"
+    [[ -n "$dylib_path" && -r "$dylib_path" ]]
+}
+
+ensure_darwin_libusb() {
+    local binary_path="$1"
+    if ! darwin_libusb_required "$binary_path"; then
+        return
+    fi
+
+    if darwin_libusb_installed "$binary_path"; then
+        info "macOS runtime dependency found: libusb"
+        return
+    fi
+
+    if ! check_cmd brew; then
+        error "macOS runtime dependency libusb is missing and Homebrew was not found.
+  Install Homebrew from https://brew.sh, then run:
+    brew install libusb
+  Then re-run tempoup."
+    fi
+
+    warn "macOS runtime dependency libusb not found; installing with Homebrew..."
+    if brew list --versions libusb >/dev/null 2>&1; then
+        if ! brew reinstall libusb; then
+            error "Failed to reinstall libusb with Homebrew."
+        fi
+    else
+        if ! brew install libusb; then
+            error "Failed to install libusb with Homebrew."
+        fi
+    fi
+
+    if ! darwin_libusb_installed "$binary_path"; then
+        error "Homebrew did not install libusb where tempo can load it.
+  Try running:
+    brew install libusb
+  Then re-run tempoup."
+    fi
+
+    info "macOS runtime dependency installed: libusb"
+}
+
+ensure_runtime_dependencies() {
+    local platform="$1"
+    local binary_path="${2:-}"
+
+    case "$platform" in
+        darwin)
+            ensure_darwin_libusb "$binary_path"
+            ;;
+    esac
+}
+
+verify_tempo_binary() {
+    local binary_path="$1"
+    local output
+
+    if output="$("$binary_path" --version 2>&1)"; then
+        local first_line
+        first_line="$(printf '%s\n' "$output" | head -n 1)"
+        info "Verified tempo launches: $first_line"
+        return
+    fi
+
+    if [[ "$output" == *"libusb"* ]]; then
+        error "Downloaded tempo binary could not launch because libusb is missing.
+  Try running:
+    brew install libusb
+  Then re-run tempoup.
+
+$output"
+    fi
+
+    error "Downloaded tempo binary could not launch.
+
+$output"
 }
 
 # Verifies the GitHub release attestation.
@@ -481,6 +599,7 @@ main() {
     if [[ -z "$BINARY_PATH" ]]; then
         error "Could not find tempo binary in downloaded archive"
     fi
+    ensure_runtime_dependencies "$PLATFORM" "$BINARY_PATH"
 
     # Final binary name (just "tempo" or "tempo.exe")
     BINARY_NAME="tempo"
@@ -504,6 +623,8 @@ main() {
     else
         error "Failed to install to $BIN_DIR. Try running with sudo."
     fi
+    verify_tempo_binary "$BIN_DIR/$BINARY_NAME"
+
     # Installation succeeded — remove backup and clear the trap
     rm -f "$OLD_BINARY" 2>/dev/null || true
     trap - ERR EXIT

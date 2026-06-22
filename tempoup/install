@@ -22,6 +22,22 @@ warn() {
     echo -e "${YELLOW}warn${NC}: $1"
 }
 
+verify_tempo_binary() {
+    local binary_path="$1"
+    local output
+
+    if output="$("$binary_path" --version 2>&1)"; then
+        local first_line
+        first_line="$(printf '%s\n' "$output" | head -n 1)"
+        info "Tempo ready: $first_line"
+        return
+    fi
+
+    echo "$output" >&2
+    echo "error: tempo failed to launch after installation" >&2
+    exit 1
+}
+
 # Install a file to BIN_DIR, using sudo if necessary
 install_bin() {
     local src="$1"
@@ -88,6 +104,11 @@ ENVEOF
     echo ""
 
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" "$@"
+    if [[ -x "$BIN_DIR/tempo" ]]; then
+        verify_tempo_binary "$BIN_DIR/tempo"
+    elif [[ -x "$BIN_DIR/tempo.exe" ]]; then
+        verify_tempo_binary "$BIN_DIR/tempo.exe"
+    fi
 
     echo ""
     local user_shell
