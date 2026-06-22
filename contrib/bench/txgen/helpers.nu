@@ -3,8 +3,19 @@ const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces" "tip20_protocol_nonces"]
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
+    "tip20_existing_recipients"
+    "tip20_2d_nonces"
+    "tip20_protocol_nonces"
+    "tip20_keychain_existing_recipients"
+    "tip20_keychain_2d_nonces"
+    "tip20_key_authorization_existing_recipients"
+    "tip20_key_authorization_2d_nonces"
+]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
+const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
+const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
+const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 
 def txgen-tip20-token-address [token_id: int] {
     ^printf "0x20c000000000000000000000%016x" $token_id
@@ -20,6 +31,54 @@ def txgen-tip20-token-choices [token_count: int] {
 
 def --env txgen-configure-tip20-token-env [token_count: int] {
     $env.TXGEN_TIP20_TOKENS = (txgen-tip20-token-choices $token_count)
+}
+
+def txgen-keychain-tip20-limits [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                token: (txgen-tip20-token-address $id)
+                amount: $TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT
+                period: 0
+            }
+        }
+        | to json -r
+}
+
+def txgen-keychain-tip20-allowed-calls [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                target: (txgen-tip20-token-address $id)
+                selectors: [
+                    {
+                        selector: $TXGEN_HELPER_TIP20_TRANSFER_SELECTOR
+                        recipients: []
+                    }
+                ]
+            }
+        }
+        | to json -r
+}
+
+def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
+    if $accounts <= 0 {
+        error make { msg: "keychain account count must be greater than zero" }
+    }
+
+    let access_keys_end = $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $accounts
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_START = ($TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START | into string)
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_END = ($access_keys_end | into string)
+    $env.TXGEN_KEYCHAIN_TIP20_LIMITS = (txgen-keychain-tip20-limits $token_count)
+    $env.TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS = (txgen-keychain-tip20-allowed-calls $token_count)
 }
 
 def txgen-shell-quote [value: any] {
@@ -277,6 +336,7 @@ def txgen-run-preset-pipeline [
     }
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
+    txgen-configure-keychain-env $accounts $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)

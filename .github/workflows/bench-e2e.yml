@@ -40,6 +40,15 @@ on:
           - tip20_protocol_nonces
           - tip20_random_recipients
           - tip20_existing_recipients
+          - tip20_keychain
+          - tip20_keychain_2d_nonces
+          - tip20_keychain_random_recipients
+          - tip20_keychain_existing_recipients
+          - tip20_key_authorization
+          - tip20_key_authorization_2d_nonces
+          - tip20_key_authorization_random_recipients
+          - tip20_key_authorization_existing_recipients
+          - keychain_auth_noop
           - mpp
           - mix
       duration:
