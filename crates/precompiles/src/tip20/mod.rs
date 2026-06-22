@@ -779,7 +779,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
-            self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_direct_transfer(msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
@@ -1065,6 +1065,26 @@ impl TIP20Token {
         } else {
             self.check_and_update_spending_limit(from, amount)?;
         }
+
+        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+            return Ok(None);
+        }
+
+        Ok(Some(to))
+    }
+
+    fn validate_direct_transfer(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+    ) -> Result<Option<Recipient>> {
+        let to = Recipient::resolve(to)?;
+        self.check_not_paused()?;
+        to.validate()?;
+        self.ensure_transfer_authorized(from, to.target)?;
+        self.check_and_update_spending_limit(from, amount)?;
 
         if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
