@@ -31,7 +31,7 @@ mod measured;
 pub mod snapshot;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
-pub(crate) use measured::{MeasuredBlocks, MeasuredCertificates};
+pub(crate) use measured::MeasuredCertificates;
 
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
@@ -149,6 +149,7 @@ where
         prunable,
         execution_block_provider: provider,
         retention_blocks,
+        metrics_context: context.with_label("marshal").with_label("finalized_blocks"),
     }))
 }
 

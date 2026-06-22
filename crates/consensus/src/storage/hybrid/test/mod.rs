@@ -59,6 +59,7 @@ impl SetupHybrid {
             prunable,
             execution_block_provider: provider.clone(),
             retention_blocks: self.retention,
+            metrics_context: context.with_label("marshal").with_label("finalized_blocks"),
         });
         (hybrid, provider)
     }

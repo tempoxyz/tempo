@@ -27,7 +27,7 @@ pub(crate) mod marshal {
     use crate::{
         consensus::{Digest, block::Block},
         epoch::SchemeProvider,
-        storage::{self, Hybrid, MeasuredBlocks, MeasuredCertificates},
+        storage::{self, Hybrid, MeasuredCertificates},
     };
 
     type FinalizationsByHeight<TContext> = MeasuredCertificates<
@@ -35,10 +35,8 @@ pub(crate) mod marshal {
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
     >;
 
-    type FinalizedBlocks<TContext> = MeasuredBlocks<
-        TContext,
-        Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>,
-    >;
+    type FinalizedBlocks<TContext> =
+        Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>;
 
     pub(crate) type Actor<TContext> = core::Actor<
         TContext,
@@ -158,11 +156,6 @@ pub(crate) mod marshal {
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;
-        let finalized_blocks = MeasuredBlocks::new(
-            finalized_blocks,
-            context.with_label("marshal").with_label("finalized_blocks"),
-            "marshal finalized block store",
-        );
 
         let (actor, mailbox, marshal_stored_height) = core::Actor::init(
             context.with_label("marshal"),

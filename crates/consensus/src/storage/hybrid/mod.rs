@@ -75,13 +75,19 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
+use std::sync::Arc;
+
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
+use commonware_runtime::{
+    BufferPooler, Clock, Metrics, Storage,
+    telemetry::metrics::histogram::{self, Timed},
+};
 use commonware_storage::{
     archive::{self, Identifier, prunable},
     translator::TwoCap,
 };
+use prometheus_client::metrics::histogram::Histogram;
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{
     BlockReader, BlockSource, ProviderError, ProviderResult,
@@ -220,6 +226,9 @@ where
     /// older is dropped from the cache and served out of
     /// [`Self::execution_block_provider`] instead.
     pub(crate) retention_blocks: u64,
+
+    /// Metrics context used for marshal-facing finalized block store latency.
+    pub(crate) metrics_context: TContext,
 }
 
 /// Finalized blocks store backed by a prunable archive (a hot cache of
@@ -244,6 +253,9 @@ where
     /// older is dropped from the cache and served out of
     /// [`Self::execution_block_provider`] instead.
     retention_blocks: u64,
+
+    /// Duration histograms for marshal-facing store calls.
+    durations: OperationDurations<TContext>,
 }
 
 impl<TContext, P> Hybrid<TContext, P>
@@ -256,11 +268,13 @@ where
             prunable,
             execution_block_provider: provider,
             retention_blocks,
+            metrics_context,
         } = config;
         Self {
             prunable,
             execution_block_provider: provider,
             retention_blocks,
+            durations: OperationDurations::init(metrics_context),
         }
     }
 
@@ -291,18 +305,8 @@ where
         let prune_floor = min_to_keep.saturating_add(1);
         prunable::Archive::prune(&mut self.prunable, prune_floor).await
     }
-}
 
-impl<TContext, TExecutionBlockProvider> Blocks for Hybrid<TContext, TExecutionBlockProvider>
-where
-    TContext: BufferPooler + Storage + Metrics + Clock + Send + Sync + 'static,
-    TExecutionBlockProvider: FinalizedBlocksProvider + 'static,
-{
-    type Block = Block;
-    type Error = Error;
-
-    #[instrument(skip_all, err)]
-    async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
+    async fn put_inner(&mut self, block: Block) -> Result<(), Error> {
         let height = block.height();
         let digest = block.digest();
         match archive::Archive::put(&mut self.prunable, height.get(), digest, block).await {
@@ -345,10 +349,33 @@ where
         }
         Ok(())
     }
+}
+
+impl<TContext, TExecutionBlockProvider> Blocks for Hybrid<TContext, TExecutionBlockProvider>
+where
+    TContext: BufferPooler + Storage + Metrics + Clock + Send + Sync + 'static,
+    TExecutionBlockProvider: FinalizedBlocksProvider + 'static,
+{
+    type Block = Block;
+    type Error = Error;
+
+    #[instrument(skip_all, err)]
+    async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
+        let mut timer = self.durations.put.timer();
+        let result = self.put_inner(block).await;
+        timer.observe();
+        result
+    }
 
     async fn sync(&mut self) -> Result<(), Self::Error> {
-        archive::Archive::sync(&mut self.prunable).await?;
-        Ok(())
+        let mut timer = self.durations.sync.timer();
+        let result = async {
+            archive::Archive::sync(&mut self.prunable).await?;
+            Ok(())
+        }
+        .await;
+        timer.observe();
+        result
     }
 
     /// Attempts to read `id` from the prunable archive, falling back to EL on miss.
@@ -377,6 +404,8 @@ where
 
     /// No-op: Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]).
     async fn prune(&mut self, _min: Height) -> Result<(), Self::Error> {
+        let mut timer = self.durations.prune.timer();
+        timer.observe();
         Ok(())
     }
 
@@ -402,5 +431,50 @@ where
         // EL here would mask gaps the marshal needs to fill via the
         // resolver.
         archive::Archive::last_index(&self.prunable).map(Height::new)
+    }
+}
+
+/// Duration histograms for marshal-facing finalized block store calls.
+struct OperationDurations<TContext>
+where
+    TContext: Clock,
+{
+    put: Timed<TContext>,
+    sync: Timed<TContext>,
+    prune: Timed<TContext>,
+}
+
+impl<TContext> OperationDurations<TContext>
+where
+    TContext: Clock + Metrics,
+{
+    fn init(context: TContext) -> Self {
+        let put = Histogram::new(histogram::Buckets::LOCAL);
+        context.register(
+            "put_duration",
+            "Histogram of marshal finalized block store put calls, in seconds",
+            put.clone(),
+        );
+
+        let sync = Histogram::new(histogram::Buckets::LOCAL);
+        context.register(
+            "sync_duration",
+            "Histogram of marshal finalized block store sync calls, in seconds",
+            sync.clone(),
+        );
+
+        let prune = Histogram::new(histogram::Buckets::LOCAL);
+        context.register(
+            "prune_duration",
+            "Histogram of marshal finalized block store prune calls, in seconds",
+            prune.clone(),
+        );
+
+        let clock = Arc::new(context);
+        Self {
+            put: Timed::new(put, Arc::clone(&clock)),
+            sync: Timed::new(sync, Arc::clone(&clock)),
+            prune: Timed::new(prune, clock),
+        }
     }
 }
