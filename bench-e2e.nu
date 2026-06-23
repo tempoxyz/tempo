@@ -1487,9 +1487,8 @@ def "main e2e" [
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
-    let regenesis_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-regenesis-main"
     let regenesis_needed = $hardfork_mode or $gas_limit != ""
-    for wt in [$baseline_wt $feature_wt $regenesis_wt] {
+    for wt in [$baseline_wt $feature_wt] {
         if ($wt | path exists) {
             print $"Removing stale local e2e worktree: ($wt)"
             try { git worktree remove --force $wt } catch { rm -rf $wt }
@@ -1497,31 +1496,19 @@ def "main e2e" [
     }
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
-    if $regenesis_needed {
-        print "Fetching latest origin/main for tempo regenesis..."
-        git fetch origin main
-        git worktree add $regenesis_wt origin/main
-    }
 
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
-    let regenesis_build_features = $global_build_features
-    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
-    # snapshot rewriting is independent of either side being benchmarked.
-    # with independent target/ directories, so cargo invocations don't collide.
+    # Build benchmark binaries in parallel with independent target/ directories,
+    # so cargo invocations don't collide.
     mut builds = [
         { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
         { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
     ]
-    let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
-    if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
-    }
     $builds | par-each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
@@ -1531,7 +1518,7 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
-    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
+    let regenesis_tempo = if $regenesis_needed { $feature_tempo } else { "" }
     let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
     let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
@@ -1692,7 +1679,6 @@ def "main e2e" [
 
     try { git worktree remove --force $baseline_wt } catch { }
     try { git worktree remove --force $feature_wt } catch { }
-    try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
