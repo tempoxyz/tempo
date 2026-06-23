@@ -41,9 +41,11 @@ struct State {
 
 impl ProposalBudgetHandle {
     pub(crate) fn new(target_block_time: Duration, static_network_budget: Duration) -> Self {
+        // Adaptive pacing can reclaim unused static network budget, but it should
+        // not shrink the build window below the configured static-budget path.
         let max_tail_budget = target_block_time
             .saturating_sub(MIN_PROPOSAL_BUDGET)
-            .max(MIN_TAIL_BUDGET);
+            .min(static_network_budget);
 
         Self {
             inner: Arc::new(Mutex::new(State {
@@ -147,6 +149,10 @@ impl ProposalBudgetHandle {
 }
 
 fn clamp_tail(tail: Duration, max_tail_budget: Duration) -> Duration {
+    if max_tail_budget <= MIN_TAIL_BUDGET {
+        return tail.min(max_tail_budget);
+    }
+
     tail.clamp(MIN_TAIL_BUDGET, max_tail_budget)
 }
 
@@ -201,13 +207,47 @@ mod tests {
             ProposalBudgetHandle::new(Duration::from_millis(550), Duration::from_millis(50));
 
         budget.record_proposal_return_at(round(1), digest(1), 1_000);
+        budget.observe_notarization_at(round(1), digest(1), 1_020);
+
+        assert_eq!(
+            budget.pacing(true),
+            ProposalPacing {
+                proposal_return_budget: Duration::from_millis(530),
+                post_return_tail: Some(Duration::from_millis(20)),
+            }
+        );
+    }
+
+    #[test]
+    fn caps_adaptive_tail_at_static_network_budget() {
+        let budget =
+            ProposalBudgetHandle::new(Duration::from_millis(550), Duration::from_millis(50));
+
+        budget.record_proposal_return_at(round(1), digest(1), 1_000);
         budget.observe_notarization_at(round(1), digest(1), 1_100);
 
         assert_eq!(
             budget.pacing(true),
             ProposalPacing {
-                proposal_return_budget: Duration::from_millis(450),
-                post_return_tail: Some(Duration::from_millis(100)),
+                proposal_return_budget: Duration::from_millis(500),
+                post_return_tail: Some(Duration::from_millis(50)),
+            }
+        );
+    }
+
+    #[test]
+    fn does_not_exceed_static_budget_below_min_tail() {
+        let budget =
+            ProposalBudgetHandle::new(Duration::from_millis(550), Duration::from_millis(5));
+
+        budget.record_proposal_return_at(round(1), digest(1), 1_000);
+        budget.observe_notarization_at(round(1), digest(1), 1_100);
+
+        assert_eq!(
+            budget.pacing(true),
+            ProposalPacing {
+                proposal_return_budget: Duration::from_millis(545),
+                post_return_tail: Some(Duration::from_millis(5)),
             }
         );
     }
