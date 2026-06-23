@@ -49,7 +49,6 @@ alloy-rlp.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
-rayon.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
