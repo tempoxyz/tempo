@@ -130,6 +130,8 @@ pub struct AccountKeychain {
     // The transaction origin (tx.origin) - the EOA that signed the transaction.
     // Used to ensure spending limits only apply when msg_sender == tx_origin.
     tx_origin: Address,
+    // spending_limit_key(tx_origin, transaction_key), cached for the current transaction.
+    transaction_limit_key: B256,
 }
 
 /// Key-level call scope.
@@ -725,7 +727,10 @@ impl AccountKeychain {
     /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
-        self.transaction_key.t_write(key_id)
+        self.transaction_key.t_write(key_id)?;
+
+        let origin = self.tx_origin.t_read()?;
+        self.refresh_transaction_limit_key(origin, key_id)
     }
 
     /// Sets the transaction origin (tx.origin) for the current transaction.
@@ -733,7 +738,31 @@ impl AccountKeychain {
     /// Called by the handler before transaction execution.
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
-        self.tx_origin.t_write(origin)
+        self.tx_origin.t_write(origin)?;
+
+        let key_id = self.transaction_key.t_read()?;
+        self.refresh_transaction_limit_key(origin, key_id)
+    }
+
+    #[inline]
+    fn refresh_transaction_limit_key(&mut self, origin: Address, key_id: Address) -> Result<()> {
+        let limit_key = if origin == Address::ZERO || key_id == Address::ZERO {
+            B256::ZERO
+        } else {
+            Self::spending_limit_key(origin, key_id)
+        };
+
+        self.transaction_limit_key.t_write(limit_key)
+    }
+
+    #[inline]
+    fn current_transaction_limit_key(&self, account: Address, key_id: Address) -> Result<B256> {
+        let limit_key = self.transaction_limit_key.t_read()?;
+        if limit_key == B256::ZERO {
+            return Ok(Self::spending_limit_key(account, key_id));
+        }
+
+        Ok(limit_key)
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -1301,6 +1330,18 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
+        let limit_key = Self::spending_limit_key(account, key_id);
+        self.verify_and_update_spending_with_limit_key(account, key_id, token, amount, limit_key)
+    }
+
+    fn verify_and_update_spending_with_limit_key(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        amount: U256,
+        limit_key: B256,
+    ) -> Result<()> {
         // If using main key (zero address), no spending limits apply
         if key_id == Address::ZERO {
             return Ok(());
@@ -1315,8 +1356,6 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        // Check and update spending limit
-        let limit_key = Self::spending_limit_key(account, key_id);
         if !self.storage.spec().is_t3() {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             if amount > remaining {
@@ -1414,7 +1453,7 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        let limit_key = Self::spending_limit_key(account, transaction_key);
+        let limit_key = self.current_transaction_limit_key(account, transaction_key)?;
         if !self.storage.spec().is_t3() {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             let refunded = remaining.saturating_add(amount);
@@ -1477,7 +1516,14 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        let limit_key = self.current_transaction_limit_key(account, transaction_key)?;
+        self.verify_and_update_spending_with_limit_key(
+            account,
+            transaction_key,
+            token,
+            amount,
+            limit_key,
+        )
     }
 
     /// Authorize a token approval with access key spending limits.
@@ -1522,7 +1568,14 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+        let limit_key = self.current_transaction_limit_key(account, transaction_key)?;
+        self.verify_and_update_spending_with_limit_key(
+            account,
+            transaction_key,
+            token,
+            approval_increase,
+            limit_key,
+        )
     }
 }
 
