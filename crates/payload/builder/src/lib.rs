@@ -83,7 +83,7 @@ use tempo_primitives::{
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
-    best::{BestTransaction, StateAwareBestTransactionsUpdate},
+    best::BestTransaction,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -123,7 +123,7 @@ where
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
             Self::Parallel(planner) => {
-                planner.on_state_update(StateAwareBestTransactionsUpdate::from_result(result));
+                planner.on_state_update(result);
             }
         }
     }

@@ -12,7 +12,7 @@ use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::{StorageActionReplay, evm::TempoEvm};
+use tempo_evm::{StorageActionReplay, TempoTxResult, evm::TempoEvm};
 use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
@@ -40,8 +40,10 @@ pub(crate) struct PrewarmingPlanner<Provider> {
     results_rx: Receiver<PlannerMessage>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    scheduled_count: Arc<AtomicUsize>,
-    completed_count: usize,
+    in_flight: Arc<AtomicUsize>,
+    state_updates_rx: Receiver<StateAwareBestTransactionsUpdate>,
+    state_update_pool: Vec<StateAwareBestTransactionsUpdate>,
+    completed: usize,
     source_exhausted: bool,
 }
 
@@ -58,30 +60,26 @@ where
     {
         let (results_tx, results_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
+        let (state_updates_tx, state_updates_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let scheduled_count = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
 
-        let coordinator_executor = prewarm.executor();
-        let coordinator_commands_tx = commands_tx.clone();
-        let coordinator_stop = stop.clone();
-        let coordinator_prewarm = prewarm.clone();
-        let coordinator_scheduled_count = scheduled_count.clone();
+        let executor = prewarm.executor();
+        let planner_ctx = PlannerContext {
+            best_txs,
+            results_tx,
+            commands_tx: commands_tx.clone(),
+            commands_rx,
+            state_updates_tx,
+            stop: stop.clone(),
+            prewarm: prewarm.clone(),
+            in_flight: in_flight.clone(),
+            source_exhausted: false,
+        };
         prewarm
             .executor()
             .spawn_blocking_named("builder-planner", move || {
-                Self::start_planner(
-                    coordinator_executor,
-                    PlannerContext {
-                        best_txs,
-                        results_tx,
-                        commands_tx: coordinator_commands_tx,
-                        commands_rx,
-                        stop: coordinator_stop,
-                        prewarm: coordinator_prewarm,
-                        scheduled_count: coordinator_scheduled_count,
-                        source_exhausted: false,
-                    },
-                );
+                Self::start_planner(executor, planner_ctx);
             });
 
         Self {
@@ -89,8 +87,10 @@ where
             results_rx,
             stop,
             prewarm,
-            scheduled_count,
-            completed_count: 0,
+            in_flight,
+            state_updates_rx,
+            state_update_pool: Vec::new(),
+            completed: 0,
             source_exhausted: false,
         }
     }
@@ -121,7 +121,7 @@ where
                         return;
                     };
 
-                    planner.scheduled_count.fetch_add(1, Ordering::Relaxed);
+                    planner.in_flight.fetch_add(1, Ordering::Relaxed);
 
                     let prewarm = planner.prewarm.clone();
                     let results_tx = planner.results_tx.clone();
@@ -145,13 +145,16 @@ where
                     PlannerCommand::Invalid { tx, kind } => {
                         ctx.best_txs.mark_invalid(&tx, kind);
                     }
-                    PlannerCommand::StateUpdate(update) => {
-                        ctx.best_txs.apply_update(update);
+                    PlannerCommand::StateUpdate(mut update) => {
+                        ctx.best_txs.apply_update(&update);
+                        update.clear();
+                        let _ = ctx.state_updates_tx.send(update);
                     }
-                    PlannerCommand::Stop { drain_rx } => {
+                    PlannerCommand::Stop {
+                        drain_rx: _drain_rx,
+                    } => {
                         ctx.stop.store(true, Ordering::Relaxed);
                         ctx.prewarm.stop();
-                        drop(drain_rx);
                         return;
                     }
                 }
@@ -163,38 +166,22 @@ where
 
     pub(crate) fn next(&mut self) -> Option<PlannedTransaction> {
         loop {
-            if self.source_exhausted
-                && self.completed_count == self.scheduled_count.load(Ordering::Relaxed)
-            {
+            if self.source_exhausted && self.completed == self.in_flight.load(Ordering::Relaxed) {
                 return None;
             }
 
             let Ok(message) = self.results_rx.recv() else {
                 return None;
             };
-            if let Some(planned) = self.record_message(message) {
-                return Some(planned);
-            }
-        }
-    }
 
-    fn record_message(&mut self, message: PlannerMessage) -> Option<PlannedTransaction> {
-        match message {
-            PlannerMessage::SourceExhausted => {
-                self.source_exhausted = true;
-                None
-            }
-            PlannerMessage::Planned { planned } => {
-                self.completed_count += 1;
-                if let Some(replay) = planned.replay.as_ref() {
-                    trace!(
-                        target: "payload_builder",
-                        tx_hash = ?planned.tx.hash(),
-                        action_count = replay.actions.len(),
-                        "Collected prewarm storage action replay"
-                    );
+            match message {
+                PlannerMessage::Planned { planned } => {
+                    self.completed += 1;
+                    return Some(planned);
                 }
-                Some(planned)
+                PlannerMessage::SourceExhausted => {
+                    self.source_exhausted = true;
+                }
             }
         }
     }
@@ -206,8 +193,27 @@ where
         });
     }
 
-    pub(crate) fn on_state_update(&self, update: StateAwareBestTransactionsUpdate) {
-        let _ = self.commands_tx.send(PlannerCommand::StateUpdate(update));
+    pub(crate) fn on_state_update(&mut self, result: &TempoTxResult) {
+        self.recycle_state_updates();
+
+        let mut update = self.state_update_pool.pop().unwrap_or_default();
+        update.update_from_result(result);
+        if update.is_empty() {
+            self.state_update_pool.push(update);
+            return;
+        }
+
+        if let Err(mpsc::SendError(PlannerCommand::StateUpdate(update))) =
+            self.commands_tx.send(PlannerCommand::StateUpdate(update))
+        {
+            self.state_update_pool.push(update);
+        }
+    }
+
+    fn recycle_state_updates(&mut self) {
+        while let Ok(update) = self.state_updates_rx.try_recv() {
+            self.state_update_pool.push(update);
+        }
     }
 }
 
@@ -227,9 +233,10 @@ struct PlannerContext<Txs, Provider> {
     results_tx: Sender<PlannerMessage>,
     commands_tx: Sender<PlannerCommand>,
     commands_rx: Receiver<PlannerCommand>,
+    state_updates_tx: Sender<StateAwareBestTransactionsUpdate>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    scheduled_count: Arc<AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
     source_exhausted: bool,
 }
 
