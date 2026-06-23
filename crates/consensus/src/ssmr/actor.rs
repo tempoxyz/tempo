@@ -581,6 +581,7 @@ enum BuilderMessage {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ControlMessage {
     GetStreamSnapshot {
         key: StreamKey,

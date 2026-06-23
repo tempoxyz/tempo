@@ -68,6 +68,18 @@ pub(crate) struct PayloadBudgetDecision {
     pub(crate) total_reserved: Duration,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PayloadBudgetInput {
+    pub(crate) elapsed: Duration,
+    pub(crate) idle_elapsed: Duration,
+    pub(crate) multiplier: u64,
+    pub(crate) marshal_persist: MarshalPersistEstimator,
+    pub(crate) block_size_bytes: usize,
+    pub(crate) validation_latency: Option<ValidationLatencyEstimate>,
+    pub(crate) post_return_tail_budget: Option<Duration>,
+    pub(crate) current_workload: ValidationLatencyWorkload,
+}
+
 /// Builds the shared proposer/validator budget decision for the current payload.
 ///
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
@@ -87,16 +99,17 @@ pub(crate) struct PayloadBudgetDecision {
 /// work once, and marshal persistence once for each side. With an adaptive
 /// post-return tail, we charge proposer marshal persistence once because the
 /// supplied budget already excludes the measured tail.
-pub(crate) fn payload_budget_decision(
-    elapsed: Duration,
-    idle_elapsed: Duration,
-    multiplier: u64,
-    marshal_persist: MarshalPersistEstimator,
-    block_size_bytes: usize,
-    validation_latency: Option<ValidationLatencyEstimate>,
-    post_return_tail_budget: Option<Duration>,
-    current_workload: ValidationLatencyWorkload,
-) -> PayloadBudgetDecision {
+pub(crate) fn payload_budget_decision(input: PayloadBudgetInput) -> PayloadBudgetDecision {
+    let PayloadBudgetInput {
+        elapsed,
+        idle_elapsed,
+        multiplier,
+        marshal_persist,
+        block_size_bytes,
+        validation_latency,
+        post_return_tail_budget,
+        current_workload,
+    } = input;
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
     let validation_latency_estimate =
@@ -153,6 +166,29 @@ pub(crate) fn decay_build_time_multiplier(current: u64, observed: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::too_many_arguments)]
+    fn payload_budget_decision(
+        elapsed: Duration,
+        idle_elapsed: Duration,
+        multiplier: u64,
+        marshal_persist: MarshalPersistEstimator,
+        block_size_bytes: usize,
+        validation_latency: Option<ValidationLatencyEstimate>,
+        post_return_tail_budget: Option<Duration>,
+        current_workload: ValidationLatencyWorkload,
+    ) -> PayloadBudgetDecision {
+        super::payload_budget_decision(PayloadBudgetInput {
+            elapsed,
+            idle_elapsed,
+            multiplier,
+            marshal_persist,
+            block_size_bytes,
+            validation_latency,
+            post_return_tail_budget,
+            current_workload,
+        })
+    }
 
     fn validation_latency_estimate(
         workload: ValidationLatencyWorkload,

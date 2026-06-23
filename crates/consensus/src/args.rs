@@ -15,6 +15,7 @@ use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
+const DEFAULT_SSMR_MAX_MESSAGE_SIZE_BYTES: u32 = 50 * 1024 * 1024;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
@@ -358,6 +359,15 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    pub(crate) fn effective_max_message_size_bytes(&self) -> u32 {
+        if self.ssmr {
+            self.max_message_size_bytes
+                .max(DEFAULT_SSMR_MAX_MESSAGE_SIZE_BYTES)
+        } else {
+            self.max_message_size_bytes
+        }
+    }
+
     /// Returns the signing key loaded from the configured file.
     ///
     /// When `--consensus.secret` is set, tries to decrypt the signing key.

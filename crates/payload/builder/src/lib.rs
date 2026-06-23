@@ -14,8 +14,8 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
+        BUILD_TIME_MULTIPLIER_SCALE, PayloadBudgetInput, decay_build_time_multiplier,
+        observed_build_time_multiplier, payload_budget_decision, scaled_build_time_multiplier,
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
@@ -688,7 +688,7 @@ where
                 Box::new(BestTransactionsPrewarming::new(
                     self.executor.clone(),
                     self.provider.clone(),
-                    execution_cache.clone(),
+                    execution_cache,
                     parent_header.hash(),
                     executor.evm().evm_env(),
                     best_txs,
@@ -709,16 +709,16 @@ where
                         cumulative_gas_used,
                         pool_transactions_included as usize,
                     );
-                    let budget_decision = payload_budget_decision(
+                    let budget_decision = payload_budget_decision(PayloadBudgetInput {
                         elapsed,
-                        normal_transaction_fill_idle_elapsed,
-                        build_time_multiplier,
+                        idle_elapsed: normal_transaction_fill_idle_elapsed,
+                        multiplier: build_time_multiplier,
                         marshal_persist,
-                        estimated_rlp_block_size,
+                        block_size_bytes: estimated_rlp_block_size,
                         validation_latency,
                         post_return_tail_budget,
                         current_workload,
-                    );
+                    });
                     if budget_decision.total_reserved >= build_budget {
                         debug!(
                             target: "payload_builder",

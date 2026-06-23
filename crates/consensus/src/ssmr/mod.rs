@@ -155,6 +155,7 @@ pub(crate) struct SsmrEnd {
 
 /// Network message for the SSMR side channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SsmrMessage {
     Start(SsmrStart),
     TxShard(SsmrTxShard),

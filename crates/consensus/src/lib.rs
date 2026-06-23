@@ -265,7 +265,7 @@ async fn instantiate_network(
         namespace,
         crypto: signing_key,
         listen: config.listen_address,
-        max_message_size: config.max_message_size_bytes,
+        max_message_size: config.effective_max_message_size_bytes(),
         mailbox_size: config.mailbox_size,
         send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,

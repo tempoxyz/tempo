@@ -301,9 +301,7 @@ impl Inner<Init> {
 
         while ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
             context.sleep(SSMR_SNAPSHOT_POLL_INTERVAL).await;
-            let Some(updated) = self.ssmr_stream_snapshot(block).await else {
-                return None;
-            };
+            let updated = self.ssmr_stream_snapshot(block).await?;
             snapshot = updated;
             if !snapshot.started {
                 return None;
@@ -1217,6 +1215,7 @@ struct VerifyResult {
         parent.digest = %parent_digest,
     )
 )]
+#[allow(clippy::too_many_arguments)]
 async fn verify_block<TContext: Pacer>(
     context: TContext,
     epoch: Epoch,
@@ -1489,10 +1488,10 @@ async fn subscribe<TContext: commonware_runtime::Clock>(
                 return result.map_err(|_| eyre!("syncer dropped channel before the parent block was sent"));
             },
             _ = context.sleep(BLOCK_SUBSCRIBE_EL_POLL_INTERVAL) => {
-                if let Some(block) = find_block_in_execution_layer(execution_node, digest)? {
-                    if resolution.accepts(&block) {
-                        return Ok(block);
-                    }
+                if let Some(block) = find_block_in_execution_layer(execution_node, digest)?
+                    && resolution.accepts(&block)
+                {
+                    return Ok(block);
                 }
             },
         }
