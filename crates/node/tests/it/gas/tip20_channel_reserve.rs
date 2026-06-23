@@ -6,13 +6,15 @@ use alloy::{
 };
 use alloy_network::ReceiptResponse;
 use tempo_alloy::rpc::TempoTransactionReceipt;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20ChannelReserve;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+use test_case::test_case;
 
 use super::helpers::{
     GasSnapshot, Receipt, TempoTxSender, fixed_signer, print_gas_snapshot, test_signer,
 };
-use crate::utils::TestNodeBuilder;
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const DEPOSIT: u64 = 1_000_000;
 const FUNDING: u64 = 20_000_000;
@@ -227,11 +229,16 @@ impl<P: Provider + Clone> ChannelEnv<P> {
     }
 }
 
+#[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
+#[test_case(TempoHardfork::T7 ; "t7_without_tip1060")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_channel_reserve_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip20_channel_reserve_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let mut funder = TempoTxSender::connect(http_url.clone(), test_signer(0)?).await?;
@@ -338,9 +345,16 @@ async fn test_tip20_channel_reserve_gas_snapshots() -> eyre::Result<()> {
         credited_reopen.gas_used(),
     );
 
-    print_gas_snapshot("TIP20ChannelReserve gas snapshot", &gas);
+    let snapshot_name = format!(
+        "tip20_channel_reserve_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    print_gas_snapshot(
+        &format!("TIP20ChannelReserve gas snapshot ({})", hardfork.name()),
+        &gas,
+    );
 
-    insta::assert_yaml_snapshot!(gas);
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }

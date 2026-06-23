@@ -564,7 +564,7 @@ impl TIP20ChannelReserve {
 
     /// Credits `payer` for deleted packed channel-state slots.
     fn credit_channel_storage_slots(&mut self, payer: Address, slots: u64) -> Result<()> {
-        if slots == 0 || !self.storage.spec().is_t8() {
+        if slots == 0 {
             return Ok(());
         }
 
@@ -596,7 +596,7 @@ impl TIP20ChannelReserve {
         channel_id: B256,
         state: PackedChannelState,
     ) -> Result<()> {
-        if !self.storage.spec().is_t8() {
+        if !self.storage.spec().is_t7() {
             return self.channel_states[channel_id].write(state);
         }
 
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(

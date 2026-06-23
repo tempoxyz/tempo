@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
 };
 
-const T8_ADDED: &[[u8; 4]] = &[ITIP20ChannelReserve::storageCreditsCall::SELECTOR];
+const T7_ADDED: &[[u8; 4]] = &[ITIP20ChannelReserve::storageCreditsCall::SELECTOR];
 
 impl Precompile for TIP20ChannelReserve {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -25,7 +25,7 @@ impl Precompile for TIP20ChannelReserve {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T8).with_added(T8_ADDED)],
+            &[SelectorSchedule::new(TempoHardfork::T7).with_added(T7_ADDED)],
             ITIP20ChannelReserveCalls::abi_decode,
             |call| match call {
                 ITIP20ChannelReserveCalls::CLOSE_GRACE_PERIOD(_) => {
