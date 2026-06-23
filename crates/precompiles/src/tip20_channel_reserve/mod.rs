@@ -11,9 +11,9 @@ use crate::{
     error::{Result, TempoPrecompileError},
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
+    storage_credits::StorageCredits,
     tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
-    tip1060_storage_credits::TIP1060StorageCredits,
 };
 use alloy::{
     primitives::{Address, B256, U256, aliases::U96, keccak256},
@@ -22,8 +22,8 @@ use alloy::{
 use std::sync::LazyLock;
 use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
-    ITIP20ChannelReserve, ITIP1060StorageCredits::Mode, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20ChannelReserveError, TIP20ChannelReserveEvent,
+    ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
+    TIP20ChannelReserveEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -397,8 +397,7 @@ impl TIP20ChannelReserve {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        self.channel_states[channel_id].delete()?;
-        self.credit_channel_storage_slot(call.descriptor.payer)?;
+        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
@@ -459,8 +458,7 @@ impl TIP20ChannelReserve {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        self.channel_states[channel_id].delete()?;
-        self.credit_channel_storage_slot(call.descriptor.payer)?;
+        self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
         if !refund.is_zero() {
             TIP20Token::from_address(call.descriptor.token)?.transfer(
                 self.address,
@@ -553,27 +551,35 @@ impl TIP20ChannelReserve {
         Ok(hash)
     }
 
-    /// Credits `payer` for one packed channel-state slot that was just deleted.
-    fn credit_channel_storage_slot(&mut self, payer: Address) -> Result<()> {
-        if !self.storage.spec().is_t7() {
+    /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
+    fn delete_channel_state_and_credit_payer(
+        &mut self,
+        channel_id: B256,
+        payer: Address,
+    ) -> Result<()> {
+        let (_, credits) = StorageCredits::new()
+            .track_minted_credits(self.address, || self.channel_states[channel_id].delete())?;
+        self.credit_channel_storage_slots(payer, credits)
+    }
+
+    /// Credits `payer` for deleted packed channel-state slots.
+    fn credit_channel_storage_slots(&mut self, payer: Address, slots: u64) -> Result<()> {
+        if slots == 0 {
             return Ok(());
         }
 
         let current = self.channel_storage_credits[payer].read()?;
-        let Some(updated) = current.checked_add(1) else {
-            return Ok(());
-        };
+        let updated = current.saturating_add(slots);
 
         if current == 0 {
-            let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
-                self.address,
-                1,
-                || self.channel_storage_credits[payer].write(updated),
-            )?;
+            let mut storage_credits = StorageCredits::new();
+            let (_, delta) = storage_credits.with_budget(self.address, 1, || {
+                self.channel_storage_credits[payer].write(updated)
+            })?;
 
-            if spent != 1 {
+            if delta != -1 {
                 return Err(TempoPrecompileError::Fatal(format!(
-                    "channel storage credit bookkeeping spend mismatch: reserved 1, spent {spent}"
+                    "channel storage credit bookkeeping spend mismatch: reserved 1, delta {delta}"
                 )));
             }
 
@@ -596,25 +602,24 @@ impl TIP20ChannelReserve {
 
         let current = self.channel_storage_credits[payer].read()?;
         if current == 0 {
-            TIP1060StorageCredits::new().set_mode(self.address, Mode::Preserve)?;
             return self.channel_states[channel_id].write(state);
         }
 
-        let checkpoint = self.storage.checkpoint();
-        self.channel_storage_credits[payer].write(current - 1)?;
+        self.channel_storage_credits[payer].delete()?;
 
-        let ((), spent) =
-            TIP1060StorageCredits::new().with_storage_credits_budget(self.address, 1, || {
-                self.channel_states[channel_id].write(state)
-            })?;
+        let mut storage_credits = StorageCredits::new();
+        let (_, delta) = storage_credits.with_budget(self.address, current, || {
+            self.channel_states[channel_id].write(state)
+        })?;
+        let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
-        if spent != 1 {
+        if spent_credits != 1 {
             return Err(TempoPrecompileError::Fatal(format!(
-                "channel storage credit spend mismatch: reserved 1, spent {spent}"
+                "channel storage credit spend mismatch: reserved 1, spent {spent_credits}"
             )));
         }
 
-        checkpoint.commit();
+        self.credit_channel_storage_slots(payer, current.saturating_sub(spent_credits))?;
         Ok(())
     }
 

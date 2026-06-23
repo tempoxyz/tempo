@@ -20,43 +20,16 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup::new().epoch_length(100).seed(seed);
-        let _first = run(setup.clone(), |metric, value| {
-            // // TODO(janis): commonware calls this marshal, we call this sync.
-            // // We should rename this to marshal (the actor, that is).
-            if metric.ends_with("_marshal_processed_height") {
-                let value = value.parse::<u64>().unwrap();
-                value >= 5
-            } else {
-                false
-            }
-        });
+        let _first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
 
         // FIXME(janis): there is some non-determinism and hence the runs are
         // sometimes flaky.
         //
-        // let first = run(setup.clone(), |metric, value| {
-        //     // // TODO(janis): commonware calls this marshal, we call this sync.
-        //     // // We should rename this to marshal (the actor, that is).
-        //     if metric.ends_with("_marshal_processed_height") {
-        //         let value = value.parse::<u64>().unwrap();
-        //         value >= 5
-        //     } else {
-        //         false
-        //     }
-        // });
+        // let first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
 
         // std::thread::sleep(Duration::from_secs(1));
 
-        // let second = run(setup.clone(), |metric, value| {
-        //     // // TODO(janis): commonware calls this marshal, we call this sync.
-        //     // // We should rename this to marshal (the actor, that is).
-        //     if metric.ends_with("_marshal_processed_height") {
-        //         let value = value.parse::<u64>().unwrap();
-        //         value >= 5
-        //     } else {
-        //         false
-        //     }
-        // });
+        // let second = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
         // assert_eq!(first, second);
     }
 }
@@ -87,16 +60,7 @@ fn many_bad_links() {
             .linkage(link.clone())
             .epoch_length(100);
 
-        let _first = run(setup.clone(), |metric, value| {
-            // // TODO(janis): commonware calls this marshal, we call this sync.
-            // // We should rename this to marshal (the actor, that is).
-            if metric.ends_with("_marshal_processed_height") {
-                let value = value.parse::<u64>().unwrap();
-                value >= 5
-            } else {
-                false
-            }
-        });
+        let _first = run(setup.clone(), |metrics| metrics.consensus_at_height(5) > 0);
 
         // FIXME(janis): the events are currently not fully deterministic, so
         // two runs will not reproduce the exact same audit.
@@ -127,16 +91,7 @@ fn reach_height_20_with_a_few_bad_links() {
         .epoch_length(100)
         .linkage(link);
 
-    let _first = run(setup, |metric, value| {
-        // // TODO(janis): commonware calls this marshal, we call this sync.
-        // // We should rename this to marshal (the actor, that is).
-        if metric.ends_with("_marshal_processed_height") {
-            let value = value.parse::<u64>().unwrap();
-            value >= 20
-        } else {
-            false
-        }
-    });
+    let _first = run(setup, |metrics| metrics.consensus_at_height(20) > 0);
 
     std::thread::sleep(Duration::from_secs(1));
 }

@@ -11,7 +11,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use crate::{
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+    storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
@@ -29,11 +29,12 @@ pub struct HashMapStorageProvider {
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    gas_params: GasParams,
+    gas_tracker: GasTracker,
     counter_sload: u64,
     counter_sstore: u64,
+    non_creditable_slots: NonCreditableSlots,
     snapshots: Vec<Snapshot>,
-    gas_tracker: GasTracker,
-    gas_params: GasParams,
 
     /// Emitted events keyed by contract address.
     pub events: HashMap<Address, Vec<LogData>>,
@@ -76,96 +77,26 @@ impl HashMapStorageProvider {
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
+            gas_params: GasParams::new_spec(spec.into()),
+            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
             counter_sload: 0,
             counter_sstore: 0,
-            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
-            gas_params: GasParams::new_spec(spec.into()),
+            non_creditable_slots: NonCreditableSlots::empty(),
         }
     }
 
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
 
     /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
     pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
+        self.gas_params = GasParams::new_spec(self.spec.into());
         self
-    }
-}
-
-impl StorageCreditsBackend for HashMapStorageProvider {
-    type Error = TempoPrecompileError;
-
-    #[inline]
-    fn gas_params(&self) -> &GasParams {
-        &self.gas_params
-    }
-
-    #[inline]
-    fn gas_tracker(&mut self) -> &mut GasTracker {
-        &mut self.gas_tracker
-    }
-
-    #[inline]
-    fn sload(
-        &mut self,
-        address: Address,
-        key: U256,
-        _skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, Self::Error> {
-        Ok(StateLoad::new(
-            self.internals
-                .get(&(address, key))
-                .copied()
-                .unwrap_or(U256::ZERO),
-            false,
-        ))
-    }
-
-    #[inline]
-    fn sstore(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-        _skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
-        let present = self
-            .internals
-            .get(&(address, key))
-            .copied()
-            .unwrap_or(U256::ZERO);
-        self.internals.insert((address, key), value);
-
-        Ok(StateLoad::new(
-            SStoreResult {
-                original_value: present,
-                present_value: present,
-                new_value: value,
-            },
-            false,
-        ))
-    }
-
-    #[inline]
-    fn tload(&mut self, address: Address, key: U256) -> U256 {
-        self.transient
-            .get(&(address, key))
-            .copied()
-            .unwrap_or(U256::ZERO)
-    }
-
-    #[inline]
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
-        self.transient.insert((address, key), value);
-    }
-
-    #[inline]
-    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), Self::Error> {
-        PrecompileStorageProvider::emit_event(self, address, event)
     }
 }
 
@@ -226,7 +157,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
                 },
                 false,
             );
-            sstore_storage_credits(self, address, &state_load)?;
+            sstore_storage_credits(self, address, Some(key), &state_load)?;
         }
 
         Ok(())
@@ -349,8 +280,77 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 }
 
+impl StorageCreditsBackend for HashMapStorageProvider {
+    type Error = TempoPrecompileError;
+
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
+    }
+
+    fn sload(
+        &mut self,
+        address: Address,
+        key: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        Ok(StateLoad::new(
+            self.internals
+                .get(&(address, key))
+                .copied()
+                .unwrap_or(U256::ZERO),
+            false,
+        ))
+    }
+
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+        let present_value = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        self.internals.insert((address, key), value);
+        Ok(StateLoad::new(
+            SStoreResult {
+                original_value: present_value,
+                present_value,
+                new_value: value,
+            },
+            false,
+        ))
+    }
+
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.transient
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.transient.insert((address, key), value);
+    }
+
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        self.non_creditable_slots.is_non_creditable_slot(owner, key)
+    }
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn set_non_creditable_slots(&mut self, slots: NonCreditableSlots) {
+        self.non_creditable_slots = slots;
+    }
+
     pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
         self.fail_on_sload = Some((address, slot));
     }
@@ -390,6 +390,7 @@ impl HashMapStorageProvider {
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
     }
 
     /// Clears all transient storage (simulates a new block).

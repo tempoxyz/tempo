@@ -10,7 +10,9 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -51,20 +53,34 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Recorded storage actions.
+    pub(crate) actions: StorageActions,
+    /// Transaction-local protocol slots whose clears must not mint storage credits.
+    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
+        let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
+        let actions = StorageActions::disabled();
+        let precompiles = tempo_precompiles::tempo_precompiles(
+            &ctx.cfg,
+            actions.clone(),
+            non_creditable_slots.clone(),
+        );
 
-        Self::new_inner(Evm {
-            instruction: instructions::tempo_instructions(ctx.cfg.spec),
-            ctx,
-            inspector,
-            precompiles,
-            frame_stack: FrameStack::new(),
-        })
+        Self::new_inner(
+            Evm {
+                instruction: instructions::tempo_instructions(ctx.cfg.spec),
+                ctx,
+                inspector,
+                precompiles,
+                frame_stack: FrameStack::new(),
+            },
+            actions,
+            non_creditable_slots,
+        )
     }
 
     /// Inner helper function to create a new Tempo EVM with empty logs.
@@ -78,6 +94,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             PrecompilesMap,
             EthFrame<EthInterpreter>,
         >,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
         Self {
             inner,
@@ -87,6 +105,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            actions,
+            non_creditable_slots,
         }
     }
 
@@ -110,12 +130,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        TempoEvm::new_inner(self.inner.with_inspector(inspector))
-    }
-
-    /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        Self::new_inner(self.inner.with_precompiles(precompiles))
+        let Self {
+            inner,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+        TempoEvm::new_inner(
+            inner.with_inspector(inspector),
+            actions,
+            non_creditable_slots,
+        )
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -123,11 +148,22 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.into_inspector()
     }
 
+    /// Returns a reference to the recorded storage actions.
+    pub fn actions(&self) -> &StorageActions {
+        &self.actions
+    }
+
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.non_creditable_slots.clone()
+    }
+
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
+        self.non_creditable_slots.borrow_mut().clear();
     }
 }
 
@@ -226,7 +262,7 @@ mod tests {
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
-    use alloy_sol_types::{SolCall, SolError, SolEvent};
+    use alloy_sol_types::{SolCall, SolError};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
         ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
@@ -247,15 +283,15 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
+    use tempo_contracts::precompiles::IStorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage_credits::{CreditMode, StorageCredits},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip1060_storage_credits::{CreditMode, TIP1060StorageCredits},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -1955,7 +1991,7 @@ mod tests {
         evm.ctx
             .db_mut()
             .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
-        let slot = TIP1060StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(owner);
         evm.ctx
             .db_mut()
             .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, U256::from(balance))
@@ -1963,7 +1999,7 @@ mod tests {
     }
 
     fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
-        let slot = TIP1060StorageCredits::slot(owner);
+        let slot = StorageCredits::slot(owner);
         evm.ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
@@ -1984,6 +2020,15 @@ mod tests {
     }
 
     fn append_tip1060_precompile_call(bytecode_bytes: &mut Vec<u8>, input_bytes: &[u8]) {
+        append_tip1060_precompile_call_store_return(bytecode_bytes, input_bytes, None);
+    }
+
+    /// Appends bytecode that calls the TIP-1060 precompile and stores the returned word in `slot`.
+    fn append_tip1060_precompile_call_store_return(
+        bytecode_bytes: &mut Vec<u8>,
+        input_bytes: &[u8],
+        store_return_in_slot: Option<u8>,
+    ) {
         for (i, &byte) in input_bytes.iter().enumerate() {
             assert!(i <= u8::MAX as usize);
             // PUSH1 <byte> PUSH1 <offset> MSTORE8  (write calldata byte at memory[offset])
@@ -1996,9 +2041,15 @@ mod tests {
             ]);
         }
 
-        // PUSH1 0x00 PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00 PUSH1 0x00
-        // (retSize=0, retOffset=0, argsSize=input length, argsOffset=0, value=0)
-        bytecode_bytes.extend_from_slice(&bytes!("60006000"));
+        let ret_size = if store_return_in_slot.is_some() {
+            0x20
+        } else {
+            0
+        };
+
+        // PUSH1 <retSize> PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00 PUSH1 0x00
+        // (retOffset=0, argsOffset=0, value=0)
+        bytecode_bytes.extend_from_slice(&[opcode::PUSH1, ret_size, opcode::PUSH1, 0x00]);
         bytecode_bytes.extend_from_slice(&[opcode::PUSH1, input_bytes.len() as u8]);
         bytecode_bytes.extend_from_slice(&bytes!("60006000"));
         // PUSH20 <STORAGE_CREDITS_ADDRESS>
@@ -2006,11 +2057,23 @@ mod tests {
         bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
         // PUSH3 0x0f4240 CALL POP  (call with 1_000_000 gas and discard success flag)
         bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
+
+        if let Some(slot) = store_return_in_slot {
+            // Store returned word: MLOAD(0) -> SSTORE(slot, value).
+            bytecode_bytes.extend_from_slice(&[
+                opcode::PUSH1,
+                0x00,
+                opcode::MLOAD,
+                opcode::PUSH1,
+                slot,
+            ]);
+            bytecode_bytes.push(opcode::SSTORE);
+        }
     }
 
     /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
     fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
-        let input_bytes = ITIP1060StorageCredits::setModeCall {
+        let input_bytes = IStorageCredits::setModeCall {
             newMode: tip1060_abi_mode(mode),
         }
         .abi_encode();
@@ -2136,7 +2199,7 @@ mod tests {
 
     #[test]
     fn test_tip1060_storage_credits_delegatecall_rejected() -> eyre::Result<()> {
-        let calldata = ITIP1060StorageCredits::setModeCall {
+        let calldata = IStorageCredits::setModeCall {
             newMode: Mode::Direct,
         }
         .abi_encode();
@@ -2279,7 +2342,7 @@ mod tests {
         // Sentinel: recursive TIP-1060 accounting would consume this pre-seeded self credit.
         seed_storage_credit_balance(&mut evm, STORAGE_CREDITS_ADDRESS, 1);
 
-        let calldata = ITIP1060StorageCredits::setModeCall {
+        let calldata = IStorageCredits::setModeCall {
             newMode: Mode::Preserve,
         }
         .abi_encode();
@@ -2391,8 +2454,8 @@ mod tests {
         // only the 5k residual set charge. The 245k credit depends on the TIP-1060 credit mode.
         let cases = [
             (CreditMode::Refund, 285_968u64, 0u64),
-            (CreditMode::Preserve, 535_514u64, 1u64),
-            (CreditMode::Direct, 535_514u64, 1u64),
+            (CreditMode::Preserve, 534_133u64, 1u64),
+            (CreditMode::Direct, 534_133u64, 1u64),
         ];
 
         for (case_id, (mode, expected_gas, expected_balance)) in cases.into_iter().enumerate() {
@@ -2482,7 +2545,7 @@ mod tests {
             ]
         }
 
-        const SET_MODE_GAS: u64 = 4_546;
+        const SET_MODE_GAS: u64 = 3_165;
 
         fn same_storage_accounting(refund_gas: u64, expected_credits: u64) -> [ModeExpectation; 3] {
             expectations(
@@ -2565,8 +2628,8 @@ mod tests {
                 expected_slot: 0,
                 credit_cases: no_initial_credits(expectations(
                     (35_968, 0),
-                    (285_514, 1),
-                    (285_514, 1),
+                    (284_133, 1),
+                    (284_133, 1),
                 )),
             },
             TransitionClass {
@@ -2603,7 +2666,7 @@ mod tests {
                         expectations: expectations(
                             (37_962, 0),
                             (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 1),
-                            (45_308, 0),
+                            (43_927, 0),
                         ),
                     },
                     CreditCase {
@@ -2612,7 +2675,7 @@ mod tests {
                         expectations: expectations(
                             (37_962, 1),
                             (37_962 + SET_MODE_GAS + STORAGE_CREDIT_VALUE, 2),
-                            (45_308, 1),
+                            (43_927, 1),
                         ),
                     },
                 ],
@@ -2769,9 +2832,7 @@ mod tests {
             state::AccountInfo,
         };
         use tempo_chainspec::hardfork::TempoHardfork;
-        use tempo_precompiles::{
-            STORAGE_CREDITS_ADDRESS, tip1060_storage_credits::TIP1060StorageCredits,
-        };
+        use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
 
         use crate::{TempoBlockEnv, TempoEvm, gas_params::tempo_gas_params};
 
@@ -2844,10 +2905,7 @@ mod tests {
         let balance = evm
             .ctx
             .db_mut()
-            .storage(
-                STORAGE_CREDITS_ADDRESS,
-                TIP1060StorageCredits::slot(contract),
-            )?
+            .storage(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(contract))?
             .as_limbs()[0];
         let slots = evm
             .ctx
@@ -2918,7 +2976,7 @@ mod tests {
         assert!(result.is_success(), "preserve churn tx should succeed");
         assert_eq!(
             result.tx_gas_used(),
-            1_029_138,
+            1_027_757,
             "three Preserve churn cycles pay the full 245k creditable portion per recreation"
         );
 
@@ -3007,8 +3065,8 @@ mod tests {
         // (mode, tx2 gas, balance after tx1/tx2).
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
-            (CreditMode::Preserve, 287_540u64, 1u64, 1u64),
-            (CreditMode::Direct, 45_340u64, 1u64, 0u64),
+            (CreditMode::Preserve, 286_159u64, 1u64, 1u64),
+            (CreditMode::Direct, 43_959u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -3076,19 +3134,20 @@ mod tests {
         Ok(())
     }
 
-    /// TIP-1060: `setBudget(n)` caps Direct credit spending, then switches back to Preserve.
+    /// TIP-1060: `setBudget(n)` caps Direct credit spending.
     ///
     /// Both contracts start with two credits and create two slots. `setBudget(1)` should discount
-    /// only the first create; plain `setMode(Direct)` has unlimited budget and discounts both.
+    /// only the first create; after the budget is exhausted, Direct stays selected but charges like
+    /// Preserve. Plain `setMode(Direct)` has unlimited budget and discounts both.
     #[test]
-    fn test_tip1060_direct_budget_caps_credit_consumption_and_emits_preserve() -> eyre::Result<()> {
+    fn test_tip1060_direct_budget_caps_credit_consumption() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
         let budgeted_contract = Address::repeat_byte(0x86);
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input = ITIP1060StorageCredits::setBudgetCall { credits: 1 }.abi_encode();
+        let set_budget_input = IStorageCredits::setBudgetCall { credits: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 
@@ -3129,19 +3188,6 @@ mod tests {
             "budget 1 must consume exactly one of the two available credits"
         );
 
-        let budgeted_mode_updates = budgeted_result
-            .logs()
-            .iter()
-            .filter(|log| log.address == STORAGE_CREDITS_ADDRESS)
-            .map(ITIP1060StorageCredits::ModeUpdated::decode_log)
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(budgeted_mode_updates.len(), 2);
-        // First event selects Direct; second event is the budget-exhausted Preserve switch.
-        assert_eq!(budgeted_mode_updates[0].account, budgeted_contract);
-        assert_eq!(budgeted_mode_updates[0].newMode, Mode::Direct);
-        assert_eq!(budgeted_mode_updates[1].account, budgeted_contract);
-        assert_eq!(budgeted_mode_updates[1].newMode, Mode::Preserve);
-
         let unlimited_tx = TxBuilder::new()
             .call(unlimited_contract, &[])
             .nonce(1)
@@ -3159,8 +3205,192 @@ mod tests {
         );
         assert!(
             budgeted_result.tx_gas_used() > unlimited_result.tx_gas_used(),
-            "the budgeted second create should pay full creation gas after switching to Preserve"
+            "the budgeted second create should pay full creation gas after the Direct budget is exhausted"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip1060_exhausted_direct_budget_stays_direct() -> eyre::Result<()> {
+        const MODE_SLOT: u8 = 3;
+        const EXHAUSTED_GAS: (u8, u8) = (4, 5);
+        const AFTER_CLEAR_GAS: (u8, u8) = (6, 7);
+
+        let store_gas = |bytecode: &mut Vec<u8>, slot: u8| {
+            bytecode.extend_from_slice(&[opcode::GAS, opcode::PUSH1, slot, opcode::SSTORE]);
+        };
+        let contract = Address::repeat_byte(0x88);
+        let mut bytecode = Vec::new();
+
+        append_tip1060_precompile_call(
+            &mut bytecode,
+            &IStorageCredits::setBudgetCall { credits: 1 }.abi_encode(),
+        );
+        bytecode.extend_from_slice(&bytes!("6001600055")); // budgeted create
+        append_tip1060_precompile_call_store_return(
+            &mut bytecode,
+            &IStorageCredits::modeOfCall { account: contract }.abi_encode(),
+            Some(MODE_SLOT),
+        );
+        store_gas(&mut bytecode, EXHAUSTED_GAS.0);
+        bytecode.extend_from_slice(&bytes!("6001600155")); // create while exhausted
+        store_gas(&mut bytecode, EXHAUSTED_GAS.1);
+        bytecode.extend_from_slice(&bytes!("6000600155")); // clear: mint credit, not budget
+        store_gas(&mut bytecode, AFTER_CLEAR_GAS.0);
+        bytecode.extend_from_slice(&bytes!("6001600255")); // still exhausted after clear
+        store_gas(&mut bytecode, AFTER_CLEAR_GAS.1);
+        bytecode.push(opcode::STOP);
+
+        let (_, evm) = run_tx_on_tip1060_contract_with_setup(
+            CreditMode::Refund,
+            contract,
+            &bytecode,
+            |evm, contract| {
+                seed_storage_credit_balance(evm, contract, 2);
+                for slot in MODE_SLOT..=AFTER_CLEAR_GAS.1 {
+                    evm.ctx.db_mut().insert_account_storage(
+                        contract,
+                        U256::from(slot),
+                        U256::ONE,
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+
+        let word = |slot: u8| {
+            evm.ctx
+                .db()
+                .storage_ref(contract, U256::from(slot))
+                .unwrap()
+        };
+        let delta = |slots: (u8, u8)| word(slots.0).as_limbs()[0] - word(slots.1).as_limbs()[0];
+
+        assert!(
+            delta(EXHAUSTED_GAS) > STORAGE_CREDIT_VALUE
+                && delta(AFTER_CLEAR_GAS) > STORAGE_CREDIT_VALUE,
+            "both exhausted creates must pay full creditable gas"
+        );
+        let expected = (U256::from(CreditMode::Direct as u8), U256::ZERO, U256::ONE);
+        assert_eq!((word(MODE_SLOT), word(1), word(2)), expected);
+        assert_eq!(storage_credit_balance(&evm, contract), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip1060_reverted_scopes_unwind_credit_accounting() -> eyre::Result<()> {
+        struct RevertedCase {
+            name: &'static str,
+            callee: Address,
+            bytecode: Bytecode,
+            initial_slot: U256,
+            initial_credits: u64,
+            expected_slot: U256,
+            expected_credits: u64,
+        }
+
+        fn caller_ignoring_reverted_callee(callee: Address) -> Bytecode {
+            let mut bytecode = bytes!("60006000600060006000").to_vec();
+            bytecode.push(opcode::PUSH20);
+            bytecode.extend_from_slice(callee.as_slice());
+            bytecode.extend_from_slice(&bytes!("620f4240f15000"));
+            Bytecode::new_raw(bytecode.into())
+        }
+
+        let mut direct_create_revert = Vec::new();
+        append_tip1060_set_mode_call(&mut direct_create_revert, CreditMode::Direct);
+        direct_create_revert.extend_from_slice(&bytes!("600160005560006000fd"));
+
+        let cases = [
+            RevertedCase {
+                name: "clear mint",
+                callee: Address::repeat_byte(0x89),
+                // SSTORE(0, 0); REVERT(0, 0)
+                bytecode: Bytecode::new_raw(bytes!("600060005560006000fd")),
+                initial_slot: U256::ONE,
+                initial_credits: 0,
+                expected_slot: U256::ONE,
+                expected_credits: 0,
+            },
+            RevertedCase {
+                name: "Refund pending creation",
+                callee: Address::repeat_byte(0x8a),
+                // SSTORE(0, 1); REVERT(0, 0)
+                bytecode: Bytecode::new_raw(bytes!("600160005560006000fd")),
+                initial_slot: U256::ZERO,
+                initial_credits: 1,
+                expected_slot: U256::ZERO,
+                expected_credits: 1,
+            },
+            RevertedCase {
+                name: "Direct debit",
+                callee: Address::repeat_byte(0x8b),
+                bytecode: Bytecode::new_raw(direct_create_revert.into()),
+                initial_slot: U256::ZERO,
+                initial_credits: 1,
+                expected_slot: U256::ZERO,
+                expected_credits: 1,
+            },
+        ];
+
+        for case in cases {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let caller_contract = Address::repeat_byte(case.callee[0] ^ 0xff);
+            let mut evm = create_funded_evm_t7(caller);
+
+            evm.ctx.db_mut().insert_account_info(
+                caller_contract,
+                AccountInfo {
+                    code: Some(caller_ignoring_reverted_callee(case.callee)),
+                    ..Default::default()
+                },
+            );
+            evm.ctx.db_mut().insert_account_info(
+                case.callee,
+                AccountInfo {
+                    code: Some(case.bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+            if !case.initial_slot.is_zero() {
+                evm.ctx.db_mut().insert_account_storage(
+                    case.callee,
+                    U256::ZERO,
+                    case.initial_slot,
+                )?;
+            }
+            seed_storage_credit_balance(&mut evm, case.callee, case.initial_credits);
+
+            let tx = TxBuilder::new()
+                .call(caller_contract, &[])
+                .gas_limit(2_000_000)
+                .build();
+            let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+                &key_pair.sign_tx(tx)?,
+                caller,
+            ))?;
+            assert!(
+                result.is_success(),
+                "top-level caller should ignore the reverted {} subcall",
+                case.name
+            );
+
+            assert_eq!(
+                evm.ctx.db().storage_ref(case.callee, U256::ZERO)?,
+                case.expected_slot,
+                "reverted {} storage write must unwind",
+                case.name
+            );
+            assert_eq!(
+                storage_credit_balance(&evm, case.callee),
+                case.expected_credits,
+                "reverted {} credit accounting must unwind",
+                case.name
+            );
+        }
 
         Ok(())
     }
@@ -3378,7 +3608,7 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            295_308,
+            293_927,
             "Direct gets the synchronous discount without an additional settlement refund"
         );
         assert_eq!(

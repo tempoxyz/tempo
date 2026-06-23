@@ -190,7 +190,7 @@ mod codec {
     }
 
     impl reth_db_api::table::Decompress for TempoTxEnvelope {
-        fn decompress(value: &[u8]) -> core::result::Result<Self, DecompressError> {
+        fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
             let (obj, _) = Compact::from_compact(value, value.len());
             Ok(obj)
         }

@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
-use commonware_runtime::{Clock as _, Metrics as _, deterministic::Context};
+use commonware_runtime::{Clock as _, deterministic::Context};
 use commonware_utils::NZU64;
 use reth_ethereum::provider::BlockReader as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-use crate::{CONSENSUS_NODE_PREFIX, TestingNode};
+use crate::{TestingNode, metrics::wait_for_metrics};
 
 /// Returns the target epoch to wait for depending on `event_height`.
 ///
@@ -42,19 +42,6 @@ pub(crate) fn read_outcome_from_validator(
     Some(OnchainDkgOutcome::read(&mut extra_data.as_ref()).expect("valid DKG outcome"))
 }
 
-/// Parses a metric line, returning (metric_name, value) if valid.
-pub(crate) fn parse_metric_line(line: &str) -> Option<(&str, u64)> {
-    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-        return None;
-    }
-
-    let mut parts = line.split_whitespace();
-    let metric = parts.next()?;
-    let value = parts.next()?.parse().ok()?;
-
-    Some((metric, value))
-}
-
 /// Waits for and reads the DKG outcome from the last block of the given epoch.
 pub(crate) async fn wait_for_outcome(
     context: &Context,
@@ -84,24 +71,6 @@ pub(crate) async fn wait_for_outcome(
     }
 }
 
-/// Counts how many validators have reached the target epoch.
-pub(crate) fn count_validators_at_epoch(context: &Context, target_epoch: u64) -> u32 {
-    let metrics = context.encode();
-    let mut at_epoch = 0;
-
-    for line in metrics.lines() {
-        let Some((metric, value)) = parse_metric_line(line) else {
-            continue;
-        };
-
-        if metric.ends_with("_epoch_manager_latest_epoch") && value >= target_epoch {
-            at_epoch += 1;
-        }
-    }
-
-    at_epoch
-}
-
 /// Waits until at least `min_validators` have reached the target epoch.
 pub(crate) async fn wait_for_validators_to_reach_epoch(
     context: &Context,
@@ -110,54 +79,10 @@ pub(crate) async fn wait_for_validators_to_reach_epoch(
 ) {
     tracing::info!(target_epoch, min_validators, "Waiting for epoch");
 
-    loop {
-        context.sleep(Duration::from_secs(1)).await;
+    wait_for_metrics(context, |metrics| {
+        metrics.consensus_at_epoch(target_epoch) >= min_validators as usize
+    })
+    .await;
 
-        if count_validators_at_epoch(context, target_epoch) >= min_validators {
-            tracing::info!(target_epoch, "Validators reached epoch");
-            return;
-        }
-    }
-}
-
-/// Asserts that no DKG ceremony failures have occurred.
-#[track_caller]
-pub(crate) fn assert_no_dkg_failures(context: &Context) {
-    let metrics = context.encode();
-
-    for line in metrics.lines() {
-        let Some((metric, value)) = parse_metric_line(line) else {
-            continue;
-        };
-
-        if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-            assert_eq!(0, value, "DKG ceremony failed: {metric}");
-        }
-    }
-}
-
-/// Asserts that no DKG ceremony failures have occurred.
-#[track_caller]
-pub(crate) fn assert_no_dkg_failure(metric: &str, value: &str) {
-    if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-        assert_eq!(0, value.parse::<u64>().unwrap(),);
-    }
-}
-
-/// Asserts that at least one validator has skipped rounds (indicating sync occurred).
-#[track_caller]
-pub(crate) fn assert_skipped_rounds(context: &Context) {
-    let metrics = context.encode();
-
-    for line in metrics.lines() {
-        let Some((metric, value)) = parse_metric_line(line) else {
-            continue;
-        };
-
-        if metric.ends_with("_rounds_skipped_total") && value > 0 {
-            return;
-        }
-    }
-
-    panic!("Expected at least one validator to have skipped rounds during sync");
+    tracing::info!(target_epoch, "Validators reached epoch");
 }

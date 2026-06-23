@@ -23,10 +23,10 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
+    storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
-    tip1060_storage_credits::{StorageCreditDeltas, TIP1060StorageCredits},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -89,10 +89,6 @@ impl StablecoinDEX {
     }
 
     /// Adds reusable-order storage credits for `user`.
-    ///
-    /// If this creates the user's DEX credit counter slot, one TIP-1060 token owned by the DEX must
-    /// be consumed by that bookkeeping slot creation. The token is available because the reusable
-    /// order storage deletion that earned the credit has already happened.
     fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
         if slots == 0 || !self.storage.spec().is_t7() {
             return Ok(());
@@ -101,62 +97,85 @@ impl StablecoinDEX {
         let current = self.dex_storage_credits[user].read()?;
         let updated = current.saturating_add(slots);
 
-        if current == 0 && updated > 0 {
-            let (_, spent) = TIP1060StorageCredits::new().with_storage_credits_budget(
-                self.address,
-                1,
-                || self.dex_storage_credits[user].write(updated),
-            )?;
-
-            if spent != 1 {
-                return Err(TempoPrecompileError::Fatal(format!(
-                    "DEX storage credit bookkeeping spend mismatch: reserved 1, spent {spent}"
-                )));
-            }
-
-            Ok(())
-        } else {
-            self.dex_storage_credits[user].write(updated)
+        if current != 0 {
+            return self.dex_storage_credits[user].write(updated);
         }
+
+        // Initializing this counter spends one DEX-owned credit from the newly granted slots.
+        // We still store the full logical balance: the DEX balance is one credit short while the
+        // counter exists, then gets that credit back when the counter is cleared.
+        let mut storage_credits = StorageCredits::new();
+        let (_, delta) = storage_credits.with_budget(self.address, 1, || {
+            self.dex_storage_credits[user].write(updated)
+        })?;
+
+        if delta != -1 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "DEX storage credit bookkeeping spend mismatch: reserved 1, delta {delta}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
+    fn delete_order(&mut self, order: &Order) -> Result<u64> {
+        StorageCredits::new()
+            .track_minted_credits(self.address, || self.orders[order.order_id()].delete())
+            .map(|(_, credits)| credits)
+    }
+
+    /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
+    fn unlink_neighbor_and_credit_maker(
+        &mut self,
+        order_id: u128,
+        update: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        let (_, credits) =
+            StorageCredits::new().track_minted_credits(self.address, || update(self))?;
+        if credits == 0 {
+            return Ok(());
+        }
+
+        let maker = self.orders[order_id].maker.read()?;
+        self.credit_dex_storage_slots(maker, credits)
+    }
+
+    /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
+    fn delete_order_and_track_deltas(
+        &mut self,
+        storage_credits: &mut StorageCreditDeltas,
+        order: &Order,
+    ) -> Result<()> {
+        let credits = self.delete_order(order)?;
+        storage_credits.credit_slots(order.maker(), credits);
+        Ok(())
     }
 
     /// Writes a reusable order record while spending at most the maker's DEX storage credits.
     ///
-    /// The DEX credit counter is debited before the reusable storage creation so clearing the
-    /// counter slot can mint the TIP-1060 token represented by that bookkeeping slot.
+    /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
+    /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
     fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
-        let slots = order.storage_credits();
         let user = order.maker();
-
-        if slots == 0 || !self.storage.spec().is_t7() {
+        let user_credits = self.dex_storage_credits[user].read()?;
+        if user_credits == 0 {
             return self.orders[order.order_id()].write(order);
         }
 
-        let current = self.dex_storage_credits[user].read()?;
-        let reserved = current.min(slots);
-        if reserved == 0 {
-            return self.orders[order.order_id()].write(order);
-        }
+        // Clear the user's bookkeeping slot before writing the order record. This makes the
+        // TIP-1060 credit represented by that bookkeeping slot available to the direct budget.
+        self.dex_storage_credits[user].delete()?;
 
-        let checkpoint = self.storage.checkpoint();
-        self.dex_storage_credits[user].write(current - reserved)?;
+        let mut storage_credits = StorageCredits::new();
+        let (_, delta) = storage_credits.with_budget(self.address, user_credits, || {
+            self.orders[order.order_id()].write(order)
+        })?;
+        let spent_credits = if delta < 0 { (-delta) as u64 } else { 0 };
 
-        let result = TIP1060StorageCredits::new().with_storage_credits_budget(
-            self.address,
-            reserved,
-            || self.orders[order.order_id()].write(order),
-        );
+        self.credit_dex_storage_slots(user, user_credits.saturating_sub(spent_credits))?;
 
-        match result {
-            Ok(((), spent)) if spent == reserved => {
-                checkpoint.commit();
-                Ok(())
-            }
-            Ok(((), spent)) => Err(TempoPrecompileError::Fatal(format!(
-                "DEX storage credit spend mismatch: reserved {reserved}, spent {spent}"
-            ))),
-            Err(err) => Err(err),
-        }
+        Ok(())
     }
 
     /// Returns the minimum representable scaled price (`MIN_PRICE`).
@@ -634,7 +653,10 @@ impl StablecoinDEX {
         Ok(order_id)
     }
 
-    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
+    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity.
+    ///
+    /// On T7+, `charge_credits` spends maker credits. Keep it `false` for taker-triggered flips
+    /// so takers cannot consume the maker's credit balance.
     fn commit_order_to_book(&mut self, mut order: Order, charge_credits: bool) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
@@ -680,7 +702,7 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if charge_credits {
+        if charge_credits && self.storage.spec().is_t7() {
             self.write_order_spending_dex_storage_credits(order)
         } else {
             self.orders[order.order_id()].write(order)
@@ -880,6 +902,7 @@ impl StablecoinDEX {
 
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
+        // In-place flips are taker-triggered, so don't spend maker credits.
         self.commit_order_to_book(flipped, false)?;
 
         // Emit OrderFlipped event for flip order
@@ -1043,13 +1066,11 @@ impl StablecoinDEX {
             // record must be deleted to avoid leaving an orphan in storage.
             let keep_record = self.storage.spec().is_t5() && res.is_ok();
             if !keep_record {
-                self.orders[order.order_id()].delete()?;
-                storage_credits.credit_slots(order.maker(), order.storage_credits());
+                self.delete_order_and_track_deltas(storage_credits, order)?;
             }
         } else {
             // Non-flip filled order: always delete.
-            self.orders[order.order_id()].delete()?;
-            storage_credits.credit_slots(order.maker(), order.storage_credits());
+            self.delete_order_and_track_deltas(storage_credits, order)?;
         }
 
         // Advance tick if liquidity is exhausted
@@ -1085,7 +1106,8 @@ impl StablecoinDEX {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            self.orders[order.next()].prev.delete()?;
+            let (_, credits) = StorageCredits::new()
+                .track_minted_credits(self.address, || self.orders[order.next()].prev.delete())?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -1098,6 +1120,8 @@ impl StablecoinDEX {
                 .write(level)?;
 
             let new_order = self.orders[order.next()].read()?;
+            storage_credits.credit_slots(new_order.maker(), credits);
+
             Some((level, new_order))
         };
 
@@ -1321,13 +1345,17 @@ impl StablecoinDEX {
 
         // Update linked list
         if order.prev() != 0 {
-            self.orders[order.prev()].next.write(order.next())?;
+            self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
+                s.orders[order.prev()].next.write(order.next())
+            })?;
         } else {
             level.head = order.next();
         }
 
         if order.next() != 0 {
-            self.orders[order.next()].prev.write(order.prev())?;
+            self.unlink_neighbor_and_credit_maker(order.next(), |s| {
+                s.orders[order.next()].prev.write(order.prev())
+            })?;
         } else {
             level.tail = order.prev();
         }
@@ -1385,8 +1413,8 @@ impl StablecoinDEX {
         }
 
         // Clear the order from storage
-        self.orders[order.order_id()].delete()?;
-        self.credit_dex_storage_slots(order.maker(), order.storage_credits())?;
+        let credits = self.delete_order(&order)?;
+        self.credit_dex_storage_slots(order.maker(), credits)?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
@@ -2037,17 +2065,152 @@ mod tests {
             exchange.create_pair(base_token)?;
 
             let order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let order = exchange.orders[order_id].read()?;
-            let credits = order.storage_credits();
             assert_eq!(exchange.storage_credits(alice)?, 0);
 
             exchange.cancel(alice, order_id)?;
-            assert_eq!(exchange.storage_credits(alice)?, credits);
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
 
-            let next_order_id = exchange.place(alice, base_token, amount, true, tick)?;
-            let next_order = exchange.orders[next_order_id].read()?;
-            assert_eq!(next_order.storage_credits(), credits);
+            exchange.place(alice, base_token, amount, true, tick)?;
             assert_eq!(exchange.storage_credits(alice)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dex_storage_credits_non_tail_cancel_credits_order_maker_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_token = base.address();
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(amount))
+                .with_mint(bob, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
+
+            let alice_linked_order = exchange.orders[alice_order_id].read()?;
+            assert_eq!(alice_linked_order.next(), bob_order_id);
+
+            exchange.cancel(alice, alice_order_id)?;
+
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
+            assert_eq!(exchange.storage_credits(bob)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dex_storage_credits_non_tail_fill_credits_order_maker_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let taker = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(amount))
+                .with_mint(bob, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(taker, U256::from(amount))
+                .with_approval(taker, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let alice_order_id = exchange.place(alice, base_token, amount, false, tick)?;
+            let bob_order_id = exchange.place(bob, base_token, amount, false, tick)?;
+
+            let alice_linked_order = exchange.orders[alice_order_id].read()?;
+            assert_eq!(alice_linked_order.next(), bob_order_id);
+
+            exchange.swap_exact_amount_in(taker, quote_token, base_token, amount, 0)?;
+
+            let alice_credits = exchange.storage_credits(alice)?;
+            let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
+            assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
+            assert_eq!(exchange.storage_credits(bob)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dex_storage_credits_tail_cancel_credits_predecessor_next_t7() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let tick = 0i16;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_token = base.address();
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(amount))
+                .with_mint(bob, U256::from(amount))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
+            let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
+
+            assert_eq!(exchange.orders[alice_order_id].next.read()?, bob_order_id);
+            assert_eq!(exchange.storage_credits(alice)?, 0);
+
+            exchange.cancel(bob, bob_order_id)?;
+
+            assert_eq!(exchange.orders[alice_order_id].next.read()?, 0);
+            assert_eq!(exchange.storage_credits(alice)?, 1);
 
             Ok(())
         })

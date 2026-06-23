@@ -9,7 +9,7 @@ use alloy::{
 use alloy_network::ReceiptResponse;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{ITIP20ChannelReserve, ITIP1060StorageCredits};
+use tempo_contracts::precompiles::{IStorageCredits, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 use test_case::test_case;
 
@@ -200,12 +200,10 @@ async fn pooled_credits<P: Provider + Clone>(
     hardfork: TempoHardfork,
 ) -> eyre::Result<u64> {
     if hardfork.is_t7() {
-        Ok(
-            ITIP1060StorageCredits::new(STORAGE_CREDITS_ADDRESS, provider)
-                .balanceOf(TIP20_CHANNEL_RESERVE_ADDRESS)
-                .call()
-                .await?,
-        )
+        Ok(IStorageCredits::new(STORAGE_CREDITS_ADDRESS, provider)
+            .balanceOf(TIP20_CHANNEL_RESERVE_ADDRESS)
+            .call()
+            .await?)
     } else {
         Ok(0)
     }
