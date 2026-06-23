@@ -319,7 +319,7 @@ jobs:
       - name: Clean up root-owned files from previous runs
         run: sudo rm -rf "$BENCH_WORK_DIR"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.3
         with:
           persist-credentials: false
           fetch-depth: 0
