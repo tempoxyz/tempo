@@ -1317,7 +1317,8 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        if !self.storage.spec().is_t3() {
+        let is_t3 = self.storage.spec().is_t3();
+        if !is_t3 {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             if amount > remaining {
                 return Err(AccountKeychainError::spending_limit_exceeded().into());
@@ -1333,9 +1334,10 @@ impl AccountKeychain {
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
+        let is_t7 = is_periodic && self.storage.spec().is_t7();
 
         if is_periodic {
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            if is_t7 && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
                 remaining = U256::ZERO;
             }
 
@@ -1355,7 +1357,7 @@ impl AccountKeychain {
         // Update remaining limit
         let new_remaining = remaining - amount;
         if is_periodic {
-            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+            if is_t7 && new_remaining.is_zero() {
                 limit_state.remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
             } else {
                 limit_state.remaining = new_remaining;
@@ -1415,7 +1417,8 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
-        if !self.storage.spec().is_t3() {
+        let is_t3 = self.storage.spec().is_t3();
+        if !is_t3 {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             let refunded = remaining.saturating_add(amount);
             return self.spending_limits[limit_key][token]
