@@ -6,13 +6,8 @@ use tempo_precompiles::{
     error::Result as TempoResult, storage::StorageActions, tip_fee_manager::TipFeeManager,
 };
 
-/// Protocol fee charging component used by the Tempo EVM's internal fee lifecycle.
-///
-/// This is separate from the public FeeManager precompile registration. Replacing this component
-/// changes the pre-transaction and post-transaction protocol fee hooks without changing which
-/// contract is exposed at the FeeManager precompile address.
+/// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager: Debug {
-    /// Resolves the fee token used to pay fees for a transaction.
     fn get_fee_token<S, TX, M>(
         &self,
         state: &mut S,
@@ -28,7 +23,6 @@ pub trait ProtocolFeeManager: Debug {
         state.get_fee_token(tx, fee_payer, spec, actions)
     }
 
-    /// Checks if the fee payer can transfer the given fee token to the fee manager.
     fn can_fee_payer_transfer<S, M>(
         &self,
         state: &mut S,
@@ -43,7 +37,6 @@ pub trait ProtocolFeeManager: Debug {
         state.can_fee_payer_transfer(fee_token, fee_payer, spec, actions)
     }
 
-    /// Collects the maximum fee from the fee payer before transaction execution.
     fn collect_fee_pre_tx(
         &self,
         fee_payer: Address,
@@ -53,7 +46,6 @@ pub trait ProtocolFeeManager: Debug {
         skip_liquidity_check: bool,
     ) -> TempoResult<Address>;
 
-    /// Finalizes fee collection after transaction execution.
     fn collect_fee_post_tx(
         &self,
         fee_payer: Address,
@@ -64,14 +56,11 @@ pub trait ProtocolFeeManager: Debug {
     ) -> TempoResult<U256>;
 }
 
-/// Default Tempo L1 protocol fee manager.
-///
-/// Delegates to the existing [`TipFeeManager`] implementation so default L1 behavior is unchanged.
+/// Default L1 implementation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TempoFeeManager;
 
 impl TempoFeeManager {
-    /// Create the default Tempo protocol fee manager.
     pub const fn new() -> Self {
         Self
     }

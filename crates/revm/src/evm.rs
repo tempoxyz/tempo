@@ -57,7 +57,7 @@ pub struct TempoEvm<DB: Database, I, F = TempoFeeManager> {
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-    /// Protocol fee manager used by the internal pre-tx and post-tx fee hooks.
+    /// Internal protocol fee hooks.
     pub(crate) fee_manager: F,
 }
 
@@ -91,7 +91,6 @@ impl<DB: Database, I, F> TempoEvm<DB, I, F>
 where
     F: ProtocolFeeManager,
 {
-    /// Consumes self and returns a new EVM with the given protocol fee manager.
     pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
     where
         OF: ProtocolFeeManager,

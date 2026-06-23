@@ -1657,7 +1657,6 @@ where
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
         let fee_manager = evm.fee_manager.clone();
-        // Finalize protocol fee collection.
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
@@ -1686,7 +1685,6 @@ where
             return Ok(());
         }
 
-        // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
@@ -1702,7 +1700,6 @@ where
                     let fee_token = evm
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
-                    // Handles both refund and fee queuing.
                     fee_manager
                         .collect_fee_post_tx(
                             fee_payer,

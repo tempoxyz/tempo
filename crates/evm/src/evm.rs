@@ -32,7 +32,6 @@ pub struct TempoEvmFactory<F = TempoFeeManager> {
 }
 
 impl<F> TempoEvmFactory<F> {
-    /// Consumes self and returns a factory with the given protocol fee manager.
     pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvmFactory<OF> {
         TempoEvmFactory { fee_manager }
     }
@@ -160,7 +159,6 @@ where
         }
     }
 
-    /// Consumes self and returns a new EVM with the given protocol fee manager.
     pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
     where
         OF: ProtocolFeeManager,
