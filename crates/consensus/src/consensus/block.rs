@@ -169,26 +169,6 @@ impl Block {
         self.execution_block
     }
 
-    /// Consumes the block and returns the execution-layer block handle plus optional BAL.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        SealedOrRecoveredBlock<tempo_primitives::Block>,
-        Option<Bytes>,
-    ) {
-        (
-            self.execution_block,
-            #[cfg(feature = "bal")]
-            {
-                self.block_access_list
-            },
-            #[cfg(not(feature = "bal"))]
-            {
-                None
-            },
-        )
-    }
-
     /// Returns the (eth) hash of the wrapped block.
     pub(crate) fn block_hash(&self) -> B256 {
         self.execution_block.hash()

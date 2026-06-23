@@ -47,7 +47,8 @@ use tempo_payload_types::{
     marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tracing::{Level, debug, error, info, info_span, instrument, warn};
 
 use super::{
     Mailbox,
@@ -86,6 +87,79 @@ struct ProposalReturn {
     /// This is a reasonably close estimate derived during payload building, not the exact final
     /// encoded block size.
     block_size_estimate_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ValidationKey {
+    height: Height,
+    digest: Digest,
+}
+
+impl ValidationKey {
+    fn new(height: Height, digest: Digest) -> Self {
+        Self { height, digest }
+    }
+
+    fn for_block(block: &Block) -> Self {
+        Self::new(block.height(), block.digest())
+    }
+}
+
+#[derive(Default)]
+struct ValidationState {
+    scheduled: Vec<ValidationKey>,
+}
+
+struct ValidationTracker {
+    validation_lock: AsyncMutex<()>,
+    state: AsyncMutex<ValidationState>,
+    notify: Notify,
+}
+
+impl Default for ValidationTracker {
+    fn default() -> Self {
+        Self {
+            validation_lock: Default::default(),
+            state: Default::default(),
+            notify: Notify::new(),
+        }
+    }
+}
+
+impl ValidationTracker {
+    async fn schedule(&self, key: ValidationKey) -> bool {
+        let mut state = self.state.lock().await;
+        if state.scheduled.contains(&key) {
+            return false;
+        }
+        state.scheduled.push(key);
+        true
+    }
+
+    async fn wait_for(&self, key: ValidationKey) -> bool {
+        let notified = {
+            let state = self.state.lock().await;
+            if !state.scheduled.contains(&key) {
+                return false;
+            }
+            self.notify.notified()
+        };
+        notified.await;
+        true
+    }
+
+    async fn finish(&self, key: ValidationKey) {
+        let mut state = self.state.lock().await;
+        if let Some(index) = state
+            .scheduled
+            .iter()
+            .position(|candidate| *candidate == key)
+        {
+            state.scheduled.swap_remove(index);
+        }
+        drop(state);
+        self.notify.notify_waiters();
+    }
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -130,6 +204,7 @@ where
 
                 scheme_provider: config.scheme_provider,
                 validation_latency_estimator: Default::default(),
+                validation_tracker: Default::default(),
 
                 metrics,
 
@@ -202,13 +277,15 @@ where
             Message::Propose(propose) => {
                 self.context.with_label("propose").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_propose(*propose, context)
+                    let validation_context = self.context.with_label("async_validation");
+                    move |context| inner.handle_propose(*propose, context, validation_context)
                 });
             }
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    let validation_context = self.context.with_label("async_validation");
+                    move |context| inner.handle_verify(*verify, context, validation_context)
                 });
             }
         }
@@ -231,6 +308,7 @@ struct Inner<TState> {
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
+    validation_tracker: Arc<ValidationTracker>,
 
     metrics: Metrics,
 
@@ -319,10 +397,11 @@ impl Inner<Init> {
         ),
         err(level = Level::WARN),
     )]
-    async fn handle_propose<TContext: Pacer>(
+    async fn handle_propose<TContext: Pacer + Spawner>(
         self,
         request: Propose,
         context: TContext,
+        validation_context: TContext,
     ) -> eyre::Result<()> {
         let Propose {
             parent: (parent_view, parent_digest),
@@ -357,6 +436,7 @@ impl Inner<Init> {
 
                 let mut proposal = Box::pin(self.clone().propose(
                     context.clone(),
+                    validation_context.clone(),
                     BuildProposalArgs {
                         propose_start,
                         parent_view,
@@ -459,10 +539,11 @@ impl Inner<Init> {
         ),
         err,
     )]
-    async fn handle_verify<TContext: Pacer>(
+    async fn handle_verify<TContext: Pacer + Spawner>(
         self,
         verify: Verify,
-        context: TContext,
+        _context: TContext,
+        validation_context: TContext,
     ) -> eyre::Result<()> {
         let Verify {
             parent,
@@ -483,7 +564,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(validation_context, parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         )?;
@@ -497,9 +578,10 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn propose<TContext: Pacer>(
+    async fn propose<TContext: Pacer + Spawner>(
         self,
         context: TContext,
+        validation_context: TContext,
         args: BuildProposalArgs,
     ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
         let BuildProposalArgs {
@@ -554,37 +636,7 @@ impl Inner<Init> {
             return Ok((parent, None));
         }
 
-        let is_genesis_parent = parent.height().is_zero()
-            || parent_epoch_info.last() == parent.height()
-                && parent_epoch_info.epoch().next() == round.epoch();
-
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && verify_block(
-                context.clone(),
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-            .is_none()
-        {
-            bail!("the proposal parent block is not valid");
-        }
+        self.wait_for_parent_execution(&parent).await?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
@@ -669,6 +721,7 @@ impl Inner<Init> {
             .lock()
             .ok()
             .and_then(|estimator| estimator.estimate());
+        let subblocks = self.subblocks.clone();
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -676,7 +729,7 @@ impl Inner<Init> {
             extra_data,
             consensus_context,
             move || {
-                self.subblocks
+                subblocks
                     .as_ref()
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
@@ -740,6 +793,14 @@ impl Inner<Init> {
         );
         let return_at = context.current() + return_delay;
 
+        self.schedule_background_validation(
+            validation_context,
+            round.epoch(),
+            proposal.clone(),
+            parent_digest,
+        )
+        .await;
+
         Ok((
             proposal,
             Some(ProposalReturn {
@@ -749,9 +810,9 @@ impl Inner<Init> {
         ))
     }
 
-    async fn verify<TContext: Pacer>(
+    async fn verify<TContext: Pacer + Spawner>(
         self,
-        context: TContext,
+        validation_context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
         proposer: PublicKey,
@@ -816,76 +877,144 @@ impl Inner<Init> {
             });
         }
 
-        if let Err(error) = self
-            .state
-            .executor
-            .canonicalize_head(parent.height(), parent.digest())
-            .await
-        {
-            tracing::warn!(
-                %error,
-                parent.height = %parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent; trying to go on",
-            );
+        if !self.marshal.verified(round, block.clone()).await {
+            bail!("marshal actor refused to persist verified block");
         }
 
-        let validation_duration = verify_block(
-            context,
+        self.schedule_background_validation(
+            validation_context,
             round.epoch(),
-            &self.epoch_strategy,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
-            &block,
+            block,
             parent_digest,
-            &self.scheme_provider,
         )
-        .await
-        .wrap_err("failed verifying block against execution layer")?;
-        if let Some(duration) = validation_duration
-            && let Ok(mut estimator) = self.validation_latency_estimator.lock()
-        {
-            estimator.observe(
-                block.height().get(),
-                ValidationLatencyWorkload::new(
-                    block.block().gas_used(),
-                    block.block().body().transaction_count(),
-                ),
-                duration,
-            );
-        }
-        let is_good = validation_duration.is_some();
-
-        let block_height = block.height();
-        let block_digest = block.digest();
-
-        if is_good {
-            // Persist the block in the marshal actor and execution layer.
-            if !self.marshal.verified(round, block).await {
-                bail!("marshal actor refused to persist verified block");
-            }
-
-            // FIXME: move this into the certification step?
-            self.state
-                .executor
-                .canonicalize_head(block_height, block_digest)
-                .await
-                .wrap_err("failed making the verified proposal the head of the canonical chain")?;
-
-            return Ok(VerifyResult {
-                result: true,
-                block: None,
-                parent: Some(parent),
-            });
-        }
+        .await;
 
         Ok(VerifyResult {
-            result: false,
-            block: Some(block),
+            result: true,
+            block: None,
             parent: Some(parent),
         })
+    }
+
+    async fn schedule_background_validation<TContext>(
+        &self,
+        context: TContext,
+        epoch: Epoch,
+        block: Block,
+        parent_digest: Digest,
+    ) where
+        TContext: Pacer + Spawner,
+    {
+        let key = ValidationKey::for_block(&block);
+        if !self.validation_tracker.schedule(key).await {
+            debug!(
+                height = %key.height,
+                digest = %key.digest,
+                "asynchronous EL validation already scheduled",
+            );
+            return;
+        }
+
+        let validation_tracker = self.validation_tracker.clone();
+        let epoch_strategy = self.epoch_strategy.clone();
+        let engine = self
+            .execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .clone();
+        let executor = self.state.executor.clone();
+        let scheme_provider = self.scheme_provider.clone();
+        let validation_latency_estimator = self.validation_latency_estimator.clone();
+
+        context.spawn(move |context| async move {
+            let block_height = block.height();
+            let block_digest = block.digest();
+            let workload = ValidationLatencyWorkload::new(
+                block.block().gas_used(),
+                block.block().body().transaction_count(),
+            );
+
+            let _guard = validation_tracker.validation_lock.lock().await;
+            match verify_block(
+                context,
+                epoch,
+                &epoch_strategy,
+                engine,
+                &block,
+                parent_digest,
+                &scheme_provider,
+            )
+            .await
+            {
+                Ok(Some(duration)) => {
+                    if let Ok(mut estimator) = validation_latency_estimator.lock() {
+                        estimator.observe(block_height.get(), workload, duration);
+                    }
+                    if let Err(error) = executor.canonicalize_head(block_height, block_digest).await
+                    {
+                        warn!(
+                            %error,
+                            height = %block_height,
+                            digest = %block_digest,
+                            "asynchronous EL validation succeeded, but canonical head update failed",
+                        );
+                    }
+                    info!(
+                        height = %block_height,
+                        digest = %block_digest,
+                        validation_duration = %display_duration(duration),
+                        "asynchronous EL validation completed",
+                    );
+                }
+                Ok(None) => {
+                    error!(
+                        height = %block_height,
+                        digest = %block_digest,
+                        "asynchronous EL validation rejected block",
+                    );
+                }
+                Err(error) => {
+                    error!(
+                        %error,
+                        height = %block_height,
+                        digest = %block_digest,
+                        "asynchronous EL validation failed",
+                    );
+                }
+            }
+            validation_tracker.finish(key).await;
+        });
+    }
+
+    async fn wait_for_parent_execution(&self, parent: &Block) -> eyre::Result<()> {
+        let key = ValidationKey::for_block(parent);
+        loop {
+            if self.execution_parent_available(parent)? {
+                return Ok(());
+            }
+            if !self.validation_tracker.wait_for(key).await {
+                bail!(
+                    "proposal parent `{}` at height `{}` is not available in \
+                    the execution layer and has no pending asynchronous validation",
+                    parent.digest(),
+                    parent.height(),
+                );
+            }
+        }
+    }
+
+    fn execution_parent_available(&self, parent: &Block) -> eyre::Result<bool> {
+        let hash = self
+            .execution_node
+            .provider
+            .block_hash(parent.height().get())
+            .wrap_err_with(|| {
+                format!(
+                    "failed querying execution layer for proposal parent `{}`",
+                    parent.digest()
+                )
+            })?;
+        Ok(hash.is_some_and(|hash| hash == parent.block_hash()))
     }
 }
 
@@ -916,6 +1045,7 @@ impl Inner<Uninit> {
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
             validation_latency_estimator: self.validation_latency_estimator,
+            validation_tracker: self.validation_tracker,
             metrics: self.metrics,
         };
 

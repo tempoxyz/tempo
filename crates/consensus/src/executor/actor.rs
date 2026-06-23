@@ -29,9 +29,7 @@ use reth_node_builder::PayloadKind;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
-use tracing::{
-    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
-};
+use tracing::{Span, debug, error, error_span, info, info_span, instrument, warn, warn_span};
 
 use super::{
     Config,
@@ -55,30 +53,6 @@ struct LastCanonicalized {
 }
 
 impl LastCanonicalized {
-    /// Updates the finalized height and finalized block hash to `height` and `digest`.
-    ///
-    /// `height` must be ahead of the latest canonicalized finalized height. If
-    /// it is not, then this is a no-op.
-    ///
-    /// Similarly, if `height` is ahead or the same as the latest canonicalized
-    /// head height, it also updates the head height.
-    ///
-    /// This is to ensure that the finalized block hash is never ahead of the
-    /// head hash.
-    fn update_finalized(self, height: Height, digest: Digest) -> Self {
-        let mut this = self;
-        if height > this.finalized_height {
-            this.finalized_height = height;
-            this.forkchoice.safe_block_hash = digest.0;
-            this.forkchoice.finalized_block_hash = digest.0;
-        }
-        if height >= this.head_height {
-            this.head_height = height;
-            this.forkchoice.head_block_hash = digest.0;
-        }
-        this
-    }
-
     /// Updates the head height and head block hash to `height` and `digest`.
     ///
     /// If `height > self.finalized_height` or `digest` is the same as the finalized block hash,
@@ -145,8 +119,6 @@ pub(crate) struct Actor<TContext> {
     /// subscriber dropped its receiver in the meantime, the built payload is
     /// discarded.
     payload_jobs: FuturesUnordered<BoxFuture<'static, ()>>,
-
-    latest_observed_finalized_tip: Option<(Height, Digest)>,
 
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
@@ -230,8 +202,6 @@ where
             execution_task: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
-            latest_observed_finalized_tip: None,
-
             public_key,
             metrics,
         })
@@ -286,14 +256,6 @@ where
                                     .boxed(),
                                 );
                             }
-                        }
-                        ExecutionTaskResult::Fatal { error } => {
-                            error_span!("shutdown").in_scope(|| error!(
-                                %error,
-                                "executor encountered fatal execution-layer update error; \
-                                shutting down to prevent consensus-execution divergence"
-                            ));
-                            break;
                         }
                     }
                 }
@@ -420,9 +382,7 @@ where
                 )));
             }
             Command::Finalize(finalized) => match *finalized {
-                Update::Tip(_, height, digest) => {
-                    self.latest_observed_finalized_tip.replace((height, digest));
-                }
+                Update::Tip(_, _, _) => {}
                 Update::Block(block, acknowledgement) => {
                     self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
                         FinalizedBlockRequest {
@@ -462,25 +422,6 @@ where
     fn start_next_execution_task(&mut self) {
         if !self.execution_task.is_none() {
             return;
-        }
-
-        // If nothing is currently scheduled and a newer finalized tip was
-        // observed, push it into the queue so that it will be picked up next.
-        if self.execution_queue.is_empty()
-            && !self.is_backfilling()
-            && let Some((height, digest)) = self.latest_observed_finalized_tip
-            && let new_canonicalized = self.last_canonicalized.update_finalized(height, digest)
-            && new_canonicalized != self.last_canonicalized
-        {
-            self.execution_queue
-                .push_back(ExecutionRequest::Canonicalize(Box::new(Canonicalize {
-                    cause: Span::current(),
-                    head_or_finalized: HeadOrFinalized::Finalized,
-                    height,
-                    digest,
-                    response: None,
-                    build_attributes: None,
-                })));
         }
 
         let Some(request) = self.execution_queue.front() else {
@@ -541,9 +482,6 @@ enum ExecutionTaskResult {
         /// A payload build that the forkchoice update kicked off on the
         /// execution layer and that still needs to be driven to completion.
         payload_job: Option<StartPayloadJob>,
-    },
-    Fatal {
-        error: Report,
     },
 }
 
@@ -607,7 +545,6 @@ where
             }
         }
         ExecutionRequest::FinalizeBlock(request) => {
-            let fatal_on_error = !request.is_backfill;
             match forward_finalized(
                 &context,
                 execution_node,
@@ -622,7 +559,6 @@ where
                     canonicalized,
                     payload_job: None,
                 },
-                Err(error) if fatal_on_error => ExecutionTaskResult::Fatal { error },
                 Err(error) => {
                     warn!(%error, "failed forwarding backfilled finalized block to execution layer");
                     ExecutionTaskResult::Completed {
@@ -659,7 +595,6 @@ async fn run_canonicalize_task<TContext: Pacer>(
 ) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
     let new_canonicalized = match head_or_finalized {
         HeadOrFinalized::Head => canonicalized.update_head(height, digest),
-        HeadOrFinalized::Finalized => canonicalized.update_finalized(height, digest),
     };
 
     if build_attributes
@@ -842,7 +777,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
         block.digest = %request.block.digest(),
         block.height = %request.block.height(),
     ),
-    err(level = Level::WARN),
+    err(level = tracing::Level::WARN),
     ret,
 )]
 async fn forward_finalized<TContext: Pacer>(
@@ -857,49 +792,47 @@ async fn forward_finalized<TContext: Pacer>(
         cause,
         block,
         acknowledgment,
-        is_backfill: _,
+        is_backfill,
     } = request;
 
-    let new_canonicalized = canonicalized.update_finalized(block.height(), block.digest());
-    let forkchoice = (new_canonicalized != canonicalized).then_some(new_canonicalized);
+    let consensus_context = block.header().consensus_context;
+    let canonicalized = if is_backfill {
+        let payload_status = execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(TempoExecutionData {
+                block: block.execution_block().clone(),
+                block_access_list: block.block_access_list().cloned(),
+                validator_set: None,
+            })
+            .pace(context, Duration::from_millis(20))
+            .await
+            .wrap_err(
+                "failed sending backfilled block to execution engine with new-payload request",
+            )?;
 
-    if let Some(canonicalized) = forkchoice {
+        ensure!(
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "backfilled block payload status was neither valid nor syncing: `{payload_status}`"
+        );
+
+        let canonicalized = canonicalized.update_head(block.height(), block.digest());
         submit_forkchoice_update(
             &execution_node,
             context,
-            cause.clone(),
+            cause,
             canonicalized,
             None,
             ForkchoiceUpdateKind::Canonicalize {
-                head_or_finalized: HeadOrFinalized::Finalized,
+                head_or_finalized: HeadOrFinalized::Head,
             },
         )
         .await?;
-    }
 
-    let (block, block_access_list) = block.into_parts();
-    let consensus_context = block.header().consensus_context;
-    let payload_status = execution_node
-        .add_ons_handle
-        .beacon_engine_handle
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-            // can be omitted for finalized blocks
-            validator_set: None,
-        })
-        .pace(context, Duration::from_millis(20))
-        .await
-        .wrap_err(
-            "failed sending new-payload request to execution engine to \
-                query payload status of finalized block",
-        )?;
-
-    ensure!(
-        payload_status.is_valid() || payload_status.is_syncing(),
-        "this is a problem: payload status of block-to-be-finalized was \
-            neither valid nor syncing: `{payload_status}`"
-    );
+        Some(canonicalized)
+    } else {
+        None
+    };
 
     if let Some(public_key) = public_key.as_ref()
         && consensus_context
@@ -910,21 +843,19 @@ async fn forward_finalized<TContext: Pacer>(
 
     acknowledgment.acknowledge();
 
-    Ok(forkchoice)
+    Ok(canonicalized)
 }
 
 /// Marker to indicate whether the head hash or finalized hash should be updated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadOrFinalized {
     Head,
-    Finalized,
 }
 
 impl std::fmt::Display for HeadOrFinalized {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let msg = match self {
             Self::Head => "head",
-            Self::Finalized => "finalized",
         };
         f.write_str(msg)
     }
