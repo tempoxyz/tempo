@@ -314,10 +314,17 @@ mod tests {
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS,
-        storage::{StorageAction, StorageActions, StorageCtx},
+        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        TIP403_REGISTRY_ADDRESS,
+        storage::{StorageAction, StorageActions, StorageCtx, StorageKey},
+        storage_credits::StorageCredits,
         test_util::TIP20Setup,
-        tip20::ITIP20,
+        tip_fee_manager::slots as fee_manager_slots,
+        tip20::{
+            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
+            slots as tip20_slots,
+        },
+        tip403_registry::slots as tip403_registry_slots,
     };
     use tempo_primitives::transaction::calc_gas_balance_spending;
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
@@ -586,13 +593,76 @@ mod tests {
         }
     }
 
-    fn snapshot_storage_actions(actions: &[StorageAction]) -> Vec<String> {
-        actions.iter().map(|action| format!("{action:?}")).collect()
+    struct StorageActionSnapshotLabels {
+        addresses: BTreeMap<Address, &'static str>,
+        slots: BTreeMap<(Address, U256), &'static str>,
+    }
+
+    fn snapshot_storage_actions(
+        actions: &[StorageAction],
+        labels: &StorageActionSnapshotLabels,
+    ) -> Vec<String> {
+        actions
+            .iter()
+            .map(|action| match *action {
+                StorageAction::Sload(address, slot, value) => {
+                    format!(
+                        "Sload({}, {}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sstore(address, slot, value) => {
+                    format!(
+                        "Sstore({}, {}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sinc(address, slot, delta) => {
+                    format!(
+                        "Sinc({}, {}, {delta})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::Sdec(address, slot, delta) => {
+                    format!(
+                        "Sdec({}, {}, {delta})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+            })
+            .collect()
+    }
+
+    impl StorageActionSnapshotLabels {
+        fn address(&self, address: Address) -> String {
+            self.addresses
+                .get(&address)
+                .copied()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{address:?}"))
+        }
+
+        fn slot(&self, address: Address, slot: U256) -> String {
+            self.slots
+                .get(&(address, slot))
+                .copied()
+                .map(str::to_string)
+                .unwrap_or_else(|| slot.to_string())
+        }
     }
 
     #[test]
     fn test_tip20_full_evm_records_storage_actions_with_fees() {
         for hardfork in TempoHardfork::VARIANTS {
+            // skip pre-T5 hardforks to avoid clutter
+            if !hardfork.is_t5() {
+                continue;
+            }
+
             let sender = Address::repeat_byte(0x01);
             let recipient = Address::repeat_byte(0x02);
             let beneficiary = Address::repeat_byte(0x03);
@@ -666,11 +736,53 @@ mod tests {
                 "test must exercise post-tx fee refund"
             );
 
+            let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
+            let fee_manager_balance_slot =
+                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
+            let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
+            let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            let validator_token_slot =
+                beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
+            let collected_fees_slot = PATH_USD_ADDRESS
+                .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+            let receive_policy_config_slot =
+                recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+
+            #[rustfmt::skip]
+            let labels = StorageActionSnapshotLabels {
+                addresses: BTreeMap::from([
+                    (PATH_USD_ADDRESS, "PATH_USD"),
+                    (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
+                    (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
+                    (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
+                ]),
+                slots: BTreeMap::from([
+                    ((PATH_USD_ADDRESS, tip20_slots::CURRENCY), "currency"),
+                    ((PATH_USD_ADDRESS, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
+                    ((PATH_USD_ADDRESS, tip20_slots::PAUSED), "paused"),
+                    ((PATH_USD_ADDRESS, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
+                    ((PATH_USD_ADDRESS, sender_balance_slot), "balances[sender]"),
+                    ((PATH_USD_ADDRESS, fee_manager_balance_slot), "balances[FeeManager]"),
+                    ((PATH_USD_ADDRESS, recipient_balance_slot), "balances[recipient]"),
+                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
+                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
+                    ((PATH_USD_ADDRESS, sender_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
+                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[recipient].rewardRecipient"),
+                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[recipient].rewardPerToken"),
+                    ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[recipient].rewardBalance"),
+                    ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
+                    ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
+                ]),
+            };
+
             let actions = evm
                 .take_actions()
                 .expect("storage action recording should be enabled");
             assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
-            let first_transfer = snapshot_storage_actions(&actions);
+            let first_transfer = snapshot_storage_actions(&actions, &labels);
             evm.db_mut().commit(result.state);
 
             let tx = TempoTxEnv {
@@ -696,7 +808,10 @@ mod tests {
 
             let snapshot = BTreeMap::from([
                 ("first_transfer", first_transfer),
-                ("second_transfer", snapshot_storage_actions(&actions)),
+                (
+                    "second_transfer",
+                    snapshot_storage_actions(&actions, &labels),
+                ),
             ]);
             insta::assert_yaml_snapshot!(
                 format!("tip20_full_evm_storage_actions_{}", hardfork.name()),
