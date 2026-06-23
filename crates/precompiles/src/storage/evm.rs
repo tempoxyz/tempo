@@ -93,6 +93,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Sets the storage actions for this provider.
+    #[inline(always)]
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
         self
