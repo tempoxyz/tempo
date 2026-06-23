@@ -516,93 +516,30 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     let credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
     let credit_seed_amount = U256::from(1234u64);
 
-    let setup_receipt = send_tempo_tx(
-        &provider,
-        &root,
-        TempoTransaction {
-            chain_id: provider.get_chain_id().await?,
-            nonce: provider.get_transaction_count(root_addr).await?,
-            max_priority_fee_per_gas: 1_000_000_000_000u128,
-            max_fee_per_gas: 1_000_000_000_000u128,
-            gas_limit: 5_000_000,
-            calls: vec![
-                Call {
-                    to: PATH_USD_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: attacker_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: PATH_USD_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: validator_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: PATH_USD_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: user_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: PATH_USD_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: credit_source_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: fee_token_addr.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::mintCall {
-                        to: root_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: fee_token_addr.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::mintCall {
-                        to: user_addr,
-                        amount: U256::from(10_000_000_000u64),
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-                Call {
-                    to: fee_token_addr.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::mintCall {
-                        to: credit_source_addr,
-                        amount: credit_seed_amount,
-                    }
-                    .abi_encode()
-                    .into(),
-                },
-            ],
-            fee_token: Some(DEFAULT_FEE_TOKEN),
-            ..Default::default()
-        },
-    )
-    .await?;
-    assert!(setup_receipt.status());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
+    for recipient in [attacker_addr, validator_addr, user_addr, credit_source_addr] {
+        let receipt = path_usd
+            .transfer(recipient, U256::from(10_000_000_000u64))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+    }
+
+    for (recipient, amount) in [
+        (root_addr, U256::from(10_000_000_000u64)),
+        (user_addr, U256::from(10_000_000_000u64)),
+        (credit_source_addr, credit_seed_amount),
+    ] {
+        let receipt = fee_token
+            .mint(recipient, amount)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+    }
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
     let seed_credit_receipt = send_tempo_tx(
         &provider,
