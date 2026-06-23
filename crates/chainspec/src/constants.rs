@@ -74,7 +74,7 @@ pub mod gas {
     /// Cap for non-payment transactions.
     ///
     /// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
-    pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
+    pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 1_000_000_000;
 
     /// TIP-1010 per-transaction gas limit cap: 30 million gas.
     /// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
