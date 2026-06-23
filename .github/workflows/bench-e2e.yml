@@ -541,7 +541,7 @@ jobs:
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
-            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const valscope = process.env.BENCH_VALSCOPE === 'true';
@@ -773,7 +773,7 @@ jobs:
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
-            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const valscope = process.env.BENCH_VALSCOPE === 'true';
