@@ -3342,7 +3342,6 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                         --max-concurrent-requests 100
                         --build-profile "coverage"
                         --benchmark-mode "coverage"
-                        --bloat-mib $bloat
                         --bloat-token-count ($TIP20_TOKEN_IDS | length))
                     if not $bench_result.ok {
                         print "Bench finished (or interrupted)."
