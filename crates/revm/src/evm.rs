@@ -10,8 +10,9 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::StorageActions;
+use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -54,18 +55,20 @@ pub struct TempoEvm<DB: Database, I> {
     pub skip_liquidity_check: bool,
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
+    /// Transaction-local protocol slots whose clears must not mint storage credits.
+    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        Self::new_with_actions(ctx, inspector, StorageActions::disabled())
-    }
-
-    /// Create a new Tempo EVM with a buffer for recording storage actions.
-    pub fn new_with_actions(ctx: TempoContext<DB>, inspector: I, actions: StorageActions) -> Self {
-        let precompiles =
-            tempo_precompiles::tempo_precompiles_with_actions(&ctx.cfg, actions.clone());
+        let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
+        let actions = StorageActions::disabled();
+        let precompiles = tempo_precompiles::tempo_precompiles(
+            &ctx.cfg,
+            actions.clone(),
+            non_creditable_slots.clone(),
+        );
 
         Self::new_inner(
             Evm {
@@ -76,6 +79,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
                 frame_stack: FrameStack::new(),
             },
             actions,
+            non_creditable_slots,
         )
     }
 
@@ -91,6 +95,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
         Self {
             inner,
@@ -101,6 +106,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             actions,
+            non_creditable_slots,
         }
     }
 
@@ -124,14 +130,28 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        let Self { inner, actions, .. } = self;
-        TempoEvm::new_inner(inner.with_inspector(inspector), actions)
+        let Self {
+            inner,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+        TempoEvm::new_inner(
+            inner.with_inspector(inspector),
+            actions,
+            non_creditable_slots,
+        )
     }
 
-    /// Consumes self and returns a new Evm type with given Precompiles.
-    pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        let Self { inner, actions, .. } = self;
-        Self::new_inner(inner.with_precompiles(precompiles), actions)
+    /// Consumes self and returns a new Evm type with given storage actions.
+    pub fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.inner.precompiles = tempo_precompiles::tempo_precompiles(
+            &self.inner.ctx.cfg,
+            actions.clone(),
+            self.non_creditable_slots.clone(),
+        );
+        self.actions = actions;
+        self
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -139,11 +159,22 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.into_inspector()
     }
 
+    /// Returns a reference to the recorded storage actions.
+    pub fn actions(&self) -> &StorageActions {
+        &self.actions
+    }
+
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.non_creditable_slots.clone()
+    }
+
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
+        self.non_creditable_slots.borrow_mut().clear();
     }
 }
 
@@ -3127,7 +3158,7 @@ mod tests {
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input = IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        let set_budget_input = IStorageCredits::setBudgetCall { credits: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 
@@ -3205,7 +3236,7 @@ mod tests {
 
         append_tip1060_precompile_call(
             &mut bytecode,
-            &IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode(),
+            &IStorageCredits::setBudgetCall { credits: 1 }.abi_encode(),
         );
         bytecode.extend_from_slice(&bytes!("6001600055")); // budgeted create
         append_tip1060_precompile_call_store_return(
