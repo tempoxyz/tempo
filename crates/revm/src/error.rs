@@ -78,6 +78,14 @@ pub enum TempoInvalidTransaction {
     #[error("nonce manager error: {0}")]
     NonceManagerError(String),
 
+    /// Expiring nonce was already seen and has not expired.
+    #[error("expiring nonce replay")]
+    ExpiringNonceReplay,
+
+    /// Expiring nonce set is full.
+    #[error("expiring nonce set full")]
+    ExpiringNonceSetFull,
+
     /// Expiring nonce transaction missing tempo_tx_env.
     #[error("expiring nonce transaction requires tempo_tx_env")]
     ExpiringNonceMissingTxEnv,
@@ -326,6 +334,8 @@ impl TempoInvalidTransaction {
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
+            | Self::ExpiringNonceReplay
+            | Self::ExpiringNonceSetFull
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
         }

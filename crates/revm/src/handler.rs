@@ -35,7 +35,7 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+    IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError, TIPFeeAMMError,
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -1107,28 +1107,35 @@ where
                     };
 
                     nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
+                        .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            TempoPrecompileError::NonceError(
+                                NonceError::InvalidExpiringNonceExpiry(_),
+                            ) => {
+                                let max_allowed =
+                                    block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                                if valid_before <= block_timestamp {
+                                    TempoInvalidTransaction::NonceManagerError(format!(
+                                        "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                                    ))
+                                    .into()
+                                } else {
+                                    TempoInvalidTransaction::NonceManagerError(format!(
+                                        "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                                    ))
+                                    .into()
+                                }
                             }
-                        }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
+                            TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
+                                TempoInvalidTransaction::ExpiringNonceReplay.into()
+                            }
+                            TempoPrecompileError::NonceError(NonceError::ExpiringNonceSetFull(_)) => {
+                                TempoInvalidTransaction::ExpiringNonceSetFull.into()
+                            }
+                            err => TempoInvalidTransaction::NonceManagerError(err.to_string())
+                                .into(),
+                        })?;
 
                     if let Some(prev_ptr) = prev_ptr {
                         nonce_manager
@@ -2105,6 +2112,24 @@ where
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
+
+        if matches!(
+            error.as_invalid_tx_err(),
+            Some(
+                TempoInvalidTransaction::ExpiringNonceReplay
+                    | TempoInvalidTransaction::ExpiringNonceSetFull
+            )
+        ) {
+            evm.ctx().local_mut().clear();
+            evm.ctx.journaled_state.discard_tx();
+            evm.frame_stack().clear();
+
+            return Ok(ExecutionResult::Revert {
+                output: Default::default(),
+                logs: Default::default(),
+                gas: ResultGas::new_with_state_gas(0, 0, 0, 0),
+            });
+        }
 
         // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
         if evm.ctx.tx.is_subblock_transaction()
@@ -6307,6 +6332,46 @@ mod tests {
                 );
             }
             other => panic!("expected ExecutionResult::Halt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_expiring_nonce_conflicts_revert_without_gas() {
+        for err in [
+            TempoInvalidTransaction::ExpiringNonceReplay,
+            TempoInvalidTransaction::ExpiringNonceSetFull,
+        ] {
+            let tx_env = TempoTxEnv {
+                inner: revm::context::TxEnv {
+                    gas_limit: 100_000,
+                    kind: TxKind::Call(Address::random()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut test = TestHandlerEvm::new(TempoHardfork::T4, tx_env);
+
+            let result = test
+                .handler
+                .catch_error(&mut test.evm, EVMError::Transaction(err.clone()))
+                .expect("expiring nonce conflicts must not invalidate the block");
+
+            match result {
+                ExecutionResult::Revert { gas, output, .. } => {
+                    assert_eq!(
+                        gas.total_gas_spent(),
+                        0,
+                        "{err} should not consume gas in the async execution experiment"
+                    );
+                    assert_eq!(
+                        gas.state_gas_spent_final(),
+                        0,
+                        "{err} should not consume state gas"
+                    );
+                    assert!(output.is_empty(), "{err} should not return revert data");
+                }
+                other => panic!("expected zero-gas revert for {err}, got {other:?}"),
+            }
         }
     }
 
