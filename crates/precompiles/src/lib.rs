@@ -368,7 +368,7 @@ impl ReceivePolicyGuard {
 impl StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP1060StorageCredits", env: env, |input| { Self::new() })
+        tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
     }
 }
 
@@ -420,6 +420,18 @@ fn mutate_void<T: SolCall>(
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+}
+
+/// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
+#[inline]
+fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
+    if StorageCtx.spec().is_t7() {
+        StorageCredits::new().set_mode(
+            credit_owner,
+            tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
+        )?;
+    }
+    Ok(())
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
