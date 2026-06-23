@@ -75,8 +75,7 @@ pub(crate) struct PayloadBudgetDecision {
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
-/// work once capped at the conservative builder-work projection, and marshal
-/// persistence once for each side.
+/// work once, and marshal persistence once for each side.
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -90,9 +89,7 @@ pub(crate) fn payload_budget_decision(
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
     let validation_latency_estimate =
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
-    let predicted_validator_work = validation_latency_estimate
-        .map(|estimate| estimate.min(predicted_builder_work))
-        .unwrap_or(predicted_builder_work);
+    let predicted_validator_work = validation_latency_estimate.unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
@@ -222,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_budget_caps_scaled_validator_feedback_at_builder_projection() {
+    fn payload_budget_uses_scaled_validator_feedback() {
         let validation_latency = validation_latency_estimate(
             ValidationLatencyWorkload::new(100, 10),
             Duration::from_millis(100),
@@ -239,9 +236,9 @@ mod tests {
 
         assert_eq!(
             decision.predicted_validator_work,
-            Duration::from_millis(135)
+            Duration::from_millis(200)
         );
-        assert_eq!(decision.total_reserved, Duration::from_millis(270));
+        assert_eq!(decision.total_reserved, Duration::from_millis(335));
     }
 
     #[test]

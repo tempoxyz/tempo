@@ -1058,6 +1058,15 @@ impl Inner<Init> {
             )
             .await?;
         }
+        let optimistic_validation_observation = optimistic_payload.as_ref().map(|payload| {
+            (
+                ValidationLatencyWorkload::new(
+                    payload.block().gas_used(),
+                    payload.block().body().transaction_count(),
+                ),
+                payload.validation_work_duration(),
+            )
+        });
         let validation_duration = verify_block(
             context,
             round.epoch(),
@@ -1077,14 +1086,16 @@ impl Inner<Init> {
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
-            estimator.observe(
-                block.height().get(),
-                ValidationLatencyWorkload::new(
-                    block.block().gas_used(),
-                    block.block().body().transaction_count(),
-                ),
-                duration,
-            );
+            let (workload, duration) = optimistic_validation_observation.unwrap_or_else(|| {
+                (
+                    ValidationLatencyWorkload::new(
+                        block.block().gas_used(),
+                        block.block().body().transaction_count(),
+                    ),
+                    duration,
+                )
+            });
+            estimator.observe(block.height().get(), workload, duration);
         }
         let is_good = validation_duration.is_some();
 
