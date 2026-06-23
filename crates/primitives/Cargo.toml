@@ -31,6 +31,7 @@ revm = { workspace = true, optional = true }
 
 # Alloy
 alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-evm = { workspace = true, optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -75,6 +76,7 @@ default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", 
 std = [
 	"alloy-consensus/secp256k1",
 	"alloy-consensus/std",
+	"alloy-evm?/std",
 	"alloy-eips/std",
 	"alloy-primitives/std",
 	"alloy-rlp/std",
@@ -112,7 +114,7 @@ serde = [
 	"revm?/serde",
 	"tempo-contracts/serde",
 ]
-evm = ["dep:revm"]
+evm = ["dep:alloy-evm", "dep:revm"]
 reth-codec = [
 	"reth",
 	"serde",

@@ -3,14 +3,14 @@
 use alloy_evm::{
     env::BlockEnvironment,
     revm::{
-        context::{Block, BlockEnv},
+        context::{Block as RevmBlock, BlockEnv},
         context_interface::block::BlobExcessGasAndPrice,
     },
 };
 use alloy_primitives::{Address, B256, U256, uint};
 use core::ops::{Deref, DerefMut};
 
-/// Tempo block environment.
+/// Tempo EVM block environment.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {
@@ -45,7 +45,7 @@ impl DerefMut for TempoBlockEnv {
     }
 }
 
-impl Block for TempoBlockEnv {
+impl RevmBlock for TempoBlockEnv {
     #[inline]
     fn number(&self) -> U256 {
         self.inner.number()

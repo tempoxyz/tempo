@@ -1,4 +1,4 @@
-use crate::{TempoInvalidTransaction, TempoTxEnv};
+use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
 use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
@@ -467,16 +467,8 @@ where
         unreachable!("'chain_id' not implemented in read-only context yet")
     }
 
-    fn timestamp(&self) -> U256 {
-        unreachable!("'timestamp' not implemented in read-only context yet")
-    }
-
-    fn beneficiary(&self) -> Address {
-        unreachable!("'beneficiary' not implemented in read-only context yet")
-    }
-
-    fn block_number(&self) -> u64 {
-        unreachable!("'block_number' not implemented in read-only context yet")
+    fn block_env(&self) -> &TempoBlockEnv {
+        unreachable!("'block_env' not implemented in read-only context yet")
     }
 
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
