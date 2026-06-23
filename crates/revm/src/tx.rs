@@ -161,6 +161,8 @@ impl TempoTxEnv {
 }
 
 impl From<TxEnv> for TempoTxEnv {
+    #[cold]
+    #[inline(never)]
     fn from(inner: TxEnv) -> Self {
         Self {
             inner,
