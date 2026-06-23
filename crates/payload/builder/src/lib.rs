@@ -59,7 +59,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -108,9 +108,7 @@ struct SsmrReplayRecoveryJob {
 }
 
 #[derive(Debug)]
-struct SsmrRecoveredTransaction {
-    shard_index: u64,
-    tx_index: usize,
+struct SsmrRecoveredTx {
     transaction: Recovered<TempoTxEnvelope>,
     tx_rlp_length: usize,
     decode_elapsed: Duration,
@@ -119,32 +117,34 @@ struct SsmrRecoveredTransaction {
 }
 
 #[derive(Debug)]
-struct SsmrPendingRecoveredShard {
-    transactions: Vec<Option<Recovered<TempoTxEnvelope>>>,
-    tx_rlp_lengths: Vec<usize>,
-    recovered_count: usize,
-    decode_elapsed: Duration,
-    recover_elapsed: Duration,
-    queue_wait_elapsed: Duration,
+struct SsmrRecoveredTransaction {
+    shard_index: u64,
+    tx_index: usize,
+    tx: SsmrRecoveredTx,
 }
 
 #[derive(Debug)]
-struct SsmrRecoveredShard {
-    shard_index: u64,
-    transactions: Vec<Recovered<TempoTxEnvelope>>,
-    tx_rlp_lengths: Vec<usize>,
+struct SsmrPendingRecoveredShard {
+    transactions: Vec<Option<SsmrRecoveredTx>>,
+    recovered_count: usize,
+}
+
+#[derive(Debug)]
+struct SsmrRecoveredBatch {
+    transactions: Vec<SsmrRecoveredTx>,
     decode_elapsed: Duration,
     recover_elapsed: Duration,
     queue_wait_elapsed: Duration,
+    completed_shards: u64,
 }
 
 #[derive(Debug)]
 enum SsmrRecoveredReplayEvent {
-    Shard(SsmrRecoveredShard),
+    Transactions(SsmrRecoveredBatch),
     Finish {
         source_wait_elapsed: Duration,
         recovery_wall_elapsed: Duration,
-        first_shard_recovery_elapsed: Option<Duration>,
+        first_tx_recovery_elapsed: Option<Duration>,
         recovery_queue_wait_sum_elapsed: Duration,
         recovery_backpressure_elapsed: Duration,
         recovery_worker_count: usize,
@@ -155,21 +155,19 @@ enum SsmrRecoveredReplayEvent {
 #[derive(Debug, Default)]
 struct SsmrReplayRecoveryState {
     pending_shards: BTreeMap<u64, SsmrPendingRecoveredShard>,
+    next_ready_shard_index: u64,
+    next_ready_tx_index: usize,
     inflight_recovery_jobs: usize,
     recovery_queue_wait_sum_elapsed: Duration,
     recovery_backpressure_elapsed: Duration,
-    first_shard_recovery_elapsed: Option<Duration>,
+    first_tx_recovery_elapsed: Option<Duration>,
 }
 
 impl SsmrPendingRecoveredShard {
     fn new(tx_count: usize) -> Self {
         Self {
             transactions: std::iter::repeat_with(|| None).take(tx_count).collect(),
-            tx_rlp_lengths: vec![0; tx_count],
             recovered_count: 0,
-            decode_elapsed: Duration::ZERO,
-            recover_elapsed: Duration::ZERO,
-            queue_wait_elapsed: Duration::ZERO,
         }
     }
 
@@ -187,40 +185,96 @@ impl SsmrPendingRecoveredShard {
             ));
         }
 
-        self.tx_rlp_lengths[tx_index] = recovered.tx_rlp_length;
-        self.decode_elapsed += recovered.decode_elapsed;
-        self.recover_elapsed += recovered.recover_elapsed;
-        self.queue_wait_elapsed += recovered.queue_wait_elapsed;
-        *slot = Some(recovered.transaction);
+        *slot = Some(recovered.tx);
         self.recovered_count += 1;
 
         Ok(())
     }
 
-    fn is_complete(&self) -> bool {
-        self.recovered_count == self.transactions.len()
+    fn len(&self) -> usize {
+        self.transactions.len()
+    }
+}
+
+impl SsmrRecoveredBatch {
+    fn push(&mut self, tx: SsmrRecoveredTx) {
+        self.decode_elapsed += tx.decode_elapsed;
+        self.recover_elapsed += tx.recover_elapsed;
+        self.queue_wait_elapsed += tx.queue_wait_elapsed;
+        self.transactions.push(tx);
     }
 
-    fn into_recovered_shard(self, shard_index: u64) -> Result<SsmrRecoveredShard, String> {
-        let transactions = self
-            .transactions
-            .into_iter()
-            .enumerate()
-            .map(|(index, transaction)| {
-                transaction.ok_or_else(|| {
-                    format!("SSMR replay shard {shard_index} missing recovered tx {index}")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+    fn has_work(&self) -> bool {
+        !self.transactions.is_empty() || self.completed_shards > 0
+    }
+}
 
-        Ok(SsmrRecoveredShard {
-            shard_index,
-            transactions,
-            tx_rlp_lengths: self.tx_rlp_lengths,
-            decode_elapsed: self.decode_elapsed,
-            recover_elapsed: self.recover_elapsed,
-            queue_wait_elapsed: self.queue_wait_elapsed,
-        })
+impl SsmrReplayRecoveryState {
+    fn insert_recovered_transaction(
+        &mut self,
+        recovered: SsmrRecoveredTransaction,
+    ) -> Result<(), String> {
+        let shard_index = recovered.shard_index;
+        let Some(shard) = self.pending_shards.get_mut(&shard_index) else {
+            return Err(format!("SSMR replay recovered unknown shard {shard_index}"));
+        };
+
+        shard.insert(recovered)
+    }
+
+    fn drain_ready_batch(
+        &mut self,
+        recovery_wall_start: Option<&Instant>,
+    ) -> Result<Option<SsmrRecoveredBatch>, String> {
+        let mut batch = SsmrRecoveredBatch {
+            transactions: Vec::new(),
+            decode_elapsed: Duration::ZERO,
+            recover_elapsed: Duration::ZERO,
+            queue_wait_elapsed: Duration::ZERO,
+            completed_shards: 0,
+        };
+
+        'drain: while let Some(shard_len) = self
+            .pending_shards
+            .get(&self.next_ready_shard_index)
+            .map(SsmrPendingRecoveredShard::len)
+        {
+            while self.next_ready_tx_index < shard_len {
+                let tx = self
+                    .pending_shards
+                    .get_mut(&self.next_ready_shard_index)
+                    .and_then(|shard| shard.transactions[self.next_ready_tx_index].take());
+                let Some(tx) = tx else {
+                    break 'drain;
+                };
+
+                if self.next_ready_shard_index == 0
+                    && self.next_ready_tx_index == 0
+                    && self.first_tx_recovery_elapsed.is_none()
+                    && let Some(start) = recovery_wall_start
+                {
+                    self.first_tx_recovery_elapsed = Some(start.elapsed());
+                }
+
+                self.next_ready_tx_index += 1;
+                batch.push(tx);
+            }
+
+            if self.next_ready_tx_index == shard_len {
+                let Some(shard) = self.pending_shards.remove(&self.next_ready_shard_index) else {
+                    return Err(format!(
+                        "SSMR replay lost ready shard {}",
+                        self.next_ready_shard_index
+                    ));
+                };
+                debug_assert_eq!(shard.recovered_count, shard_len);
+                self.next_ready_shard_index += 1;
+                self.next_ready_tx_index = 0;
+                batch.completed_shards += 1;
+            }
+        }
+
+        Ok(batch.has_work().then_some(batch))
     }
 }
 
@@ -250,11 +304,13 @@ fn recover_ssmr_replay_transaction(
     Ok(SsmrRecoveredTransaction {
         shard_index,
         tx_index,
-        transaction: Recovered::new_unchecked(tx, sender),
-        tx_rlp_length,
-        decode_elapsed,
-        recover_elapsed,
-        queue_wait_elapsed,
+        tx: SsmrRecoveredTx {
+            transaction: Recovered::new_unchecked(tx, sender),
+            tx_rlp_length,
+            decode_elapsed,
+            recover_elapsed,
+            queue_wait_elapsed,
+        },
     })
 }
 
@@ -292,18 +348,7 @@ fn forward_ssmr_replay_recovered_transaction(
         }
     };
 
-    let shard_index = recovered.shard_index;
-    let Some(shard) = state.pending_shards.get_mut(&shard_index) else {
-        let _ = send_ssmr_replay_event(
-            ready_tx,
-            SsmrRecoveredReplayEvent::Error(format!(
-                "SSMR replay recovered unknown shard {shard_index}"
-            )),
-            &mut state.recovery_backpressure_elapsed,
-        );
-        return false;
-    };
-    if let Err(error) = shard.insert(recovered) {
+    if let Err(error) = state.insert_recovered_transaction(recovered) {
         let _ = send_ssmr_replay_event(
             ready_tx,
             SsmrRecoveredReplayEvent::Error(error),
@@ -311,16 +356,10 @@ fn forward_ssmr_replay_recovered_transaction(
         );
         return false;
     }
-    if !shard.is_complete() {
-        return true;
-    }
 
-    let shard = state
-        .pending_shards
-        .remove(&shard_index)
-        .expect("complete recovered SSMR shard must exist");
-    let shard = match shard.into_recovered_shard(shard_index) {
-        Ok(shard) => shard,
+    let batch = match state.drain_ready_batch(recovery_wall_start) {
+        Ok(Some(batch)) => batch,
+        Ok(None) => return true,
         Err(error) => {
             let _ = send_ssmr_replay_event(
                 ready_tx,
@@ -330,19 +369,63 @@ fn forward_ssmr_replay_recovered_transaction(
             return false;
         }
     };
-    if shard_index == 0
-        && state.first_shard_recovery_elapsed.is_none()
-        && let Some(start) = recovery_wall_start
-    {
-        state.first_shard_recovery_elapsed = Some(start.elapsed());
-    }
-    state.recovery_queue_wait_sum_elapsed += shard.queue_wait_elapsed;
+
+    state.recovery_queue_wait_sum_elapsed += batch.queue_wait_elapsed;
 
     send_ssmr_replay_event(
         ready_tx,
-        SsmrRecoveredReplayEvent::Shard(shard),
+        SsmrRecoveredReplayEvent::Transactions(batch),
         &mut state.recovery_backpressure_elapsed,
     )
+}
+
+fn forward_ssmr_replay_ready_batch(
+    ready_tx: &Sender<SsmrRecoveredReplayEvent>,
+    state: &mut SsmrReplayRecoveryState,
+    recovery_wall_start: Option<&Instant>,
+) -> bool {
+    let batch = match state.drain_ready_batch(recovery_wall_start) {
+        Ok(Some(batch)) => batch,
+        Ok(None) => return true,
+        Err(error) => {
+            let _ = send_ssmr_replay_event(
+                ready_tx,
+                SsmrRecoveredReplayEvent::Error(error),
+                &mut state.recovery_backpressure_elapsed,
+            );
+            return false;
+        }
+    };
+
+    state.recovery_queue_wait_sum_elapsed += batch.queue_wait_elapsed;
+
+    send_ssmr_replay_event(
+        ready_tx,
+        SsmrRecoveredReplayEvent::Transactions(batch),
+        &mut state.recovery_backpressure_elapsed,
+    )
+}
+
+fn insert_ssmr_replay_shard(
+    ready_tx: &Sender<SsmrRecoveredReplayEvent>,
+    state: &mut SsmrReplayRecoveryState,
+    shard_index: u64,
+    tx_count: usize,
+) -> bool {
+    if state
+        .pending_shards
+        .insert(shard_index, SsmrPendingRecoveredShard::new(tx_count))
+        .is_some()
+    {
+        let _ = send_ssmr_replay_event(
+            ready_tx,
+            SsmrRecoveredReplayEvent::Error(format!("SSMR replay duplicate shard {shard_index}")),
+            &mut state.recovery_backpressure_elapsed,
+        );
+        return false;
+    }
+
+    true
 }
 
 fn spawn_ssmr_replay_recovery(
@@ -409,40 +492,19 @@ fn spawn_ssmr_replay_recovery(
                         recovery_wall_start = Some(Instant::now());
                     }
                     let tx_count = transactions.len();
-                    if recovery_state
-                        .pending_shards
-                        .insert(shard_index, SsmrPendingRecoveredShard::new(tx_count))
-                        .is_some()
-                    {
-                        let _ = send_ssmr_replay_event(
-                            &ready_tx,
-                            SsmrRecoveredReplayEvent::Error(format!(
-                                "SSMR replay duplicate shard {shard_index}"
-                            )),
-                            &mut recovery_state.recovery_backpressure_elapsed,
-                        );
+                    if !insert_ssmr_replay_shard(
+                        &ready_tx,
+                        &mut recovery_state,
+                        shard_index,
+                        tx_count,
+                    ) {
                         return;
                     }
                     if tx_count == 0 {
-                        let shard = recovery_state
-                            .pending_shards
-                            .remove(&shard_index)
-                            .expect("empty pending SSMR shard must exist");
-                        let shard = match shard.into_recovered_shard(shard_index) {
-                            Ok(shard) => shard,
-                            Err(error) => {
-                                let _ = send_ssmr_replay_event(
-                                    &ready_tx,
-                                    SsmrRecoveredReplayEvent::Error(error),
-                                    &mut recovery_state.recovery_backpressure_elapsed,
-                                );
-                                return;
-                            }
-                        };
-                        if !send_ssmr_replay_event(
+                        if !forward_ssmr_replay_ready_batch(
                             &ready_tx,
-                            SsmrRecoveredReplayEvent::Shard(shard),
-                            &mut recovery_state.recovery_backpressure_elapsed,
+                            &mut recovery_state,
+                            recovery_wall_start.as_ref(),
                         ) {
                             return;
                         }
@@ -496,6 +558,13 @@ fn spawn_ssmr_replay_recovery(
                             }
                         }
                     }
+                    if !forward_ssmr_replay_ready_batch(
+                        &ready_tx,
+                        &mut recovery_state,
+                        recovery_wall_start.as_ref(),
+                    ) {
+                        return;
+                    }
                     if !recovery_state.pending_shards.is_empty() {
                         let _ = send_ssmr_replay_event(
                             &ready_tx,
@@ -512,7 +581,7 @@ fn spawn_ssmr_replay_recovery(
                         recovery_wall_elapsed: recovery_wall_start
                             .map(|start| start.elapsed())
                             .unwrap_or_default(),
-                        first_shard_recovery_elapsed: recovery_state.first_shard_recovery_elapsed,
+                        first_tx_recovery_elapsed: recovery_state.first_tx_recovery_elapsed,
                         recovery_queue_wait_sum_elapsed: recovery_state
                             .recovery_queue_wait_sum_elapsed,
                         recovery_backpressure_elapsed: recovery_state.recovery_backpressure_elapsed,
@@ -1006,12 +1075,12 @@ where
         let mut ssmr_replay_recover_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_wall_elapsed = Duration::ZERO;
-        let mut ssmr_replay_first_shard_recovery_elapsed = None;
+        let mut ssmr_replay_first_tx_recovery_elapsed = None;
         let mut ssmr_replay_recovery_queue_wait_sum_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_backpressure_elapsed = Duration::ZERO;
         let mut ssmr_replay_execution_wait_for_recovery_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_worker_count = 0usize;
-        let mut ssmr_replay_max_recovered_ahead = 0usize;
+        let mut ssmr_replay_max_recovered_tx_ahead = 0usize;
         let mut ssmr_replay_execute_elapsed = Duration::ZERO;
         let mut ssmr_replay_shards = 0u64;
         let mut ssmr_replay_transactions = 0u64;
@@ -1025,100 +1094,87 @@ where
         let post_return_tail_budget = attributes.post_return_tail_budget();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
             let recovered_events = spawn_ssmr_replay_recovery(self.executor.clone(), replay_source);
-            let mut pending_shards = BTreeMap::new();
-            let mut next_shard_index = 0u64;
+            let mut pending_transactions = VecDeque::new();
             let mut replay_finished = false;
 
             loop {
                 check_cancel!();
 
-                if let Some(shard) = pending_shards.remove(&next_shard_index) {
-                    let SsmrRecoveredShard {
-                        shard_index,
-                        transactions,
-                        tx_rlp_lengths,
+                if let Some(tx) = pending_transactions.pop_front() {
+                    let SsmrRecoveredTx {
+                        transaction: recovered,
+                        tx_rlp_length,
                         decode_elapsed,
                         recover_elapsed,
                         queue_wait_elapsed: _,
-                    } = shard;
-                    debug_assert_eq!(shard_index, next_shard_index);
-                    next_shard_index += 1;
-                    ssmr_replay_shards += 1;
+                    } = tx;
                     ssmr_replay_decode_elapsed += decode_elapsed;
                     ssmr_replay_recover_elapsed += recover_elapsed;
                     ssmr_replay_decode_recover_elapsed += decode_elapsed + recover_elapsed;
 
-                    for (tx_rlp_length, recovered) in tx_rlp_lengths.into_iter().zip(transactions) {
-                        check_cancel!();
-                        let max_regular_gas_used = core::cmp::min(
-                            recovered.inner().gas_limit(),
-                            executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                        );
-                        if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                            return Err(PayloadBuilderError::evm(
-                                BlockExecutionError::Validation(
-                                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                                        transaction_gas_limit: recovered.inner().gas_limit(),
-                                        block_available_gas: non_shared_gas_limit
-                                            - cumulative_gas_used,
-                                    },
-                                ),
-                            ));
-                        }
+                    let max_regular_gas_used = core::cmp::min(
+                        recovered.inner().gas_limit(),
+                        executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                    );
+                    if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                        return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
+                            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                                transaction_gas_limit: recovered.inner().gas_limit(),
+                                block_available_gas: non_shared_gas_limit - cumulative_gas_used,
+                            },
+                        )));
+                    }
 
-                        let is_payment = if hardfork.is_t5() {
-                            recovered.inner().is_payment_v2()
-                        } else {
-                            recovered.inner().is_payment_v1()
-                        };
-                        if !is_payment
-                            && non_payment_gas_used + max_regular_gas_used > general_gas_limit
-                        {
-                            return Err(PayloadBuilderError::other(
-                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                            ));
-                        }
-
-                        if is_payment {
-                            payment_transactions += 1;
-                        }
-
-                        let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
-                        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                            return Err(PayloadBuilderError::other(
-                                ConsensusError::BlockTooLarge {
-                                    rlp_length: estimated_block_size_with_tx,
-                                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
-                                },
-                            ));
-                        }
-
-                        let execute_start = Instant::now();
-                        executor
-                            .execute_transaction_with_result_closure(recovered.clone(), |result| {
-                                cumulative_gas_used += result.block_gas_used();
-                                cumulative_state_gas_used += result.state_gas_used();
-                                if !is_payment {
-                                    non_payment_gas_used += result.block_gas_used();
-                                }
-                                total_fees += result.validator_fee();
-                            })
-                            .map_err(PayloadBuilderError::evm)?;
-                        ssmr_replay_execute_elapsed += execute_start.elapsed();
-                        trace!("SSMR replay transaction executed");
-                        if let Some(bal_task_handle) = &bal_task_handle {
-                            bal_task_handle.bump_bal_index();
-                        }
-
-                        pool_transactions_yielded += 1;
-                        pool_transactions_included += 1;
-                        ssmr_replay_transactions += 1;
-                        estimated_rlp_block_size += tx_rlp_length;
-                        let _ = roots_tx.send((
-                            BuilderTx::Owned(Box::new(recovered)),
-                            executor.receipts().last().unwrap().clone(),
+                    let is_payment = if hardfork.is_t5() {
+                        recovered.inner().is_payment_v2()
+                    } else {
+                        recovered.inner().is_payment_v1()
+                    };
+                    if !is_payment
+                        && non_payment_gas_used + max_regular_gas_used > general_gas_limit
+                    {
+                        return Err(PayloadBuilderError::other(
+                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
                         ));
                     }
+
+                    if is_payment {
+                        payment_transactions += 1;
+                    }
+
+                    let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
+                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                        return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                            rlp_length: estimated_block_size_with_tx,
+                            max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                        }));
+                    }
+
+                    let execute_start = Instant::now();
+                    executor
+                        .execute_transaction_with_result_closure(recovered.clone(), |result| {
+                            cumulative_gas_used += result.block_gas_used();
+                            cumulative_state_gas_used += result.state_gas_used();
+                            if !is_payment {
+                                non_payment_gas_used += result.block_gas_used();
+                            }
+                            total_fees += result.validator_fee();
+                        })
+                        .map_err(PayloadBuilderError::evm)?;
+                    ssmr_replay_execute_elapsed += execute_start.elapsed();
+                    trace!("SSMR replay transaction executed");
+                    if let Some(bal_task_handle) = &bal_task_handle {
+                        bal_task_handle.bump_bal_index();
+                    }
+
+                    pool_transactions_yielded += 1;
+                    pool_transactions_included += 1;
+                    ssmr_replay_transactions += 1;
+                    estimated_rlp_block_size += tx_rlp_length;
+                    let _ = roots_tx.send((
+                        BuilderTx::Owned(Box::new(recovered)),
+                        executor.receipts().last().unwrap().clone(),
+                    ));
 
                     continue;
                 }
@@ -1139,24 +1195,23 @@ where
                 ssmr_replay_execution_wait_for_recovery_elapsed += wait_elapsed;
 
                 match event {
-                    Ok(SsmrRecoveredReplayEvent::Shard(shard)) => {
-                        let recovered_ahead =
-                            shard.shard_index.saturating_sub(next_shard_index) as usize;
-                        ssmr_replay_max_recovered_ahead =
-                            ssmr_replay_max_recovered_ahead.max(recovered_ahead);
-                        pending_shards.insert(shard.shard_index, shard);
+                    Ok(SsmrRecoveredReplayEvent::Transactions(batch)) => {
+                        ssmr_replay_shards += batch.completed_shards;
+                        pending_transactions.extend(batch.transactions);
+                        ssmr_replay_max_recovered_tx_ahead =
+                            ssmr_replay_max_recovered_tx_ahead.max(pending_transactions.len());
                     }
                     Ok(SsmrRecoveredReplayEvent::Finish {
                         source_wait_elapsed,
                         recovery_wall_elapsed,
-                        first_shard_recovery_elapsed,
+                        first_tx_recovery_elapsed,
                         recovery_queue_wait_sum_elapsed,
                         recovery_backpressure_elapsed,
                         recovery_worker_count,
                     }) => {
                         ssmr_replay_wait_elapsed += source_wait_elapsed;
                         ssmr_replay_recovery_wall_elapsed += recovery_wall_elapsed;
-                        ssmr_replay_first_shard_recovery_elapsed = first_shard_recovery_elapsed;
+                        ssmr_replay_first_tx_recovery_elapsed = first_tx_recovery_elapsed;
                         ssmr_replay_recovery_queue_wait_sum_elapsed +=
                             recovery_queue_wait_sum_elapsed;
                         ssmr_replay_recovery_backpressure_elapsed += recovery_backpressure_elapsed;
@@ -1775,12 +1830,12 @@ where
             ?ssmr_replay_wait_elapsed,
             ?ssmr_replay_recovery_wait_elapsed,
             ?ssmr_replay_recovery_wall_elapsed,
-            ?ssmr_replay_first_shard_recovery_elapsed,
+            ?ssmr_replay_first_tx_recovery_elapsed,
             ?ssmr_replay_recovery_queue_wait_sum_elapsed,
             ?ssmr_replay_recovery_backpressure_elapsed,
             ?ssmr_replay_execution_wait_for_recovery_elapsed,
             ssmr_replay_recovery_worker_count,
-            ssmr_replay_max_recovered_ahead,
+            ssmr_replay_max_recovered_tx_ahead,
             ?ssmr_replay_compute_elapsed,
             ?ssmr_replay_decode_recover_elapsed,
             ?ssmr_replay_decode_elapsed,
