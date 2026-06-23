@@ -1200,6 +1200,8 @@ impl AccountKeychain {
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
     /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
+    #[cold]
+    #[inline(never)]
     pub fn validate_keychain_authorization(
         &self,
         account: Address,
