@@ -1202,6 +1202,14 @@ where
             .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
     }
 
+    fn has_blobs_for_versioned_hashes(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<Vec<bool>, reth_transaction_pool::blobstore::BlobStoreError> {
+        self.protocol_pool
+            .has_blobs_for_versioned_hashes(versioned_hashes)
+    }
+
     fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {
         TransactionPool::blob_store(&self.protocol_pool)
     }

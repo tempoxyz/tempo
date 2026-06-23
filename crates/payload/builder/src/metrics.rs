@@ -112,6 +112,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockBuildStopReason {
     GasLimit,
     RlpBlockSizeLimit,
