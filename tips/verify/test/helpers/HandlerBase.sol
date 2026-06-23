@@ -390,11 +390,11 @@ abstract contract HandlerBase is InvariantBase {
         }
     }
 
-    // ============ Nonce Sync Helpers for Catch Blocks ============
+    // ============ Nonce Sync Helpers ============
 
-    /// @notice Sync ghost protocol nonce with actual VM nonce after tx failure
-    /// @dev Call this in catch blocks for protocol nonce transactions (legacy tx, tempo tx with nonceKey=0)
-    function _syncNonceAfterFailure(address account) internal {
+    /// @notice Sync ghost protocol nonce with the current VM account nonce.
+    /// @dev Use after any path that may advance protocol nonce outside normal ghost accounting.
+    function _syncProtocolNonceFromVm(address account) internal {
         uint256 actualNonce = vm.getNonce(account);
         if (actualNonce > ghost_protocolNonce[account]) {
             ghost_protocolNonce[account] = actualNonce;
@@ -416,7 +416,7 @@ abstract contract HandlerBase is InvariantBase {
     /// @notice Unified handler for protocol nonce transaction reverts
     /// @dev Syncs nonce and increments revert counter
     function _handleRevertProtocol(address account) internal {
-        _syncNonceAfterFailure(account);
+        _syncProtocolNonceFromVm(account);
         ghost_totalTxReverted++;
     }
 
