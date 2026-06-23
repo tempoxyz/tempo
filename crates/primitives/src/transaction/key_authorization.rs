@@ -554,6 +554,8 @@ mod rlp {
     }
 
     impl From<&KeyAuthorization> for KeyAuthorizationWire {
+        #[cold]
+        #[inline(never)]
         fn from(value: &KeyAuthorization) -> Self {
             let KeyAuthorization {
                 chain_id,
@@ -584,6 +586,8 @@ mod rlp {
     impl TryFrom<KeyAuthorizationWire> for KeyAuthorization {
         type Error = alloy_rlp::Error;
 
+        #[cold]
+        #[inline(never)]
         fn try_from(value: KeyAuthorizationWire) -> alloy_rlp::Result<Self> {
             if value.is_admin.is_some_and(|marker| marker.get() != 1) {
                 return Err(alloy_rlp::Error::Custom(
@@ -632,6 +636,8 @@ mod rlp {
     }
 
     impl From<&TokenLimit> for TokenLimitWire {
+        #[cold]
+        #[inline(never)]
         fn from(value: &TokenLimit) -> Self {
             let TokenLimit {
                 token,
@@ -647,6 +653,8 @@ mod rlp {
     }
 
     impl From<TokenLimitWire> for TokenLimit {
+        #[cold]
+        #[inline(never)]
         fn from(value: TokenLimitWire) -> Self {
             Self {
                 token: value.token,
