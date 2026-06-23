@@ -77,6 +77,8 @@ pub trait PrecompileStorageProvider {
     ///
     /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
     /// storage delta rather than an observation point that callers can branch on.
+    #[cold]
+    #[inline(never)]
     fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
         let value = self
             .sload(address, key)?
@@ -89,6 +91,8 @@ pub trait PrecompileStorageProvider {
     ///
     /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
     /// storage delta rather than an observation point that callers can branch on.
+    #[cold]
+    #[inline(never)]
     fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
         let current = self.sload(address, key)?;
         let value = current
@@ -215,6 +219,8 @@ pub trait StorageOps {
     ///
     /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
     /// storage delta rather than an observation point that callers can branch on.
+    #[cold]
+    #[inline(never)]
     fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
         let value = self
             .load(slot)?
@@ -227,6 +233,8 @@ pub trait StorageOps {
     ///
     /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
     /// storage delta rather than an observation point that callers can branch on.
+    #[cold]
+    #[inline(never)]
     fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
         let current = self.load(slot)?;
         let value = current
