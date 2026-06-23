@@ -89,11 +89,7 @@ impl EncodedBlockTransactionsBuilder {
     pub(crate) fn push(&mut self, transaction: &TempoTxEnvelope, encoded_2718: &[u8]) {
         self.transaction_count += 1;
         if !transaction.is_legacy() {
-            alloy_rlp::Header {
-                list: false,
-                payload_length: encoded_2718.len(),
-            }
-            .encode(&mut self.payload);
+            encode_rlp_string_header(encoded_2718.len(), &mut self.payload);
         }
         self.payload.extend_from_slice(encoded_2718);
     }
@@ -111,6 +107,22 @@ impl EncodedBlockTransactionsBuilder {
             rlp: rlp.into(),
         }
     }
+}
+
+fn encode_rlp_string_header(payload_length: usize, out: &mut Vec<u8>) {
+    if payload_length < 56 {
+        out.push(0x80 + payload_length as u8);
+        return;
+    }
+
+    let length_bytes = payload_length.to_be_bytes();
+    let first_nonzero = length_bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(length_bytes.len() - 1);
+    let encoded_len = length_bytes.len() - first_nonzero;
+    out.push(0xb7 + encoded_len as u8);
+    out.extend_from_slice(&length_bytes[first_nonzero..]);
 }
 
 /// Encodes the execution block into the shared cache when dropped.
