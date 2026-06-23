@@ -150,14 +150,13 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             .sstore(key, value, skip_cold_load)?)
     }
 
-    /// Performs a metered precompile SLOAD, optionally recording the storage action.
+    /// Performs the journal load and T4+ pre-charge shared by recorded and unrecorded SLOAD.
     #[inline]
-    fn sload_inner(
+    fn sload_begin(
         &mut self,
         address: Address,
         key: U256,
-        record: bool,
-    ) -> Result<U256, TempoPrecompileError> {
+    ) -> Result<(StateLoad<U256>, u64), TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
@@ -169,20 +168,51 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         };
 
         let result = self.sload_journal(address, key, skip_cold_load)?;
-        if record {
-            self.actions
-                .record(StorageAction::Sload(address, key, result.data));
-        }
+        Ok((result, additional_cost))
+    }
 
+    /// Charges the remaining SLOAD gas after storage-action recording has had a chance to run.
+    #[inline]
+    fn sload_finish(
+        &mut self,
+        is_cold: bool,
+        additional_cost: u64,
+    ) -> Result<(), TempoPrecompileError> {
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         }
 
         // dynamic gas
-        if result.is_cold {
+        if is_cold {
             self.deduct_gas(additional_cost)?;
         }
 
+        Ok(())
+    }
+
+    /// Performs a metered precompile SLOAD and records the storage action.
+    #[inline]
+    fn sload_inner(
+        &mut self,
+        address: Address,
+        key: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        let (result, additional_cost) = self.sload_begin(address, key)?;
+        self.actions
+            .record(StorageAction::Sload(address, key, result.data));
+        self.sload_finish(result.is_cold, additional_cost)?;
+        Ok(result.data)
+    }
+
+    /// Performs a metered precompile SLOAD without recording a storage action.
+    #[inline]
+    fn sload_inner_unrecorded(
+        &mut self,
+        address: Address,
+        key: U256,
+    ) -> Result<U256, TempoPrecompileError> {
+        let (result, additional_cost) = self.sload_begin(address, key)?;
+        self.sload_finish(result.is_cold, additional_cost)?;
         Ok(result.data)
     }
 
@@ -393,7 +423,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let current = self.sload_inner(address, key, false)?;
+        let current = self.sload_inner_unrecorded(address, key)?;
         let value = current
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
@@ -418,7 +448,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let current = self.sload_inner(address, key, false)?;
+        let current = self.sload_inner_unrecorded(address, key)?;
         let value = current
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
@@ -467,7 +497,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.sload_inner(address, key, true)
+        self.sload_inner(address, key)
     }
 
     #[inline]
