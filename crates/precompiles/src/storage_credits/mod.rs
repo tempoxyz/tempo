@@ -13,7 +13,7 @@ use crate::{
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::{cell::OnceCell, collections::{BTreeMap, BTreeSet}};
+use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
