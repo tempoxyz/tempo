@@ -6,7 +6,7 @@
 
 use std::{collections::VecDeque, ops::RangeInclusive, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
+use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
@@ -21,19 +21,20 @@ use futures::{
         oneshot,
     },
     future::BoxFuture,
-    stream::FuturesUnordered,
 };
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
-use reth_node_builder::PayloadKind;
+use reth_primitives_traits::{BlockBody as _, SealedHeader};
+use reth_transaction_pool::TransactionPool;
 use tempo_node::{TempoExecutionData, TempoFullNode};
+use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
 use tracing::{Span, debug, error, error_span, info, info_span, instrument, warn, warn_span};
 
 use super::{
     Config,
-    ingress::{CanonicalizeAndBuild, CanonicalizeHead, Command, Message},
+    ingress::{BuildOptimistic, CanonicalizeHead, Command, Message},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -111,14 +112,6 @@ pub(crate) struct Actor<TContext> {
     execution_queue: VecDeque<ExecutionRequest>,
     /// The single execution-layer request currently being driven in the background.
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
-
-    /// Payload build jobs currently being driven to completion.
-    ///
-    /// Each job resolves a payload from the execution layer's payload builder
-    /// and delivers it to the subscriber that requested the build. If the
-    /// subscriber dropped its receiver in the meantime, the built payload is
-    /// discarded.
-    payload_jobs: FuturesUnordered<BoxFuture<'static, ()>>,
 
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
@@ -200,7 +193,6 @@ where
             pending_backfill: OptionFuture::none(),
             execution_queue: VecDeque::new(),
             execution_task: OptionFuture::none(),
-            payload_jobs: FuturesUnordered::new(),
 
             public_key,
             metrics,
@@ -239,22 +231,12 @@ where
 
                 task_result = &mut self.execution_task => {
                     match task_result {
-                        ExecutionTaskResult::Completed { canonicalized, payload_job } => {
+                        ExecutionTaskResult::Completed { canonicalized } => {
                             if let Some(canonicalized) = canonicalized {
                                 // There is only one execution task running at
                                 // a time, and `last_canonicalized` is only
                                 // mutated here to keep a consistent view.
                                 self.last_canonicalized = canonicalized;
-                            }
-                            if let Some(job) = payload_job {
-                                self.payload_jobs.push(
-                                    run_payload_job(
-                                        self.context.clone(),
-                                        self.execution_node.clone(),
-                                        job,
-                                    )
-                                    .boxed(),
-                                );
                             }
                         }
                     }
@@ -283,8 +265,6 @@ where
                         }
                     }
                 }
-
-                Some(()) = self.payload_jobs.next() => {}
 
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
@@ -354,28 +334,24 @@ where
                         height,
                         digest,
                         response: Some(response),
-                        build_attributes: None,
                     },
                 )));
             }
-            Command::CanonicalizeAndBuild(CanonicalizeAndBuild {
-                height,
-                digest,
+            Command::BuildOptimistic(BuildOptimistic {
+                parent,
                 attributes,
                 response,
             }) => {
                 if is_backfilling {
-                    info_span!("handle_message").in_scope(|| {
-                        info!("request to canonicalize and build deferred while backfilling")
-                    });
+                    info_span!("handle_message")
+                        .in_scope(|| info!("optimistic build request deferred while backfilling"));
                 }
-                self.enqueue_execution_request(ExecutionRequest::Canonicalize(Box::new(
-                    Canonicalize {
+                self.enqueue_execution_request(ExecutionRequest::BuildOptimistic(Box::new(
+                    BuildOptimisticRequest {
                         cause,
-                        height,
-                        digest,
-                        response: None,
-                        build_attributes: Some((*attributes, response)),
+                        parent,
+                        attributes: *attributes,
+                        response,
                     },
                 )));
             }
@@ -449,6 +425,7 @@ where
 enum ExecutionRequest {
     Heartbeat { cause: Span },
     Canonicalize(Box<Canonicalize>),
+    BuildOptimistic(Box<BuildOptimisticRequest>),
     FinalizeBlock(Box<FinalizedBlockRequest>),
 }
 
@@ -477,9 +454,6 @@ enum ForkchoiceUpdateKind {
 enum ExecutionTaskResult {
     Completed {
         canonicalized: Option<LastCanonicalized>,
-        /// A payload build that the forkchoice update kicked off on the
-        /// execution layer and that still needs to be driven to completion.
-        payload_job: Option<StartPayloadJob>,
     },
 }
 
@@ -490,16 +464,12 @@ struct Canonicalize {
     /// Acknowledges to the requester that the execution layer accepted the
     /// forkchoice update.
     response: Option<oneshot::Sender<()>>,
-    /// Payload attributes to register a build job with the forkchoice
-    /// update, paired with the subscriber awaiting the built payload.
-    build_attributes: Option<(TempoPayloadAttributes, oneshot::Sender<TempoBuiltPayload>)>,
 }
 
-/// A payload build registered on the execution layer whose result still needs
-/// to be delivered to the subscriber that requested it.
-struct StartPayloadJob {
+struct BuildOptimisticRequest {
     cause: Span,
-    payload_id: PayloadId,
+    parent: Block,
+    attributes: TempoPayloadAttributes,
     response: oneshot::Sender<TempoBuiltPayload>,
 }
 
@@ -521,7 +491,6 @@ where
                 &context,
                 cause,
                 canonicalized,
-                None,
                 ForkchoiceUpdateKind::Heartbeat,
             )
             .await
@@ -530,15 +499,17 @@ where
             }
             ExecutionTaskResult::Completed {
                 canonicalized: None,
-                payload_job: None,
             }
         }
         ExecutionRequest::Canonicalize(request) => {
-            let (canonicalized, payload_job) =
+            let canonicalized =
                 run_canonicalize_task(&context, execution_node, canonicalized, *request).await;
+            ExecutionTaskResult::Completed { canonicalized }
+        }
+        ExecutionRequest::BuildOptimistic(request) => {
+            run_optimistic_build_task(execution_node, *request).await;
             ExecutionTaskResult::Completed {
-                canonicalized,
-                payload_job,
+                canonicalized: None,
             }
         }
         ExecutionRequest::FinalizeBlock(request) => {
@@ -552,15 +523,11 @@ where
             )
             .await
             {
-                Ok(canonicalized) => ExecutionTaskResult::Completed {
-                    canonicalized,
-                    payload_job: None,
-                },
+                Ok(canonicalized) => ExecutionTaskResult::Completed { canonicalized },
                 Err(error) => {
                     warn!(%error, "failed forwarding backfilled finalized block to execution layer");
                     ExecutionTaskResult::Completed {
                         canonicalized: None,
-                        payload_job: None,
                     }
                 }
             }
@@ -585,31 +552,9 @@ async fn run_canonicalize_task<TContext: Pacer>(
         height,
         digest,
         response,
-        mut build_attributes,
     }: Canonicalize,
-) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
+) -> Option<LastCanonicalized> {
     let new_canonicalized = canonicalized.update_head(height, digest);
-
-    if build_attributes
-        .as_ref()
-        .is_some_and(|(_, response)| response.is_canceled())
-    {
-        info!("dropping payload build request: the subscriber went away while it was queued");
-        build_attributes.take();
-    }
-
-    // Only build on top of the most recent head. If the requested parent
-    // could not be made the head (because a block above it was already
-    // finalized), the build is stale, and submitting its attributes anyway
-    // would register a build on top of the wrong block. Taking the
-    // attributes drops the response channel, which signals the failure to
-    // the subscriber.
-    if build_attributes.is_some() && new_canonicalized.forkchoice.head_block_hash != digest.0 {
-        info!("dropping payload build request: its parent cannot be made the head");
-        build_attributes.take();
-    }
-
-    let (attributes, payload_response) = build_attributes.unzip();
 
     // The forkchoice update is submitted even if it would not change the
     // forkchoice state: the execution layer treats it as a no-op (the FCU
@@ -619,92 +564,106 @@ async fn run_canonicalize_task<TContext: Pacer>(
         context,
         cause.clone(),
         new_canonicalized,
-        attributes,
         ForkchoiceUpdateKind::Canonicalize,
     )
     .await
     {
-        Ok(payload_id) => {
+        Ok(()) => {
             if let Some(response) = response {
                 let _ = response.send(());
             }
-            let payload_job = match (payload_response, payload_id) {
-                (Some(response), Some(payload_id)) => Some(StartPayloadJob {
-                    cause,
-                    payload_id,
-                    response,
-                }),
-                (Some(_dropped_to_signal_failure), None) => {
-                    warn!("execution layer did not return a payload id for the build request");
-                    None
-                }
-                (None, _) => None,
-            };
-            (Some(new_canonicalized), payload_job)
+            Some(new_canonicalized)
         }
         Err(error) => {
             // Dropping the response channels signals the failure to the
             // subscribers; the cause is only logged here.
             warn!(%error, "forkchoice update failed");
-            (None, None)
+            None
         }
     }
 }
 
-/// Drives a payload build on the execution layer to completion.
-///
-/// Resolves the payload registered under `payload_id` from the execution
-/// layer's payload builder and delivers it on `response`. If the subscriber
-/// goes away before the payload is resolved (for example because the
-/// consensus engine cancelled the proposal request that triggered the
-/// build), the in-flight resolve future is dropped, which deregisters the
-/// build job from the payload builder and aborts the build.
+/// Builds a payload from a consensus parent that may not yet be canonicalized
+/// in the execution layer.
 #[instrument(
     skip_all,
-    parent = &cause,
-    fields(%payload_id),
+    parent = &request.cause,
+    fields(
+        parent_height = %request.parent.height(),
+        parent_digest = %request.parent.digest(),
+    ),
 )]
-async fn run_payload_job<TContext: Pacer>(
-    context: TContext,
+async fn run_optimistic_build_task(
     execution_node: Arc<TempoFullNode>,
-    StartPayloadJob {
-        cause,
-        payload_id,
-        mut response,
-    }: StartPayloadJob,
+    request: BuildOptimisticRequest,
 ) {
-    let payload = select! {
-        payload = execution_node
-            .payload_builder_handle
-            .resolve_kind(payload_id, PayloadKind::WaitForPending)
-            .pace(&context, Duration::from_millis(20))
-        => payload,
+    let BuildOptimisticRequest {
+        cause: _,
+        parent,
+        attributes,
+        response,
+    } = request;
 
-        // Drops the in-flight payload-resolution, killing payload build.
-        () = response.cancellation() => {
-            info!("payload subscriber went away before the payload was resolved; killing the payload build");
-            return;
-        }
-    };
+    if response.is_canceled() {
+        info!(
+            "dropping optimistic payload build request: the subscriber went away while it was queued"
+        );
+        return;
+    }
 
-    // In the failure branches, dropping the response channel signals the
-    // failure to the subscriber; the cause is only logged here.
-    match payload {
-        Some(Ok(payload)) => {
+    let parent_header = Arc::new(SealedHeader::new(
+        parent.block().header().clone(),
+        parent.block_hash(),
+    ));
+    let pool = execution_node.pool.clone();
+    let parent_transaction_hashes = parent
+        .block()
+        .body()
+        .transaction_hashes_iter()
+        .copied()
+        .collect::<Vec<_>>();
+    if !parent_transaction_hashes.is_empty() {
+        let removed = pool.prune_transactions(parent_transaction_hashes);
+        debug!(
+            parent_transactions_pruned = removed.len(),
+            "pruned consensus parent transactions before optimistic build",
+        );
+    }
+    let provider = execution_node.provider.clone();
+    let task_executor = execution_node.task_executor.clone();
+    let builder_executor = task_executor.clone();
+    let evm_config = execution_node.evm_config.clone();
+
+    let build = task_executor.spawn_blocking(move || {
+        let builder = TempoPayloadBuilder::new(
+            pool,
+            provider,
+            builder_executor,
+            evm_config,
+            TempoPayloadBuilderConfig::default(),
+        );
+        builder.build_optimistic_payload(parent_header, attributes)
+    });
+
+    match build.await {
+        Ok(Ok(payload)) => {
             if response.send(payload).is_err() {
                 info!(
-                    "payload subscriber went away before the payload could be delivered; discarding it"
+                    "payload subscriber went away before the optimistic payload could be delivered; discarding it"
                 );
             }
         }
-        Some(Err(error)) => {
+        Ok(Err(error)) => {
             warn!(
                 error = %eyre::Report::new(error),
-                "payload build job failed",
+                "optimistic payload build failed",
             );
         }
-        None => {
-            warn!("no payload build job found under the payload ID");
+        Err(error) => {
+            warn!(
+                %error,
+                "optimistic payload build task failed",
+            );
         }
     }
 }
@@ -725,13 +684,12 @@ async fn submit_forkchoice_update<TContext: Pacer>(
     context: &TContext,
     cause: Span,
     canonicalized: LastCanonicalized,
-    attrs: Option<TempoPayloadAttributes>,
     kind: ForkchoiceUpdateKind,
-) -> eyre::Result<Option<PayloadId>> {
+) -> eyre::Result<()> {
     let fcu_response = execution_node
         .add_ons_handle
         .beacon_engine_handle
-        .fork_choice_updated(canonicalized.forkchoice, attrs)
+        .fork_choice_updated(canonicalized.forkchoice, None)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed requesting execution layer to update forkchoice state")?;
@@ -760,7 +718,7 @@ async fn submit_forkchoice_update<TContext: Pacer>(
             .wrap_err("execution layer responded with error for forkchoice-update"));
     }
 
-    Ok(fcu_response.payload_id)
+    Ok(())
 }
 
 #[instrument(
@@ -815,7 +773,6 @@ async fn forward_finalized<TContext: Pacer>(
             context,
             cause,
             canonicalized,
-            None,
             ForkchoiceUpdateKind::Canonicalize,
         )
         .await?;

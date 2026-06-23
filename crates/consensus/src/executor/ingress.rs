@@ -35,32 +35,21 @@ impl Mailbox {
         )
     }
 
-    /// Canonicalizes the given head and requests a new payload to be built.
-    ///
-    /// The built payload is delivered on the returned channel once the
-    /// execution layer finishes constructing it. The receiver may be dropped
-    /// to signal that the payload is no longer wanted, whereupon the executor
-    /// will drop the payload job.
-    ///
-    /// Conversely, the executor dropping its sender means the build failed;
-    /// the executor logs the cause.
-    pub(crate) fn canonicalize_and_build(
+    /// Builds a payload directly from the consensus parent without first
+    /// canonicalizing that parent in the execution layer.
+    pub(crate) fn build_optimistic(
         &self,
-        height: Height,
-        digest: Digest,
+        parent: Block,
         attributes: TempoPayloadAttributes,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
-                height,
-                digest,
+            .unbounded_send(Message::in_current_span(BuildOptimistic {
+                parent,
                 attributes: Box::new(attributes),
                 response,
             }))
-            .wrap_err(
-                "failed sending canonicalize and build request to agent, this means it exited",
-            )?;
+            .wrap_err("failed sending optimistic build request to agent, this means it exited")?;
         Ok(rx)
     }
 }
@@ -84,8 +73,8 @@ impl Message {
 pub(super) enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
     CanonicalizeHead(CanonicalizeHead),
-    /// Requests the agent to canonicalize the head and build a new payload.
-    CanonicalizeAndBuild(CanonicalizeAndBuild),
+    /// Requests the agent to build a payload from a consensus parent.
+    BuildOptimistic(BuildOptimistic),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
 }
@@ -98,9 +87,8 @@ pub(super) struct CanonicalizeHead {
 }
 
 #[derive(Debug)]
-pub(super) struct CanonicalizeAndBuild {
-    pub(super) height: Height,
-    pub(super) digest: Digest,
+pub(super) struct BuildOptimistic {
+    pub(super) parent: Block,
     pub(super) attributes: Box<TempoPayloadAttributes>,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
 }
@@ -111,9 +99,9 @@ impl From<CanonicalizeHead> for Command {
     }
 }
 
-impl From<CanonicalizeAndBuild> for Command {
-    fn from(value: CanonicalizeAndBuild) -> Self {
-        Self::CanonicalizeAndBuild(value)
+impl From<BuildOptimistic> for Command {
+    fn from(value: BuildOptimistic) -> Self {
+        Self::BuildOptimistic(value)
     }
 }
 

@@ -42,10 +42,10 @@ use reth_evm::{
 };
 use reth_execution_types::BlockExecutionResult;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::BuiltPayload;
-use reth_primitives_traits::{Recovered, RecoveredBlock};
+use reth_payload_primitives::{BuiltPayload, PayloadAttributes};
+use reth_primitives_traits::{Recovered, RecoveredBlock, SealedHeader};
 use reth_revm::{State, context::Block, database::StateProviderDatabase, db::BundleState};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{StateProviderBox, StateProviderFactory, noop::NoopProvider};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -71,7 +71,8 @@ use tempo_payload_types::{
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt,
+    TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -161,6 +162,7 @@ struct BlockDraft {
     payment_transactions: u64,
     pool_transactions_yielded: u64,
     pool_transactions_included: u64,
+    pool_transaction_hashes: Vec<B256>,
     total_fees: U256,
     invalid_pool_transaction_execution_attempts: u64,
     normal_transaction_fill_idle_elapsed: Duration,
@@ -243,6 +245,7 @@ where
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
+        let mut pool_transaction_hashes = Vec::new();
         let mut total_fees = U256::ZERO;
         let mut skipped_oversized_block = false;
         let invalid_pool_transaction_execution_attempts = 0u64;
@@ -376,6 +379,7 @@ where
             trace!("Transaction selected without local execution");
 
             pool_transactions_included += 1;
+            pool_transaction_hashes.push(*pool_tx.hash());
             estimated_rlp_block_size += tx_rlp_length;
             let _ = roots_tx.send(BuilderTx::Pooled(pool_tx));
         };
@@ -395,6 +399,7 @@ where
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
+            pool_transaction_hashes,
             total_fees,
             invalid_pool_transaction_execution_attempts,
             normal_transaction_fill_idle_elapsed,
@@ -509,6 +514,7 @@ where
             args,
             |attributes| self.pool.best_transactions_with_attributes(attributes),
             false,
+            PayloadBuildMode::ExecutionBacked,
         )
     }
 
@@ -534,6 +540,7 @@ where
             ),
             |_| core::iter::empty(),
             true,
+            PayloadBuildMode::ExecutionBacked,
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -545,6 +552,31 @@ where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
+    pub fn build_optimistic_payload(
+        &self,
+        parent_header: Arc<SealedHeader<TempoHeader>>,
+        attributes: TempoPayloadAttributes,
+    ) -> Result<TempoBuiltPayload, PayloadBuilderError> {
+        let payload_id = attributes.payload_id(&parent_header.hash());
+        let config = PayloadConfig::new(parent_header, attributes, payload_id);
+
+        self.build_payload(
+            BuildArguments::new(
+                Default::default(),
+                None,
+                None,
+                config,
+                Default::default(),
+                Default::default(),
+            ),
+            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            false,
+            PayloadBuildMode::Optimistic,
+        )?
+        .into_payload()
+        .ok_or_else(|| PayloadBuilderError::MissingPayload)
+    }
+
     #[instrument(
         target = "payload_builder",
         skip_all,
@@ -559,6 +591,7 @@ where
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
+        mode: PayloadBuildMode,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -603,19 +636,30 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
+        let chain_spec = self.provider.chain_spec();
+
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
-                execution_cache.cache().clone(),
-                Some(self.cache_metrics.clone()),
-            ));
-        }
-        if self.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
-        }
+        let state_provider: StateProviderBox = match mode {
+            PayloadBuildMode::ExecutionBacked => {
+                let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+                if let Some(execution_cache) = &execution_cache {
+                    state_provider = Box::new(CachedStateProvider::new(
+                        state_provider,
+                        execution_cache.cache().clone(),
+                        Some(self.cache_metrics.clone()),
+                    ));
+                }
+                if self.state_provider_metrics {
+                    state_provider =
+                        Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
+                }
+                state_provider
+            }
+            PayloadBuildMode::Optimistic => Box::new(
+                NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chain_spec.clone()),
+            ),
+        };
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
@@ -629,7 +673,6 @@ where
 
         check_cancel!();
 
-        let chain_spec = self.provider.chain_spec();
         let is_osaka = self
             .provider
             .chain_spec()
@@ -728,7 +771,9 @@ where
 
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
-        maybe_override_fee_recipient(&mut executor, &attributes);
+        if mode == PayloadBuildMode::ExecutionBacked {
+            maybe_override_fee_recipient(&mut executor, &attributes);
+        }
         drop(trie_handle);
 
         check_cancel!();
@@ -767,18 +812,20 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
-                self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
-        } else {
-            Box::new(best_txs)
-        });
+        let mut best_txs = StateAwareBestTransactions::new(
+            if self.enable_prewarming && mode == PayloadBuildMode::ExecutionBacked {
+                Box::new(BestTransactionsPrewarming::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache,
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    best_txs,
+                )) as Box<dyn BestTransactions<Item = _>>
+            } else {
+                Box::new(best_txs)
+            },
+        );
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -1125,6 +1172,15 @@ where
             execution_block_encoded,
         );
 
+        if mode == PayloadBuildMode::Optimistic && !draft.pool_transaction_hashes.is_empty() {
+            let removed = self.pool.prune_transactions(draft.pool_transaction_hashes);
+            debug!(
+                target: "payload_builder",
+                optimistic_pool_transactions_pruned = removed.len(),
+                "pruned selected optimistic payload transactions from pool"
+            );
+        }
+
         drop(db);
         self.executor.spawn_drop(state_provider);
         if build_once_with_shared_trie {
@@ -1171,6 +1227,12 @@ where
 
         (transactions_tx, result_rx)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PayloadBuildMode {
+    ExecutionBacked,
+    Optimistic,
 }
 
 pub fn is_more_subblocks(

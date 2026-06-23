@@ -108,6 +108,13 @@ impl ValidationKey {
 #[derive(Default)]
 struct ValidationState {
     scheduled: Vec<ValidationKey>,
+    active: Option<ValidationKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ValidationStatus {
+    Active,
+    Missing,
 }
 
 struct ValidationTracker {
@@ -136,20 +143,36 @@ impl ValidationTracker {
         true
     }
 
-    async fn wait_for(&self, key: ValidationKey) -> bool {
-        let notified = {
-            let state = self.state.lock().await;
-            if !state.scheduled.contains(&key) {
-                return false;
-            }
-            self.notify.notified()
-        };
-        notified.await;
-        true
+    async fn begin(&self, key: ValidationKey) {
+        let mut state = self.state.lock().await;
+        if state.scheduled.contains(&key) {
+            state.active = Some(key);
+        }
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait_until_active_or_missing(&self, key: ValidationKey) -> ValidationStatus {
+        loop {
+            let notified = {
+                let state = self.state.lock().await;
+                if state.active == Some(key) {
+                    return ValidationStatus::Active;
+                }
+                if !state.scheduled.contains(&key) {
+                    return ValidationStatus::Missing;
+                }
+                self.notify.notified()
+            };
+            notified.await;
+        }
     }
 
     async fn finish(&self, key: ValidationKey) {
         let mut state = self.state.lock().await;
+        if state.active == Some(key) {
+            state.active = None;
+        }
         if let Some(index) = state
             .scheduled
             .iter()
@@ -636,7 +659,7 @@ impl Inner<Init> {
             return Ok((parent, None));
         }
 
-        self.wait_for_parent_execution(&parent).await?;
+        self.wait_for_parent_build_slot(&parent).await?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
@@ -746,7 +769,7 @@ impl Inner<Init> {
         let payload = self
             .state
             .executor
-            .canonicalize_and_build(parent.height(), parent.digest(), attrs)?
+            .build_optimistic(parent.clone(), attrs)?
             .await
             .wrap_err(
                 "executor dropped the payload channel: the build failed (the \
@@ -935,6 +958,7 @@ impl Inner<Init> {
             );
 
             let _guard = validation_tracker.validation_lock.lock().await;
+            validation_tracker.begin(key).await;
             match verify_block(
                 context,
                 epoch,
@@ -986,19 +1010,26 @@ impl Inner<Init> {
         });
     }
 
-    async fn wait_for_parent_execution(&self, parent: &Block) -> eyre::Result<()> {
+    async fn wait_for_parent_build_slot(&self, parent: &Block) -> eyre::Result<()> {
         let key = ValidationKey::for_block(parent);
-        loop {
-            if self.execution_parent_available(parent)? {
-                return Ok(());
-            }
-            if !self.validation_tracker.wait_for(key).await {
+        if self.execution_parent_available(parent)? {
+            return Ok(());
+        }
+
+        match self
+            .validation_tracker
+            .wait_until_active_or_missing(key)
+            .await
+        {
+            ValidationStatus::Active => Ok(()),
+            ValidationStatus::Missing if self.execution_parent_available(parent)? => Ok(()),
+            ValidationStatus::Missing => {
                 bail!(
                     "proposal parent `{}` at height `{}` is not available in \
-                    the execution layer and has no pending asynchronous validation",
+                    the execution layer and has no active asynchronous validation",
                     parent.digest(),
                     parent.height(),
-                );
+                )
             }
         }
     }
