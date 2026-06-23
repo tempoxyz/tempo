@@ -1027,6 +1027,8 @@ impl TIP20Token {
         self.allowances[owner][spender].write(amount)
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_total_supply(&mut self, amount: U256) -> Result<()> {
         self.total_supply.write(amount)
     }
