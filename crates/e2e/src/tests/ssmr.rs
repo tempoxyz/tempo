@@ -2,10 +2,11 @@ use std::time::Duration;
 
 use alloy::{
     eips::eip2718::Encodable2718,
-    network::{Ethereum, EthereumWallet, NetworkTransactionBuilder},
-    primitives::{Bytes, U256},
-    rpc::types::TransactionRequest,
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    primitives::{Bytes, TxKind, U256},
+    signers::{
+        SignerSync as _,
+        local::{MnemonicBuilder, PrivateKeySigner},
+    },
     sol_types::SolCall,
 };
 use commonware_macros::test_traced;
@@ -14,11 +15,16 @@ use commonware_runtime::{
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
-use reth_chainspec::{ChainSpecProvider, EthChainSpec};
-use reth_ethereum::pool::TransactionPool;
+use reth_ethereum::{
+    chainspec::{ChainSpecProvider, EthChainSpec},
+    rpc::eth::EthApiServer,
+};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_node::{PoolTransaction, TempoPooledTransaction, TransactionOrigin};
 use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{Call, TempoTransaction},
+};
 
 use crate::{
     Setup, TestingNode,
@@ -36,13 +42,10 @@ fn ssmr_streams_real_tip20_transfers() {
             .how_many_signers(4)
             .epoch_length(100)
             .seed(42)
+            .proposal_return_budget(Duration::from_millis(500))
             .ssmr(true)
             .ssmr_shard_target_bytes(5 * 1024);
         let (mut nodes, execution_runtime) = setup_validators(&mut context, setup).await;
-
-        for node in &mut nodes {
-            node.consensus_config_mut().proposal_return_budget = Duration::from_millis(500);
-        }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
         wait_for_all_validators_at_height(&context, 4, 3).await;
@@ -88,21 +91,25 @@ async fn sign_tip20_transfers(chain_id: u64) -> Vec<Bytes> {
             to: recipient,
             amount: U256::from(100 + i),
         };
-        let mut request = TransactionRequest::default()
-            .to(PATH_USD_ADDRESS)
-            .input(call.abi_encode().into());
-        request.nonce = Some(0);
-        request.chain_id = Some(chain_id);
-        request.gas = Some(1_000_000);
-        request.max_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
-        request.max_priority_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
+        let tx = TempoTransaction {
+            chain_id,
+            nonce: 0,
+            gas_limit: 1_000_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            fee_token: Some(PATH_USD_ADDRESS),
+            calls: vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: call.abi_encode().into(),
+            }],
+            ..Default::default()
+        };
 
-        let envelope = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
-            request,
-            &EthereumWallet::from(signer),
-        )
-        .await
-        .expect("test transaction signs");
+        let signature = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .expect("test transaction signs");
+        let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
         signed.push(envelope.encoded_2718().into());
     }
     signed
@@ -113,25 +120,17 @@ async fn inject_raw_transactions(
     nodes: &[TestingNode<commonware_runtime::deterministic::Context>],
     transfers: Vec<Bytes>,
 ) {
-    let pools = nodes
+    let eth_apis = nodes
         .iter()
-        .map(|node| node.execution().pool.clone())
-        .collect::<Vec<_>>();
-    let recovered = transfers
-        .into_iter()
-        .map(|tx| {
-            <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(tx.as_ref())
-                .expect("test transaction recovers")
-        })
+        .map(|node| node.execution().eth_api().clone())
         .collect::<Vec<_>>();
 
     execution_runtime
         .run_async(async move {
-            tokio::time::timeout(Duration::from_secs(10), async move {
-                for pool in pools {
-                    for tx in &recovered {
-                        pool.add_transaction(TransactionOrigin::External, tx.clone())
-                            .await?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                for eth_api in eth_apis {
+                    for tx in transfers.clone() {
+                        eth_api.send_raw_transaction(tx).await?;
                     }
                 }
                 Ok::<_, eyre::Report>(())
