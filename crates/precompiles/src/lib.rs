@@ -142,6 +142,7 @@ pub struct PrecompileEnv {
 }
 
 impl PrecompileEnv {
+    #[inline]
     pub fn new(
         cfg: &CfgEnv<TempoHardfork>,
         actions: StorageActions,
