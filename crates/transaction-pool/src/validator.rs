@@ -1,7 +1,7 @@
 use crate::{
     amm::AmmLiquidityCache,
     state_cache::{StateCache, StateCacheDb},
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::{StorageActionReplaySource, TempoPoolTransactionError, TempoPooledTransaction},
 };
 
 use alloy_consensus::constants::KECCAK_EMPTY;
@@ -9,7 +9,7 @@ use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
-use reth_evm::ConfigureEvm;
+use reth_evm::{ConfigureEvm, Evm};
 use reth_primitives_traits::{
     Account, Bytecode, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -38,10 +38,11 @@ use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
     nonce::{INonce, NonceManager},
-    storage::StorageActions,
+    storage::{StorageAction, StorageActions},
 };
 use tempo_primitives::{
     Block, TempoHeader,
@@ -51,6 +52,7 @@ use tempo_primitives::{
 use tempo_revm::{
     TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, error::FeePaymentError,
 };
+use tracing::trace;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -343,6 +345,7 @@ where
     fn validate_batch<P: StateProvider>(
         &self,
         state_provider: P,
+        parent_hash: B256,
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
@@ -356,7 +359,7 @@ where
         // - Disable nonce check: the pool accepts future-nonce transactions (queued)
         //   and handles nonce ordering separately.
         // - Skip liquidity check: the pool performs its own liquidity validation against a cached view of the AMM state.
-        let mut evm = TempoEvm::new(&mut db, evm_env);
+        let mut evm = TempoEvm::new(&mut db, evm_env).with_actions();
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
@@ -369,6 +372,14 @@ where
                 // key authorisation) while keeping loaded accounts and storage warm for the
                 // rest of the batch.
                 evm.ctx_mut().journal_mut().discard_tx();
+                if let TransactionValidationOutcome::Valid { transaction, .. } = &outcome {
+                    self.prewarm_imported_transaction(
+                        transaction.transaction(),
+                        parent_hash,
+                        &mut evm,
+                    );
+                }
+                evm.clear_actions();
                 outcome
             })
             .collect()
@@ -377,10 +388,14 @@ where
     /// Returns the latest state provider and a state cache valid for the provider's tip.
     fn latest_state_provider_and_cache(
         &self,
-    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+    ) -> ProviderResult<(StateProviderBox, B256, Arc<StateCache>)> {
         let state_provider = self.inner.client().latest()?;
         let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        Ok((
+            state_provider,
+            latest_hash,
+            self.state_cache_for_tip(latest_hash),
+        ))
     }
 
     /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
@@ -393,6 +408,56 @@ where
             cached_state
         } else {
             Arc::new(StateCache::default())
+        }
+    }
+
+    /// Executes a newly imported pool transaction once and stores its replayable storage actions.
+    fn prewarm_imported_transaction<DB>(
+        &self,
+        transaction: &TempoPooledTransaction,
+        parent_hash: B256,
+        evm: &mut TempoEvm<DB>,
+    ) where
+        DB: Database<Error = ProviderError>,
+    {
+        if transaction.has_cached_storage_action_replay(parent_hash)
+            || !transaction.is_storage_action_replay_candidate()
+        {
+            evm.clear_actions();
+            return;
+        }
+
+        let previous_disable_nonce_check = evm.ctx().cfg.disable_nonce_check;
+        let previous_disable_balance_check = evm.ctx().cfg.disable_balance_check;
+        let (previous_skip_valid_after_check, previous_skip_liquidity_check) = {
+            let inner = evm.inner_mut();
+            (inner.skip_valid_after_check, inner.skip_liquidity_check)
+        };
+
+        evm.ctx_mut().cfg.disable_nonce_check = true;
+        evm.ctx_mut().cfg.disable_balance_check = true;
+        {
+            let inner = evm.inner_mut();
+            inner.skip_valid_after_check = false;
+            inner.skip_liquidity_check = false;
+        }
+
+        let replay = collect_storage_action_replay(transaction, evm);
+
+        evm.ctx_mut().cfg.disable_nonce_check = previous_disable_nonce_check;
+        evm.ctx_mut().cfg.disable_balance_check = previous_disable_balance_check;
+        {
+            let inner = evm.inner_mut();
+            inner.skip_valid_after_check = previous_skip_valid_after_check;
+            inner.skip_liquidity_check = previous_skip_liquidity_check;
+        }
+
+        if let Some(replay) = replay {
+            transaction.cache_storage_action_replay(
+                parent_hash,
+                replay,
+                StorageActionReplaySource::TransactionPool,
+            );
         }
     }
 
@@ -664,6 +729,87 @@ where
     }
 }
 
+fn collect_storage_action_replay<DB>(
+    transaction: &TempoPooledTransaction,
+    evm: &mut TempoEvm<DB>,
+) -> Option<StorageActionReplay>
+where
+    DB: Database<Error = ProviderError>,
+{
+    let tx_hash = *transaction.hash();
+    evm.clear_actions();
+
+    let expiring_nonce = expiring_nonce_replay(transaction);
+    let mut tx_env = transaction.clone_tx_env();
+    if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+        tempo_tx_env.expiring_nonce_idx = transaction.is_expiring_nonce().then_some(0);
+    }
+
+    let mut result = match evm.transact_raw(tx_env) {
+        Ok(result) => result,
+        Err(err) => {
+            evm.clear_actions();
+            trace!(
+                target: "transaction_pool",
+                %err,
+                ?tx_hash,
+                "Failed to collect imported transaction storage actions"
+            );
+            return None;
+        }
+    };
+
+    if !result.result.is_success() {
+        evm.clear_actions();
+        trace!(
+            target: "transaction_pool",
+            ?tx_hash,
+            result = ?result.result,
+            "Imported transaction action collection produced non-success result"
+        );
+        return None;
+    }
+
+    let mut actions = evm.take_actions()?;
+    if expiring_nonce.is_some() {
+        actions.retain(|action| !is_nonce_manager_action(action));
+    }
+    if actions.is_empty() && expiring_nonce.is_none() {
+        return None;
+    }
+
+    result.state.clear();
+    Some(StorageActionReplay {
+        result: result.result,
+        actions,
+        validator_fee: evm.validator_fee(),
+        state: result.state,
+        expiring_nonce,
+    })
+}
+
+fn expiring_nonce_replay(transaction: &TempoPooledTransaction) -> Option<ExpiringNonceReplay> {
+    if !transaction.is_expiring_nonce() {
+        return None;
+    }
+
+    let valid_before = transaction.tx_env().tempo_tx_env.as_ref()?.valid_before?;
+    Some(ExpiringNonceReplay {
+        hash: transaction.expiring_nonce_hash()?,
+        valid_before,
+    })
+}
+
+fn is_nonce_manager_action(action: &StorageAction) -> bool {
+    let address = match *action {
+        StorageAction::Sload(address, ..)
+        | StorageAction::Sstore(address, ..)
+        | StorageAction::Sinc(address, ..)
+        | StorageAction::Sdec(address, ..) => address,
+    };
+    address == NONCE_PRECOMPILE_ADDRESS
+}
+
 impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
@@ -676,15 +822,17 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let (state_provider, parent_hash, cached_state) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         self.validate_batch(
             state_provider,
+            parent_hash,
             cached_state,
             core::iter::once((origin, transaction)),
         )
@@ -697,19 +845,20 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|(_, tx)| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, parent_hash, cached_state) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|(_, tx)| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider, parent_hash, cached_state, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -717,20 +866,22 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
-        let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
-            Ok(provider_and_cache) => provider_and_cache,
-            Err(err) => {
-                return transactions
-                    .into_iter()
-                    .map(|tx| {
-                        TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
-                    })
-                    .collect();
-            }
-        };
+        let (state_provider, parent_hash, cached_state) =
+            match self.latest_state_provider_and_cache() {
+                Ok(provider_and_cache) => provider_and_cache,
+                Err(err) => {
+                    return transactions
+                        .into_iter()
+                        .map(|tx| {
+                            TransactionValidationOutcome::Error(*tx.hash(), Box::new(err.clone()))
+                        })
+                        .collect();
+                }
+            };
 
         self.validate_batch(
             state_provider,
+            parent_hash,
             cached_state,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
@@ -1051,7 +1202,7 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (mismatched_tip_hash, shared_cache.clone());
 
-        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+        let (_, _, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }

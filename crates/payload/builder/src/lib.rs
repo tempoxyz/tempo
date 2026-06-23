@@ -89,7 +89,7 @@ use tempo_primitives::{
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
     best::BestTransaction,
-    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    transaction::{StorageActionReplaySource, TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -472,6 +472,7 @@ where
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut parallel_transactions_executed = 0u64;
+        let mut txpool_prewarmed_transactions = 0u64;
         let mut total_fees = U256::ZERO;
 
         // If building an empty payload, don't include any subblocks
@@ -704,6 +705,8 @@ where
                 };
                 break stop_reason;
             };
+            let parallel_replay_from_txpool =
+                planned_pool_tx.replay_source == Some(StorageActionReplaySource::TransactionPool);
             let parallel_replay = planned_pool_tx.replay;
             if let Some(actions) = planned_pool_tx.action_buffer {
                 best_txs.recycle_actions(actions);
@@ -930,6 +933,9 @@ where
 
             if replayed_transaction {
                 parallel_transactions_executed += 1;
+                if parallel_replay_from_txpool {
+                    txpool_prewarmed_transactions += 1;
+                }
             }
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
@@ -1311,6 +1317,7 @@ where
             pool_transactions_yielded,
             pool_transactions_included,
             parallel_transactions_executed,
+            txpool_prewarmed_transactions,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
             subblock_transactions,

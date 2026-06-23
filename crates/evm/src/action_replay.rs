@@ -20,7 +20,7 @@ use tempo_precompiles::{
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
 /// Precomputed transaction result plus semantic precompile storage actions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StorageActionReplay {
     pub result: ExecutionResult<TempoHaltReason>,
     pub actions: Vec<StorageAction>,

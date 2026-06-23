@@ -279,6 +279,10 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+
+    pub(crate) fn parent_hash(&self) -> B256 {
+        self.parent_hash
+    }
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -569,14 +573,14 @@ mod tests {
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
         let prewarming = BestTransactionsPrewarming::new(
-            PrewarmingExecutionContext {
+            PrewarmingExecutionContext::new(
                 provider,
-                executor: executor.clone(),
-                parent_hash: parent_header.hash(),
-                cache: None,
+                executor.clone(),
+                None,
+                parent_header.hash(),
                 evm_env,
-                stop: Arc::default(),
-            },
+                Arc::default(),
+            ),
             TestBestTransactions::new(txs, log),
         );
         TestPrewarming {

@@ -4,20 +4,16 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, TxKind};
-use alloy_sol_types::SolInterface;
-use reth_evm::{Evm, RecoveredTx};
-use reth_revm::context::Transaction as _;
+use reth_evm::Evm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
-use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoTxResult, evm::TempoEvm};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
-use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},
+    transaction::StorageActionReplaySource,
 };
 use tracing::trace;
 
@@ -27,6 +23,7 @@ use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 pub(crate) struct PlannedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
+    pub(crate) replay_source: Option<StorageActionReplaySource>,
     pub(crate) action_buffer: Option<Vec<StorageAction>>,
 }
 
@@ -35,6 +32,7 @@ impl PlannedTransaction {
         Self {
             tx,
             replay: None,
+            replay_source: None,
             action_buffer: None,
         }
     }
@@ -304,6 +302,20 @@ where
         return PlannedTransaction {
             tx,
             replay: None,
+            replay_source: None,
+            action_buffer,
+        };
+    }
+
+    let parent_hash = prewarm.parent_hash();
+    if let Some((replay, replay_source)) = tx
+        .transaction
+        .cached_storage_action_replay_with_source(parent_hash)
+    {
+        return PlannedTransaction {
+            tx,
+            replay: Some(Box::new(replay)),
+            replay_source: Some(replay_source),
             action_buffer,
         };
     }
@@ -321,7 +333,7 @@ where
             return None;
         }
 
-        if !is_storage_action_replay_candidate(&tx) {
+        if !tx.transaction.is_storage_action_replay_candidate() {
             evm.clear_actions();
             return None;
         }
@@ -376,87 +388,23 @@ where
         }))
     });
 
+    if let Some(replay) = replay.as_ref() {
+        tx.transaction.cache_storage_action_replay(
+            parent_hash,
+            (**replay).clone(),
+            StorageActionReplaySource::PayloadBuilder,
+        );
+    }
+    let replay_source = replay
+        .as_ref()
+        .map(|_| StorageActionReplaySource::PayloadBuilder);
+
     PlannedTransaction {
         tx,
         replay,
+        replay_source,
         action_buffer,
     }
-}
-
-fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {
-    let tx_env = tx.transaction.tx_env();
-
-    if tx.transaction.inner().tx().subblock_proposer().is_some() {
-        return false;
-    }
-    if !tx_env.value().is_zero() {
-        return false;
-    }
-    if tx_env
-        .access_list()
-        .is_some_and(|mut access_list| access_list.next().is_some())
-    {
-        return false;
-    }
-    if tx_env.authorization_list_len() != 0 {
-        return false;
-    }
-
-    let Some(aa_env) = tx_env.tempo_tx_env.as_ref() else {
-        return false;
-    };
-    if !aa_env.tempo_authorization_list.is_empty() {
-        return false;
-    }
-    if aa_env.key_authorization.is_some() {
-        return false;
-    }
-    if tx_env.nonce() != 0 {
-        return false;
-    }
-    if tx
-        .transaction
-        .inner()
-        .tx()
-        .as_aa()
-        .is_some_and(|aa| aa.signature().as_keychain().is_some())
-    {
-        return false;
-    }
-    if tx_env.fee_payer().is_err() {
-        return false;
-    }
-
-    let mut calls = tx_env.calls();
-    let Some((kind, input)) = calls.next() else {
-        return false;
-    };
-    if !is_valid_tip20_transfer_call(*kind, input) {
-        return false;
-    }
-    calls.next().is_none()
-}
-
-fn is_valid_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
-    let TxKind::Call(token) = kind else {
-        return false;
-    };
-    if !token.is_tip20() {
-        return false;
-    }
-
-    match ITIP20::ITIP20Calls::abi_decode(input) {
-        Ok(ITIP20::ITIP20Calls::transfer(call)) => is_valid_direct_recipient(call.to),
-        Ok(ITIP20::ITIP20Calls::transferWithMemo(call)) => is_valid_direct_recipient(call.to),
-        Ok(ITIP20::ITIP20Calls::transferFrom(_))
-        | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(_))
-        | Ok(_) => false,
-        Err(_) => false,
-    }
-}
-
-fn is_valid_direct_recipient(to: Address) -> bool {
-    !to.is_zero() && !to.is_tip20() && !to.is_virtual()
 }
 
 fn expiring_nonce_replay(tx: &BestTransaction) -> Option<ExpiringNonceReplay> {

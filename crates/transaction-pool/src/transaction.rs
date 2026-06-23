@@ -9,23 +9,26 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
+use alloy_evm::{FromRecoveredTx, RecoveredTx};
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use alloy_sol_types::SolInterface;
+use parking_lot::RwLock;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::{PoolTransactionError, RawPoolTransactionError},
 };
+use revm::context::Transaction as _;
 use std::{
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::ITIP20;
+use tempo_evm::StorageActionReplay;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -33,9 +36,25 @@ use tempo_precompiles::{
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{TempoAddressExt, TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
+
+/// Origin of a cached storage-action replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageActionReplaySource {
+    /// Replay was collected during transaction pool import.
+    TransactionPool,
+    /// Replay was collected by the payload builder prewarming planner.
+    PayloadBuilder,
+}
+
+#[derive(Debug, Clone)]
+struct CachedStorageActionReplay {
+    parent_hash: B256,
+    replay: Arc<StorageActionReplay>,
+    source: StorageActionReplaySource,
+}
 
 /// Tempo pooled transaction representation.
 ///
@@ -74,6 +93,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Cached storage-action replay recorded before payload execution.
+    storage_action_replay: Arc<RwLock<Option<CachedStorageActionReplay>>>,
 }
 
 impl TempoPooledTransaction {
@@ -124,6 +145,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            storage_action_replay: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -310,6 +332,103 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
+    /// Returns whether this transaction can use storage-action replay.
+    pub fn is_storage_action_replay_candidate(&self) -> bool {
+        let tx_env = self.tx_env();
+
+        if self.inner().tx().subblock_proposer().is_some() {
+            return false;
+        }
+        if !tx_env.value().is_zero() {
+            return false;
+        }
+        if tx_env
+            .access_list()
+            .is_some_and(|mut access_list| access_list.next().is_some())
+        {
+            return false;
+        }
+        if tx_env.authorization_list_len() != 0 {
+            return false;
+        }
+
+        let Some(aa_env) = tx_env.tempo_tx_env.as_ref() else {
+            return false;
+        };
+        if !aa_env.tempo_authorization_list.is_empty() {
+            return false;
+        }
+        if aa_env.key_authorization.is_some() {
+            return false;
+        }
+        if tx_env.nonce() != 0 {
+            return false;
+        }
+        if self
+            .inner()
+            .tx()
+            .as_aa()
+            .is_some_and(|aa| aa.signature().as_keychain().is_some())
+        {
+            return false;
+        }
+        if tx_env.fee_payer().is_err() {
+            return false;
+        }
+
+        let mut calls = tx_env.calls();
+        let Some((kind, input)) = calls.next() else {
+            return false;
+        };
+        if !is_valid_tip20_transfer_call(*kind, input) {
+            return false;
+        }
+        calls.next().is_none()
+    }
+
+    /// Returns a cached storage-action replay if one was recorded for `parent_hash`.
+    pub fn cached_storage_action_replay(&self, parent_hash: B256) -> Option<StorageActionReplay> {
+        self.storage_action_replay
+            .read()
+            .as_ref()
+            .filter(|cached| cached.parent_hash == parent_hash)
+            .map(|cached| (*cached.replay).clone())
+    }
+
+    /// Returns a cached storage-action replay and its source if one was recorded for `parent_hash`.
+    pub fn cached_storage_action_replay_with_source(
+        &self,
+        parent_hash: B256,
+    ) -> Option<(StorageActionReplay, StorageActionReplaySource)> {
+        self.storage_action_replay
+            .read()
+            .as_ref()
+            .filter(|cached| cached.parent_hash == parent_hash)
+            .map(|cached| ((*cached.replay).clone(), cached.source))
+    }
+
+    /// Returns true if a storage-action replay has already been recorded for `parent_hash`.
+    pub fn has_cached_storage_action_replay(&self, parent_hash: B256) -> bool {
+        self.storage_action_replay
+            .read()
+            .as_ref()
+            .is_some_and(|cached| cached.parent_hash == parent_hash)
+    }
+
+    /// Caches a storage-action replay for this transaction.
+    pub fn cache_storage_action_replay(
+        &self,
+        parent_hash: B256,
+        replay: StorageActionReplay,
+        source: StorageActionReplaySource,
+    ) {
+        *self.storage_action_replay.write() = Some(CachedStorageActionReplay {
+            parent_hash,
+            replay: Arc::new(replay),
+            source,
+        });
+    }
+
     /// Returns a tuple that can be passed to block executor.
     pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
         (self.tx_env().clone(), &self.inner.transaction)
@@ -489,6 +608,28 @@ impl TempoPooledTransaction {
             }
         }
     }
+}
+
+fn is_valid_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
+    let TxKind::Call(token) = kind else {
+        return false;
+    };
+    if !token.is_tip20() {
+        return false;
+    }
+
+    match ITIP20::ITIP20Calls::abi_decode(input) {
+        Ok(ITIP20::ITIP20Calls::transfer(call)) => is_valid_direct_recipient(call.to),
+        Ok(ITIP20::ITIP20Calls::transferWithMemo(call)) => is_valid_direct_recipient(call.to),
+        Ok(ITIP20::ITIP20Calls::transferFrom(_))
+        | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(_))
+        | Ok(_) => false,
+        Err(_) => false,
+    }
+}
+
+fn is_valid_direct_recipient(to: Address) -> bool {
+    !to.is_zero() && !to.is_tip20() && !to.is_virtual()
 }
 
 /// Tempo-specific transaction pool rejection reasons.
@@ -1026,6 +1167,49 @@ mod tests {
             .gas_limit(21000)
             .build_eip1559();
         assert!(!pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn storage_action_replay_candidate_accepts_simple_aa_transfer() {
+        let sender = Address::random();
+        let recipient = address!("0000000000000000000000000000000000000001");
+        let calldata = ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(10),
+        }
+        .abi_encode()
+        .into();
+        let tx = TxBuilder::aa(sender)
+            .calls(vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: calldata,
+            }])
+            .build();
+
+        assert!(tx.is_storage_action_replay_candidate());
+    }
+
+    #[test]
+    fn storage_action_replay_candidate_rejects_non_direct_transfer() {
+        let sender = Address::random();
+        let recipient = address!("0000000000000000000000000000000000000001");
+        let calldata = ITIP20::transferFromCall {
+            from: Address::random(),
+            to: recipient,
+            amount: U256::from(10),
+        }
+        .abi_encode()
+        .into();
+        let tx = TxBuilder::aa(sender)
+            .calls(vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: calldata,
+            }])
+            .build();
+
+        assert!(!tx.is_storage_action_replay_candidate());
     }
 
     #[test]
