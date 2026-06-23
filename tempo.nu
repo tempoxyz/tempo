@@ -2363,6 +2363,7 @@ def "main bench" [
     --baseline-hardfork: string = ""                # Latest active hardfork for baseline (e.g. T1, T1C, T2)
     --feature-hardfork: string = ""                 # Latest active hardfork for feature (e.g. T1, T1C, T2)
     --gas-limit: string = ""                        # Block gas limit for genesis (raw number, e.g. 1000000000)
+    --general-gas-limit: string = ""                # General (non-payment) gas limit override for genesis
 ] {
     validate-mode $mode
 
@@ -2376,6 +2377,7 @@ def "main bench" [
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
     let txgen_genesis_args = ["--mnemonic" (txgen-account-mnemonic)]
 
     # Auto-derive tracing OTLP URL: prefer GRAFANA_TEMPO, fall back to TEMPO_TELEMETRY_URL
@@ -2586,6 +2588,7 @@ def "main bench" [
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
                 and ($marker | get -o gas_limit | default "") == $gas_limit
+                and ($marker | get -o general_gas_limit | default "") == $general_gas_limit
                 and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
                 and ($"($baseline_datadir)/db" | path exists)
                 and ($"($feature_datadir)/db" | path exists)
@@ -2604,11 +2607,11 @@ def "main bench" [
                 if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
                 mkdir $baseline_genesis_dir
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                     }
                 }
                 cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
@@ -2619,13 +2622,13 @@ def "main bench" [
                 if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
                 mkdir $feature_genesis_dir
                 if $feature == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                 } else {
                     # Use feature worktree for feature genesis so it picks up any
                     # new hardfork-related genesis changes from the feature branch
                     do {
                         cd $feature_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args ...$general_gas_limit_args
                     }
                 }
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
@@ -2662,6 +2665,7 @@ def "main bench" [
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
                     gas_limit: $gas_limit
+                    general_gas_limit: $general_gas_limit
                     txgen_mnemonic: (txgen-account-mnemonic)
                 } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
@@ -2680,6 +2684,7 @@ def "main bench" [
                 and ($marker.bloat_mib | into int) == $bloat
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o gas_limit | default "") == $gas_limit
+                and ($marker | get -o general_gas_limit | default "") == $general_gas_limit
                 and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
                 and ($"($datadir)/db" | path exists)
                 and ($"($meta_dir)/genesis.json" | path exists)
@@ -2695,11 +2700,11 @@ def "main bench" [
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args ...$general_gas_limit_args
                         }
                     }
                 }
@@ -2725,6 +2730,7 @@ def "main bench" [
                     accounts: $genesis_accounts,
                     bench_datadir: $datadir,
                     gas_limit: $gas_limit,
+                    general_gas_limit: $general_gas_limit,
                     txgen_mnemonic: (txgen-account-mnemonic)
                 } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 

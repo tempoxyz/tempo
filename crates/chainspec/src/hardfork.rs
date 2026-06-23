@@ -79,6 +79,11 @@ macro_rules! tempo_hardfork {
             /// Retrieves activation condition for a Tempo-specific hardfork.
             fn tempo_fork_activation(&self, fork: TempoHardfork) -> reth_chainspec::ForkCondition;
 
+            /// Optional chainspec override for the general (non-payment) gas limit.
+            fn general_gas_limit_override(&self) -> Option<u64> {
+                None
+            }
+
             /// Retrieves the Tempo hardfork active at a given timestamp.
             fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
                 for &fork in TempoHardfork::VARIANTS.iter().rev() {
@@ -103,6 +108,10 @@ macro_rules! tempo_hardfork {
             /// - T1+: fixed at 30M gas
             /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
             fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+                if let Some(general_gas_limit) = self.general_gas_limit_override() {
+                    return general_gas_limit;
+                }
+
                 self.tempo_hardfork_at(timestamp)
                     .general_gas_limit()
                     .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
