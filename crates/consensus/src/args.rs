@@ -67,7 +67,7 @@ pub struct Args {
 
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
-    #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]
+    #[arg(long = "consensus.listen-address", default_value = "0.0.0.0:8000")]
     pub listen_address: SocketAddr,
 
     /// The socket address that will be bound to export consensus specific
