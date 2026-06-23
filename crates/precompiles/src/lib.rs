@@ -44,7 +44,7 @@ use crate::{
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
@@ -138,14 +138,14 @@ pub trait Precompile {
 pub struct PrecompileEnv {
     cfg: CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    non_creditable_slots: Rc<NonCreditableSlots>,
 }
 
 impl PrecompileEnv {
     pub fn new(
         cfg: &CfgEnv<TempoHardfork>,
         actions: StorageActions,
-        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        non_creditable_slots: Rc<NonCreditableSlots>,
     ) -> Self {
         Self {
             cfg: cfg.clone(),
@@ -171,7 +171,7 @@ impl PrecompileEnv {
 pub fn tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    non_creditable_slots: Rc<NonCreditableSlots>,
 ) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
@@ -194,7 +194,7 @@ pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    non_creditable_slots: Rc<NonCreditableSlots>,
 ) {
     let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
 
@@ -246,7 +246,7 @@ macro_rules! tempo_precompile {
         let env = PrecompileEnv::new(
             $cfg,
             StorageActions::disabled(),
-            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            Rc::new(NonCreditableSlots::empty()),
         );
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};
@@ -627,7 +627,7 @@ mod tests {
         tempo_precompiles(
             cfg_env,
             StorageActions::disabled(),
-            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            Rc::new(NonCreditableSlots::empty()),
         )
     }
 

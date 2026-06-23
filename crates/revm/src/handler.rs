@@ -1437,7 +1437,7 @@ where
                 } else {
                     None
                 };
-                evm.non_creditable_slots.borrow_mut().initialize(
+                evm.non_creditable_slots.initialize(
                     fee_payer,
                     fee_token,
                     keychain_fee_key,
@@ -1738,7 +1738,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
-        evm.non_creditable_slots.borrow_mut().clear();
+        evm.non_creditable_slots.clear();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

@@ -230,7 +230,7 @@ mod tests {
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.set_spec(TempoHardfork::T7);
 
-        let mut non_creditable_slots = NonCreditableSlots::empty();
+        let non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
         storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;
@@ -271,7 +271,7 @@ mod tests {
         )?;
         storage.set_spec(TempoHardfork::T7);
 
-        let mut non_creditable_slots = NonCreditableSlots::empty();
+        let non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
         storage.set_non_creditable_slots(non_creditable_slots);
         storage.sstore(owner, no_credit_slot, U256::ZERO)?;

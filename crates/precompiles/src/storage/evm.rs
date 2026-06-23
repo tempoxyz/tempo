@@ -11,7 +11,7 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
@@ -26,7 +26,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    non_creditable_slots: Rc<NonCreditableSlots>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -54,7 +54,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
-            non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            non_creditable_slots: Rc::new(NonCreditableSlots::empty()),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -99,7 +99,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Sets the transaction-local non-creditable clear-slot context for this provider.
-    pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
+    pub fn with_non_creditable_slots(mut self, slots: Rc<NonCreditableSlots>) -> Self {
         self.non_creditable_slots = slots;
         self
     }
@@ -285,7 +285,6 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
         self.non_creditable_slots
-            .borrow()
             .is_non_creditable_slot(owner, key)
     }
 

@@ -16,7 +16,6 @@ use reth_revm::{
     context::{CfgEnv, result::ExecutionResult},
 };
 use std::{
-    cell::RefCell,
     ops::{Deref, DerefMut},
     rc::Rc,
 };
@@ -132,7 +131,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
-    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+    pub fn non_creditable_slots(&self) -> Rc<NonCreditableSlots> {
         self.inner.non_creditable_slots()
     }
 

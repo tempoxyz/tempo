@@ -17,7 +17,7 @@ use crate::{
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::{cell::OnceCell, collections::BTreeMap};
+use std::{cell::Cell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -269,11 +269,11 @@ impl StorageCredits {
 /// credits being unbacked.
 #[derive(Debug, Default)]
 pub struct NonCreditableSlots {
-    fee_payer: Address,
-    fee_token: Address,
-    keychain_fee_key: Option<Address>,
-    fee_balance_slot: OnceCell<U256>,
-    keychain_limit_slot: OnceCell<U256>,
+    fee_payer: Cell<Address>,
+    fee_token: Cell<Address>,
+    keychain_fee_key: Cell<Option<Address>>,
+    fee_balance_slot: Cell<Option<U256>>,
+    keychain_limit_slot: Cell<Option<Option<U256>>>,
 }
 
 impl NonCreditableSlots {
@@ -283,28 +283,35 @@ impl NonCreditableSlots {
     }
 
     pub fn initialize(
-        &mut self,
+        &self,
         fee_payer: Address,
         fee_token: Address,
         keychain_fee_key: Option<Address>,
     ) {
-        self.fee_payer = fee_payer;
-        self.fee_token = fee_token;
-        self.keychain_fee_key = keychain_fee_key;
+        self.fee_payer.set(fee_payer);
+        self.fee_token.set(fee_token);
+        self.keychain_fee_key.set(keychain_fee_key);
+        self.fee_balance_slot.set(None);
+        self.keychain_limit_slot.set(None);
     }
 
     #[inline]
-    pub fn clear(&mut self) {
-        *self = Self::empty();
+    pub fn clear(&self) {
+        self.fee_payer.set(Address::ZERO);
+        self.fee_token.set(Address::ZERO);
+        self.keychain_fee_key.set(None);
+        self.fee_balance_slot.set(None);
+        self.keychain_limit_slot.set(None);
     }
 
     #[inline]
     pub(crate) fn is_non_creditable_slot(&self, owner: Address, slot: U256) -> bool {
-        if self.fee_token.is_zero() {
+        let fee_token = self.fee_token.get();
+        if fee_token.is_zero() {
             return false;
         }
 
-        if owner == self.fee_token && self.fee_balance_slot() == slot {
+        if owner == fee_token && self.fee_balance_slot(fee_token) == slot {
             return true;
         }
 
@@ -320,22 +327,33 @@ impl NonCreditableSlots {
     }
 
     #[inline]
-    fn fee_balance_slot(&self) -> U256 {
-        *self.fee_balance_slot.get_or_init(|| {
-            TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
-        })
+    fn fee_balance_slot(&self, fee_token: Address) -> U256 {
+        if let Some(slot) = self.fee_balance_slot.get() {
+            return slot;
+        }
+
+        let slot = TIP20Token::from_address_unchecked(fee_token)
+            .balances[self.fee_payer.get()]
+            .slot();
+        self.fee_balance_slot.set(Some(slot));
+        slot
     }
 
     #[inline]
     fn keychain_limit_slot(&self) -> Option<U256> {
-        let key_id = self.keychain_fee_key?;
-        Some(*self.keychain_limit_slot.get_or_init(|| {
+        if let Some(slot) = self.keychain_limit_slot.get() {
+            return slot;
+        }
+
+        let slot = self.keychain_fee_key.get().map(|key_id| {
             let keychain = AccountKeychain::new();
-            let limit_key = AccountKeychain::spending_limit_key(self.fee_payer, key_id);
-            keychain.spending_limits[limit_key][self.fee_token]
+            let limit_key = AccountKeychain::spending_limit_key(self.fee_payer.get(), key_id);
+            keychain.spending_limits[limit_key][self.fee_token.get()]
                 .remaining
                 .slot()
-        }))
+        });
+        self.keychain_limit_slot.set(Some(slot));
+        slot
     }
 }
 
@@ -427,7 +445,7 @@ mod tests {
     fn non_creditable_slots_match_fee_bookkeeping_slots() {
         let fee_token = crate::PATH_USD_ADDRESS;
         let fee_payer = Address::repeat_byte(0x13);
-        let mut slots = NonCreditableSlots::empty();
+        let slots = NonCreditableSlots::empty();
         slots.initialize(fee_payer, fee_token, None);
 
         let fee_balance_slot =
@@ -441,7 +459,7 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x16);
         let key_id = Address::repeat_byte(0x17);
         let fee_token = crate::PATH_USD_ADDRESS;
-        let mut slots = NonCreditableSlots::empty();
+        let slots = NonCreditableSlots::empty();
         slots.initialize(fee_payer, fee_token, Some(key_id));
 
         let keychain = AccountKeychain::new();
@@ -460,7 +478,7 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x20);
         let key_id = Address::repeat_byte(0x21);
         let fee_token = crate::PATH_USD_ADDRESS;
-        let mut slots = NonCreditableSlots::empty();
+        let slots = NonCreditableSlots::empty();
         slots.initialize(fee_payer, fee_token, Some(key_id));
 
         let fee_balance_slot =

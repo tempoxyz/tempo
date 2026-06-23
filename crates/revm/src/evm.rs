@@ -10,7 +10,7 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
@@ -56,13 +56,13 @@ pub struct TempoEvm<DB: Database, I> {
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
-    pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    pub(crate) non_creditable_slots: Rc<NonCreditableSlots>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
+        let non_creditable_slots = Rc::new(NonCreditableSlots::empty());
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(
             &ctx.cfg,
@@ -95,7 +95,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
         actions: StorageActions,
-        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        non_creditable_slots: Rc<NonCreditableSlots>,
     ) -> Self {
         Self {
             inner,
@@ -165,7 +165,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
-    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+    pub fn non_creditable_slots(&self) -> Rc<NonCreditableSlots> {
         self.non_creditable_slots.clone()
     }
 
@@ -174,7 +174,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
-        self.non_creditable_slots.borrow_mut().clear();
+        self.non_creditable_slots.clear();
     }
 }
 
