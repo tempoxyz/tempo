@@ -1366,8 +1366,7 @@ fn maybe_override_fee_recipient<DB: Database>(
                 return Ok(None);
             }
             let on_chain = config
-                .validator_by_public_key(*public_key)
-                .map(|v| v.feeRecipient)
+                .fee_recipient_by_public_key(*public_key)
                 .map_err(PayloadBuilderError::other)?;
             Ok((!on_chain.is_zero()).then_some(on_chain))
         },

@@ -290,6 +290,18 @@ impl ValidatorConfigV2 {
         self.read_validator_at(idx1 - 1)
     }
 
+    /// Looks up only the execution fee recipient by Ed25519 public key.
+    ///
+    /// Payload building only needs the beneficiary, so avoid reading the full validator record and
+    /// decoding its string fields on the hot proposal path.
+    pub fn fee_recipient_by_public_key(&self, pubkey: B256) -> Result<Address> {
+        let idx1 = self.pubkey_to_index[pubkey].read()?;
+        if idx1 == 0 {
+            Err(ValidatorConfigV2Error::validator_not_found())?
+        }
+        self.validators[(idx1 - 1) as usize].fee_recipient.read()
+    }
+
     /// Returns only active validators (where `deactivatedAtHeight == 0`).
     ///
     /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
@@ -1187,6 +1199,7 @@ mod tests {
 
             let v3 = vc.validator_by_public_key(pubkey)?;
             assert_eq!(v3.validatorAddress, validator);
+            assert_eq!(vc.fee_recipient_by_public_key(pubkey)?, validator);
 
             Ok(())
         })
