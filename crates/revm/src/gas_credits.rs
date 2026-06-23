@@ -1,7 +1,7 @@
 //! TIP-1060 specific implementations.
 
 use crate::{
-    TempoInvalidTransaction,
+    TempoFeeManager, TempoInvalidTransaction,
     evm::{TempoContext, TempoEvm},
 };
 use alloy_evm::Database;
@@ -30,10 +30,13 @@ use tempo_precompiles::{
 /// entries with non-zero pending creations are settled against the same account's persistent
 /// storage credit balance, consuming up to `min(pending, balance)` credits and refunding one fixed
 /// storage credit value per credit. Mode-only transient entries are ignored.
-pub fn apply_refund<DB: Database, I>(
-    evm: &mut TempoEvm<DB, I>,
+pub fn apply_refund<DB: Database, I, FM>(
+    evm: &mut TempoEvm<DB, I, FM>,
     gas: &mut Gas,
-) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>>
+where
+    FM: TempoFeeManager,
+{
     if !evm.cfg.spec.is_t7() {
         return Ok(());
     }

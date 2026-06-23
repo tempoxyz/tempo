@@ -1,4 +1,4 @@
-use crate::{TempoBlockEnv, TempoTxEnv, instructions};
+use crate::{L1FeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -20,7 +20,7 @@ pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardf
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
-pub struct TempoEvm<DB: Database, I> {
+pub struct TempoEvm<DB: Database, I, F = L1FeeManager> {
     /// Inner EVM type.
     #[deref]
     #[deref_mut]
@@ -57,11 +57,23 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Protocol fee manager used by the internal pre-tx and post-tx fee hooks.
+    pub(crate) fee_manager: F,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        TempoEvm::new_with_fee_manager(ctx, inspector, L1FeeManager)
+    }
+}
+
+impl<DB: Database, I, F> TempoEvm<DB, I, F>
+where
+    F: TempoFeeManager,
+{
+    /// Create a new Tempo EVM with a custom protocol fee manager.
+    pub fn new_with_fee_manager(ctx: TempoContext<DB>, inspector: I, fee_manager: F) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(
@@ -80,6 +92,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             },
             actions,
             non_creditable_slots,
+            fee_manager,
         )
     }
 
@@ -96,6 +109,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        fee_manager: F,
     ) -> Self {
         Self {
             inner,
@@ -107,6 +121,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check: false,
             actions,
             non_creditable_slots,
+            fee_manager,
         }
     }
 
@@ -127,19 +142,24 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
-impl<DB: Database, I> TempoEvm<DB, I> {
+impl<DB: Database, I, F> TempoEvm<DB, I, F>
+where
+    F: TempoFeeManager,
+{
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
+    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP, F> {
         let Self {
             inner,
             actions,
             non_creditable_slots,
+            fee_manager,
             ..
         } = self;
         TempoEvm::new_inner(
             inner.with_inspector(inspector),
             actions,
             non_creditable_slots,
+            fee_manager,
         )
     }
 
@@ -162,9 +182,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
-impl<DB, I> EvmTr for TempoEvm<DB, I>
+impl<DB, I, F> EvmTr for TempoEvm<DB, I, F>
 where
     DB: Database,
+    F: TempoFeeManager,
 {
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
@@ -219,10 +240,11 @@ where
     }
 }
 
-impl<DB, I> InspectorEvmTr for TempoEvm<DB, I>
+impl<DB, I, F> InspectorEvmTr for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
+    F: TempoFeeManager,
 {
     type Inspector = I;
 

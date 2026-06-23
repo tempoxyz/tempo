@@ -37,6 +37,8 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
+#[cfg(test)]
+use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -52,7 +54,6 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
-    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -65,7 +66,8 @@ use tempo_primitives::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    L1FeeManager, TempoBatchCallEnv, TempoEvm, TempoFeeManager, TempoInvalidTransaction,
+    TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -409,12 +411,12 @@ fn calculate_key_authorization_gas(
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
-pub struct TempoEvmHandler<DB, I> {
+pub struct TempoEvmHandler<DB, I, FM = L1FeeManager> {
     /// Phantom data to avoid type inference issues.
-    _phantom: core::marker::PhantomData<(DB, I)>,
+    _phantom: core::marker::PhantomData<(DB, I, FM)>,
 }
 
-impl<DB, I> TempoEvmHandler<DB, I> {
+impl<DB, I, FM> TempoEvmHandler<DB, I, FM> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
@@ -423,10 +425,13 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
-impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+impl<DB: alloy_evm::Database, I, FM> TempoEvmHandler<DB, I, FM>
+where
+    FM: TempoFeeManager,
+{
     fn seed_precompile_tx_context(
         &self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
@@ -455,13 +460,14 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     }
 }
 
-impl<DB, I> TempoEvmHandler<DB, I>
+impl<DB, I, FM> TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
+    FM: TempoFeeManager + Clone,
 {
     fn prevalidate_keychain_call_scopes(
         &self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         calls: &[tempo_primitives::transaction::Call],
         remaining_gas: &mut u64,
         reservoir: u64,
@@ -554,18 +560,18 @@ where
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
     /// execution can use by providing the appropriate exec loop function.
-    fn execute_single_call_with<F>(
+    fn execute_single_call_with<R>(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         gas_limit: u64,
         reservoir: u64,
-        mut run_loop: F,
+        mut run_loop: R,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
-        F: FnMut(
+        R: FnMut(
             &mut Self,
-            &mut TempoEvm<DB, I>,
-            <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
+            &mut TempoEvm<DB, I, FM>,
+            <<TempoEvm<DB, I, FM> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         // Create first frame action
@@ -585,7 +591,7 @@ where
     /// This calls the same helper methods used by the default [`Handler::execution`] implementation.
     fn execute_single_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
@@ -611,18 +617,18 @@ where
     /// This checkpoint only covers user-call execution. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
-    fn execute_multi_call_with<F>(
+    fn execute_multi_call_with<R>(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         mut remaining_gas: u64,
         mut reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
-        mut execute_single: F,
+        mut execute_single: R,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
-        F: FnMut(
+        R: FnMut(
             &mut Self,
-            &mut TempoEvm<DB, I>,
+            &mut TempoEvm<DB, I, FM>,
             u64,
             u64,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
@@ -753,7 +759,7 @@ where
     /// Executes a multi-call AA transaction atomically.
     fn execute_multi_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         gas_limit: u64,
         reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
@@ -767,7 +773,7 @@ where
     /// inspect_run_exec_loop instead of run_exec_loop.
     fn inspect_execute_single_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -783,7 +789,7 @@ where
     /// inspect_execute_single_call instead of execute_single_call.
     fn inspect_execute_multi_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
         gas_limit: u64,
         reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
@@ -801,17 +807,18 @@ where
     }
 }
 
-impl<DB, I> Default for TempoEvmHandler<DB, I> {
+impl<DB, I, FM> Default for TempoEvmHandler<DB, I, FM> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<DB, I> Handler for TempoEvmHandler<DB, I>
+impl<DB, I, FM> Handler for TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
+    FM: TempoFeeManager + Clone,
 {
-    type Evm = TempoEvm<DB, I>;
+    type Evm = TempoEvm<DB, I, FM>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
 
@@ -967,14 +974,15 @@ where
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
+        let fee_manager = evm.fee_manager.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec, actions.clone())
+        let fee_token = fee_manager
+            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -1388,7 +1396,7 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    TipFeeManager::new().collect_fee_pre_tx(
+                    fee_manager.collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
@@ -1648,7 +1656,8 @@ where
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
-        // Call collectFeePostTx on TipFeeManager precompile
+        let fee_manager = evm.fee_manager.clone();
+        // Finalize protocol fee collection.
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
@@ -1688,14 +1697,12 @@ where
             tx,
             actions,
             || {
-                let mut fee_manager = TipFeeManager::new();
-
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
                     let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
                     let fee_token = evm
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
-                    // Call collectFeePostTx (handles both refund and fee queuing)
+                    // Handles both refund and fee queuing.
                     fee_manager
                         .collect_fee_post_tx(
                             fee_payer,
@@ -2159,16 +2166,17 @@ where
     }
 }
 
-impl<DB, I> TempoEvmHandler<DB, I>
+impl<DB, I, FM> TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
+    FM: TempoFeeManager + Clone,
 {
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(
         &mut self,
-        evm: &mut TempoEvm<DB, I>,
+        evm: &mut TempoEvm<DB, I, FM>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         let mut init_and_floor_gas = self.validate(evm)?;
         self.pre_execution(evm, &mut init_and_floor_gas)?;
@@ -2317,11 +2325,12 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 /// Calculates intrinsic gas based on:
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
 /// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
-fn validate_aa_initial_tx_gas<DB, I>(
-    evm: &TempoEvm<DB, I>,
+fn validate_aa_initial_tx_gas<DB, I, FM>(
+    evm: &TempoEvm<DB, I, FM>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: alloy_evm::Database,
+    FM: TempoFeeManager,
 {
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
     let gas_limit = tx.gas_limit();
@@ -2427,10 +2436,11 @@ where
     Ok(balance)
 }
 
-impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
+impl<DB, I, FM> InspectorHandler for TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
     I: Inspector<TempoContext<DB>>,
+    FM: TempoFeeManager + Clone,
 {
     type IT = EthInterpreter;
 
