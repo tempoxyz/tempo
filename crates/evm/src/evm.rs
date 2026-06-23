@@ -32,9 +32,9 @@ pub struct TempoEvmFactory<F = TempoFeeManager> {
 }
 
 impl<F> TempoEvmFactory<F> {
-    /// Create a Tempo EVM factory with a custom protocol fee manager.
-    pub fn new_with_fee_manager(fee_manager: F) -> Self {
-        Self { fee_manager }
+    /// Consumes self and returns a factory with the given protocol fee manager.
+    pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvmFactory<OF> {
+        TempoEvmFactory { fee_manager }
     }
 }
 
@@ -64,7 +64,7 @@ where
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new_with_fee_manager(db, input, self.fee_manager.clone())
+        TempoEvm::new(db, input).with_fee_manager(self.fee_manager.clone())
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -73,7 +73,8 @@ where
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        TempoEvm::new_with_fee_manager(db, input, self.fee_manager.clone())
+        TempoEvm::new(db, input)
+            .with_fee_manager(self.fee_manager.clone())
             .with_inspector(inspector)
     }
 }
@@ -92,20 +93,6 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector, F = TempoFeeManager> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        TempoEvm::new_with_fee_manager(db, input, TempoFeeManager::new())
-    }
-}
-
-impl<DB: Database, F> TempoEvm<DB, NoOpInspector, F>
-where
-    F: ProtocolFeeManager,
-{
-    /// Create a new [`TempoEvm`] instance with a custom protocol fee manager.
-    pub fn new_with_fee_manager(
-        db: DB,
-        input: EvmEnv<TempoHardfork, TempoBlockEnv>,
-        fee_manager: F,
-    ) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
         // flag on the input `EvmEnv`; here we pass it through unchanged.
@@ -116,7 +103,7 @@ where
             .with_tx(Default::default());
 
         Self {
-            inner: tempo_revm::TempoEvm::new_with_fee_manager(ctx, NoOpInspector {}, fee_manager),
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
         }
     }
@@ -170,6 +157,17 @@ where
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
             inspect: true,
+        }
+    }
+
+    /// Consumes self and returns a new EVM with the given protocol fee manager.
+    pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
+    where
+        OF: ProtocolFeeManager,
+    {
+        TempoEvm {
+            inner: self.inner.with_fee_manager(fee_manager),
+            inspect: self.inspect,
         }
     }
 

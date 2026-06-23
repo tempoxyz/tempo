@@ -64,16 +64,6 @@ pub struct TempoEvm<DB: Database, I, F = TempoFeeManager> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        TempoEvm::new_with_fee_manager(ctx, inspector, TempoFeeManager::new())
-    }
-}
-
-impl<DB: Database, I, F> TempoEvm<DB, I, F>
-where
-    F: ProtocolFeeManager,
-{
-    /// Create a new Tempo EVM with a custom protocol fee manager.
-    pub fn new_with_fee_manager(ctx: TempoContext<DB>, inspector: I, fee_manager: F) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(
@@ -92,8 +82,45 @@ where
             },
             actions,
             non_creditable_slots,
-            fee_manager,
+            TempoFeeManager::new(),
         )
+    }
+}
+
+impl<DB: Database, I, F> TempoEvm<DB, I, F>
+where
+    F: ProtocolFeeManager,
+{
+    /// Consumes self and returns a new EVM with the given protocol fee manager.
+    pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
+    where
+        OF: ProtocolFeeManager,
+    {
+        let Self {
+            inner,
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+
+        TempoEvm {
+            inner,
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            actions,
+            non_creditable_slots,
+            fee_manager,
+        }
     }
 
     /// Inner helper function to create a new Tempo EVM with empty logs.
