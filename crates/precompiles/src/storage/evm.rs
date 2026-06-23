@@ -394,9 +394,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         let current = self.sload_inner(address, key, false)?;
-        let value = current
-            .checked_add(delta)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        let (value, overflowed) = current.overflowing_add(delta);
+        if overflowed {
+            return Err(TempoPrecompileError::under_overflow());
+        }
 
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
@@ -419,9 +420,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         let current = self.sload_inner(address, key, false)?;
-        let value = current
-            .checked_sub(delta)
-            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        let (value, underflowed) = current.overflowing_sub(delta);
+        if underflowed {
+            return Err(TempoPrecompileError::storage_delta_underflow(current));
+        }
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
