@@ -143,6 +143,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         )
     }
 
+    /// Consumes self and returns a new Evm type with given storage actions.
+    pub fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.inner.precompiles = tempo_precompiles::tempo_precompiles(
+            &self.inner.ctx.cfg,
+            actions.clone(),
+            self.non_creditable_slots.clone(),
+        );
+        self.actions = actions;
+        self
+    }
+
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
