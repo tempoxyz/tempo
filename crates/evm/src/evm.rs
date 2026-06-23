@@ -15,9 +15,13 @@ use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{CfgEnv, result::ExecutionResult},
 };
-use std::ops::{Deref, DerefMut};
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::{StorageAction, StorageActions};
+use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -65,8 +69,6 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
-    /// Recorded storage actions.
-    actions: StorageActions,
     inspect: bool,
 }
 
@@ -82,10 +84,8 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        let actions = StorageActions::disabled();
         Self {
-            inner: tempo_revm::TempoEvm::new_with_actions(ctx, NoOpInspector {}, actions.clone()),
-            actions,
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
         }
     }
@@ -131,11 +131,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.validator_fee
     }
 
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.inner.non_creditable_slots()
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
-            actions: self.actions,
             inspect: true,
         }
     }
@@ -154,19 +158,20 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Enables recording of storage actions.
     pub fn with_actions(mut self) -> Self {
-        self.actions.enable();
-        self.inner = self.inner.with_actions(self.actions.clone());
+        let mut actions = self.inner.actions().clone();
+        actions.enable();
+        self.inner = self.inner.with_actions(actions);
         self
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
-        self.actions.take()
+        self.inner.actions().take()
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
-        self.actions.replace(actions)
+        self.inner.actions().replace(actions)
     }
 }
 
@@ -311,7 +316,8 @@ mod tests {
     use tempo_precompiles::{
         PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         TIP403_REGISTRY_ADDRESS,
-        storage::{StorageAction, StorageCtx, StorageKey},
+        storage::{StorageAction, StorageActions, StorageCtx, StorageKey},
+        storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip_fee_manager::slots as fee_manager_slots,
         tip20::{
@@ -319,7 +325,6 @@ mod tests {
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
-        tip1060_storage_credits::TIP1060StorageCredits,
     };
     use tempo_primitives::transaction::calc_gas_balance_spending;
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
@@ -484,6 +489,13 @@ mod tests {
         state: &EvmState,
         hardfork: TempoHardfork,
     ) {
+        let mut original_values = BTreeMap::<(Address, U256), U256>::new();
+        for (address, account) in state {
+            for (slot, storage_slot) in &account.storage {
+                original_values.insert((*address, *slot), storage_slot.original_value());
+            }
+        }
+
         let mut first_loads = BTreeMap::<(Address, U256), U256>::new();
         let mut reconstructed = BTreeMap::<(Address, U256), U256>::new();
 
@@ -508,6 +520,46 @@ mod tests {
                         reconstructed.contains_key(&key),
                         "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
                     );
+                    reconstructed.insert(key, value);
+                }
+                StorageAction::Sinc(address, slot, delta) => {
+                    let key = (address, slot);
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SINC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = current.checked_add(delta).unwrap_or_else(|| {
+                        panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
+                    reconstructed.insert(key, value);
+                }
+                StorageAction::Sdec(address, slot, delta) => {
+                    let key = (address, slot);
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SDEC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = current.checked_sub(delta).unwrap_or_else(|| {
+                        panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
+                    });
                     reconstructed.insert(key, value);
                 }
             }
@@ -640,15 +692,15 @@ mod tests {
                     gas_price: u128::from(gas_price),
                     gas_limit,
                     kind: TxKind::Call(PATH_USD_ADDRESS),
-                    data: calldata,
+                    data: calldata.clone(),
                     ..Default::default()
                 },
                 fee_token: Some(PATH_USD_ADDRESS),
                 ..Default::default()
             };
-
             let result = evm.transact_raw(tx).expect("transfer should execute");
             assert!(result.result.is_success(), "hardfork: {hardfork:?}");
+
             let max_fee_spending = calc_gas_balance_spending(gas_limit, u128::from(gas_price));
             let actual_spending =
                 calc_gas_balance_spending(result.result.tx_gas_used(), u128::from(gas_price));
@@ -679,12 +731,11 @@ mod tests {
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
             let collected_fees_slot = PATH_USD_ADDRESS
                 .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
-            let path_usd_storage_credit_slot = TIP1060StorageCredits::slot(PATH_USD_ADDRESS);
+            let path_usd_storage_credit_slot = StorageCredits::slot(PATH_USD_ADDRESS);
             let currency_word = short_string_word(USD_CURRENCY.as_bytes());
 
             let sender_after_fee = starting_balance - max_fee_spending;
             let sender_after_transfer = sender_after_fee - transfer_amount;
-            let sender_after_refund = sender_after_transfer + refund_amount;
 
             let actions = evm
                 .take_actions()
@@ -706,11 +757,9 @@ mod tests {
                     ),
                     // SLOAD paused: fee escrow respects token pause state.
                     StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
-                    // SLOAD balances[sender]: read sender balance before fee escrow debit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, starting_balance),
-                    // SSTORE balances[sender]: debit max fee escrow.
-                    StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SLOAD balances[FeeManager]: read fee escrow custody balance.
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SLOAD balances[FeeManager]: zero-to-nonzero escrow credit falls back to SLOAD+SSTORE.
                     StorageAction::Sload(PATH_USD_ADDRESS, fee_manager_balance_slot, U256::ZERO),
                     // SSTORE balances[FeeManager]: credit max fee escrow.
                     StorageAction::Sstore(
@@ -732,15 +781,9 @@ mod tests {
                         receive_policy_config_slot,
                         U256::ZERO,
                     ),
-                    // SLOAD balances[sender]: read post-escrow balance before user transfer debit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SSTORE balances[sender]: debit user transfer.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SLOAD balances[recipient]: read recipient balance before transfer credit.
+                    // SDEC balances[sender]: debit user transfer.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, transfer_amount),
+                    // SLOAD balances[recipient]: zero-to-nonzero transfer credit falls back to SLOAD+SSTORE.
                     StorageAction::Sload(PATH_USD_ADDRESS, recipient_balance_slot, U256::ZERO),
                     // SSTORE balances[recipient]: credit user transfer.
                     StorageAction::Sstore(
@@ -754,33 +797,13 @@ mod tests {
                         path_usd_storage_credit_slot,
                         U256::ZERO,
                     ),
-                    // SLOAD balances[FeeManager]: read escrow custody before refunding unused fee.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        max_fee_spending,
-                    ),
-                    // SSTORE balances[FeeManager]: leave actual spent fee in FeeManager custody.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        actual_spending,
-                    ),
-                    // SLOAD balances[sender]: read sender before crediting unused fee refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SSTORE balances[sender]: refund unused fee.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_refund,
-                    ),
+                    // SDEC balances[FeeManager]: refund unused fee from escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, fee_manager_balance_slot, refund_amount),
+                    // SINC balances[sender]: credit unused fee refund.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, sender_balance_slot, refund_amount),
                     // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
-                    // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
+                    // SLOAD collectedFees[beneficiary][PATH_USD]: zero accrual falls back to SLOAD+SSTORE.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
                     // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
                     StorageAction::Sstore(
@@ -805,8 +828,6 @@ mod tests {
                     ),
                     // SLOAD paused: fee escrow respects token pause state.
                     StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
-                    // SLOAD balances[sender]: read sender balance before fee escrow debit.
-                    StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, starting_balance),
                     // SLOAD userRewardInfo[sender].rewardRecipient: fee payer is opted out.
                     StorageAction::Sload(
                         PATH_USD_ADDRESS,
@@ -831,9 +852,9 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SSTORE balances[sender]: debit max fee escrow.
-                    StorageAction::Sstore(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
-                    // SLOAD balances[FeeManager]: read fee escrow custody balance.
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SLOAD balances[FeeManager]: zero-to-nonzero escrow credit falls back to SLOAD+SSTORE.
                     StorageAction::Sload(PATH_USD_ADDRESS, fee_manager_balance_slot, U256::ZERO),
                     // SSTORE balances[FeeManager]: credit max fee escrow.
                     StorageAction::Sstore(
@@ -905,7 +926,7 @@ mod tests {
                         sender_balance_slot,
                         sender_after_transfer,
                     ),
-                    // SLOAD balances[recipient]: read recipient balance before transfer credit.
+                    // SLOAD balances[recipient]: zero-to-nonzero transfer credit falls back to SLOAD+SSTORE.
                     StorageAction::Sload(PATH_USD_ADDRESS, recipient_balance_slot, U256::ZERO),
                     // SSTORE balances[recipient]: credit user transfer.
                     StorageAction::Sstore(
@@ -937,39 +958,279 @@ mod tests {
                         tip20_slots::GLOBAL_REWARD_PER_TOKEN,
                         U256::ZERO,
                     ),
-                    // SLOAD balances[FeeManager]: read escrow custody before refunding unused fee.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        max_fee_spending,
-                    ),
-                    // SSTORE balances[FeeManager]: leave actual spent fee in FeeManager custody.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        fee_manager_balance_slot,
-                        actual_spending,
-                    ),
-                    // SLOAD balances[sender]: read sender before crediting unused fee refund.
-                    StorageAction::Sload(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_transfer,
-                    ),
-                    // SSTORE balances[sender]: refund unused fee.
-                    StorageAction::Sstore(
-                        PATH_USD_ADDRESS,
-                        sender_balance_slot,
-                        sender_after_refund,
-                    ),
+                    // SDEC balances[FeeManager]: refund unused fee from escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, fee_manager_balance_slot, refund_amount),
+                    // SINC balances[sender]: credit unused fee refund.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, sender_balance_slot, refund_amount),
                     // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
-                    // SLOAD collectedFees[beneficiary][PATH_USD]: read current validator accrual.
+                    // SLOAD collectedFees[beneficiary][PATH_USD]: zero accrual falls back to SLOAD+SSTORE.
                     StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, collected_fees_slot, U256::ZERO),
                     // SSTORE collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
                     StorageAction::Sstore(
                         TIP_FEE_MANAGER_ADDRESS,
                         collected_fees_slot,
                         actual_spending,
+                    ),
+                ]
+            };
+
+            assert_eq!(actions, expected, "hardfork: {hardfork:?}");
+            assert_storage_actions_reconstruct_evm_state(&actions, &result.state, hardfork);
+            evm.db_mut().commit(result.state);
+
+            let tx = TempoTxEnv {
+                inner: TxEnv {
+                    caller: sender,
+                    gas_price: u128::from(gas_price),
+                    gas_limit,
+                    kind: TxKind::Call(PATH_USD_ADDRESS),
+                    data: calldata,
+                    nonce: 1,
+                    ..Default::default()
+                },
+                fee_token: Some(PATH_USD_ADDRESS),
+                ..Default::default()
+            };
+            let result = evm.transact_raw(tx).expect("transfer should execute");
+            assert!(result.result.is_success(), "hardfork: {hardfork:?}");
+            let second_actual_spending =
+                calc_gas_balance_spending(result.result.tx_gas_used(), u128::from(gas_price));
+            let second_refund_amount = max_fee_spending - second_actual_spending;
+            let sender_after_first_tx = sender_after_transfer + refund_amount;
+            let sender_after_second_fee = sender_after_first_tx - max_fee_spending;
+            let sender_after_second_transfer = sender_after_second_fee - transfer_amount;
+
+            let actions = evm
+                .take_actions()
+                .expect("storage action recording should be enabled");
+
+            // The second transfer starts from the committed first transfer state, so balance
+            // and fee accumulator slots created by the first transfer use SINC/SDEC.
+            let expected = if hardfork == latest_available_hardfork() {
+                vec![
+                    // SLOAD currency length: validate explicit PATH_USD fee token is USD.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::CURRENCY, currency_word),
+                    // SLOAD currency value: read the short "USD" currency string.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::CURRENCY, currency_word),
+                    // SLOAD validatorTokens[beneficiary]: pre-tx fee route uses default PATH_USD.
+                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
+                    // SLOAD transferPolicyId: authorize fee escrow transfer to FeeManager.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::TRANSFER_POLICY_ID,
+                        transfer_policy_id_word,
+                    ),
+                    // SLOAD paused: fee escrow respects token pause state.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SINC balances[FeeManager]: credit max fee escrow into non-zero balance.
+                    StorageAction::Sinc(
+                        PATH_USD_ADDRESS,
+                        fee_manager_balance_slot,
+                        max_fee_spending,
+                    ),
+                    // SLOAD paused: user TIP20 transfer rejects paused tokens.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
+                    // SLOAD transferPolicyId: read policy word for user TIP20 transfer checks.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::TRANSFER_POLICY_ID,
+                        transfer_policy_id_word,
+                    ),
+                    // SLOAD receivePolicies[recipient]: validate user TIP20 inbound policy.
+                    StorageAction::Sload(
+                        TIP403_REGISTRY_ADDRESS,
+                        receive_policy_config_slot,
+                        U256::ZERO,
+                    ),
+                    // SDEC balances[sender]: debit user transfer.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, transfer_amount),
+                    // SINC balances[recipient]: credit user transfer into non-zero balance.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, recipient_balance_slot, transfer_amount),
+                    // SDEC balances[FeeManager]: refund unused fee from escrow.
+                    StorageAction::Sdec(
+                        PATH_USD_ADDRESS,
+                        fee_manager_balance_slot,
+                        second_refund_amount,
+                    ),
+                    // SINC balances[sender]: credit unused fee refund.
+                    StorageAction::Sinc(
+                        PATH_USD_ADDRESS,
+                        sender_balance_slot,
+                        second_refund_amount,
+                    ),
+                    // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
+                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
+                    // SINC collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
+                    StorageAction::Sinc(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        collected_fees_slot,
+                        second_actual_spending,
+                    ),
+                ]
+            } else {
+                vec![
+                    // SLOAD currency length: validate explicit PATH_USD fee token is USD.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::CURRENCY, currency_word),
+                    // SLOAD currency value: read the short "USD" currency string.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::CURRENCY, currency_word),
+                    // SLOAD validatorTokens[beneficiary]: pre-tx fee route uses default PATH_USD.
+                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
+                    // SLOAD transferPolicyId: authorize fee escrow transfer to FeeManager.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::TRANSFER_POLICY_ID,
+                        transfer_policy_id_word,
+                    ),
+                    // SLOAD paused: fee escrow respects token pause state.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
+                    // SLOAD userRewardInfo[sender].rewardRecipient: fee payer is opted out.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_recipient_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardPerToken: load fee payer reward checkpoint.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_per_token_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardBalance: load fee payer unclaimed rewards.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_balance_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD globalRewardPerToken: compute fee payer reward delta.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+                        U256::ZERO,
+                    ),
+                    // SDEC balances[sender]: debit max fee escrow.
+                    StorageAction::Sdec(PATH_USD_ADDRESS, sender_balance_slot, max_fee_spending),
+                    // SINC balances[FeeManager]: credit max fee escrow into non-zero balance.
+                    StorageAction::Sinc(
+                        PATH_USD_ADDRESS,
+                        fee_manager_balance_slot,
+                        max_fee_spending,
+                    ),
+                    // SLOAD paused: user TIP20 transfer rejects paused tokens.
+                    StorageAction::Sload(PATH_USD_ADDRESS, tip20_slots::PAUSED, U256::ZERO),
+                    // SLOAD transferPolicyId: read policy word for user TIP20 transfer checks.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::TRANSFER_POLICY_ID,
+                        transfer_policy_id_word,
+                    ),
+                    // SLOAD balances[sender]: read post-escrow balance before user transfer debit.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_balance_slot,
+                        sender_after_second_fee,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_recipient_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardPerToken: load sender reward checkpoint.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_per_token_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardBalance: load sender unclaimed rewards.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_balance_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD globalRewardPerToken: compute sender reward delta.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[recipient].rewardRecipient: recipient is opted out.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        recipient_reward_info_slot + reward_recipient_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[recipient].rewardPerToken: load recipient reward checkpoint.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        recipient_reward_info_slot + reward_per_token_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[recipient].rewardBalance: load recipient unclaimed rewards.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        recipient_reward_info_slot + reward_balance_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD globalRewardPerToken: compute recipient reward delta.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+                        U256::ZERO,
+                    ),
+                    // SSTORE balances[sender]: debit user transfer.
+                    StorageAction::Sstore(
+                        PATH_USD_ADDRESS,
+                        sender_balance_slot,
+                        sender_after_second_transfer,
+                    ),
+                    // SINC balances[recipient]: credit user transfer into non-zero balance.
+                    StorageAction::Sinc(PATH_USD_ADDRESS, recipient_balance_slot, transfer_amount),
+                    // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out before fee refund.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_recipient_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardPerToken: load sender checkpoint before refund.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_per_token_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD userRewardInfo[sender].rewardBalance: load sender rewards before refund.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        sender_reward_info_slot + reward_balance_offset,
+                        U256::ZERO,
+                    ),
+                    // SLOAD globalRewardPerToken: compute sender reward delta before refund.
+                    StorageAction::Sload(
+                        PATH_USD_ADDRESS,
+                        tip20_slots::GLOBAL_REWARD_PER_TOKEN,
+                        U256::ZERO,
+                    ),
+                    // SDEC balances[FeeManager]: refund unused fee from escrow.
+                    StorageAction::Sdec(
+                        PATH_USD_ADDRESS,
+                        fee_manager_balance_slot,
+                        second_refund_amount,
+                    ),
+                    // SINC balances[sender]: credit unused fee refund.
+                    StorageAction::Sinc(
+                        PATH_USD_ADDRESS,
+                        sender_balance_slot,
+                        second_refund_amount,
+                    ),
+                    // SLOAD validatorTokens[beneficiary]: post-tx fee route uses default PATH_USD.
+                    StorageAction::Sload(TIP_FEE_MANAGER_ADDRESS, validator_token_slot, U256::ZERO),
+                    // SINC collectedFees[beneficiary][PATH_USD]: accrue actual PATH_USD spending.
+                    StorageAction::Sinc(
+                        TIP_FEE_MANAGER_ADDRESS,
+                        collected_fees_slot,
+                        second_actual_spending,
                     ),
                 ]
             };

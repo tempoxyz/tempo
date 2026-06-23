@@ -1,4 +1,4 @@
-use crate::{evm::TempoContext, tip1060};
+use crate::{evm::TempoContext, gas_credits};
 use alloy_evm::Database;
 use revm::{
     bytecode::opcode::SSTORE,
@@ -40,7 +40,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
         EthInstructions::new(
             {
                 let mut table = instruction_table::<EthInterpreter, TempoContext<DB>>();
-                table[SSTORE as usize] = Instruction::new(tip1060::sstore);
+                table[SSTORE as usize] = Instruction::new(gas_credits::sstore);
                 table
             },
             gas_table_spec(evm_spec),

@@ -20,5 +20,6 @@ jobs:
           close-pr-message: "Closed due to inactivity. Reopen if still needed."
           stale-pr-label: stale
           exempt-draft-pr: false
+          operations-per-run: 120
           days-before-issue-stale: -1
           days-before-issue-close: -1

@@ -1,17 +1,18 @@
-use std::{
-    sync::{Mutex, MutexGuard},
-    time::Duration,
-};
+use std::sync::{Mutex, MutexGuard};
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock as _, Metrics as _, Runner as _,
-    deterministic::{Config, Context, Runner},
+    Runner as _,
+    deterministic::{Config, Runner},
 };
 use futures::future::join_all;
 use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorder};
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validators};
+use crate::{
+    Setup, connect_execution_peers,
+    metrics::{MetricsExt, wait_for_metrics},
+    setup_validators,
+};
 
 const PAYLOAD_FINALIZATION_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_payload_finalization_duration_seconds_count";
@@ -119,14 +120,16 @@ fn run_payload_builder_test(
                 connect_execution_peers(&nodes).await;
             }
 
-            wait_for_height(
-                &context,
-                share_sparse_trie_with_payload_builder.len() as u32,
-                target_height,
-            )
+            let expected_validators = share_sparse_trie_with_payload_builder.len();
+            wait_for_metrics(&context, |metrics| {
+                metrics.consensus_at_height(target_height) == expected_validators
+            })
             .await;
 
-            consensus_metric_sum(&context, NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
+            let metrics = context.to_metrics();
+            metrics
+                .values::<u64>(NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX)
+                .sum()
         });
 
     let final_finalization_count =
@@ -200,47 +203,6 @@ fn assert_pool_inclusion_metrics(deltas: &MetricDelta) {
         (0.0..=1.0).contains(&ratio),
         "expected pool transactions inclusion ratio last to be within 0.0..=1.0, got {ratio}"
     );
-}
-
-async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
-    loop {
-        let validators_at_height = context
-            .encode()
-            .lines()
-            .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
-            .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let metric = parts.next()?;
-                let value = parts.next()?;
-                metric
-                    .ends_with("_marshal_processed_height")
-                    .then(|| value.parse::<u64>().ok())?
-            })
-            .filter(|height| *height >= target_height)
-            .count() as u32;
-
-        if validators_at_height == expected_validators {
-            break;
-        }
-
-        context.sleep(Duration::from_secs(1)).await;
-    }
-}
-
-fn consensus_metric_sum(context: &Context, metric_suffix: &str) -> u64 {
-    context
-        .encode()
-        .lines()
-        .filter(|line| line.starts_with(CONSENSUS_NODE_PREFIX))
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let metric = parts.next()?;
-            let value = parts.next()?;
-            metric
-                .ends_with(metric_suffix)
-                .then(|| value.parse::<u64>().ok())?
-        })
-        .sum()
 }
 
 fn prometheus_histogram_count(recorder: &PrometheusRecorder, metric: &str) -> u64 {
