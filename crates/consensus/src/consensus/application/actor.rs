@@ -81,6 +81,7 @@ struct BuildProposalArgs {
 }
 
 const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const SSMR_OPTIMISTIC_VERIFY_WAIT: Duration = Duration::from_millis(100);
 const BLOCK_SUBSCRIBE_EL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SSMR_STATIC_BUILD_BUDGET: Duration = Duration::from_millis(400);
 
@@ -295,26 +296,39 @@ impl Inner<Init> {
         context: &TContext,
         block: &Block,
         mut snapshot: SsmrStreamSnapshot,
-    ) -> Option<SsmrCompleteStream>
+    ) -> (Option<SsmrCompleteStream>, bool)
     where
         TContext: commonware_runtime::Clock,
     {
         if !snapshot.started {
-            return None;
+            return (None, false);
         }
         if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
-            return snapshot.complete;
+            return (snapshot.complete, false);
         }
 
+        let wait_start = Instant::now();
         while ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
+            if wait_start.elapsed() >= SSMR_OPTIMISTIC_VERIFY_WAIT {
+                debug!(
+                    block.digest = %block.digest(),
+                    block.height = %block.height(),
+                    waited = ?wait_start.elapsed(),
+                    stream.complete = snapshot.complete.is_some(),
+                    "SSMR optimistic artifact not ready during verify wait; falling back to normal validation"
+                );
+                return (snapshot.complete, true);
+            }
             context.sleep(SSMR_SNAPSHOT_POLL_INTERVAL).await;
-            let updated = self.ssmr_stream_snapshot(block).await?;
+            let Some(updated) = self.ssmr_stream_snapshot(block).await else {
+                return (None, false);
+            };
             snapshot = updated;
             if !snapshot.started {
-                return None;
+                return (None, false);
             }
         }
-        snapshot.complete
+        (snapshot.complete, false)
     }
 
     #[instrument(
@@ -986,10 +1000,10 @@ impl Inner<Init> {
         let mut ssmr_fallback_validation = false;
         if let Some(snapshot) = self.ssmr_stream_snapshot(&block).await {
             let stream_started = snapshot.started;
-            if let Some(stream) = self
+            let (stream, optimistic_wait_timed_out) = self
                 .wait_for_started_ssmr_stream(&context, &block, snapshot)
-                .await
-            {
+                .await;
+            if let Some(stream) = stream {
                 match reconcile_ssmr_transcript(&block, &stream.transcript) {
                     Ok(true) => {
                         self.metrics.ssmr_final_reconciliations.inc();
@@ -1030,6 +1044,7 @@ impl Inner<Init> {
                                     block.height = %block.height(),
                                     optimistic.finalizing = stream.optimistic_execution_finalizing,
                                     optimistic.failed = stream.optimistic_execution_failed,
+                                    optimistic.wait_timed_out = optimistic_wait_timed_out,
                                     "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
                                 );
                             }
@@ -1062,9 +1077,10 @@ impl Inner<Init> {
                 self.metrics.ssmr_missing_shards_at_proposal.inc();
                 self.metrics.ssmr_fallback_validation_count.inc();
                 debug!(
-                block.digest = %block.digest(),
+                    block.digest = %block.digest(),
                     block.height = %block.height(),
                     stream.started = stream_started,
+                    optimistic.wait_timed_out = optimistic_wait_timed_out,
                     "SSMR stream has no optimistic artifact at proposal; using normal validation"
                 );
             }

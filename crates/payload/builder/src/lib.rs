@@ -153,6 +153,116 @@ enum SsmrRecoveredReplayEvent {
 }
 
 #[derive(Debug, Default)]
+struct SsmrReplayProgress {
+    pending_transactions: VecDeque<SsmrRecoveredTx>,
+    replay_finished: bool,
+    source_wait_elapsed: Duration,
+    recovery_wall_elapsed: Duration,
+    first_tx_recovery_elapsed: Option<Duration>,
+    recovery_queue_wait_sum_elapsed: Duration,
+    recovery_backpressure_elapsed: Duration,
+    execution_wait_for_recovery_elapsed: Duration,
+    recovery_worker_count: usize,
+    max_recovered_tx_ahead: usize,
+    shards: u64,
+    transactions: u64,
+}
+
+impl SsmrReplayProgress {
+    fn ingest_event(&mut self, event: SsmrRecoveredReplayEvent) -> Result<(), PayloadBuilderError> {
+        match event {
+            SsmrRecoveredReplayEvent::Transactions(batch) => {
+                self.shards += batch.completed_shards;
+                self.pending_transactions.extend(batch.transactions);
+                self.max_recovered_tx_ahead = self
+                    .max_recovered_tx_ahead
+                    .max(self.pending_transactions.len());
+            }
+            SsmrRecoveredReplayEvent::Finish {
+                source_wait_elapsed,
+                recovery_wall_elapsed,
+                first_tx_recovery_elapsed,
+                recovery_queue_wait_sum_elapsed,
+                recovery_backpressure_elapsed,
+                recovery_worker_count,
+            } => {
+                self.source_wait_elapsed += source_wait_elapsed;
+                self.recovery_wall_elapsed += recovery_wall_elapsed;
+                self.first_tx_recovery_elapsed = first_tx_recovery_elapsed;
+                self.recovery_queue_wait_sum_elapsed += recovery_queue_wait_sum_elapsed;
+                self.recovery_backpressure_elapsed += recovery_backpressure_elapsed;
+                self.recovery_worker_count = recovery_worker_count;
+                self.replay_finished = true;
+            }
+            SsmrRecoveredReplayEvent::Error(error) => {
+                return Err(PayloadBuilderError::other(std::io::Error::other(error)));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn drain_ready_events(
+        &mut self,
+        recovered_events: &Receiver<SsmrRecoveredReplayEvent>,
+    ) -> Result<(), PayloadBuilderError> {
+        if self.replay_finished {
+            return Ok(());
+        }
+
+        loop {
+            match recovered_events.try_recv() {
+                Ok(event) => self.ingest_event(event)?,
+                Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return Err(self.recovery_closed_error());
+                }
+            }
+
+            if self.replay_finished {
+                return Ok(());
+            }
+        }
+    }
+
+    fn wait_for_next_event(
+        &mut self,
+        recovered_events: &Receiver<SsmrRecoveredReplayEvent>,
+    ) -> Result<Duration, PayloadBuilderError> {
+        let wait_start = Instant::now();
+        let event = recovered_events.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
+        let wait_elapsed = wait_start.elapsed();
+        self.execution_wait_for_recovery_elapsed += wait_elapsed;
+
+        match event {
+            Ok(event) => self.ingest_event(event)?,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(self.recovery_closed_error());
+            }
+        }
+
+        Ok(wait_elapsed)
+    }
+
+    fn recovery_closed_error(&self) -> PayloadBuilderError {
+        warn!(
+            pending_transactions = self.pending_transactions.len(),
+            replay_finished = self.replay_finished,
+            ssmr_replay_transactions = self.transactions,
+            ssmr_replay_shards = self.shards,
+            ssmr_replay_recovery_wall_elapsed = ?self.recovery_wall_elapsed,
+            ssmr_replay_recovery_backpressure_elapsed = ?self.recovery_backpressure_elapsed,
+            ssmr_replay_max_recovered_tx_ahead = self.max_recovered_tx_ahead,
+            "SSMR replay recovery closed before finish"
+        );
+        PayloadBuilderError::other(std::io::Error::other(
+            "SSMR replay recovery closed before finish",
+        ))
+    }
+}
+
+#[derive(Debug, Default)]
 struct SsmrReplayRecoveryState {
     pending_shards: BTreeMap<u64, SsmrPendingRecoveredShard>,
     next_ready_shard_index: u64,
@@ -1094,13 +1204,14 @@ where
         let post_return_tail_budget = attributes.post_return_tail_budget();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
             let recovered_events = spawn_ssmr_replay_recovery(self.executor.clone(), replay_source);
-            let mut pending_transactions = VecDeque::new();
-            let mut replay_finished = false;
+            let mut replay_progress = SsmrReplayProgress::default();
 
-            loop {
+            let stop_reason = loop {
                 check_cancel!();
 
-                if let Some(tx) = pending_transactions.pop_front() {
+                replay_progress.drain_ready_events(&recovered_events)?;
+
+                if let Some(tx) = replay_progress.pending_transactions.pop_front() {
                     let SsmrRecoveredTx {
                         transaction: recovered,
                         tx_rlp_length,
@@ -1169,7 +1280,7 @@ where
 
                     pool_transactions_yielded += 1;
                     pool_transactions_included += 1;
-                    ssmr_replay_transactions += 1;
+                    replay_progress.transactions += 1;
                     estimated_rlp_block_size += tx_rlp_length;
                     let _ = roots_tx.send((
                         BuilderTx::Owned(Box::new(recovered)),
@@ -1179,7 +1290,7 @@ where
                     continue;
                 }
 
-                if replay_finished {
+                if replay_progress.replay_finished {
                     break if cumulative_gas_used >= non_shared_gas_limit {
                         BlockBuildStopReason::GasLimit
                     } else {
@@ -1187,48 +1298,26 @@ where
                     };
                 }
 
-                let wait_start = Instant::now();
-                let event = recovered_events.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
-                let wait_elapsed = wait_start.elapsed();
+                let wait_elapsed = replay_progress.wait_for_next_event(&recovered_events)?;
                 normal_transaction_fill_idle_elapsed += wait_elapsed;
                 ssmr_replay_recovery_wait_elapsed += wait_elapsed;
-                ssmr_replay_execution_wait_for_recovery_elapsed += wait_elapsed;
+            };
 
-                match event {
-                    Ok(SsmrRecoveredReplayEvent::Transactions(batch)) => {
-                        ssmr_replay_shards += batch.completed_shards;
-                        pending_transactions.extend(batch.transactions);
-                        ssmr_replay_max_recovered_tx_ahead =
-                            ssmr_replay_max_recovered_tx_ahead.max(pending_transactions.len());
-                    }
-                    Ok(SsmrRecoveredReplayEvent::Finish {
-                        source_wait_elapsed,
-                        recovery_wall_elapsed,
-                        first_tx_recovery_elapsed,
-                        recovery_queue_wait_sum_elapsed,
-                        recovery_backpressure_elapsed,
-                        recovery_worker_count,
-                    }) => {
-                        ssmr_replay_wait_elapsed += source_wait_elapsed;
-                        ssmr_replay_recovery_wall_elapsed += recovery_wall_elapsed;
-                        ssmr_replay_first_tx_recovery_elapsed = first_tx_recovery_elapsed;
-                        ssmr_replay_recovery_queue_wait_sum_elapsed +=
-                            recovery_queue_wait_sum_elapsed;
-                        ssmr_replay_recovery_backpressure_elapsed += recovery_backpressure_elapsed;
-                        ssmr_replay_recovery_worker_count = recovery_worker_count;
-                        replay_finished = true;
-                    }
-                    Ok(SsmrRecoveredReplayEvent::Error(error)) => {
-                        return Err(PayloadBuilderError::other(std::io::Error::other(error)));
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                        return Err(PayloadBuilderError::other(std::io::Error::other(
-                            "SSMR replay recovery closed before finish",
-                        )));
-                    }
-                }
-            }
+            ssmr_replay_wait_elapsed = replay_progress.source_wait_elapsed;
+            ssmr_replay_recovery_wall_elapsed = replay_progress.recovery_wall_elapsed;
+            ssmr_replay_first_tx_recovery_elapsed = replay_progress.first_tx_recovery_elapsed;
+            ssmr_replay_recovery_queue_wait_sum_elapsed =
+                replay_progress.recovery_queue_wait_sum_elapsed;
+            ssmr_replay_recovery_backpressure_elapsed =
+                replay_progress.recovery_backpressure_elapsed;
+            ssmr_replay_execution_wait_for_recovery_elapsed =
+                replay_progress.execution_wait_for_recovery_elapsed;
+            ssmr_replay_recovery_worker_count = replay_progress.recovery_worker_count;
+            ssmr_replay_max_recovered_tx_ahead = replay_progress.max_recovered_tx_ahead;
+            ssmr_replay_shards = replay_progress.shards;
+            ssmr_replay_transactions = replay_progress.transactions;
+
+            stop_reason
         } else {
             let base_fee = executor.evm().block().basefee;
             let pool_fetch_start = Instant::now();

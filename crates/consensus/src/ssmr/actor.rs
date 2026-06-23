@@ -166,10 +166,28 @@ impl Actor {
     pub(crate) async fn run(
         mut self,
         (mut network_tx, mut network_rx): (
-            impl Sender<PublicKey = PublicKey>,
+            impl Sender<PublicKey = PublicKey> + Send + 'static,
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        let (outbound_tx, mut outbound_rx) = mpsc::unbounded::<OutboundMessage>();
+        let metrics = self.metrics.clone();
+        self.task_executor
+            .spawn_critical_task("ssmr-outbound", async move {
+                while let Some(outbound) = outbound_rx.next().await {
+                    if network_tx
+                        .send(Recipients::All, outbound.bytes, true)
+                        .await
+                        .is_ok()
+                    {
+                        metrics.bytes_sent.inc_by(outbound.byte_len as u64);
+                        if outbound.byte_len != 0 {
+                            metrics.shards_sent.inc();
+                        }
+                    }
+                }
+            });
+
         loop {
             tokio::select! {
                 biased;
@@ -177,25 +195,24 @@ impl Actor {
                 Some(message) = self.control_rx.next() => {
                     self.on_control_message(message);
                 }
+                Some(message) = self.builder_rx.next() => {
+                    self.on_builder_message(message, &outbound_tx);
+                }
                 Ok((sender, message)) = network_rx.recv() => {
                     let _ = self.on_network_message(sender, message);
-                }
-                Some(message) = self.builder_rx.next() => {
-                    self.on_builder_message(message, &mut network_tx).await;
                 }
             }
         }
     }
 
-    async fn on_builder_message(
+    fn on_builder_message(
         &mut self,
         message: BuilderMessage,
-        network_tx: &mut impl Sender<PublicKey = PublicKey>,
+        outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
     ) {
         match message {
             BuilderMessage::BuilderEvent { stream, event } => {
-                self.broadcast_builder_event(stream, event, network_tx)
-                    .await;
+                self.broadcast_builder_event(stream, event, outbound_tx);
             }
         }
     }
@@ -237,11 +254,11 @@ impl Actor {
     }
 
     #[instrument(skip_all, fields(stream.parent = %stream.stream_key.parent_hash, stream.height = stream.stream_key.block_height))]
-    async fn broadcast_builder_event(
+    fn broadcast_builder_event(
         &mut self,
         stream: ProposalStream,
         event: SsmrBuilderEvent,
-        network_tx: &mut impl Sender<PublicKey = PublicKey>,
+        outbound_tx: &mpsc::UnboundedSender<OutboundMessage>,
     ) {
         if stream.stream_key.proposer() != public_key_to_tempo_primitive(&self.public_key) {
             return;
@@ -252,20 +269,10 @@ impl Actor {
         };
         let encoded = message.encode();
         let bytes = encoded.len();
-        if network_tx
-            .send(
-                Recipients::All,
-                bytes::Bytes::copy_from_slice(encoded.as_ref()),
-                true,
-            )
-            .await
-            .is_ok()
-        {
-            self.metrics.bytes_sent.inc_by(bytes as u64);
-            if bytes != 0 {
-                self.metrics.shards_sent.inc();
-            }
-        }
+        let _ = outbound_tx.unbounded_send(OutboundMessage {
+            bytes: bytes::Bytes::copy_from_slice(encoded.as_ref()),
+            byte_len: bytes,
+        });
     }
 
     #[instrument(skip_all, err(level = Level::DEBUG), fields(sender = %sender, msg_bytes = message.len()))]
@@ -579,6 +586,11 @@ enum BuilderMessage {
         stream: ProposalStream,
         event: SsmrBuilderEvent,
     },
+}
+
+struct OutboundMessage {
+    bytes: bytes::Bytes,
+    byte_len: usize,
 }
 
 #[allow(clippy::large_enum_variant)]
