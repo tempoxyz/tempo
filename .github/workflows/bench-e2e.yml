@@ -41,6 +41,7 @@ on:
           - tip20_existing_recipients
           - mpp
           - mix
+          - dex
       duration:
         description: Benchmark duration in seconds.
         type: string
