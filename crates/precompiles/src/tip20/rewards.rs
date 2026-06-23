@@ -306,6 +306,8 @@ impl TIP20Token {
     }
 
     /// Handles reward accounting when tokens are minted to an address.
+    #[cold]
+    #[inline(never)]
     pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
         let to_delegate = self.update_rewards(to)?;
 
