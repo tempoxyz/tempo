@@ -425,7 +425,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+        let sstore_action = if value == U256::ZERO && current != U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, value)
