@@ -58,6 +58,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
+    context_interface::cfg::GasParams,
     handler::EthPrecompiles,
     precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
@@ -136,7 +137,9 @@ pub trait Precompile {
 /// Shared execution environment captured by Tempo precompile wrappers.
 #[derive(Clone)]
 pub struct PrecompileEnv {
-    cfg: CfgEnv<TempoHardfork>,
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+    gas_params: GasParams,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 }
@@ -148,7 +151,9 @@ impl PrecompileEnv {
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
         Self {
-            cfg: cfg.clone(),
+            spec: cfg.spec,
+            amsterdam_eip8037_enabled: cfg.enable_amsterdam_eip8037,
+            gas_params: cfg.gas_params.clone(),
             actions,
             non_creditable_slots,
         }
@@ -203,9 +208,9 @@ pub fn extend_tempo_precompiles(
             Some(TIP20Token::create_precompile(*address, &env))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&env))
-        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.cfg.spec.is_t5() {
+        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.spec.is_t5() {
             Some(TIP20ChannelReserve::create_precompile(&env))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
+        } else if *address == ADDRESS_REGISTRY_ADDRESS && env.spec.is_t3() {
             Some(AddressRegistry::create_precompile(&env))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403Registry::create_precompile(&env))
@@ -221,11 +226,11 @@ pub fn extend_tempo_precompiles(
             Some(AccountKeychain::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&env))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&env))
-        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
+        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&env))
-        } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
+        } else if *address == STORAGE_CREDITS_ADDRESS && env.spec.is_t7() {
             Some(StorageCredits::create_precompile(&env))
         } else {
             None
@@ -252,9 +257,9 @@ macro_rules! tempo_precompile {
     }};
     ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
         let env = $env.clone();
-        let spec = env.cfg.spec;
-        let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
-        let gas_params = env.cfg.gas_params.clone();
+        let spec = env.spec;
+        let amsterdam_eip8037_enabled = env.amsterdam_eip8037_enabled;
+        let gas_params = env.gas_params.clone();
         let actions = env.actions.clone();
         let non_creditable_slots = env.non_creditable_slots.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
