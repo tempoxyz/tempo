@@ -161,6 +161,21 @@ fn scale_above_baseline(current: u128, baseline: u128) -> Option<u128> {
     Some(current.saturating_mul(VALIDATION_LATENCY_WORKLOAD_SCALE) / baseline)
 }
 
+fn scale_proportionally(current: u128, baseline: u128) -> Option<u128> {
+    if current == 0 {
+        return (baseline != 0).then_some(0);
+    }
+    if baseline == 0 {
+        return None;
+    }
+
+    Some(
+        current
+            .saturating_mul(VALIDATION_LATENCY_WORKLOAD_SCALE)
+            .div_ceil(baseline),
+    )
+}
+
 fn scale_duration(elapsed: Duration, scale: u128) -> Duration {
     let nanos = elapsed
         .as_nanos()
@@ -212,6 +227,33 @@ impl ValidationLatencyEstimate {
         let scale = [
             scale_above_baseline(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
             scale_above_baseline(
+                workload.transaction_count as u128,
+                self.p90_transaction_count as u128,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .max()?;
+        Some(scale_duration(self.elapsed, scale))
+    }
+
+    /// Estimates validation latency proportionally to the supplied workload.
+    ///
+    /// Optimistic payload builders use this for transaction selection because
+    /// they need the incremental validator work selected so far. In particular,
+    /// an empty workload must not inherit the full recent block validation
+    /// latency, or the builder can stop before selecting any transactions.
+    pub fn estimate_proportional(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
+        if self.elapsed == Duration::ZERO {
+            return None;
+        }
+        if workload.gas_used == 0 && workload.transaction_count == 0 {
+            return Some(Duration::ZERO);
+        }
+
+        let scale = [
+            scale_proportionally(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
+            scale_proportionally(
                 workload.transaction_count as u128,
                 self.p90_transaction_count as u128,
             ),
@@ -433,6 +475,26 @@ mod tests {
                 ValidationLatencyWorkload::new(400, 4)
             ),
             Some(Duration::from_millis(100))
+        );
+    }
+
+    #[test]
+    fn proportional_validation_latency_scales_down_to_current_workload() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        estimator.observe(
+            1,
+            ValidationLatencyWorkload::new(1_000, 10),
+            Duration::from_millis(100),
+        );
+        let estimate = estimator.estimate().expect("validation estimate");
+
+        assert_eq!(
+            estimate.estimate_proportional(ValidationLatencyWorkload::new(0, 0)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            estimate.estimate_proportional(ValidationLatencyWorkload::new(500, 5)),
+            Some(Duration::from_millis(50))
         );
     }
 

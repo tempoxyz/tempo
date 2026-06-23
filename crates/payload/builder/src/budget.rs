@@ -133,8 +133,8 @@ pub(crate) fn optimistic_payload_budget_decision(
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
     let predicted_validator_work = validation_latency
-        .and_then(|estimate| estimate.estimate(current_workload))
-        .or_else(|| bootstrap_validation_latency_estimate().estimate(current_workload))
+        .and_then(|estimate| estimate.estimate_proportional(current_workload))
+        .or_else(|| bootstrap_validation_latency_estimate().estimate_proportional(current_workload))
         .unwrap_or(Duration::ZERO);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
@@ -311,6 +311,49 @@ mod tests {
         assert_eq!(
             decision.predicted_validator_work,
             Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn optimistic_budget_starts_with_zero_validator_work() {
+        let validation_latency = validation_latency_estimate(
+            ValidationLatencyWorkload::new(0, 8_000),
+            Duration::from_millis(300),
+        )
+        .expect("validation estimate");
+        let decision = optimistic_payload_budget_decision(
+            Duration::from_millis(1),
+            Duration::ZERO,
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            Some(validation_latency),
+            ValidationLatencyWorkload::new(0, 0),
+        );
+
+        assert_eq!(decision.predicted_validator_work, Duration::ZERO);
+    }
+
+    #[test]
+    fn optimistic_budget_scales_validator_feedback_to_current_workload() {
+        let validation_latency = validation_latency_estimate(
+            ValidationLatencyWorkload::new(0, 10_000),
+            Duration::from_millis(300),
+        )
+        .expect("validation estimate");
+        let decision = optimistic_payload_budget_decision(
+            Duration::from_millis(1),
+            Duration::ZERO,
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            Some(validation_latency),
+            ValidationLatencyWorkload::new(0, 5_000),
+        );
+
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(150)
         );
     }
 
