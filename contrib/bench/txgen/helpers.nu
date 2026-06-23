@@ -214,6 +214,10 @@ def txgen-validate-bench-args [bench_args: string] {
     txgen-parse-bench-args $bench_args | ignore
 }
 
+def txgen-spec-has-keychain-setup [spec_path: string] {
+    (open --raw $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
+}
+
 def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
     if $bloat_mib <= 0 {
         error make { msg: "bloat size must be greater than zero" }
@@ -379,16 +383,28 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let txgen_setup_cmd = [
+        $txgen_tempo_bin
+        "generate"
+        "-s" $spec_path
+        "-n" 0
+        "--seed" $TXGEN_HELPER_DEFAULT_SEED
+        "--rpc" $generate_rpc_url
+    ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
-    let bench_base_cmd = [
+    let bench_send_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
         "--retries" 0
-        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
+    ]
+    let bench_base_cmd = [
+        ...$bench_send_base_cmd
+        ...$metrics_url_args
+        "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
@@ -426,9 +442,26 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let use_two_phase_keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
+    let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+
+    if $use_two_phase_keychain_setup {
+        let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
+        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+
+        print "  Streaming keychain setup transactions into bench send..."
+        let setup_result = (bash -lc $setup_pipeline | complete)
+        if $setup_result.stdout != "" { print $setup_result.stdout }
+        if $setup_result.stderr != "" { print $setup_result.stderr }
+
+        if $setup_result.exit_code != 0 {
+            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+        }
+    }
 
     print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     let result = (bash -lc $pipeline | complete)
