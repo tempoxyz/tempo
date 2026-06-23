@@ -12,8 +12,8 @@ use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::{StorageActionReplay, TempoTxResult, evm::TempoEvm};
-use tempo_precompiles::storage::StorageAction;
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoTxResult, evm::TempoEvm};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
 use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
@@ -313,6 +313,7 @@ where
             return None;
         }
 
+        let expiring_nonce = expiring_nonce_replay(&tx);
         let mut result = match evm.transact_raw(tx.transaction.clone_tx_env()) {
             Ok(result) => result,
             Err(err) => {
@@ -338,8 +339,11 @@ where
             return None;
         }
 
-        let actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
-        if actions.is_empty() {
+        let mut actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
+        if expiring_nonce.is_some() {
+            actions.retain(|action| !is_nonce_manager_action(action));
+        }
+        if actions.is_empty() && expiring_nonce.is_none() {
             action_buffer = Some(actions);
             return None;
         }
@@ -350,6 +354,7 @@ where
             actions,
             validator_fee: evm.validator_fee(),
             state: result.state,
+            expiring_nonce,
         }))
     });
 
@@ -388,7 +393,7 @@ fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {
     if aa_env.key_authorization.is_some() {
         return false;
     }
-    if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY || tx_env.nonce() != 0 {
+    if tx_env.nonce() != 0 {
         return false;
     }
     if tx
@@ -434,4 +439,31 @@ fn is_valid_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 
 fn is_valid_direct_recipient(to: Address) -> bool {
     !to.is_zero() && !to.is_tip20() && !to.is_virtual()
+}
+
+fn expiring_nonce_replay(tx: &BestTransaction) -> Option<ExpiringNonceReplay> {
+    if !tx.transaction.is_expiring_nonce() {
+        return None;
+    }
+
+    let valid_before = tx
+        .transaction
+        .tx_env()
+        .tempo_tx_env
+        .as_ref()?
+        .valid_before?;
+    Some(ExpiringNonceReplay {
+        hash: tx.transaction.expiring_nonce_hash()?,
+        valid_before,
+    })
+}
+
+fn is_nonce_manager_action(action: &StorageAction) -> bool {
+    let address = match *action {
+        StorageAction::Sload(address, ..)
+        | StorageAction::Sstore(address, ..)
+        | StorageAction::Sinc(address, ..)
+        | StorageAction::Sdec(address, ..) => address,
+    };
+    address == NONCE_PRECOMPILE_ADDRESS
 }
