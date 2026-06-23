@@ -228,7 +228,8 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// let mut name_slot = Slot::<String>::new(slots::NAME, address_rc);
     /// name_slot.delete().unwrap();
     /// ```
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn delete(&mut self) -> Result<()> {
         T::delete(self, self.slot, self.ctx)
     }
@@ -246,7 +247,8 @@ impl<T: Storable> Handler<T> for Slot<T> {
     }
 
     /// Deletes the value at this slot in transient storage (sets to zero).
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t_delete(&mut self) -> Result<()> {
         T::delete(&mut self.transient(), self.slot, self.ctx)
     }
