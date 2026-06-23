@@ -157,8 +157,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Enables recording of storage actions.
-    pub fn with_actions(self) -> Self {
-        self.inner.actions().enable();
+    pub fn with_actions(mut self) -> Self {
+        let mut actions = self.inner.actions().clone();
+        actions.enable();
+        self.inner = self.inner.with_actions(actions);
         self
     }
 
