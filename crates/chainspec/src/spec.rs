@@ -204,6 +204,23 @@ impl TempoChainSpec {
         self.default_follow_url
     }
 
+    /// Returns the general (non-payment) gas limit for the given timestamp and block.
+    /// - Genesis override: fixed at the configured value
+    /// - T1+: fixed at 30M gas
+    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    pub fn general_gas_limit_at(
+        &self,
+        timestamp: u64,
+        gas_limit: u64,
+        shared_gas_limit: u64,
+    ) -> u64 {
+        self.info.general_gas_limit().unwrap_or_else(|| {
+            self.tempo_hardfork_at(timestamp)
+                .general_gas_limit()
+                .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+        })
+    }
+
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
@@ -403,10 +420,6 @@ impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
         self.fork(fork)
     }
-
-    fn general_gas_limit_override(&self) -> Option<u64> {
-        self.info.general_gas_limit()
-    }
 }
 
 #[cfg(test)]
@@ -577,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_genesis_with_general_gas_limit_override() {
+    fn test_general_gas_limit_at_uses_genesis_override() {
         let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
             "config": {
                 "chainId": 1234,
