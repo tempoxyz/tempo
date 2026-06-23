@@ -153,6 +153,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &self.actions
     }
 
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.non_creditable_slots.clone()
+    }
+
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.collected_fee = U256::ZERO;
