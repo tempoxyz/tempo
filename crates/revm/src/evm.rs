@@ -3142,7 +3142,7 @@ mod tests {
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input = IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        let set_budget_input = IStorageCredits::setBudgetCall { credits: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 
@@ -3220,7 +3220,7 @@ mod tests {
 
         append_tip1060_precompile_call(
             &mut bytecode,
-            &IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode(),
+            &IStorageCredits::setBudgetCall { credits: 1 }.abi_encode(),
         );
         bytecode.extend_from_slice(&bytes!("6001600055")); // budgeted create
         append_tip1060_precompile_call_store_return(
