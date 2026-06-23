@@ -555,6 +555,12 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut ssmr_replay_wait_elapsed = Duration::ZERO;
+        let mut ssmr_replay_compute_elapsed = Duration::ZERO;
+        let mut ssmr_replay_decode_recover_elapsed = Duration::ZERO;
+        let mut ssmr_replay_execute_elapsed = Duration::ZERO;
+        let mut ssmr_replay_shards = 0u64;
+        let mut ssmr_replay_transactions = 0u64;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -571,11 +577,17 @@ where
                 // Any blocking receive time is stream overlap, not execution work.
                 let wait_start = Instant::now();
                 let replay_command = replay_source.recv_timeout(Duration::from_millis(1));
-                normal_transaction_fill_idle_elapsed += wait_start.elapsed();
+                let wait_elapsed = wait_start.elapsed();
+                normal_transaction_fill_idle_elapsed += wait_elapsed;
+                ssmr_replay_wait_elapsed += wait_elapsed;
                 match replay_command {
                     Ok(SsmrReplayCommand::Shard {
                         transactions: encoded_transactions,
                     }) => {
+                        let shard_compute_start = Instant::now();
+                        ssmr_replay_shards += 1;
+
+                        let decode_recover_start = Instant::now();
                         let mut decoded = Vec::with_capacity(encoded_transactions.len());
                         for encoded in &encoded_transactions {
                             let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
@@ -583,6 +595,7 @@ where
                             let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
                             decoded.push(Recovered::new_unchecked(tx, sender));
                         }
+                        ssmr_replay_decode_recover_elapsed += decode_recover_start.elapsed();
 
                         for (encoded, recovered) in encoded_transactions.into_iter().zip(decoded) {
                             check_cancel!();
@@ -631,6 +644,7 @@ where
                                 ));
                             }
 
+                            let execute_start = Instant::now();
                             executor
                                 .execute_transaction_with_result_closure(
                                     recovered.clone(),
@@ -644,6 +658,7 @@ where
                                     },
                                 )
                                 .map_err(PayloadBuilderError::evm)?;
+                            ssmr_replay_execute_elapsed += execute_start.elapsed();
                             trace!("SSMR replay transaction executed");
                             if let Some(bal_task_handle) = &bal_task_handle {
                                 bal_task_handle.bump_bal_index();
@@ -651,12 +666,14 @@ where
 
                             pool_transactions_yielded += 1;
                             pool_transactions_included += 1;
+                            ssmr_replay_transactions += 1;
                             estimated_rlp_block_size += tx_rlp_length;
                             let _ = roots_tx.send((
                                 BuilderTx::Owned(Box::new(recovered)),
                                 executor.receipts().last().unwrap().clone(),
                             ));
                         }
+                        ssmr_replay_compute_elapsed += shard_compute_start.elapsed();
                     }
                     Ok(SsmrReplayCommand::Finish) => {
                         break if cumulative_gas_used >= non_shared_gas_limit {
@@ -1268,6 +1285,13 @@ where
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ssmr_replay_enabled = is_ssmr_replay,
+            ?ssmr_replay_wait_elapsed,
+            ?ssmr_replay_compute_elapsed,
+            ?ssmr_replay_decode_recover_elapsed,
+            ?ssmr_replay_execute_elapsed,
+            ssmr_replay_shards,
+            ssmr_replay_transactions,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
