@@ -818,10 +818,10 @@ impl AccountKeychain {
 
         // Empty child sets mean "no further restriction" once the parent target was explicitly
         // allowed, so a present target with `selectors = []` allows any selector.
-        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
+        let selector_count = self.key_scopes[key_hash].target_scopes[target]
             .selectors
-            .is_empty()?;
-        if target_is_unconstrained {
+            .len()?;
+        if selector_count == 0 {
             return Ok(());
         }
 
@@ -833,19 +833,26 @@ impl AccountKeychain {
         let selector = FixedBytes::<4>::from(
             <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
         );
-        if !self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .contains(&selector)?
-        {
+        let selector_allowed = if selector_count == 1 {
+            self.key_scopes[key_hash].target_scopes[target]
+                .selectors
+                .read_at_unchecked(0)?
+                == selector
+        } else {
+            self.key_scopes[key_hash].target_scopes[target]
+                .selectors
+                .contains(&selector)?
+        };
+        if !selector_allowed {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         // Likewise, a present selector with `recipients = []` means any recipient is allowed.
-        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selector_scopes[selector]
+        let recipient_count = self.key_scopes[key_hash].target_scopes[target].selector_scopes
+            [selector]
             .recipients
-            .is_empty()?;
-        if selector_is_unconstrained {
+            .len()?;
+        if recipient_count == 0 {
             return Ok(());
         }
 
@@ -860,10 +867,17 @@ impl AccountKeychain {
         }
 
         let recipient = Address::from_slice(&recipient_word[12..]);
-        if self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
-            .recipients
-            .contains(&recipient)?
-        {
+        let recipient_allowed = if recipient_count == 1 {
+            self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
+                .recipients
+                .read_at_unchecked(0)?
+                == recipient
+        } else {
+            self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
+                .recipients
+                .contains(&recipient)?
+        };
+        if recipient_allowed {
             Ok(())
         } else {
             Err(AccountKeychainError::call_not_allowed().into())

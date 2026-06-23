@@ -376,6 +376,17 @@ where
         Ok(Some(self.values[index].read()?))
     }
 
+    /// Returns the value at `index` without reading the set length.
+    ///
+    /// Callers must already know `index < self.len()`.
+    #[inline]
+    pub fn read_at_unchecked(&self, index: usize) -> Result<T>
+    where
+        T::Handler: Handler<T>,
+    {
+        self.values[index].read()
+    }
+
     /// Reads a range of values from the set.
     ///
     /// This is a partial version of `read()` for when you only need a subset.
