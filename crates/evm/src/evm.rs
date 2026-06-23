@@ -870,6 +870,12 @@ mod tests {
                         tip20_slots::TRANSFER_POLICY_ID,
                         transfer_policy_id_word,
                     ),
+                    // SLOAD receivePolicies[recipient]: validate user TIP20 inbound policy.
+                    StorageAction::Sload(
+                        TIP403_REGISTRY_ADDRESS,
+                        receive_policy_config_slot,
+                        U256::ZERO,
+                    ),
                     // SLOAD balances[sender]: read post-escrow balance before user transfer debit.
                     StorageAction::Sload(PATH_USD_ADDRESS, sender_balance_slot, sender_after_fee),
                     // SLOAD userRewardInfo[sender].rewardRecipient: sender is opted out.
@@ -1125,6 +1131,12 @@ mod tests {
                         PATH_USD_ADDRESS,
                         tip20_slots::TRANSFER_POLICY_ID,
                         transfer_policy_id_word,
+                    ),
+                    // SLOAD receivePolicies[recipient]: validate user TIP20 inbound policy.
+                    StorageAction::Sload(
+                        TIP403_REGISTRY_ADDRESS,
+                        receive_policy_config_slot,
+                        U256::ZERO,
                     ),
                     // SLOAD balances[sender]: read post-escrow balance before user transfer debit.
                     StorageAction::Sload(
