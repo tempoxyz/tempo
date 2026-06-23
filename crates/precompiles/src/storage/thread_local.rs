@@ -133,7 +133,7 @@ impl StorageCtx {
 
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
-        self.with_block_env(|block_env| block_env.number.to::<u64>())
+        self.with_block_env(|block_env| block_env.number.saturating_to::<u64>())
     }
 
     /// Executes a closure with access to the current Tempo block environment.
