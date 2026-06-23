@@ -816,16 +816,14 @@ impl AccountKeychain {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        // Empty child sets mean "no further restriction" once the parent target was explicitly
-        // allowed, so a present target with `selectors = []` allows any selector.
-        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .is_empty()?;
-        if target_is_unconstrained {
-            return Ok(());
-        }
+        let target_scope = &self.key_scopes[key_hash].target_scopes[target];
 
         if input.len() < 4 {
+            // Empty child sets mean "no further restriction" once the parent target was explicitly
+            // allowed, so a present target with `selectors = []` allows any selector.
+            if target_scope.selectors.is_empty()? {
+                return Ok(());
+            }
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
@@ -833,37 +831,36 @@ impl AccountKeychain {
         let selector = FixedBytes::<4>::from(
             <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
         );
-        if !self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .contains(&selector)?
-        {
+        if !target_scope.selectors.contains(&selector)? {
+            if target_scope.selectors.is_empty()? {
+                return Ok(());
+            }
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
-        // Likewise, a present selector with `recipients = []` means any recipient is allowed.
-        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selector_scopes[selector]
-            .recipients
-            .is_empty()?;
-        if selector_is_unconstrained {
-            return Ok(());
-        }
+        let recipients = &target_scope.selector_scopes[selector].recipients;
 
         if input.len() < 36 {
+            // Likewise, a present selector with `recipients = []` means any recipient is allowed.
+            if recipients.is_empty()? {
+                return Ok(());
+            }
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         // Recipient-constrained selectors only permit ABI-encoded address arguments.
         let recipient_word = &input[4..36];
         if recipient_word[..12].iter().any(|byte| *byte != 0) {
+            if recipients.is_empty()? {
+                return Ok(());
+            }
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         let recipient = Address::from_slice(&recipient_word[12..]);
-        if self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
-            .recipients
-            .contains(&recipient)?
-        {
+        if recipients.contains(&recipient)? {
+            Ok(())
+        } else if recipients.is_empty()? {
             Ok(())
         } else {
             Err(AccountKeychainError::call_not_allowed().into())
