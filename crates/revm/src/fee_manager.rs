@@ -1,5 +1,6 @@
 use crate::{TempoStateAccess, TempoTx};
 use alloy_primitives::{Address, U256};
+use core::fmt::Debug;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::Result as TempoResult, storage::StorageActions, tip_fee_manager::TipFeeManager,
@@ -10,7 +11,7 @@ use tempo_precompiles::{
 /// This is separate from the public FeeManager precompile registration. Replacing this component
 /// changes the pre-transaction and post-transaction protocol fee hooks without changing which
 /// contract is exposed at the FeeManager precompile address.
-pub trait ProtocolFeeManager: core::fmt::Debug {
+pub trait ProtocolFeeManager: Debug {
     /// Resolves the fee token used to pay fees for a transaction.
     fn get_fee_token<S, TX, M>(
         &self,
