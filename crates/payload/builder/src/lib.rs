@@ -879,6 +879,7 @@ where
                     }
                 }
             } else {
+                action_replay_state.invalidate_expiring_nonce_cache();
                 let execution_result = executor.execute_transaction_with_result_closure(
                     pool_tx.transaction.executable(),
                     |result| {
