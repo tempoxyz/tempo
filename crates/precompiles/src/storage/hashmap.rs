@@ -1,12 +1,18 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::{
     context::journaled_state::JournalCheckpoint,
+    context_interface::cfg::GasParams,
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::PrecompileStorageProvider,
+    storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
+};
 
 /// In-memory [`PrecompileStorageProvider`] for unit tests.
 ///
@@ -23,8 +29,11 @@ pub struct HashMapStorageProvider {
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    gas_params: GasParams,
+    gas_tracker: GasTracker,
     counter_sload: u64,
     counter_sstore: u64,
+    non_creditable_slots: NonCreditableSlots,
     snapshots: Vec<Snapshot>,
 
     /// Emitted events keyed by contract address.
@@ -36,6 +45,7 @@ pub struct HashMapStorageProvider {
 /// PERF: naive cloning strategy due to its limited usage.
 struct Snapshot {
     internals: HashMap<(Address, U256), U256>,
+    transient: HashMap<(Address, U256), U256>,
     events: HashMap<Address, Vec<LogData>>,
 }
 
@@ -67,20 +77,25 @@ impl HashMapStorageProvider {
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
+            gas_params: GasParams::new_spec(spec.into()),
+            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
             counter_sload: 0,
             counter_sstore: 0,
+            non_creditable_slots: NonCreditableSlots::empty(),
         }
     }
 
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
 
     /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
     pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
+        self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
 }
@@ -126,7 +141,25 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.counter_sstore += 1;
+        let present = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
         self.internals.insert((address, key), value);
+
+        if self.spec.is_t7() {
+            let state_load = StateLoad::new(
+                SStoreResult {
+                    original_value: present,
+                    present_value: present,
+                    new_value: value,
+                },
+                false,
+            );
+            sstore_storage_credits(self, address, Some(key), &state_load)?;
+        }
+
         Ok(())
     }
 
@@ -210,6 +243,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         let idx = self.snapshots.len();
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
+            transient: self.transient.clone(),
             events: self.events.clone(),
         });
         JournalCheckpoint {
@@ -236,6 +270,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         );
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
+            self.transient = snapshot.transient;
             self.events = snapshot.events;
         }
     }
@@ -245,8 +280,77 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 }
 
+impl StorageCreditsBackend for HashMapStorageProvider {
+    type Error = TempoPrecompileError;
+
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    fn gas_tracker(&mut self) -> &mut GasTracker {
+        &mut self.gas_tracker
+    }
+
+    fn sload(
+        &mut self,
+        address: Address,
+        key: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        Ok(StateLoad::new(
+            self.internals
+                .get(&(address, key))
+                .copied()
+                .unwrap_or(U256::ZERO),
+            false,
+        ))
+    }
+
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        _skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
+        let present_value = self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        self.internals.insert((address, key), value);
+        Ok(StateLoad::new(
+            SStoreResult {
+                original_value: present_value,
+                present_value,
+                new_value: value,
+            },
+            false,
+        ))
+    }
+
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.transient
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO)
+    }
+
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.transient.insert((address, key), value);
+    }
+
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        self.non_creditable_slots.is_non_creditable_slot(owner, key)
+    }
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 impl HashMapStorageProvider {
+    pub fn set_non_creditable_slots(&mut self, slots: NonCreditableSlots) {
+        self.non_creditable_slots = slots;
+    }
+
     pub fn fail_next_sload_at(&mut self, address: Address, slot: U256) {
         self.fail_on_sload = Some((address, slot));
     }
@@ -286,6 +390,7 @@ impl HashMapStorageProvider {
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
+        self.gas_params = GasParams::new_spec(self.spec.into());
     }
 
     /// Clears all transient storage (simulates a new block).

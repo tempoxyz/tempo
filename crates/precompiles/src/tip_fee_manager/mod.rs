@@ -148,7 +148,7 @@ impl TipFeeManager {
     /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
     /// validator prefers a different token, verifies sufficient pool liquidity.
     /// Reserves liquidity on T1C+, with a two-hop fallback through `userToken.quoteToken()` on T5+.
-    /// Returns the user's fee token.
+    /// Returns the user's fee token and the validator fee token.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix

@@ -39,6 +39,9 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
+/// Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
+const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
+
 #[inline]
 pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     matches!(
@@ -1331,12 +1334,18 @@ impl AccountKeychain {
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
-        if is_periodic && current_timestamp >= limit_state.period_end {
-            let next_end = limit_state.compute_next_period_end(current_timestamp);
+        if is_periodic {
+            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+                remaining = U256::ZERO;
+            }
 
-            remaining = U256::from(limit_state.max);
-            limit_state.remaining = remaining;
-            limit_state.period_end = next_end;
+            if current_timestamp >= limit_state.period_end {
+                let next_end = limit_state.compute_next_period_end(current_timestamp);
+
+                remaining = U256::from(limit_state.max);
+                limit_state.remaining = remaining;
+                limit_state.period_end = next_end;
+            }
         }
 
         if amount > remaining {
@@ -1346,7 +1355,11 @@ impl AccountKeychain {
         // Update remaining limit
         let new_remaining = remaining - amount;
         if is_periodic {
-            limit_state.remaining = new_remaining;
+            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+                limit_state.remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
+            } else {
+                limit_state.remaining = new_remaining;
+            }
             self.spending_limits[limit_key][token].write(limit_state)?;
         } else {
             self.spending_limits[limit_key][token]
@@ -4535,6 +4548,63 @@ mod tests {
                 token,
             })?;
             assert_eq!(remaining, U256::from(90));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t7_periodic_exact_depletion_stores_sentinel_but_emits_zero() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        storage.set_timestamp(U256::from(1_000u64));
+
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
+                            token,
+                            amount: U256::from(100),
+                            period: 60,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
+            keychain.clear_emitted_events();
+
+            keychain.verify_and_update_spending(account, key_id, token, U256::from(100))?;
+
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            assert_eq!(
+                keychain.spending_limits[limit_key][token]
+                    .remaining
+                    .read()?,
+                ZERO_PERIODIC_REMAINING_SENTINEL
+            );
+            keychain.assert_emitted_events(vec![AccountKeychainEvent::access_key_spend(
+                account,
+                key_id,
+                token,
+                U256::from(100),
+                U256::ZERO,
+            )]);
+
             Ok(())
         })
     }
