@@ -188,25 +188,47 @@ jobs:
           SAVE_MATRIX: ${{ needs.resolve-refs.outputs.save-matrix }}
         run: |
           CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
-          TMP_DIR=$(mktemp -d)
+          TMP_DIR=""
 
-          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-            true
-          else
-            git init "${TMP_DIR}"
-            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-          fi
+          prepare_state() {
+            if [ -n "${TMP_DIR}" ]; then
+              rm -rf "${TMP_DIR}"
+            fi
 
-          echo "$SAVE_MATRIX" | jq -c '.include[]' | while read -r entry; do
-            state_file="$(echo "$entry" | jq -r '.state_file')"
-            feature_ref="$(echo "$entry" | jq -r '.feature_ref')"
-            mkdir -p "$(dirname "${TMP_DIR}/${state_file}")"
-            echo "${feature_ref}" > "${TMP_DIR}/${state_file}"
-            git -C "${TMP_DIR}" add "${state_file}"
+            TMP_DIR=$(mktemp -d)
+            if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+              true
+            else
+              git init "${TMP_DIR}"
+              git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+            fi
+
+            echo "$SAVE_MATRIX" | jq -c '.include[]' | while read -r entry; do
+              state_file="$(echo "$entry" | jq -r '.state_file')"
+              feature_ref="$(echo "$entry" | jq -r '.feature_ref')"
+              mkdir -p "$(dirname "${TMP_DIR}/${state_file}")"
+              echo "${feature_ref}" > "${TMP_DIR}/${state_file}"
+              git -C "${TMP_DIR}" add "${state_file}"
+            done
+          }
+
+          for attempt in 1 2 3 4 5; do
+            prepare_state
+            if git -C "${TMP_DIR}" diff --cached --quiet; then
+              echo "No state change"
+              rm -rf "${TMP_DIR}"
+              exit 0
+            fi
+            git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+              commit -m "bench: update e2e nightly state"
+            if git -C "${TMP_DIR}" push origin HEAD:state; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to push state after ${attempt} attempts"
+              rm -rf "${TMP_DIR}"
+              exit 1
+            fi
+            sleep "$attempt"
           done
-
-          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
-          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update e2e nightly state"
-          git -C "${TMP_DIR}" push origin HEAD:state
           rm -rf "${TMP_DIR}"

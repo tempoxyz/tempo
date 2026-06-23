@@ -5,10 +5,10 @@
 
 use std::time::Duration;
 
-use super::dkg::common::assert_no_dkg_failures;
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, TestingNode, connect_execution_peers,
+    Setup, TestingNode, connect_execution_peers,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
+    metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
 };
 use commonware_consensus::types::FixedEpocher;
@@ -16,7 +16,7 @@ use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_macros::test_traced;
 use commonware_math::algebra::Random as _;
 use commonware_runtime::{
-    BufferPooler, Clock, Handle, Metrics, Pacer, Runner as _, Spawner, Storage,
+    BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::NZU64;
@@ -46,28 +46,6 @@ impl FeedStateProvider for Follower {
 impl<T: FeedStateProvider> FeedStateProvider for &T {
     fn feed_state(&self) -> FeedStateHandle {
         (*self).feed_state()
-    }
-}
-
-async fn wait_for_height(context: &Context, prefix: &str, target_height: u64) {
-    loop {
-        let metrics = context.encode();
-        for line in metrics.lines() {
-            if !line.starts_with(prefix) {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-            if metric.ends_with("_marshal_processed_height") {
-                let height = value.parse::<u64>().unwrap();
-                if height >= target_height {
-                    return;
-                }
-            }
-        }
-
-        context.sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -119,7 +97,7 @@ impl FollowerBuilder {
         upstream: impl FeedStateProvider,
     ) -> Follower
     where
-        TContext: BufferPooler + Clock + CryptoRngCore + Metrics + Pacer + Spawner + Storage,
+        TContext: BufferPooler + Clock + CryptoRngCore + RuntimeMetrics + Pacer + Spawner + Storage,
     {
         use tempo_consensus::follow::upstream::in_process;
         let Self {
@@ -232,9 +210,11 @@ impl Follower {
             }
         }
     }
+}
 
-    fn name(&self) -> &str {
-        &self.name
+impl MetricScope for Follower {
+    fn metric_prefix(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -252,15 +232,16 @@ fn follower_bootstraps_from_validator() {
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-        wait_for_height(&context, CONSENSUS_NODE_PREFIX, target_height).await;
+        wait_for_height(&context, &validators[0], target_height).await;
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
             .follow(&mut context, &validators[0])
             .await;
+
         follower.connect_peers(&validators).await;
 
-        wait_for_height(&context, &follower.name, target_height).await;
+        wait_for_height(&context, &follower, target_height).await;
 
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
@@ -287,7 +268,7 @@ fn follower_fast_sync_skips_historical_boundaries() {
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-        wait_for_height(&context, CONSENSUS_NODE_PREFIX, start_height).await;
+        wait_for_height(&context, &validators[0], start_height).await;
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
@@ -296,7 +277,7 @@ fn follower_fast_sync_skips_historical_boundaries() {
 
         follower.connect_peers(&validators).await;
 
-        wait_for_height(&context, &follower.name, follower_target_height).await;
+        wait_for_height(&context, &follower, follower_target_height).await;
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
         let epoch_0_boundary = EPOCH_LENGTH - 1;
@@ -343,8 +324,8 @@ fn follower_reads_boundaries_after_full_dkg() {
             .await
             .unwrap();
 
-        wait_for_height(&context, CONSENSUS_NODE_PREFIX, start_height).await;
-        assert_no_dkg_failures(&context);
+        wait_for_height(&context, &validators[0], start_height).await;
+        context.to_metrics().assert_no_dkg_failures();
 
         let follower = Follower::builder()
             .runtime(execution_runtime.handle())
@@ -352,7 +333,7 @@ fn follower_reads_boundaries_after_full_dkg() {
             .await;
         follower.connect_peers(&validators).await;
 
-        wait_for_height(&context, &follower.name, follower_target_height).await;
+        wait_for_height(&context, &follower, follower_target_height).await;
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 
         let epoch_0_boundary = EPOCH_LENGTH - 1;
@@ -385,7 +366,7 @@ fn follower_bootstraps_from_follower() {
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         // Some finalization state needs to be present.
-        wait_for_height(&context, CONSENSUS_NODE_PREFIX, target_height).await;
+        wait_for_height(&context, &validators[0], target_height).await;
 
         let validator_follower = Follower::builder()
             .runtime(execution_runtime.handle())
@@ -394,7 +375,7 @@ fn follower_bootstraps_from_follower() {
         validator_follower.connect_peers(&validators).await;
 
         // Some finalization state needs to be present.
-        wait_for_height(&context, validator_follower.name(), target_height).await;
+        wait_for_height(&context, &validator_follower, target_height).await;
 
         let follower_follower = Follower::builder()
             .runtime(execution_runtime.handle())
@@ -406,7 +387,7 @@ fn follower_bootstraps_from_follower() {
         // should address all race conditions between a) the secondary follower
         // starting, b) receving the finalized block, and c) propagating it to its
         // consensus feed so that it can d) be queried successfully.
-        wait_for_height(&context, validator_follower.name(), target_height * 2).await;
+        wait_for_height(&context, &validator_follower, target_height * 2).await;
 
         follower_follower
             .feed
@@ -432,7 +413,7 @@ fn follower_starts_from_validator_archives() {
         connect_execution_peers(&validators).await;
 
         // Wait for validator[0] specifically since we'll donate its archive.
-        wait_for_height(&context, &validators[0].metric_prefix(), target_height).await;
+        wait_for_height(&context, &validators[0], target_height).await;
 
         // Stop validator[0] and donate both its consensus archive and EL chaindata
         // to the follower. Block production continues with 3/4 validators.
@@ -446,7 +427,7 @@ fn follower_starts_from_validator_archives() {
             .await;
         follower.connect_peers(&validators).await;
 
-        wait_for_height(&context, &follower.name, follower_target_height).await;
+        wait_for_height(&context, &follower, follower_target_height).await;
 
         follower.feed.get_finalization(Query::Latest).await.unwrap();
 

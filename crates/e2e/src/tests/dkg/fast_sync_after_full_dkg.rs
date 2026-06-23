@@ -11,11 +11,11 @@ use reth_ethereum::storage::BlockNumReader as _;
 use std::time::Duration;
 use tracing::info;
 
-use super::common::{
-    assert_no_dkg_failures, assert_skipped_rounds, wait_for_outcome,
-    wait_for_validators_to_reach_epoch,
+use super::common::{wait_for_outcome, wait_for_validators_to_reach_epoch};
+use crate::{
+    Setup, connect_execution_peers, connect_execution_to_peers, metrics::MetricsExt,
+    setup_validators,
 };
-use crate::{Setup, connect_execution_peers, connect_execution_to_peers, setup_validators};
 
 /// Tests that a late-joining validator can sync and participate after a full DKG ceremony.
 ///
@@ -117,7 +117,7 @@ fn validator_can_fast_sync_after_full_dkg() {
             context.sleep(Duration::from_millis(100)).await;
         }
         // ensure fast-sync was used to jump epoch boundaries (including from old to new sharing)
-        assert_skipped_rounds(&context);
+        context.to_metrics().assert_any_rounds_skipped();
 
         // verify continued progress
         let block_after_sync = late_validator
@@ -133,6 +133,6 @@ fn validator_can_fast_sync_after_full_dkg() {
             block_later > block_after_sync,
             "Late validator should keep progressing after sync"
         );
-        assert_no_dkg_failures(&context);
+        context.to_metrics().assert_no_dkg_failures();
     })
 }
