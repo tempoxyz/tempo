@@ -49,7 +49,7 @@ use tempo_payload_types::{
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tracing::{Level, debug, info, info_span, instrument, trace, warn};
 
 use super::{
     Mailbox,
@@ -81,7 +81,6 @@ struct BuildProposalArgs {
 }
 
 const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const SSMR_OPTIMISTIC_VERIFY_WAIT: Duration = Duration::from_millis(100);
 const BLOCK_SUBSCRIBE_EL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SSMR_STATIC_BUILD_BUDGET: Duration = Duration::from_millis(400);
 
@@ -295,40 +294,34 @@ impl Inner<Init> {
         &self,
         context: &TContext,
         block: &Block,
-        mut snapshot: SsmrStreamSnapshot,
-    ) -> (Option<SsmrCompleteStream>, bool)
+        mut snapshot: Option<SsmrStreamSnapshot>,
+    ) -> SsmrCompleteStream
     where
         TContext: commonware_runtime::Clock,
     {
-        if !snapshot.started {
-            return (None, false);
-        }
-        if !ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
-            return (snapshot.complete, false);
-        }
+        loop {
+            if let Some(current) = snapshot.take() {
+                if let Some(stream) = current.complete.as_ref()
+                    && stream.optimistic_payload.is_none()
+                {
+                    trace!(
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        optimistic.finalizing = stream.optimistic_execution_finalizing,
+                        optimistic.failed = stream.optimistic_execution_failed,
+                        "waiting for SSMR optimistic payload"
+                    );
+                }
+                if !ssmr_snapshot_waiting_for_optimistic_payload(&current)
+                    && let Some(stream) = current.complete
+                {
+                    return stream;
+                }
+            }
 
-        let wait_start = Instant::now();
-        while ssmr_snapshot_waiting_for_optimistic_payload(&snapshot) {
-            if wait_start.elapsed() >= SSMR_OPTIMISTIC_VERIFY_WAIT {
-                debug!(
-                    block.digest = %block.digest(),
-                    block.height = %block.height(),
-                    waited = ?wait_start.elapsed(),
-                    stream.complete = snapshot.complete.is_some(),
-                    "SSMR optimistic artifact not ready during verify wait; falling back to normal validation"
-                );
-                return (snapshot.complete, true);
-            }
             context.sleep(SSMR_SNAPSHOT_POLL_INTERVAL).await;
-            let Some(updated) = self.ssmr_stream_snapshot(block).await else {
-                return (None, false);
-            };
-            snapshot = updated;
-            if !snapshot.started {
-                return (None, false);
-            }
+            snapshot = self.ssmr_stream_snapshot(block).await;
         }
-        (snapshot.complete, false)
     }
 
     #[instrument(
@@ -998,91 +991,67 @@ impl Inner<Init> {
 
         let mut optimistic_payload = None;
         let mut ssmr_fallback_validation = false;
-        if let Some(snapshot) = self.ssmr_stream_snapshot(&block).await {
-            let stream_started = snapshot.started;
-            let (stream, optimistic_wait_timed_out) = self
+        if self.ssmr.is_some() {
+            let snapshot = self.ssmr_stream_snapshot(&block).await;
+            let stream = self
                 .wait_for_started_ssmr_stream(&context, &block, snapshot)
                 .await;
-            if let Some(stream) = stream {
-                match reconcile_ssmr_transcript(&block, &stream.transcript) {
-                    Ok(true) => {
-                        self.metrics.ssmr_final_reconciliations.inc();
-                        match stream.optimistic_payload {
-                            Some(payload) => {
-                                match reconcile_ssmr_optimistic_payload(&block, &payload) {
-                                    Ok(()) => {
-                                        if block.missing_required_sidecars() {
-                                            block = block_from_ssmr_optimistic_payload(&payload)?;
-                                        }
-                                        optimistic_payload = Some(payload);
-                                        debug!(
-                                            block.digest = %block.digest(),
-                                            block.height = %block.height(),
-                                            "final proposal matches complete SSMR transcript and optimistic artifact"
-                                        );
+            match reconcile_ssmr_transcript(&block, &stream.transcript) {
+                Ok(true) => {
+                    self.metrics.ssmr_final_reconciliations.inc();
+                    match stream.optimistic_payload {
+                        Some(payload) => {
+                            match reconcile_ssmr_optimistic_payload(&block, &payload) {
+                                Ok(()) => {
+                                    if block.missing_required_sidecars() {
+                                        block = block_from_ssmr_optimistic_payload(&payload)?;
                                     }
-                                    Err(mismatch) => {
-                                        ssmr_fallback_validation = true;
-                                        self.metrics.ssmr_fallback_validation_count.inc();
-                                        warn!(
-                                            ?mismatch,
-                                            block.digest = %block.digest(),
-                                            block.height = %block.height(),
-                                            proposal.has_required_sidecars = !block.missing_required_sidecars(),
-                                            proposal.has_block_access_list = block.block_access_list().is_some(),
-                                            optimistic.has_block_access_list = payload.block_access_list().is_some(),
-                                            "SSMR optimistic artifact does not match final proposal; falling back to normal validation"
-                                        );
-                                    }
+                                    optimistic_payload = Some(payload);
+                                    debug!(
+                                        block.digest = %block.digest(),
+                                        block.height = %block.height(),
+                                        "final proposal matches complete SSMR transcript and optimistic artifact"
+                                    );
+                                }
+                                Err(mismatch) => {
+                                    ssmr_fallback_validation = true;
+                                    self.metrics.ssmr_fallback_validation_count.inc();
+                                    warn!(
+                                        ?mismatch,
+                                        block.digest = %block.digest(),
+                                        block.height = %block.height(),
+                                        proposal.has_required_sidecars = !block.missing_required_sidecars(),
+                                        proposal.has_block_access_list = block.block_access_list().is_some(),
+                                        optimistic.has_block_access_list = payload.block_access_list().is_some(),
+                                        "SSMR optimistic artifact does not match final proposal; falling back to normal validation"
+                                    );
                                 }
                             }
-                            None => {
-                                ssmr_fallback_validation = true;
-                                self.metrics.ssmr_fallback_validation_count.inc();
-                                debug!(
-                                    block.digest = %block.digest(),
-                                    block.height = %block.height(),
-                                    optimistic.finalizing = stream.optimistic_execution_finalizing,
-                                    optimistic.failed = stream.optimistic_execution_failed,
-                                    optimistic.wait_timed_out = optimistic_wait_timed_out,
-                                    "final proposal matches SSMR transcript but optimistic artifact is unavailable; falling back to normal validation"
-                                );
-                            }
                         }
-                    }
-                    Ok(false) => {
-                        ssmr_fallback_validation = true;
-                        self.metrics.ssmr_final_reconciliation_mismatches.inc();
-                        self.metrics.ssmr_fallback_validation_count.inc();
-                        warn!(
-                            block.digest = %block.digest(),
-                            block.height = %block.height(),
-                            "complete SSMR transcript did not match final proposal; falling back to normal validation"
-                        );
-                    }
-                    Err(error) => {
-                        ssmr_fallback_validation = true;
-                        self.metrics.ssmr_final_reconciliation_mismatches.inc();
-                        self.metrics.ssmr_fallback_validation_count.inc();
-                        warn!(
-                            %error,
-                            block.digest = %block.digest(),
-                            block.height = %block.height(),
-                            "failed reconciling SSMR transcript; falling back to normal validation"
-                        );
+                        None => unreachable!("SSMR verify waits until optimistic payload is ready"),
                     }
                 }
-            } else {
-                ssmr_fallback_validation = true;
-                self.metrics.ssmr_missing_shards_at_proposal.inc();
-                self.metrics.ssmr_fallback_validation_count.inc();
-                debug!(
-                    block.digest = %block.digest(),
-                    block.height = %block.height(),
-                    stream.started = stream_started,
-                    optimistic.wait_timed_out = optimistic_wait_timed_out,
-                    "SSMR stream has no optimistic artifact at proposal; using normal validation"
-                );
+                Ok(false) => {
+                    ssmr_fallback_validation = true;
+                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
+                    self.metrics.ssmr_fallback_validation_count.inc();
+                    warn!(
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        "complete SSMR transcript did not match final proposal; falling back to normal validation"
+                    );
+                }
+                Err(error) => {
+                    ssmr_fallback_validation = true;
+                    self.metrics.ssmr_final_reconciliation_mismatches.inc();
+                    self.metrics.ssmr_fallback_validation_count.inc();
+                    warn!(
+                        %error,
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        "failed reconciling SSMR transcript; falling back to normal validation"
+                    );
+                }
             }
         } else {
             ssmr_fallback_validation = true;
@@ -1412,11 +1381,11 @@ enum SsmrOptimisticPayloadMismatch {
 
 fn ssmr_snapshot_waiting_for_optimistic_payload(snapshot: &SsmrStreamSnapshot) -> bool {
     if !snapshot.started {
-        return false;
+        return true;
     }
 
     match snapshot.complete.as_ref() {
-        Some(stream) => stream.optimistic_payload.is_none() && !stream.optimistic_execution_failed,
+        Some(stream) => stream.optimistic_payload.is_none(),
         None => true,
     }
 }

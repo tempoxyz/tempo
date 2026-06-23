@@ -1157,9 +1157,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     return 0
 }
 
-def e2e-run-sides [run_pairs: int] {
+def e2e-run-sides [run_pairs: int, run_side: string] {
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $run_side not-in ["comparison" "feature"] {
+        print $"Error: --run-side must be one of: comparison, feature \(got '($run_side)'\)"
         exit 1
     }
 
@@ -1173,7 +1177,11 @@ def e2e-run-sides [run_pairs: int] {
             $sides = ($sides | append ["feature" "baseline"])
         }
     }
-    $sides
+    if $run_side == "feature" {
+        $sides | where { |side| $side == "feature" }
+    } else {
+        $sides
+    }
 }
 
 def e2e-write-summary-config [
@@ -1284,6 +1292,7 @@ def "main e2e" [
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
     --runner-metrics-url: string = $E2E_RUNNER_METRICS_URL # Runner node-exporter metrics URL (empty disables runner metrics)
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
+    --run-side: string = "comparison"                    # comparison runs baseline and feature; feature runs feature only
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1310,6 +1319,10 @@ def "main e2e" [
     }
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $run_side not-in ["comparison" "feature"] {
+        print $"Error: --run-side must be one of: comparison, feature \(got '($run_side)'\)"
         exit 1
     }
     if $summary_warmup_blocks < 0 {
@@ -1614,7 +1627,7 @@ def "main e2e" [
     mut baseline_run_index = 0
     mut feature_run_index = 0
     mut runs = []
-    for side in (e2e-run-sides $run_pairs) {
+    for side in (e2e-run-sides $run_pairs $run_side) {
         if $side == "baseline" {
             $baseline_run_index = $baseline_run_index + 1
             $runs = ($runs | append {
