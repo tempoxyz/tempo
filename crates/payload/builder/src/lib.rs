@@ -21,10 +21,9 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
-use alloy_eip7928::bal::Bal;
+use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy};
 use alloy_eips::eip2718::Encodable2718;
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -38,21 +37,15 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, block::BlockExecutor,
     execute::BlockAssemblerInput,
 };
-use reth_execution_types::BlockExecutionOutput;
+use reth_execution_types::BlockExecutionResult;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
-use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{
-    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
-};
-use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
-};
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_payload_primitives::BuiltPayload;
+use reth_primitives_traits::{Recovered, RecoveredBlock};
+use reth_revm::{State, context::Block, database::StateProviderDatabase, db::BundleState};
+use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -62,7 +55,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -88,7 +80,7 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+use tracing::{debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -121,8 +113,6 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
-    /// Whether to include block access lists in built execution payloads.
-    enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -201,8 +191,7 @@ where
     metrics: &'a TempoPayloadBuilderMetrics,
     executor: &'a mut E,
     best_txs: &'a mut StateAwareBestTransactions<I>,
-    roots_tx: &'a Sender<(BuilderTx, TempoReceipt)>,
-    bal_task_handle: Option<&'a BalTaskHandle>,
+    roots_tx: &'a Sender<BuilderTx>,
     is_cancelled: &'a dyn Fn() -> bool,
     started_at: Instant,
     build_once_with_shared_trie: bool,
@@ -233,7 +222,6 @@ where
             executor,
             best_txs,
             roots_tx,
-            bal_task_handle,
             is_cancelled,
             started_at,
             build_once_with_shared_trie,
@@ -250,14 +238,14 @@ where
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut cumulative_gas_used = 0;
-        let mut cumulative_state_gas_used = 0u64;
+        let cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut total_fees = U256::ZERO;
         let mut skipped_oversized_block = false;
-        let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let marshal_persist = marshal_persist_estimate();
 
@@ -380,61 +368,16 @@ where
                 continue;
             }
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
-                |result| {
-                    cumulative_gas_used += result.block_gas_used();
-                    cumulative_state_gas_used += result.state_gas_used();
-                    if !is_payment {
-                        non_payment_gas_used += result.block_gas_used();
-                    }
-
-                    total_fees += result.validator_fee();
-
-                    best_txs.on_new_result(result);
-                },
-            );
-            if let Err(err) = execution_result {
-                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                }) = &err
-                {
-                    invalid_pool_transaction_execution_attempts += 1;
-
-                    if error.is_nonce_too_low() {
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        metrics.inc_pool_tx_skipped("nonce_too_low");
-                    } else {
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        metrics.inc_pool_tx_skipped("invalid_tx");
-                    }
-                    continue;
-                } else {
-                    return Err(PayloadBuilderError::evm(err));
-                }
-            };
-            trace!("Transaction executed");
-            if let Some(bal_task_handle) = bal_task_handle {
-                bal_task_handle.bump_bal_index();
+            cumulative_gas_used += max_regular_gas_used;
+            if !is_payment {
+                non_payment_gas_used += max_regular_gas_used;
             }
+            total_fees += core::cmp::max(pool_tx.transaction.fee_token_cost(), U256::from(1_u64));
+            trace!("Transaction selected without local execution");
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+            let _ = roots_tx.send(BuilderTx::Pooled(pool_tx));
         };
 
         let elapsed_at_tx_cutoff = started_at.elapsed();
@@ -480,7 +423,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
-            enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -626,7 +568,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -635,7 +577,7 @@ where
         let PayloadConfig {
             parent_header,
             attributes,
-            payload_id,
+            payload_id: _,
             ..
         } = config;
         let build_once_with_shared_trie =
@@ -787,32 +729,7 @@ where
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
-
-        let bal_task_handle = if self.enable_bal {
-            let bal_task_handle =
-                self.spawn_bal_task(trie_handle.as_ref().map(|handle| handle.state_hook()));
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
-            Some(bal_task_handle)
-        } else {
-            if let Some(ref handle) = trie_handle {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.state_hook())));
-            }
-            None
-        };
-
-        executor.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
-        if let Some(bal_task_handle) = &bal_task_handle {
-            bal_task_handle.bump_bal_index();
-        }
+        drop(trie_handle);
 
         check_cancel!();
 
@@ -877,7 +794,6 @@ where
             executor: &mut executor,
             best_txs: &mut best_txs,
             roots_tx: &roots_tx,
-            bal_task_handle: bal_task_handle.as_ref(),
             is_cancelled: &is_cancelled,
             started_at: start,
             build_once_with_shared_trie,
@@ -939,38 +855,14 @@ where
             debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
-        // Apply subblock transactions
+        // Include subblock transactions without local execution.
         for subblock in subblocks {
             let subblock_start = Instant::now();
             let mut subblock_tx_count = 0f64;
 
             for tx in subblock.into_recovered_iter() {
-                if let Err(err) = executor.execute_transaction(&tx) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(executor.evm().block().number.to(), Ordering::Relaxed);
-                        self.metrics.inc_build_failure("subblock_invalid_tx");
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
-                    }
-                }
-                if let Some(bal_task_handle) = &bal_task_handle {
-                    bal_task_handle.bump_bal_index();
-                }
-
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
-                    BuilderTx::Owned(Box::new(tx)),
-                    executor.receipts().last().unwrap().clone(),
-                ));
+                let _ = roots_tx.send(BuilderTx::Owned(Box::new(tx)));
             }
 
             self.metrics
@@ -995,22 +887,12 @@ where
             .subblock_transactions_last
             .set(subblock_transactions);
 
-        // Apply system transactions
+        // Include system transactions without local execution.
         let system_txs_execution_start = Instant::now();
         let _system_txs_span =
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
-            executor
-                .execute_transaction(&system_tx)
-                .map_err(PayloadBuilderError::evm)?;
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
-
-            let _ = roots_tx.send((
-                BuilderTx::Owned(Box::new(system_tx)),
-                executor.receipts().last().unwrap().clone(),
-            ));
+            let _ = roots_tx.send(BuilderTx::Owned(Box::new(system_tx)));
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -1039,82 +921,16 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let (evm, execution_result) = executor.finish()?;
-        let evm_env = evm.into_env();
+        let evm_env = executor.evm().evm_env();
+        drop(executor);
 
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
-
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
-        db.set_state_hook(None);
-
-        // Drop the BAL task sender to trigger finalization.
-        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
-
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
-            .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
-        } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
-        };
-
-        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
-                let state_root_wait_start = Instant::now();
-                let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
-                        let elapsed = state_root_wait_start.elapsed();
-                        self.metrics
-                            .sparse_trie_state_root_wait_duration_seconds
-                            .record(elapsed);
-                        debug!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
-                        );
-                        Some((outcome, elapsed))
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "payload_builder",
-                            id = %payload_id,
-                            %err,
-                            "sparse trie failed, falling back to sync state root"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-            .unzip();
-
-        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
-            (Some(bal), Some(bal_hash))
-        } else {
-            (None, None)
-        };
-
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
-        } else {
-            let (state_root, trie_updates) = finish_provider
-                .state_root_with_updates(hashed_state.clone())
-                .map_err(BlockExecutionError::other)?;
-
-            (state_root, Arc::new(trie_updates))
-        };
+        let execution_result = BlockExecutionResult::<TempoReceipt>::default();
+        let empty_bundle_state = BundleState::default();
+        let sparse_trie_state_root_wait_elapsed: Option<Duration> = None;
+        let block_access_list: Option<Bytes> = None;
 
         let RootsTaskResult {
             transactions_root,
-            receipts_root,
-            receipts_bloom,
             transactions,
             senders,
             encoded_block_transactions,
@@ -1129,15 +945,24 @@ where
                 &parent_header,
                 transactions,
                 &execution_result,
-                &db.bundle_state,
+                &empty_bundle_state,
                 &finish_provider,
-                state_root,
-                block_access_list_hash,
+                B256::ZERO,
+                None,
             ),
             Some(transactions_root),
-            Some(receipts_root),
-            Some(receipts_bloom),
+            Some(B256::ZERO),
+            Some(Bloom::ZERO),
         )?;
+
+        let mut block = block;
+        block.header.inner.state_root = B256::ZERO;
+        block.header.inner.receipts_root = B256::ZERO;
+        block.header.inner.logs_bloom = Bloom::ZERO;
+        block.header.inner.gas_used = 0;
+        if chain_spec.is_prague_active_at_timestamp(attributes.timestamp) {
+            block.header.inner.requests_hash = Some(B256::ZERO);
+        }
 
         let block = RecoveredBlock::new_unhashed(block, senders);
 
@@ -1290,22 +1115,10 @@ where
         self.executor.spawn_drop(execution_block_encoder);
         let eth_payload = EthBuiltPayload::new(block.clone(), draft.total_fees, requests, None);
 
-        let execution_output = BlockExecutionOutput {
-            result: execution_result,
-            state: db.take_bundle(),
-        };
-
-        let executed_block = BuiltPayloadExecutedBlock {
-            recovered_block: block,
-            execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
-            trie_updates,
-        };
-
         let payload = TempoBuiltPayload::new(
             eth_payload,
             block_access_list,
-            Some(executed_block),
+            None,
             validation_work_duration,
             validation_latency_duration,
             draft.estimated_rlp_block_size,
@@ -1324,14 +1137,8 @@ where
         }
     }
 
-    fn spawn_roots_task(
-        &self,
-    ) -> (
-        Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<RootsTaskResult>,
-    ) {
-        let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+    fn spawn_roots_task(&self) -> (Sender<BuilderTx>, oneshot::Receiver<RootsTaskResult>) {
+        let (transactions_tx, transactions_rx) = crossbeam_channel::unbounded::<BuilderTx>();
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
@@ -1340,13 +1147,11 @@ where
                 let mut senders = Vec::new();
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
 
                 let mut buf = Vec::new();
 
-                for (tx, receipt) in transactions_rx.into_iter() {
+                for tx in transactions_rx.into_iter() {
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
@@ -1354,20 +1159,10 @@ where
                     encoded_block_transactions.push(&tx, &buf);
                     transactions.push(tx);
                     senders.push(sender);
-
-                    let receipt = receipt.with_bloom_ref();
-
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
                 }
                 let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
                 let _ = result_tx.send(RootsTaskResult {
                     transactions_root,
-                    receipts_root,
-                    receipts_bloom,
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
@@ -1376,68 +1171,6 @@ where
 
         (transactions_tx, result_rx)
     }
-
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-        let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                    }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
-                        }
-                    }
-                }
-            }
-
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
-
-        BalTaskHandle {
-            msg_tx: task_tx,
-            bal_rx,
-        }
-    }
-}
-
-struct BalTaskHandle {
-    msg_tx: mpsc::Sender<BalMessage>,
-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
-}
-
-impl BalTaskHandle {
-    fn state_hook(&self) -> impl OnStateHook {
-        let msg_tx = self.msg_tx.clone();
-        move |state: EvmState| {
-            let _ = msg_tx.send(BalMessage::State(state));
-        }
-    }
-
-    fn bump_bal_index(&self) {
-        let _ = self.msg_tx.send(BalMessage::BumpIndex);
-    }
-
-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
-        self.bal_rx
-    }
-}
-
-enum BalMessage {
-    State(EvmState),
-    BumpIndex,
 }
 
 pub fn is_more_subblocks(
@@ -1536,10 +1269,6 @@ impl BuilderTx {
 pub(crate) struct RootsTaskResult {
     /// The root hash of the transaction trie.
     transactions_root: B256,
-    /// The root hash of the receipts trie.
-    receipts_root: B256,
-    /// The receipts bloom filter.
-    receipts_bloom: Bloom,
     /// The transactions included in the block.
     transactions: Vec<TempoTxEnvelope>,
     /// The senders of the transactions.

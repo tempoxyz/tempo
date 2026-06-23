@@ -142,13 +142,6 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
-    /// Increments the build failure counter for a given reason.
-    #[inline]
-    pub(crate) fn inc_build_failure(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
-            .increment(1);
-    }
-
     /// Increments the counter for why the payload builder stopped adding pool transactions.
     #[inline]
     pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
