@@ -96,53 +96,36 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
-trait PayloadTransactionSource {
-    fn next(&mut self) -> Option<parallel::PlannedTransaction>;
-
-    fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError);
-
-    fn on_new_result(&mut self, result: &TempoTxResult);
+enum PayloadTransactions<Provider> {
+    Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
+    Parallel(parallel::PrewarmingPlanner<Provider>),
 }
 
-struct SequentialPayloadTransactions {
-    inner: StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>,
-}
-
-impl PayloadTransactionSource for SequentialPayloadTransactions {
-    fn next(&mut self) -> Option<parallel::PlannedTransaction> {
-        self.inner
-            .next()
-            .map(parallel::PlannedTransaction::without_replay)
-    }
-
-    fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
-        self.inner.mark_invalid(tx, kind);
-    }
-
-    fn on_new_result(&mut self, result: &TempoTxResult) {
-        self.inner.on_new_result(result);
-    }
-}
-
-struct ParallelPayloadTransactions<Provider> {
-    planner: parallel::PrewarmingPlanner<Provider>,
-}
-
-impl<Provider> PayloadTransactionSource for ParallelPayloadTransactions<Provider>
+impl<Provider> PayloadTransactions<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
     fn next(&mut self) -> Option<parallel::PlannedTransaction> {
-        self.planner.next()
+        match self {
+            Self::Sequential(txs) => txs.next().map(parallel::PlannedTransaction::without_replay),
+            Self::Parallel(planner) => planner.next(),
+        }
     }
 
     fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
-        self.planner.mark_invalid(tx, kind);
+        match self {
+            Self::Sequential(txs) => txs.mark_invalid(tx, kind),
+            Self::Parallel(planner) => planner.mark_invalid(tx, kind),
+        }
     }
 
     fn on_new_result(&mut self, result: &TempoTxResult) {
-        self.planner
-            .on_state_update(StateAwareBestTransactionsUpdate::from_result(result));
+        match self {
+            Self::Sequential(txs) => txs.on_new_result(result),
+            Self::Parallel(planner) => {
+                planner.on_state_update(StateAwareBestTransactionsUpdate::from_result(result));
+            }
+        }
     }
 }
 
@@ -619,13 +602,11 @@ where
             executor.evm().evm_env(),
             Arc::new(AtomicBool::new(false)),
         );
-        let mut best_txs: Box<dyn PayloadTransactionSource> = if self.config.enable_parallel {
-            Box::new(ParallelPayloadTransactions {
-                planner: parallel::PrewarmingPlanner::new(
-                    prewarm_ctx,
-                    StateAwareBestTransactions::new(raw_best_txs),
-                ),
-            })
+        let mut best_txs = if self.config.enable_parallel {
+            PayloadTransactions::Parallel(parallel::PrewarmingPlanner::new(
+                prewarm_ctx,
+                StateAwareBestTransactions::new(raw_best_txs),
+            ))
         } else {
             let inner = if self.config.enable_prewarming {
                 Box::new(BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs))
@@ -634,9 +615,7 @@ where
                 Box::new(raw_best_txs)
             };
 
-            Box::new(SequentialPayloadTransactions {
-                inner: StateAwareBestTransactions::new(inner),
-            })
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(inner))
         };
         self.metrics
             .pool_fetch_duration_seconds

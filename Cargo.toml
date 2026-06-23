@@ -10,6 +10,7 @@ categories = ["cryptography::cryptocurrencies"]
 keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
+
 [workspace]
 members = [
   "bin/tempo",
