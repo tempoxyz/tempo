@@ -12,13 +12,14 @@
 //! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
 //!
 //! SSMR adaptive path:
-//! `leader_idle + predicted_builder_work + marshal_persist >= budget`.
+//! `leader_idle + max(predicted_builder_work, predicted_validator_work) + marshal_persist >= budget`.
 //! Idle waiting only happens on the proposer. Builder work is projected from the
 //! current build, while validator work uses feedback from previously validated
 //! blocks when available and otherwise falls back to the builder projection.
 //! Once SSMR learns the proposal-return-to-notarization tail, that tail already
-//! has been reserved by consensus before the payload build budget reaches this
-//! helper.
+//! has been reserved by consensus. Streamed validation can overlap block
+//! construction, but the slower side still determines when the block can safely
+//! be returned.
 
 use std::time::Duration;
 
@@ -92,13 +93,15 @@ pub(crate) struct PayloadBudgetInput {
 /// from this build.
 /// `current_workload` describes the block currently being assembled.
 /// `post_return_tail_budget`, when present, means consensus already subtracted
-/// the post-return tail from the supplied build budget.
+/// the post-return tail from the supplied build budget and SSMR validation work
+/// is expected to overlap proposer build work.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
 /// work once, and marshal persistence once for each side. With an adaptive
-/// post-return tail, we charge proposer marshal persistence once because the
-/// supplied budget already excludes the measured tail.
+/// post-return tail, validator execution overlaps builder execution, so we
+/// charge the slower of the two plus proposer marshal persistence once because
+/// the supplied budget already excludes the measured tail.
 pub(crate) fn payload_budget_decision(input: PayloadBudgetInput) -> PayloadBudgetDecision {
     let PayloadBudgetInput {
         elapsed,
@@ -116,15 +119,19 @@ pub(crate) fn payload_budget_decision(input: PayloadBudgetInput) -> PayloadBudge
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
     let predicted_validator_work = validation_latency_estimate.unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
-    let tail_reserved = if post_return_tail_budget.is_some() {
-        Duration::ZERO
+    let concurrent_work_reserved = if post_return_tail_budget.is_some() {
+        predicted_builder_work.max(predicted_validator_work)
     } else {
-        predicted_validator_work.saturating_add(marshal_persist)
+        predicted_builder_work.saturating_add(predicted_validator_work)
     };
     let total_reserved = idle_elapsed
-        .saturating_add(predicted_builder_work)
+        .saturating_add(concurrent_work_reserved)
         .saturating_add(marshal_persist)
-        .saturating_add(tail_reserved);
+        .saturating_add(if post_return_tail_budget.is_some() {
+            Duration::ZERO
+        } else {
+            marshal_persist
+        });
     PayloadBudgetDecision {
         predicted_builder_work,
         predicted_validator_work,
@@ -349,6 +356,32 @@ mod tests {
         assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
         assert_eq!(decision.marshal_persist, Duration::from_millis(15));
         assert_eq!(decision.total_reserved, Duration::from_millis(150));
+    }
+
+    #[test]
+    fn ssmr_budget_reserves_slower_validator_work() {
+        let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
+        let workload = ValidationLatencyWorkload::new(100, 0);
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(240));
+
+        let decision = payload_budget_decision(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            marshal_persist,
+            15_000,
+            validation_latency,
+            Some(Duration::from_millis(40)),
+            workload,
+        );
+
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(240)
+        );
+        assert_eq!(decision.marshal_persist, Duration::from_millis(15));
+        assert_eq!(decision.total_reserved, Duration::from_millis(255));
     }
 
     #[test]

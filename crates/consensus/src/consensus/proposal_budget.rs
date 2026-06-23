@@ -19,7 +19,8 @@ pub(crate) struct ProposalPacing {
     pub(crate) proposal_return_budget: Duration,
     /// Observed time from returning our proposal to seeing its notarization.
     ///
-    /// When present, this replaces the normal validator-side reserve for SSMR.
+    /// When present, SSMR uses it for the post-return consensus/network tail
+    /// while the payload builder models validator execution as overlapped work.
     pub(crate) post_return_tail: Option<Duration>,
 }
 
