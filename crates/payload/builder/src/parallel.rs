@@ -14,7 +14,7 @@ use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoTxResult, evm::TempoEvm};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
-use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
+use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},

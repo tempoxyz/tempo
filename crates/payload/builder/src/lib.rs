@@ -477,6 +477,7 @@ where
         let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
+        let mut parallel_transactions_executed = 0u64;
         let mut total_fees = U256::ZERO;
 
         // If building an empty payload, don't include any subblocks
@@ -787,6 +788,7 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
+            let replayed_transaction = parallel_replay.is_some();
             if let Some(replay) = parallel_replay {
                 let mut stop_reason = None;
                 let execution_outcome = executor.execute_storage_action_replay_tx(
@@ -932,6 +934,9 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
+            if replayed_transaction {
+                parallel_transactions_executed += 1;
+            }
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
@@ -1269,6 +1274,12 @@ where
             .pool_transactions_included_last
             .set(pool_transactions_included as f64);
         self.metrics
+            .parallel_transactions_executed
+            .record(parallel_transactions_executed as f64);
+        self.metrics
+            .parallel_transactions_executed_last
+            .set(parallel_transactions_executed as f64);
+        self.metrics
             .invalid_pool_transaction_execution_attempts
             .record(invalid_pool_transaction_execution_attempts as f64);
         self.metrics
@@ -1323,6 +1334,7 @@ where
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
+            parallel_transactions_executed,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
             subblock_transactions,
