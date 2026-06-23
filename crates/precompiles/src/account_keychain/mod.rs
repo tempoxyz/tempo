@@ -800,12 +800,23 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        let key_hash = Self::spending_limit_key(account, key_id);
+        self.validate_call_scope_for_transaction_key_hash(key_hash, to, input)
+    }
+
+    /// Validates a top-level call against a precomputed account/key scope hash.
+    ///
+    /// Callers must only use this for non-root keys on T3+.
+    pub fn validate_call_scope_for_transaction_key_hash(
+        &self,
+        key_hash: B256,
+        to: &TxKind,
+        input: &[u8],
+    ) -> Result<()> {
         let target = match to {
             TxKind::Call(target) => *target,
             TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
         };
-
-        let key_hash = Self::spending_limit_key(account, key_id);
 
         // Key-level scoped flag decides whether this CALL must match the stored scope tree.
         if !self.key_scopes[key_hash].is_scoped.read()? {

@@ -499,6 +499,8 @@ where
 
             (access_key_addr, keychain_sig.user_address)
         };
+        let scope_key_hash = (access_key_addr != Address::ZERO)
+            .then(|| AccountKeychain::spending_limit_key(user_address, access_key_addr));
         let Some(kind) = calls.first().map(|call| call.to) else {
             return Err(EVMError::Custom(
                 "AA transactions must contain at least one call".into(),
@@ -515,12 +517,20 @@ where
             || {
                 let keychain = AccountKeychain::default();
                 for call in calls {
-                    keychain.validate_call_scope_for_transaction(
-                        user_address,
-                        access_key_addr,
-                        &call.to,
-                        call.input.as_ref(),
-                    )?;
+                    if let Some(scope_key_hash) = scope_key_hash {
+                        keychain.validate_call_scope_for_transaction_key_hash(
+                            scope_key_hash,
+                            &call.to,
+                            call.input.as_ref(),
+                        )?;
+                    } else {
+                        keychain.validate_call_scope_for_transaction(
+                            user_address,
+                            access_key_addr,
+                            &call.to,
+                            call.input.as_ref(),
+                        )?;
+                    }
                 }
                 Ok::<(), TempoPrecompileError>(())
             },
