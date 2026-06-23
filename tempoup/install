@@ -28,9 +28,6 @@ should_verify_tempo_after_tempoup() {
             -h|--help|-v|--version|-U|--update)
                 return 1
                 ;;
-            -i|--install)
-                return 0
-                ;;
         esac
     done
 

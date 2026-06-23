@@ -178,6 +178,9 @@ run_install '
     should_verify_tempo_after_tempoup
     should_verify_tempo_after_tempoup --unsafe-skip-verify
     should_verify_tempo_after_tempoup --unsafe-skip-verify -i v1.9.1
+    ! should_verify_tempo_after_tempoup -i v1.9.1 --help
+    ! should_verify_tempo_after_tempoup -i v1.9.1 --version
+    ! should_verify_tempo_after_tempoup -i v1.9.1 --update
     ! should_verify_tempo_after_tempoup --help
     ! should_verify_tempo_after_tempoup -h
     ! should_verify_tempo_after_tempoup --version
@@ -186,3 +189,22 @@ run_install '
     ! should_verify_tempo_after_tempoup -U
 '
 ok "bootstrap verification gating"
+
+ROLLBACK_DIR="$TMP_ROOT/rollback-upgrade"
+mkdir -p "$ROLLBACK_DIR"
+printf 'old tempo\n' > "$ROLLBACK_DIR/tempo"
+if output="$(ROLLBACK_DIR="$ROLLBACK_DIR" run_tempoup '
+    TEMPOUP_INSTALL_TARGET="$ROLLBACK_DIR/tempo"
+    TEMPOUP_OLD_BINARY="$TEMPOUP_INSTALL_TARGET.old"
+    TEMPOUP_HAD_OLD_BINARY=1
+    mv -f "$TEMPOUP_INSTALL_TARGET" "$TEMPOUP_OLD_BINARY"
+    trap rollback_tempo_install EXIT
+    printf "new tempo\n" > "$TEMPOUP_INSTALL_TARGET"
+    false
+' 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    fail "failed upgrade rollback succeeded"
+fi
+[[ "$(cat "$ROLLBACK_DIR/tempo")" == "old tempo" ]] || fail "failed upgrade did not restore old tempo"
+[[ ! -e "$ROLLBACK_DIR/tempo.old" ]] || fail "failed upgrade left backup behind"
+ok "failed upgrade restores old tempo"
