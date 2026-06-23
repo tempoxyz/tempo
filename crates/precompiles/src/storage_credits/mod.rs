@@ -9,11 +9,11 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::cell::OnceCell;
+use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -29,10 +29,10 @@ pub enum CreditMode {
 // NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    /// Remaining number of credits that may be spent directly in `Direct` mode.
-    pub budget: u64,
     /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Remaining number of credits that may be spent directly in `Direct` mode.
+    pub budget: u64,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
@@ -44,9 +44,9 @@ impl TryFrom<U256> for TransientState {
     fn try_from(value: U256) -> Result<Self> {
         let limbs = value.as_limbs();
         Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[2],
+            mode: (limbs[0] as u8).try_into()?,
+            budget: limbs[1],
+            pending_refunds: limbs[3],
         })
     }
 }
@@ -54,7 +54,7 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, value.pending_refunds, 0])
+        Self::from_limbs([value.mode as u64, value.budget, 0, value.pending_refunds])
     }
 }
 
@@ -165,6 +165,31 @@ impl StorageCredits {
         self.handler::<u64>(account).read()
     }
 
+    /// Runs `f` and returns its value plus the number of credits minted for `account`.
+    ///
+    /// A negative delta means the operation consumed credits where the caller expected
+    /// a mint-only/no-op operation, so it is treated as a fatal bookkeeping error.
+    pub fn track_minted_credits<T>(
+        &self,
+        account: Address,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, u64)> {
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
+
+        let before = self.balance_of(account)?;
+        let value = f()?;
+        let after = self.balance_of(account)?;
+        if after < before {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "storage credit operation for owner {account} consumed credits (before: {before}, after: {after})"
+            )));
+        }
+
+        Ok((value, after - before))
+    }
+
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
         self.credit_state_of(account).map(|state| state.mode)
     }
@@ -173,6 +198,7 @@ impl StorageCredits {
         self.credit_state_of(account).map(|state| state.budget)
     }
 
+    /// Sets the transaction-local storage-creation mode for the caller.
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mode = CreditMode::try_from(mode)?;
         let budget = if matches!(mode, CreditMode::Direct) {
@@ -220,6 +246,79 @@ impl StorageCredits {
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
         self.handler::<U256>(account).t_write(state.into())
+    }
+
+    /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
+    /// from `credit_owner`'s balance, returning the signed persistent credit-balance delta.
+    ///
+    /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
+    /// before this returns so later storage writes cannot consume the remaining allowance.
+    pub fn with_budget<T>(
+        &mut self,
+        credit_owner: Address,
+        limit: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, i128)> {
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
+
+        if limit == 0 {
+            let before = self.balance_of(credit_owner)?;
+            let value = f()?;
+            let after = self.balance_of(credit_owner)?;
+            return Ok((value, i128::from(after) - i128::from(before)));
+        }
+
+        self.set_budget(credit_owner, limit)?;
+
+        let before = self.balance_of(credit_owner)?;
+        let result = f();
+        let after = self.balance_of(credit_owner)?;
+        let delta = i128::from(after) - i128::from(before);
+
+        // After `f` has been applied and accounting is done, reset to `Preserve`.
+        let current_state = self.credit_state_of(credit_owner)?;
+        let state = TransientState {
+            budget: 0,
+            mode: CreditMode::Preserve,
+            pending_refunds: current_state.pending_refunds,
+        };
+        self.write_credit_state_of(credit_owner, state)?;
+
+        result.map(|value| (value, delta))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StorageCreditDeltas(BTreeMap<Address, u64>);
+
+impl StorageCreditDeltas {
+    pub fn new() -> Self {
+        Self(BTreeMap::default())
+    }
+
+    /// Adds `slots` reusable-storage credits earned by `user`.
+    ///
+    /// This intentionally records only a delta. The persisted counter is loaded once during
+    /// [`Self::flush`], outside the fill loop and only if the enclosing DEX operation succeeds.
+    pub fn credit_slots(&mut self, user: Address, slots: u64) {
+        if slots == 0 {
+            return;
+        }
+
+        self.0
+            .entry(user)
+            .and_modify(|total| *total = total.saturating_add(slots))
+            .or_insert(slots);
+    }
+
+    pub fn flush(self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
+        for (user, slots) in self.0 {
+            apply(user, slots)?;
+        }
+
+        Ok(())
     }
 }
 
