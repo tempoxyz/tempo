@@ -120,34 +120,25 @@ impl StablecoinDEX {
 
     /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
     fn delete_order(&mut self, order: &Order) -> Result<u64> {
-        let delta = StorageCredits::new()
-            .track_credit_delta(self.address, || self.orders[order.order_id()].delete())?;
-        if delta < 0 {
-            return Err(TempoPrecompileError::Fatal(format!(
-                "DEX order delete spent storage credits: delta {delta}"
-            )));
-        }
-
-        Ok(delta as u64)
+        StorageCredits::new()
+            .track_minted_credits(self.address, || self.orders[order.order_id()].delete())
+            .map(|(_, credits)| credits)
     }
 
-    /// Updates an order-record and credits `order_id`'s maker for any minted credits.
-    fn update_order_and_credit_maker(
+    /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
+    fn unlink_neighbor_and_credit_maker(
         &mut self,
         order_id: u128,
         update: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<()> {
-        let delta = StorageCredits::new().track_credit_delta(self.address, || update(self))?;
-        if delta < 0 {
-            return Err(TempoPrecompileError::Fatal(format!(
-                "DEX order update spent storage credits: order {order_id}, delta {delta}"
-            )));
-        } else if delta == 0 {
+        let (_, credits) =
+            StorageCredits::new().track_minted_credits(self.address, || update(self))?;
+        if credits == 0 {
             return Ok(());
         }
 
         let maker = self.orders[order_id].maker.read()?;
-        self.credit_dex_storage_slots(maker, delta as u64)
+        self.credit_dex_storage_slots(maker, credits)
     }
 
     /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
@@ -1115,8 +1106,8 @@ impl StablecoinDEX {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            let delta = StorageCredits::new()
-                .track_credit_delta(self.address, || self.orders[order.next()].prev.delete())?;
+            let (_, credits) = StorageCredits::new()
+                .track_minted_credits(self.address, || self.orders[order.next()].prev.delete())?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -1129,7 +1120,7 @@ impl StablecoinDEX {
                 .write(level)?;
 
             let new_order = self.orders[order.next()].read()?;
-            storage_credits.credit_slots(new_order.maker(), delta.max(0) as u64);
+            storage_credits.credit_slots(new_order.maker(), credits);
 
             Some((level, new_order))
         };
@@ -1354,7 +1345,7 @@ impl StablecoinDEX {
 
         // Update linked list
         if order.prev() != 0 {
-            self.update_order_and_credit_maker(order.prev(), |s| {
+            self.unlink_neighbor_and_credit_maker(order.prev(), |s| {
                 s.orders[order.prev()].next.write(order.next())
             })?;
         } else {
@@ -1362,7 +1353,7 @@ impl StablecoinDEX {
         }
 
         if order.next() != 0 {
-            self.update_order_and_credit_maker(order.next(), |s| {
+            self.unlink_neighbor_and_credit_maker(order.next(), |s| {
                 s.orders[order.next()].prev.write(order.prev())
             })?;
         } else {
