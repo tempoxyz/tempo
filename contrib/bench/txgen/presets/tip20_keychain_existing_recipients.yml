@@ -35,6 +35,7 @@ setup:
             - ${TXGEN_KEYCHAIN_ACCESS_KEYS_END}
         key_type: secp256k1
         gas_limit: ${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}
+        fee_token: "0x20c0000000000000000000000000000000000000"
         limits: ${TXGEN_KEYCHAIN_TIP20_LIMITS}
         allowed_calls: ${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}
 
