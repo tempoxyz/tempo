@@ -39,6 +39,8 @@ impl StorageActions {
     }
 
     /// Enables actions recording.
+    #[cold]
+    #[inline(never)]
     pub fn enable(&mut self) {
         match self {
             Self::Disabled => *self = Self::enabled(),
@@ -52,11 +54,15 @@ impl StorageActions {
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn take(&self) -> Option<Vec<StorageAction>> {
         self.replace(Vec::new())
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
             Self::Disabled => None,
