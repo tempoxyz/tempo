@@ -95,6 +95,7 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
 const DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES: usize = 5 * 1024;
 const SSMR_REPLAY_SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const SSMR_REPLAY_RECOVERY_QUEUE_CAPACITY: usize = 2;
 
 #[derive(Debug)]
 struct SsmrRecoveredShard {
@@ -150,44 +151,29 @@ fn recover_ssmr_replay_shard(
     })
 }
 
+fn send_ssmr_replay_event(
+    ready_tx: &Sender<SsmrRecoveredReplayEvent>,
+    event: SsmrRecoveredReplayEvent,
+    recovery_backpressure_elapsed: &mut Duration,
+) -> bool {
+    let send_start = Instant::now();
+    let sent = ready_tx.send(event).is_ok();
+    *recovery_backpressure_elapsed += send_start.elapsed();
+    sent
+}
+
 fn spawn_ssmr_replay_recovery(
     executor: TaskExecutor,
     replay_source: SsmrReplaySource,
 ) -> Receiver<SsmrRecoveredReplayEvent> {
-    let (ready_tx, ready_rx) = crossbeam_channel::unbounded();
-    let (recovered_tx, recovered_rx) = crossbeam_channel::unbounded();
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded(SSMR_REPLAY_RECOVERY_QUEUE_CAPACITY);
 
-    executor.clone().spawn_blocking(move || {
-        let max_inflight = executor.cpu_pool().current_num_threads().max(1);
-        let mut inflight = 0usize;
+    executor.spawn_blocking(move || {
         let mut next_shard_index = 0u64;
         let mut source_wait_elapsed = Duration::ZERO;
         let mut recovery_backpressure_elapsed = Duration::ZERO;
 
-        let forward_recovered = |event, inflight: &mut usize| -> bool {
-            *inflight = inflight.saturating_sub(1);
-            ready_tx.send(event).is_ok()
-        };
-
         loop {
-            while let Ok(event) = recovered_rx.try_recv() {
-                if !forward_recovered(event, &mut inflight) {
-                    return;
-                }
-            }
-
-            while inflight >= max_inflight {
-                let backpressure_start = Instant::now();
-                let event = match recovered_rx.recv() {
-                    Ok(event) => event,
-                    Err(_) => return,
-                };
-                recovery_backpressure_elapsed += backpressure_start.elapsed();
-                if !forward_recovered(event, &mut inflight) {
-                    return;
-                }
-            }
-
             let wait_start = Instant::now();
             let command = replay_source.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
             source_wait_elapsed += wait_start.elapsed();
@@ -196,29 +182,15 @@ fn spawn_ssmr_replay_recovery(
                 Ok(SsmrReplayCommand::Shard { transactions }) => {
                     let shard_index = next_shard_index;
                     next_shard_index += 1;
-                    inflight += 1;
-
-                    let recovered_tx = recovered_tx.clone();
-                    executor.cpu_pool().spawn_fifo(move || {
-                        let event = recover_ssmr_replay_shard(shard_index, transactions)
-                            .map(SsmrRecoveredReplayEvent::Shard)
-                            .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
-                        let _ = recovered_tx.send(event);
-                    });
+                    let event = recover_ssmr_replay_shard(shard_index, transactions)
+                        .map(SsmrRecoveredReplayEvent::Shard)
+                        .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
+                    if !send_ssmr_replay_event(&ready_tx, event, &mut recovery_backpressure_elapsed)
+                    {
+                        return;
+                    }
                 }
                 Ok(SsmrReplayCommand::Finish) => {
-                    while inflight > 0 {
-                        let backpressure_start = Instant::now();
-                        let event = match recovered_rx.recv() {
-                            Ok(event) => event,
-                            Err(_) => return,
-                        };
-                        recovery_backpressure_elapsed += backpressure_start.elapsed();
-                        if !forward_recovered(event, &mut inflight) {
-                            return;
-                        }
-                    }
-
                     let _ = ready_tx.send(SsmrRecoveredReplayEvent::Finish {
                         source_wait_elapsed,
                         recovery_backpressure_elapsed,
@@ -227,9 +199,13 @@ fn spawn_ssmr_replay_recovery(
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = ready_tx.send(SsmrRecoveredReplayEvent::Error(
-                        "SSMR replay source closed before finish".to_string(),
-                    ));
+                    let _ = send_ssmr_replay_event(
+                        &ready_tx,
+                        SsmrRecoveredReplayEvent::Error(
+                            "SSMR replay source closed before finish".to_string(),
+                        ),
+                        &mut recovery_backpressure_elapsed,
+                    );
                     return;
                 }
             }
