@@ -1,7 +1,7 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 use alloy::{
     network::ReceiptResponse,
-    primitives::{Address, U256},
+    primitives::{Address, B256, Bytes, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
     signers::{
         SignerSync,
@@ -13,8 +13,8 @@ use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20, ITIP403Registry,
-    ITIPFeeAMM,
+    DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
+    ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
     account_keychain::IAccountKeychain::{
         IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
     },
@@ -22,7 +22,8 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 use tempo_primitives::{
@@ -1443,6 +1444,161 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
         credits.balanceOf(*token.address()).call().await?,
         credit_before,
         "a later Refund-mode balance-slot creation by the same token must redeem the minted credit"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip1066_channel_storage_credits_are_payer_scoped() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let root = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let other_payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(2)?
+        .build()?;
+    let payee = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+        .index(3)?
+        .build()?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(root)
+        .connect_http(setup.http_url.clone());
+    let payer_provider = ProviderBuilder::new()
+        .wallet(payer.clone())
+        .connect_http(setup.http_url.clone());
+    let other_payer_provider = ProviderBuilder::new()
+        .wallet(other_payer.clone())
+        .connect_http(setup.http_url.clone());
+    let payee_provider = ProviderBuilder::new()
+        .wallet(payee.clone())
+        .connect_http(setup.http_url);
+
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+    for funded in [payer.address(), other_payer.address()] {
+        let receipt = path_usd
+            .transfer(funded, U256::from(5_000_000u64))
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.status());
+    }
+
+    let payer_reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, &payer_provider);
+    let other_payer_reserve =
+        ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, &other_payer_provider);
+    let payee_reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, &payee_provider);
+    let storage_credits = IStorageCredits::new(STORAGE_CREDITS_ADDRESS, &provider);
+
+    let open_receipt = payer_reserve
+        .open(
+            payee.address(),
+            Address::ZERO,
+            PATH_USD_ADDRESS,
+            U96::from(1_000u64),
+            B256::with_last_byte(1),
+            Address::ZERO,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(open_receipt.status());
+
+    let opened = open_receipt
+        .logs()
+        .iter()
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
+        .ok_or_else(|| eyre::eyre!("ChannelOpened event missing"))?;
+    let descriptor = ITIP20ChannelReserve::ChannelDescriptor {
+        payer: opened.payer,
+        payee: opened.payee,
+        operator: opened.operator,
+        token: opened.token,
+        salt: opened.salt,
+        authorizedSigner: opened.authorizedSigner,
+        expiringNonceHash: opened.expiringNonceHash,
+    };
+
+    let close_receipt = payee_reserve
+        .close(descriptor, U96::ZERO, U96::ZERO, Bytes::new())
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(close_receipt.status());
+
+    assert_eq!(
+        payer_reserve.storageCredits(payer.address()).call().await?,
+        1
+    );
+    assert_eq!(
+        payer_reserve
+            .storageCredits(other_payer.address())
+            .call()
+            .await?,
+        0
+    );
+    assert_eq!(
+        storage_credits
+            .balanceOf(TIP20_CHANNEL_RESERVE_ADDRESS)
+            .call()
+            .await?,
+        0,
+        "the TIP-1060 token backing the first channel credit is held by the payer counter slot"
+    );
+
+    let other_open_receipt = other_payer_reserve
+        .open(
+            payee.address(),
+            Address::ZERO,
+            PATH_USD_ADDRESS,
+            U96::from(1_000u64),
+            B256::with_last_byte(2),
+            Address::ZERO,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(other_open_receipt.status());
+    assert_eq!(
+        payer_reserve.storageCredits(payer.address()).call().await?,
+        1,
+        "a different payer must not consume the original payer's channel credit"
+    );
+
+    let payer_reopen_receipt = payer_reserve
+        .open(
+            payee.address(),
+            Address::ZERO,
+            PATH_USD_ADDRESS,
+            U96::from(1_000u64),
+            B256::with_last_byte(3),
+            Address::ZERO,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(payer_reopen_receipt.status());
+    assert_eq!(
+        payer_reserve.storageCredits(payer.address()).call().await?,
+        0,
+        "the original payer's next open must consume exactly one channel credit"
+    );
+    assert_eq!(
+        storage_credits
+            .balanceOf(TIP20_CHANNEL_RESERVE_ADDRESS)
+            .call()
+            .await?,
+        0,
+        "consuming channel credits must not leave reusable TIP-1060 credits on the precompile"
     );
 
     Ok(())
