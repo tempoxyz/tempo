@@ -161,7 +161,8 @@ impl StateAwareBestTransactionsUpdate {
 
             for (&slot, storage_slot) in &account.storage {
                 tip20_balances.push(StateAwareTip20BalanceUpdate {
-                    key: (address, slot),
+                    address,
+                    slot,
                     original_balance: storage_slot.original_value,
                     present_balance: storage_slot.present_value,
                 });
@@ -174,7 +175,8 @@ impl StateAwareBestTransactionsUpdate {
 
 #[derive(Debug)]
 struct StateAwareTip20BalanceUpdate {
-    key: (Address, U256),
+    address: Address,
+    slot: U256,
     original_balance: U256,
     present_balance: U256,
 }
@@ -191,21 +193,48 @@ where
         }
     }
 
-    /// Processes a new transaction execution result and collects any relevant
-    /// state changes that might affect other transactions validity.
+    /// Applies relevant state changes from an executed transaction result.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
-        self.apply_update(StateAwareBestTransactionsUpdate::from_result(result));
+        for (&address, account) in &result.result().state {
+            if !is_tip20_prefix(address) {
+                continue;
+            }
+
+            for (&slot, storage_slot) in &account.storage {
+                self.apply_tip20_balance_update(
+                    address,
+                    slot,
+                    storage_slot.original_value,
+                    storage_slot.present_value,
+                );
+            }
+        }
     }
 
     /// Applies a compact state update produced from a transaction execution result.
     pub fn apply_update(&mut self, update: StateAwareBestTransactionsUpdate) {
         for balance in update.tip20_balances {
-            if balance.present_balance < balance.original_balance {
-                self.decreased_balances
-                    .insert(balance.key, balance.present_balance);
-            } else if let Some(existing) = self.decreased_balances.get_mut(&balance.key) {
-                *existing = balance.present_balance;
-            }
+            self.apply_tip20_balance_update(
+                balance.address,
+                balance.slot,
+                balance.original_balance,
+                balance.present_balance,
+            );
+        }
+    }
+
+    fn apply_tip20_balance_update(
+        &mut self,
+        address: Address,
+        slot: U256,
+        original_balance: U256,
+        present_balance: U256,
+    ) {
+        if present_balance < original_balance {
+            self.decreased_balances
+                .insert((address, slot), present_balance);
+        } else if let Some(existing) = self.decreased_balances.get_mut(&(address, slot)) {
+            *existing = present_balance;
         }
     }
 }
