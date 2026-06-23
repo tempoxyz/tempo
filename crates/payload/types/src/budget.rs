@@ -179,6 +179,20 @@ pub struct ValidationLatencyEstimate {
 }
 
 impl ValidationLatencyEstimate {
+    /// Creates a bootstrap estimate from a per-transaction validation cost.
+    ///
+    /// This is used before local async validation samples are available. It
+    /// intentionally uses transaction count as the scaling dimension because
+    /// optimistic payloads do not execute transactions while building and
+    /// therefore carry no meaningful builder-side gas-used signal.
+    pub fn from_per_transaction(elapsed_per_transaction: Duration) -> Self {
+        Self {
+            elapsed: elapsed_per_transaction,
+            p90_gas_used: 0,
+            p90_transaction_count: 1,
+        }
+    }
+
     /// Estimates validation latency for the supplied workload.
     ///
     /// Recent elapsed validation feedback is the floor so faster replay feedback
@@ -189,6 +203,9 @@ impl ValidationLatencyEstimate {
     /// persistence, not execution-layer validation work.
     pub fn estimate(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
         if self.elapsed == Duration::ZERO {
+            return None;
+        }
+        if workload.transaction_count > 0 && self.p90_transaction_count == 0 {
             return None;
         }
 
@@ -383,6 +400,16 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_validation_latency_scales_by_transaction_count() {
+        let estimate = ValidationLatencyEstimate::from_per_transaction(Duration::from_micros(50));
+
+        assert_eq!(
+            estimate.estimate(ValidationLatencyWorkload::new(0, 5_000)),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
     fn validation_latency_estimate_replaces_existing_sample_id() {
         let mut estimator = ValidationLatencyEstimator::default();
         let workload = ValidationLatencyWorkload::new(100, 0);
@@ -433,6 +460,10 @@ mod tests {
         );
         assert_eq!(
             estimate_with_sample(empty, ValidationLatencyWorkload::new(1_000, 10)),
+            None
+        );
+        assert_eq!(
+            estimate_with_sample(empty, ValidationLatencyWorkload::new(0, 10)),
             None
         );
     }

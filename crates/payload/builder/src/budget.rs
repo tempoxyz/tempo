@@ -21,6 +21,8 @@ use tempo_payload_types::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyWorkload,
 };
 
+const BOOTSTRAP_VALIDATION_LATENCY_PER_TRANSACTION: Duration = Duration::from_micros(50);
+
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
@@ -34,6 +36,11 @@ const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 /// For example, `1.35` means "when cutoff work is 100 ms, expect the completed
 /// replayable build work to be about 135 ms".
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
+
+/// Returns the startup validation estimate used before local validation samples exist.
+pub(crate) fn bootstrap_validation_latency_estimate() -> ValidationLatencyEstimate {
+    ValidationLatencyEstimate::from_per_transaction(BOOTSTRAP_VALIDATION_LATENCY_PER_TRANSACTION)
+}
 
 /// Converts a human-readable build-work multiplier into the fixed-point representation.
 pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
@@ -93,6 +100,42 @@ pub(crate) fn payload_budget_decision(
     let predicted_validator_work = validation_latency_estimate
         .map(|estimate| estimate.min(predicted_builder_work))
         .unwrap_or(predicted_builder_work);
+    let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let total_reserved = idle_elapsed
+        .saturating_add(predicted_builder_work)
+        .saturating_add(predicted_validator_work)
+        .saturating_add(marshal_persist)
+        .saturating_add(marshal_persist);
+    PayloadBudgetDecision {
+        predicted_builder_work,
+        predicted_validator_work,
+        marshal_persist,
+        total_reserved,
+    }
+}
+
+/// Builds an async-execution budget decision for optimistic payload assembly.
+///
+/// Optimistic builders do not execute transactions locally, so builder wall
+/// time is no longer a conservative proxy for validator replay time. This keeps
+/// the builder-work projection for diagnostics and build-window enforcement,
+/// but lets validator work come directly from measured or bootstrap validation
+/// latency.
+pub(crate) fn optimistic_payload_budget_decision(
+    elapsed: Duration,
+    idle_elapsed: Duration,
+    multiplier: u64,
+    marshal_persist: MarshalPersistEstimator,
+    block_size_bytes: usize,
+    validation_latency: Option<ValidationLatencyEstimate>,
+    current_workload: ValidationLatencyWorkload,
+) -> PayloadBudgetDecision {
+    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
+    let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_validator_work = validation_latency
+        .and_then(|estimate| estimate.estimate(current_workload))
+        .or_else(|| bootstrap_validation_latency_estimate().estimate(current_workload))
+        .unwrap_or(Duration::ZERO);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
@@ -242,6 +285,64 @@ mod tests {
             Duration::from_millis(135)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
+    }
+
+    #[test]
+    fn optimistic_budget_does_not_cap_validation_at_builder_projection() {
+        let validation_latency = validation_latency_estimate(
+            ValidationLatencyWorkload::new(0, 1),
+            Duration::from_millis(50),
+        )
+        .expect("validation estimate");
+        let decision = optimistic_payload_budget_decision(
+            Duration::from_millis(1),
+            Duration::ZERO,
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            Some(validation_latency),
+            ValidationLatencyWorkload::new(0, 10),
+        );
+
+        assert_eq!(
+            decision.predicted_builder_work,
+            Duration::from_micros(1_350)
+        );
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn bootstrap_validation_estimate_targets_five_thousand_transactions() {
+        assert_eq!(
+            bootstrap_validation_latency_estimate()
+                .estimate(ValidationLatencyWorkload::new(0, 5_000)),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn optimistic_budget_uses_bootstrap_when_samples_do_not_match_workload() {
+        let empty_block_latency = validation_latency_estimate(
+            ValidationLatencyWorkload::new(0, 0),
+            Duration::from_millis(1),
+        );
+        let decision = optimistic_payload_budget_decision(
+            Duration::from_millis(1),
+            Duration::ZERO,
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            empty_block_latency,
+            ValidationLatencyWorkload::new(0, 5_000),
+        );
+
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(250)
+        );
     }
 
     #[test]

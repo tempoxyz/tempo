@@ -21,13 +21,19 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
+    /// Remaining local build budget available to this payload build.
     ///
-    /// Consensus sets this to the proposal return budget left when it dispatches
+    /// Consensus sets this to the build-phase budget left when it dispatches
     /// the build. `None` means the build was not requested by consensus, so the
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Target execution-layer validation work for this payload.
+    ///
+    /// Consensus sets this for optimistic async builds so transaction selection
+    /// can target validator work independently from cheap builder-side assembly.
+    #[serde(skip)]
+    payload_validation_budget: Option<Duration>,
     /// Validation latency estimate for a consensus payload build.
     ///
     /// Consensus snapshots this from recent locally validated blocks. `None`
@@ -84,6 +90,7 @@ impl TempoPayloadAttributes {
                 target_gas_limit: None,
             },
             payload_build_budget: None,
+            payload_validation_budget: None,
             validation_latency_estimate: None,
             timestamp_millis_part,
             extra_data,
@@ -103,11 +110,10 @@ impl TempoPayloadAttributes {
         self.proposer_public_key.as_ref()
     }
 
-    /// Sets the remaining local proposal budget for a consensus payload build.
+    /// Sets the remaining local build budget for a consensus payload build.
     ///
     /// The value should already account for any time spent before the build was
-    /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
+    /// requested.
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
         self.payload_build_budget = Some(budget);
         self
@@ -120,6 +126,17 @@ impl TempoPayloadAttributes {
     /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+    }
+
+    /// Sets the target validation-work budget for a consensus payload build.
+    pub fn with_payload_validation_budget(mut self, budget: Duration) -> Self {
+        self.payload_validation_budget = Some(budget);
+        self
+    }
+
+    /// Returns the target validation-work budget, if this is an async build.
+    pub fn payload_validation_budget(&self) -> Option<Duration> {
+        self.payload_validation_budget
     }
 
     /// Sets the validation latency estimate for a consensus payload build.
@@ -168,6 +185,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            payload_validation_budget: None,
             validation_latency_estimate: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),

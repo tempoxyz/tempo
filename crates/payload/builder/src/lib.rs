@@ -14,8 +14,9 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_decision, scaled_build_time_multiplier,
+        BUILD_TIME_MULTIPLIER_SCALE, bootstrap_validation_latency_estimate,
+        decay_build_time_multiplier, observed_build_time_multiplier,
+        optimistic_payload_budget_decision, payload_budget_decision, scaled_build_time_multiplier,
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
@@ -198,6 +199,7 @@ where
     started_at: Instant,
     build_once_with_shared_trie: bool,
     payload_build_budget: Option<Duration>,
+    payload_validation_budget: Option<Duration>,
     build_time_multiplier: u64,
     validation_latency: Option<ValidationLatencyEstimate>,
     estimated_rlp_block_size: usize,
@@ -228,6 +230,7 @@ where
             started_at,
             build_once_with_shared_trie,
             payload_build_budget,
+            payload_validation_budget,
             build_time_multiplier,
             validation_latency,
             mut estimated_rlp_block_size,
@@ -263,34 +266,69 @@ where
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = payload_budget_decision(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    marshal_persist,
-                    estimated_rlp_block_size,
-                    validation_latency,
-                    current_workload,
-                );
-                if budget_decision.total_reserved >= build_budget {
-                    debug!(
-                        target: "payload_builder",
-                        ?elapsed,
-                        ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
-                        predicted_builder_work = ?budget_decision.predicted_builder_work,
-                        predicted_validator_work = ?budget_decision.predicted_validator_work,
-                        total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
-                        ?current_workload,
-                        gas_used = cumulative_gas_used,
-                        transactions = pool_transactions_included,
+                if let Some(validation_budget) = payload_validation_budget {
+                    let budget_decision = optimistic_payload_budget_decision(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        marshal_persist,
                         estimated_rlp_block_size,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                        "stopping pool transaction execution before payload build budget is exhausted"
+                        validation_latency,
+                        current_workload,
                     );
-                    break BlockBuildStopReason::BuildBudget;
+                    if budget_decision.predicted_validator_work >= validation_budget
+                        || budget_decision.predicted_builder_work >= build_budget
+                    {
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            ?validation_budget,
+                            predicted_builder_work = ?budget_decision.predicted_builder_work,
+                            predicted_validator_work = ?budget_decision.predicted_validator_work,
+                            total_reserved = ?budget_decision.total_reserved,
+                            marshal_persist = ?budget_decision.marshal_persist,
+                            ?current_workload,
+                            gas_used = cumulative_gas_used,
+                            transactions = pool_transactions_included,
+                            estimated_rlp_block_size,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping optimistic pool transaction selection before build or validation budget is exhausted"
+                        );
+                        break BlockBuildStopReason::BuildBudget;
+                    }
+                } else {
+                    let budget_decision = payload_budget_decision(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        marshal_persist,
+                        estimated_rlp_block_size,
+                        validation_latency,
+                        current_workload,
+                    );
+                    if budget_decision.total_reserved >= build_budget {
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            predicted_builder_work = ?budget_decision.predicted_builder_work,
+                            predicted_validator_work = ?budget_decision.predicted_validator_work,
+                            total_reserved = ?budget_decision.total_reserved,
+                            marshal_persist = ?budget_decision.marshal_persist,
+                            ?current_workload,
+                            gas_used = cumulative_gas_used,
+                            transactions = pool_transactions_included,
+                            estimated_rlp_block_size,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping pool transaction execution before payload build budget is exhausted"
+                        );
+                        break BlockBuildStopReason::BuildBudget;
+                    }
                 }
             }
 
@@ -834,6 +872,7 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
+        let payload_validation_budget = attributes.payload_validation_budget();
         let validation_latency = attributes.validation_latency_estimate();
         let is_cancelled = || cancel.is_cancelled();
         let Some(draft) = BlockDraftBuilder {
@@ -845,6 +884,7 @@ where
             started_at: start,
             build_once_with_shared_trie,
             payload_build_budget,
+            payload_validation_budget,
             build_time_multiplier: self.build_time_multiplier(),
             validation_latency,
             estimated_rlp_block_size,
@@ -1107,6 +1147,10 @@ where
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
+            .or_else(|| {
+                payload_validation_budget
+                    .and_then(|_| bootstrap_validation_latency_estimate().estimate(final_workload))
+            })
             .unwrap_or(validation_work_duration);
 
         self.metrics.payload_build_duration_seconds.record(elapsed);

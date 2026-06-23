@@ -733,12 +733,11 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested. This accounts for a late `handle_propose`
-        // start instead of resetting the budget at builder entry.
-        let build_budget = self
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
+        let phase_budget = half_duration(self.proposal_return_budget);
+        // Give the builder only the build-phase window that remains when
+        // payload construction is requested. The validation budget is kept as a
+        // fixed target for transaction selection.
+        let build_budget = phase_budget.saturating_sub(propose_start.elapsed());
         let validation_latency_estimate = self
             .validation_latency_estimator
             .lock()
@@ -759,6 +758,7 @@ impl Inner<Init> {
             },
         )
         .with_payload_build_budget(build_budget)
+        .with_payload_validation_budget(phase_budget)
         .with_validation_latency_estimate(validation_latency_estimate);
 
         // Subscribe to the payload build. The executor owns the build job
@@ -1201,6 +1201,10 @@ async fn verify_block<TContext: Pacer>(
             )
         }
     }
+}
+
+fn half_duration(duration: Duration) -> Duration {
+    Duration::from_nanos((duration.as_nanos() / 2).min(u128::from(u64::MAX)) as u64)
 }
 
 #[instrument(skip_all, err(Display))]
