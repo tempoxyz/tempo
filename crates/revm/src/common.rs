@@ -536,8 +536,16 @@ where
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // Read-only storage never runs TIP-1060 accounting.
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {
+        // Read-only storage never mints TIP-1060 storage credits.
     }
 }
 
