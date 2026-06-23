@@ -9,7 +9,7 @@ mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -59,6 +59,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -69,8 +70,8 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
-    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplayCommand, TempoBuiltPayload,
-    TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
+    SsmrBuilderEvent, SsmrBuilderShard, SsmrBuilderSink, SsmrReplayCommand, SsmrReplaySource,
+    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
@@ -92,6 +93,151 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
+const DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES: usize = 5 * 1024;
+const SSMR_REPLAY_SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+#[derive(Debug)]
+struct SsmrRecoveredShard {
+    shard_index: u64,
+    transactions: Vec<Recovered<TempoTxEnvelope>>,
+    tx_rlp_lengths: Vec<usize>,
+    decode_elapsed: Duration,
+    recover_elapsed: Duration,
+}
+
+#[derive(Debug)]
+enum SsmrRecoveredReplayEvent {
+    Shard(SsmrRecoveredShard),
+    Finish {
+        source_wait_elapsed: Duration,
+        recovery_backpressure_elapsed: Duration,
+    },
+    Error(String),
+}
+
+fn recover_ssmr_replay_shard(
+    shard_index: u64,
+    encoded_transactions: Vec<Bytes>,
+) -> Result<SsmrRecoveredShard, String> {
+    let mut transactions = Vec::with_capacity(encoded_transactions.len());
+    let mut tx_rlp_lengths = Vec::with_capacity(encoded_transactions.len());
+    let mut decode_elapsed = Duration::ZERO;
+    let mut recover_elapsed = Duration::ZERO;
+
+    for encoded in encoded_transactions {
+        tx_rlp_lengths.push(encoded.len());
+
+        let decode_start = Instant::now();
+        let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
+            .map_err(|error| format!("failed decoding SSMR replay transaction: {error}"))?;
+        decode_elapsed += decode_start.elapsed();
+
+        let recover_start = Instant::now();
+        let sender = tx
+            .try_recover()
+            .map_err(|error| format!("failed recovering SSMR replay transaction: {error}"))?;
+        recover_elapsed += recover_start.elapsed();
+
+        transactions.push(Recovered::new_unchecked(tx, sender));
+    }
+
+    Ok(SsmrRecoveredShard {
+        shard_index,
+        transactions,
+        tx_rlp_lengths,
+        decode_elapsed,
+        recover_elapsed,
+    })
+}
+
+fn spawn_ssmr_replay_recovery(
+    executor: TaskExecutor,
+    replay_source: SsmrReplaySource,
+) -> Receiver<SsmrRecoveredReplayEvent> {
+    let (ready_tx, ready_rx) = crossbeam_channel::unbounded();
+    let (recovered_tx, recovered_rx) = crossbeam_channel::unbounded();
+
+    executor.clone().spawn_blocking(move || {
+        let max_inflight = executor.cpu_pool().current_num_threads().max(1);
+        let mut inflight = 0usize;
+        let mut next_shard_index = 0u64;
+        let mut source_wait_elapsed = Duration::ZERO;
+        let mut recovery_backpressure_elapsed = Duration::ZERO;
+
+        let forward_recovered = |event, inflight: &mut usize| -> bool {
+            *inflight = inflight.saturating_sub(1);
+            ready_tx.send(event).is_ok()
+        };
+
+        loop {
+            while let Ok(event) = recovered_rx.try_recv() {
+                if !forward_recovered(event, &mut inflight) {
+                    return;
+                }
+            }
+
+            while inflight >= max_inflight {
+                let backpressure_start = Instant::now();
+                let event = match recovered_rx.recv() {
+                    Ok(event) => event,
+                    Err(_) => return,
+                };
+                recovery_backpressure_elapsed += backpressure_start.elapsed();
+                if !forward_recovered(event, &mut inflight) {
+                    return;
+                }
+            }
+
+            let wait_start = Instant::now();
+            let command = replay_source.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
+            source_wait_elapsed += wait_start.elapsed();
+
+            match command {
+                Ok(SsmrReplayCommand::Shard { transactions }) => {
+                    let shard_index = next_shard_index;
+                    next_shard_index += 1;
+                    inflight += 1;
+
+                    let recovered_tx = recovered_tx.clone();
+                    executor.cpu_pool().spawn_fifo(move || {
+                        let event = recover_ssmr_replay_shard(shard_index, transactions)
+                            .map(SsmrRecoveredReplayEvent::Shard)
+                            .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
+                        let _ = recovered_tx.send(event);
+                    });
+                }
+                Ok(SsmrReplayCommand::Finish) => {
+                    while inflight > 0 {
+                        let backpressure_start = Instant::now();
+                        let event = match recovered_rx.recv() {
+                            Ok(event) => event,
+                            Err(_) => return,
+                        };
+                        recovery_backpressure_elapsed += backpressure_start.elapsed();
+                        if !forward_recovered(event, &mut inflight) {
+                            return;
+                        }
+                    }
+
+                    let _ = ready_tx.send(SsmrRecoveredReplayEvent::Finish {
+                        source_wait_elapsed,
+                        recovery_backpressure_elapsed,
+                    });
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = ready_tx.send(SsmrRecoveredReplayEvent::Error(
+                        "SSMR replay source closed before finish".to_string(),
+                    ));
+                    return;
+                }
+            }
+        }
+    });
+
+    ready_rx
+}
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -556,8 +702,11 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut ssmr_replay_wait_elapsed = Duration::ZERO;
-        let mut ssmr_replay_compute_elapsed = Duration::ZERO;
         let mut ssmr_replay_decode_recover_elapsed = Duration::ZERO;
+        let mut ssmr_replay_decode_elapsed = Duration::ZERO;
+        let mut ssmr_replay_recover_elapsed = Duration::ZERO;
+        let mut ssmr_replay_recovery_wait_elapsed = Duration::ZERO;
+        let mut ssmr_replay_recovery_backpressure_elapsed = Duration::ZERO;
         let mut ssmr_replay_execute_elapsed = Duration::ZERO;
         let mut ssmr_replay_shards = 0u64;
         let mut ssmr_replay_transactions = 0u64;
@@ -570,122 +719,137 @@ where
         let validation_latency = attributes.validation_latency_estimate();
         let post_return_tail_budget = attributes.post_return_tail_budget();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
+            let recovered_events = spawn_ssmr_replay_recovery(self.executor.clone(), replay_source);
+            let mut pending_shards = BTreeMap::new();
+            let mut next_shard_index = 0u64;
+            let mut replay_finished = false;
+
             loop {
                 check_cancel!();
 
-                // SSMR replay measures validator CPU separately from shard arrival latency.
-                // Any blocking receive time is stream overlap, not execution work.
-                let wait_start = Instant::now();
-                let replay_command = replay_source.recv_timeout(Duration::from_millis(1));
-                let wait_elapsed = wait_start.elapsed();
-                normal_transaction_fill_idle_elapsed += wait_elapsed;
-                ssmr_replay_wait_elapsed += wait_elapsed;
-                match replay_command {
-                    Ok(SsmrReplayCommand::Shard {
-                        transactions: encoded_transactions,
-                    }) => {
-                        let shard_compute_start = Instant::now();
-                        ssmr_replay_shards += 1;
+                if let Some(shard) = pending_shards.remove(&next_shard_index) {
+                    let SsmrRecoveredShard {
+                        shard_index,
+                        transactions,
+                        tx_rlp_lengths,
+                        decode_elapsed,
+                        recover_elapsed,
+                    } = shard;
+                    debug_assert_eq!(shard_index, next_shard_index);
+                    next_shard_index += 1;
+                    ssmr_replay_shards += 1;
+                    ssmr_replay_decode_elapsed += decode_elapsed;
+                    ssmr_replay_recover_elapsed += recover_elapsed;
+                    ssmr_replay_decode_recover_elapsed += decode_elapsed + recover_elapsed;
 
-                        let decode_recover_start = Instant::now();
-                        let mut decoded = Vec::with_capacity(encoded_transactions.len());
-                        for encoded in &encoded_transactions {
-                            let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
-                                .map_err(PayloadBuilderError::other)?;
-                            let sender = tx.try_recover().map_err(PayloadBuilderError::other)?;
-                            decoded.push(Recovered::new_unchecked(tx, sender));
-                        }
-                        ssmr_replay_decode_recover_elapsed += decode_recover_start.elapsed();
-
-                        for (encoded, recovered) in encoded_transactions.into_iter().zip(decoded) {
-                            check_cancel!();
-                            let max_regular_gas_used = core::cmp::min(
-                                recovered.inner().gas_limit(),
-                                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                            );
-                            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                                return Err(PayloadBuilderError::evm(
-                                        BlockExecutionError::Validation(
-                                            BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                                                transaction_gas_limit: recovered.inner().gas_limit(),
-                                                block_available_gas: non_shared_gas_limit
-                                                    - cumulative_gas_used,
-                                            },
-                                        ),
-                                    ));
-                            }
-
-                            let is_payment = if hardfork.is_t5() {
-                                recovered.inner().is_payment_v2()
-                            } else {
-                                recovered.inner().is_payment_v1()
-                            };
-                            if !is_payment
-                                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
-                            {
-                                return Err(PayloadBuilderError::other(
-                                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                                ));
-                            }
-
-                            if is_payment {
-                                payment_transactions += 1;
-                            }
-
-                            let tx_rlp_length = encoded.len();
-                            let estimated_block_size_with_tx =
-                                estimated_rlp_block_size + tx_rlp_length;
-                            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                                return Err(PayloadBuilderError::other(
-                                    ConsensusError::BlockTooLarge {
-                                        rlp_length: estimated_block_size_with_tx,
-                                        max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                    for (tx_rlp_length, recovered) in tx_rlp_lengths.into_iter().zip(transactions) {
+                        check_cancel!();
+                        let max_regular_gas_used = core::cmp::min(
+                            recovered.inner().gas_limit(),
+                            executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                        );
+                        if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                            return Err(PayloadBuilderError::evm(
+                                BlockExecutionError::Validation(
+                                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                                        transaction_gas_limit: recovered.inner().gas_limit(),
+                                        block_available_gas: non_shared_gas_limit
+                                            - cumulative_gas_used,
                                     },
-                                ));
-                            }
-
-                            let execute_start = Instant::now();
-                            executor
-                                .execute_transaction_with_result_closure(
-                                    recovered.clone(),
-                                    |result| {
-                                        cumulative_gas_used += result.block_gas_used();
-                                        cumulative_state_gas_used += result.state_gas_used();
-                                        if !is_payment {
-                                            non_payment_gas_used += result.block_gas_used();
-                                        }
-                                        total_fees += result.validator_fee();
-                                    },
-                                )
-                                .map_err(PayloadBuilderError::evm)?;
-                            ssmr_replay_execute_elapsed += execute_start.elapsed();
-                            trace!("SSMR replay transaction executed");
-                            if let Some(bal_task_handle) = &bal_task_handle {
-                                bal_task_handle.bump_bal_index();
-                            }
-
-                            pool_transactions_yielded += 1;
-                            pool_transactions_included += 1;
-                            ssmr_replay_transactions += 1;
-                            estimated_rlp_block_size += tx_rlp_length;
-                            let _ = roots_tx.send((
-                                BuilderTx::Owned(Box::new(recovered)),
-                                executor.receipts().last().unwrap().clone(),
+                                ),
                             ));
                         }
-                        ssmr_replay_compute_elapsed += shard_compute_start.elapsed();
-                    }
-                    Ok(SsmrReplayCommand::Finish) => {
-                        break if cumulative_gas_used >= non_shared_gas_limit {
-                            BlockBuildStopReason::GasLimit
+
+                        let is_payment = if hardfork.is_t5() {
+                            recovered.inner().is_payment_v2()
                         } else {
-                            BlockBuildStopReason::TxPoolEmpty
+                            recovered.inner().is_payment_v1()
                         };
+                        if !is_payment
+                            && non_payment_gas_used + max_regular_gas_used > general_gas_limit
+                        {
+                            return Err(PayloadBuilderError::other(
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            ));
+                        }
+
+                        if is_payment {
+                            payment_transactions += 1;
+                        }
+
+                        let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
+                        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                            return Err(PayloadBuilderError::other(
+                                ConsensusError::BlockTooLarge {
+                                    rlp_length: estimated_block_size_with_tx,
+                                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                                },
+                            ));
+                        }
+
+                        let execute_start = Instant::now();
+                        executor
+                            .execute_transaction_with_result_closure(recovered.clone(), |result| {
+                                cumulative_gas_used += result.block_gas_used();
+                                cumulative_state_gas_used += result.state_gas_used();
+                                if !is_payment {
+                                    non_payment_gas_used += result.block_gas_used();
+                                }
+                                total_fees += result.validator_fee();
+                            })
+                            .map_err(PayloadBuilderError::evm)?;
+                        ssmr_replay_execute_elapsed += execute_start.elapsed();
+                        trace!("SSMR replay transaction executed");
+                        if let Some(bal_task_handle) = &bal_task_handle {
+                            bal_task_handle.bump_bal_index();
+                        }
+
+                        pool_transactions_yielded += 1;
+                        pool_transactions_included += 1;
+                        ssmr_replay_transactions += 1;
+                        estimated_rlp_block_size += tx_rlp_length;
+                        let _ = roots_tx.send((
+                            BuilderTx::Owned(Box::new(recovered)),
+                            executor.receipts().last().unwrap().clone(),
+                        ));
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+
+                    continue;
+                }
+
+                if replay_finished {
+                    break if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                }
+
+                let wait_start = Instant::now();
+                let event = recovered_events.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
+                let wait_elapsed = wait_start.elapsed();
+                normal_transaction_fill_idle_elapsed += wait_elapsed;
+                ssmr_replay_recovery_wait_elapsed += wait_elapsed;
+
+                match event {
+                    Ok(SsmrRecoveredReplayEvent::Shard(shard)) => {
+                        pending_shards.insert(shard.shard_index, shard);
+                    }
+                    Ok(SsmrRecoveredReplayEvent::Finish {
+                        source_wait_elapsed,
+                        recovery_backpressure_elapsed,
+                    }) => {
+                        ssmr_replay_wait_elapsed += source_wait_elapsed;
+                        ssmr_replay_recovery_backpressure_elapsed += recovery_backpressure_elapsed;
+                        replay_finished = true;
+                    }
+                    Ok(SsmrRecoveredReplayEvent::Error(error)) => {
+                        return Err(PayloadBuilderError::other(std::io::Error::other(error)));
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                         return Err(PayloadBuilderError::other(std::io::Error::other(
-                            "SSMR replay source closed before finish",
+                            "SSMR replay recovery closed before finish",
                         )));
                     }
                 }
@@ -912,6 +1076,8 @@ where
             drop(best_txs);
             stop_reason
         };
+        let ssmr_replay_compute_elapsed =
+            ssmr_replay_decode_recover_elapsed + ssmr_replay_execute_elapsed;
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
@@ -1287,8 +1453,12 @@ where
             ?normal_transaction_fill_idle_elapsed,
             ssmr_replay_enabled = is_ssmr_replay,
             ?ssmr_replay_wait_elapsed,
+            ?ssmr_replay_recovery_wait_elapsed,
+            ?ssmr_replay_recovery_backpressure_elapsed,
             ?ssmr_replay_compute_elapsed,
             ?ssmr_replay_decode_recover_elapsed,
+            ?ssmr_replay_decode_elapsed,
+            ?ssmr_replay_recover_elapsed,
             ?ssmr_replay_execute_elapsed,
             ssmr_replay_shards,
             ssmr_replay_transactions,
@@ -1510,8 +1680,16 @@ impl SsmrShardPacker {
         self.pending_transactions.push(tx);
         self.next_tx_index += 1;
 
-        if self.pending_bytes >= self.target_bytes {
+        if self.pending_bytes >= self.current_target_bytes() {
             self.flush();
+        }
+    }
+
+    fn current_target_bytes(&self) -> usize {
+        if self.shard_index == 0 {
+            self.target_bytes.min(DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES)
+        } else {
+            self.target_bytes
         }
     }
 
@@ -1706,6 +1884,57 @@ mod tests {
                 assert_eq!(shard.first_tx_index, 2);
                 assert_eq!(shard.transactions.len(), 1);
                 assert_eq!(shard.cumulative_tx_bytes, 6);
+                assert_eq!(shard.cumulative_gas_estimate, 60);
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+        assert_eq!(
+            events[2],
+            SsmrBuilderEvent::End {
+                total_shards: 2,
+                total_transactions: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn ssmr_packer_flushes_first_shard_early() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: SsmrBuilderSink = Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event);
+        });
+
+        let mut packer = SsmrShardPacker::new(sink, DEFAULT_SSMR_SHARD_TARGET_BYTES);
+        packer.push(Bytes::from(vec![0; 4 * 1024]), 10);
+        packer.push(Bytes::from(vec![0; 1024]), 20);
+        packer.push(Bytes::from(vec![0; 6 * 1024]), 30);
+        packer.finish();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.shard_index, 0);
+                assert_eq!(shard.first_tx_index, 0);
+                assert_eq!(shard.transactions.len(), 2);
+                assert_eq!(
+                    shard.cumulative_tx_bytes,
+                    DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES as u64
+                );
+                assert_eq!(shard.cumulative_gas_estimate, 30);
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+        match &events[1] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.shard_index, 1);
+                assert_eq!(shard.first_tx_index, 2);
+                assert_eq!(shard.transactions.len(), 1);
+                assert_eq!(
+                    shard.cumulative_tx_bytes,
+                    (DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES + 6 * 1024) as u64
+                );
                 assert_eq!(shard.cumulative_gas_estimate, 60);
             }
             other => panic!("expected shard, got {other:?}"),
