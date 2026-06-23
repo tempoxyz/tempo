@@ -13360,6 +13360,7 @@ dependencies = [
  "crossbeam-channel",
  "metrics",
  "proptest",
+ "rayon",
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-consensus-common",

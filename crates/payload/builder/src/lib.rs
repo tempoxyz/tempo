@@ -10,6 +10,7 @@ mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::{Receiver, Sender};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -129,26 +130,42 @@ fn recover_ssmr_replay_shard(
     shard_index: u64,
     encoded_transactions: Vec<Bytes>,
 ) -> Result<SsmrRecoveredShard, String> {
-    let mut transactions = Vec::with_capacity(encoded_transactions.len());
-    let mut tx_rlp_lengths = Vec::with_capacity(encoded_transactions.len());
+    let recovered_transactions: Vec<_> = encoded_transactions
+        .into_par_iter()
+        .map(|encoded| {
+            let tx_rlp_length = encoded.len();
+
+            let decode_start = Instant::now();
+            let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
+                .map_err(|error| format!("failed decoding SSMR replay transaction: {error}"))?;
+            let decode_elapsed = decode_start.elapsed();
+
+            let recover_start = Instant::now();
+            let sender = tx
+                .try_recover()
+                .map_err(|error| format!("failed recovering SSMR replay transaction: {error}"))?;
+            let recover_elapsed = recover_start.elapsed();
+
+            Ok::<_, String>((
+                Recovered::new_unchecked(tx, sender),
+                tx_rlp_length,
+                decode_elapsed,
+                recover_elapsed,
+            ))
+        })
+        .collect();
+
+    let mut transactions = Vec::with_capacity(recovered_transactions.len());
+    let mut tx_rlp_lengths = Vec::with_capacity(recovered_transactions.len());
     let mut decode_elapsed = Duration::ZERO;
     let mut recover_elapsed = Duration::ZERO;
 
-    for encoded in encoded_transactions {
-        tx_rlp_lengths.push(encoded.len());
-
-        let decode_start = Instant::now();
-        let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
-            .map_err(|error| format!("failed decoding SSMR replay transaction: {error}"))?;
-        decode_elapsed += decode_start.elapsed();
-
-        let recover_start = Instant::now();
-        let sender = tx
-            .try_recover()
-            .map_err(|error| format!("failed recovering SSMR replay transaction: {error}"))?;
-        recover_elapsed += recover_start.elapsed();
-
-        transactions.push(Recovered::new_unchecked(tx, sender));
+    for recovered in recovered_transactions {
+        let (transaction, tx_rlp_length, tx_decode_elapsed, tx_recover_elapsed) = recovered?;
+        transactions.push(transaction);
+        tx_rlp_lengths.push(tx_rlp_length);
+        decode_elapsed += tx_decode_elapsed;
+        recover_elapsed += tx_recover_elapsed;
     }
 
     Ok(SsmrRecoveredShard {
@@ -203,20 +220,35 @@ fn spawn_ssmr_replay_recovery(
     let (ready_tx, ready_rx) = crossbeam_channel::bounded(recovery_queue_capacity);
     let (job_tx, job_rx) = crossbeam_channel::unbounded::<SsmrReplayRecoveryJob>();
     let (recovered_tx, recovered_rx) = crossbeam_channel::bounded(recovery_queue_capacity);
+    let recovery_pool = match rayon::ThreadPoolBuilder::new()
+        .num_threads(recovery_worker_count)
+        .thread_name(|index| format!("ssmr-replay-recovery-tx-{index}"))
+        .build()
+    {
+        Ok(pool) => Arc::new(pool),
+        Err(error) => {
+            let _ = ready_tx.send(SsmrRecoveredReplayEvent::Error(format!(
+                "failed building SSMR replay recovery pool: {error}"
+            )));
+            return ready_rx;
+        }
+    };
 
     executor.spawn_blocking(move || {
         for worker_index in 0..recovery_worker_count {
             let job_rx = job_rx.clone();
             let recovered_tx = recovered_tx.clone();
+            let recovery_pool = Arc::clone(&recovery_pool);
             if let Err(error) = std::thread::Builder::new()
-                .name(format!("ssmr-replay-recovery-{worker_index}"))
+                .name(format!("ssmr-replay-recovery-worker-{worker_index}"))
                 .spawn(move || {
                     while let Ok(SsmrReplayRecoveryJob {
                         shard_index,
                         transactions,
                     }) = job_rx.recv()
                     {
-                        let event = recover_ssmr_replay_shard(shard_index, transactions)
+                        let event = recovery_pool
+                            .install(|| recover_ssmr_replay_shard(shard_index, transactions))
                             .map(SsmrRecoveredReplayEvent::Shard)
                             .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
                         if recovered_tx.send(event).is_err() {
