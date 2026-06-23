@@ -3,7 +3,7 @@
 //! The application actor implements the [`commonware_consensus::Automaton`]
 //! trait to propose and verify blocks.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::PublicKey;
@@ -19,7 +19,9 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
-use crate::{epoch::SchemeProvider, ssmr, subblocks};
+use crate::{
+    consensus::proposal_budget::ProposalBudgetHandle, epoch::SchemeProvider, ssmr, subblocks,
+};
 
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
@@ -54,18 +56,14 @@ pub(super) struct Config<TContext> {
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: Arc<TempoFullNode>,
 
+    /// Adaptive proposal budget controller shared with the feed actor.
+    pub(super) proposal_budget: ProposalBudgetHandle,
+
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: Option<subblocks::Mailbox>,
 
     /// A handle to the SSMR side-channel service.
     pub(crate) ssmr: Option<ssmr::Mailbox>,
-
-    /// Local proposal return budget, excluding the network propagation allowance.
-    ///
-    /// Starts at `target_block_time - network_budget`; `handle_propose`
-    /// subtracts time already spent in the view before handing the remaining
-    /// budget to the payload builder.
-    pub(super) proposal_return_budget: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

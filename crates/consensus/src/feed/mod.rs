@@ -18,7 +18,7 @@ use commonware_runtime::Spawner;
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
-use crate::alias::marshal;
+use crate::{alias::marshal, consensus::proposal_budget::ProposalBudgetHandle};
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 pub use state::FeedStateHandle;
@@ -30,9 +30,18 @@ pub(crate) fn init<TContext: Spawner>(
     epocher: FixedEpocher,
     execution_node: Arc<TempoFullNode>,
     state: FeedStateHandle,
+    proposal_budget: ProposalBudgetHandle,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, epocher, execution_node, rx, state);
+    let actor = Actor::new(
+        context,
+        marshal,
+        epocher,
+        execution_node,
+        rx,
+        state,
+        proposal_budget,
+    );
     (actor, mailbox)
 }

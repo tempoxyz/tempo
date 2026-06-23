@@ -30,7 +30,7 @@ use tracing::{info, info_span};
 use super::{driver, resolver, resolver::Resolver, stubs};
 use crate::{
     alias,
-    consensus::{Digest, block::Block},
+    consensus::{Digest, block::Block, proposal_budget::ProposalBudgetHandle},
     epoch::SchemeProvider,
     executor,
     feed::{self, FeedStateHandle},
@@ -145,6 +145,7 @@ impl<TUpstream> Config<TUpstream> {
             epoch_strategy.clone(),
             self.execution_node.clone(),
             self.feed_state,
+            ProposalBudgetHandle::new(Duration::ZERO, Duration::ZERO),
         );
 
         let (executor_actor, executor_mailbox) = executor::init(

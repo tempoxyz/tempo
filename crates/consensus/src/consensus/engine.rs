@@ -28,7 +28,7 @@ use tracing::info;
 
 use crate::{
     alias,
-    consensus::application,
+    consensus::{application, proposal_budget::ProposalBudgetHandle},
     dkg,
     epoch::{self, SchemeProvider},
     peer_manager, ssmr, storage, subblocks,
@@ -75,6 +75,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     ///
     /// The leader uses this window for payload building, local marshal
     /// persistence, and any final wait before returning the proposal.
+    pub target_block_time: Duration,
+    pub static_network_budget: Duration,
     pub proposal_return_budget: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
@@ -242,6 +244,8 @@ where
                 max_buffered_bytes: self.ssmr_max_buffered_bytes,
             })
         });
+        let proposal_budget =
+            ProposalBudgetHandle::new(self.target_block_time, self.static_network_budget);
 
         let (feed, feed_mailbox) = crate::feed::init(
             context.with_label("feed"),
@@ -249,6 +253,7 @@ where
             epoch_strategy.clone(),
             execution_node.clone(),
             self.feed_state,
+            proposal_budget.clone(),
         );
 
         let (application, application_mailbox) = application::init(super::application::Config {
@@ -258,7 +263,7 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
-            proposal_return_budget: self.proposal_return_budget,
+            proposal_budget,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             ssmr: ssmr.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),

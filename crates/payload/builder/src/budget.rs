@@ -8,10 +8,17 @@
 //! through consensus.
 //!
 //! The decision model is:
+//! Normal path:
 //! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
+//!
+//! SSMR adaptive path:
+//! `leader_idle + predicted_builder_work + marshal_persist >= budget`.
 //! Idle waiting only happens on the proposer. Builder work is projected from the
 //! current build, while validator work uses feedback from previously validated
 //! blocks when available and otherwise falls back to the builder projection.
+//! Once SSMR learns the proposal-return-to-notarization tail, that tail already
+//! has been reserved by consensus before the payload build budget reaches this
+//! helper.
 
 use std::time::Duration;
 
@@ -72,10 +79,14 @@ pub(crate) struct PayloadBudgetDecision {
 /// `predicted_builder_work`, which is the replayable proposer work projected
 /// from this build.
 /// `current_workload` describes the block currently being assembled.
+/// `post_return_tail_budget`, when present, means consensus already subtracted
+/// the post-return tail from the supplied build budget.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
-/// work once, and marshal persistence once for each side.
+/// work once, and marshal persistence once for each side. With an adaptive
+/// post-return tail, we charge proposer marshal persistence once because the
+/// supplied budget already excludes the measured tail.
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -83,6 +94,7 @@ pub(crate) fn payload_budget_decision(
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
     validation_latency: Option<ValidationLatencyEstimate>,
+    post_return_tail_budget: Option<Duration>,
     current_workload: ValidationLatencyWorkload,
 ) -> PayloadBudgetDecision {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
@@ -91,11 +103,15 @@ pub(crate) fn payload_budget_decision(
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
     let predicted_validator_work = validation_latency_estimate.unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let tail_reserved = if post_return_tail_budget.is_some() {
+        Duration::ZERO
+    } else {
+        predicted_validator_work.saturating_add(marshal_persist)
+    };
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
-        .saturating_add(predicted_validator_work)
         .saturating_add(marshal_persist)
-        .saturating_add(marshal_persist);
+        .saturating_add(tail_reserved);
     PayloadBudgetDecision {
         predicted_builder_work,
         predicted_validator_work,
@@ -173,6 +189,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             None,
+            None,
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
@@ -188,6 +205,7 @@ mod tests {
             1_350_000,
             MarshalPersistEstimator::default(),
             0,
+            None,
             None,
             ValidationLatencyWorkload::default(),
         );
@@ -210,6 +228,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
+            None,
             workload,
         );
 
@@ -231,6 +250,7 @@ mod tests {
             MarshalPersistEstimator::default(),
             0,
             validation_latency,
+            None,
             ValidationLatencyWorkload::new(200, 10),
         );
 
@@ -252,6 +272,7 @@ mod tests {
             marshal_persist,
             15_000,
             None,
+            None,
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.marshal_persist, Duration::from_millis(15));
@@ -264,10 +285,34 @@ mod tests {
             marshal_persist,
             14_999,
             None,
+            None,
             ValidationLatencyWorkload::default(),
         );
         assert_eq!(decision.marshal_persist, Duration::from_micros(14_999));
         assert_eq!(decision.total_reserved, Duration::from_micros(299_998));
+    }
+
+    #[test]
+    fn payload_budget_does_not_double_count_post_return_tail() {
+        let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
+        let workload = ValidationLatencyWorkload::new(100, 0);
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
+
+        let decision = payload_budget_decision(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            marshal_persist,
+            15_000,
+            validation_latency,
+            Some(Duration::from_millis(40)),
+            workload,
+        );
+
+        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
+        assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
+        assert_eq!(decision.marshal_persist, Duration::from_millis(15));
+        assert_eq!(decision.total_reserved, Duration::from_millis(150));
     }
 
     #[test]

@@ -42,7 +42,7 @@ use tracing::{debug, error, info_span, instrument, warn, warn_span};
 use super::state::FeedStateHandle;
 use crate::{
     alias::marshal,
-    consensus::{Digest, block::Block},
+    consensus::{Digest, block::Block, proposal_budget::ProposalBudgetHandle},
     utils::OptionFuture,
 };
 
@@ -57,14 +57,21 @@ pub(super) type Receiver = futures::channel::mpsc::UnboundedReceiver<FeedActivit
 /// Resolves to `(Round, FeedActivity, Block)` when the block becomes available.
 struct PendingSubscription {
     round: Round,
+    seen_at_millis: u64,
     activity: Option<FeedActivity>,
     block_rx: oneshot::Receiver<Block>,
 }
 
 impl PendingSubscription {
-    fn new(round: Round, activity: FeedActivity, block_rx: oneshot::Receiver<Block>) -> Self {
+    fn new(
+        round: Round,
+        seen_at_millis: u64,
+        activity: FeedActivity,
+        block_rx: oneshot::Receiver<Block>,
+    ) -> Self {
         Self {
             round,
+            seen_at_millis,
             activity: Some(activity),
             block_rx,
         }
@@ -72,13 +79,13 @@ impl PendingSubscription {
 }
 
 impl Future for PendingSubscription {
-    type Output = eyre::Result<(Round, FeedActivity, Block)>;
+    type Output = eyre::Result<(Round, FeedActivity, Block, u64)>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.block_rx.poll_unpin(cx) {
             Poll::Ready(Ok(block)) => {
                 let activity = self.activity.take().expect("polled after completion");
-                Poll::Ready(Ok((self.round, activity, block)))
+                Poll::Ready(Ok((self.round, activity, block, self.seen_at_millis)))
             }
             Poll::Ready(Err(_)) => Poll::Ready(Err(eyre::eyre!("block subscription cancelled"))),
             Poll::Pending => Poll::Pending,
@@ -95,6 +102,8 @@ pub(crate) struct Actor<TContext> {
     state: FeedStateHandle,
     /// Marshal mailbox for block lookups.
     marshal: marshal::Mailbox,
+    /// Shared controller for learning local proposal pacing.
+    proposal_budget: ProposalBudgetHandle,
     /// Pending block subscriptions keyed by round. Since finalizations
     /// must be delivered, pending subscriptions are bound by the marshal.
     pending: BTreeMap<Round, PendingSubscription>,
@@ -111,6 +120,7 @@ impl<TContext: Spawner> Actor<TContext> {
         execution_node: Arc<TempoFullNode>,
         receiver: Receiver,
         state: FeedStateHandle,
+        proposal_budget: ProposalBudgetHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
         state.set_epocher(epocher);
@@ -121,6 +131,7 @@ impl<TContext: Spawner> Actor<TContext> {
             receiver,
             state,
             marshal,
+            proposal_budget,
             pending: BTreeMap::new(),
         }
     }
@@ -143,7 +154,9 @@ impl<TContext: Spawner> Actor<TContext> {
             select!(
                 result = &mut oldest => {
                     match result {
-                        Ok((_, activity, block)) => self.handle_activity(activity, block),
+                        Ok((_, activity, block, seen_at_millis)) => {
+                            self.handle_activity(activity, block, seen_at_millis)
+                        }
                         Err(error) => warn_span!("feed_actor").in_scope(||
                             warn!(%error, "did not get pending block")
                         ),
@@ -192,13 +205,14 @@ impl<TContext: Spawner> Actor<TContext> {
             _ => return,
         }
 
+        let seen_at_millis = now_millis();
         let block_rx = self.marshal.subscribe_by_digest(Some(round), payload).await;
-        let pending = PendingSubscription::new(round, activity, block_rx);
+        let pending = PendingSubscription::new(round, seen_at_millis, activity, block_rx);
         self.pending.insert(round, pending);
     }
 
     #[instrument(skip_all, fields(activity = ?activity))]
-    fn handle_activity(&self, activity: FeedActivity, consensus_block: Block) {
+    fn handle_activity(&self, activity: FeedActivity, consensus_block: Block, seen_at_millis: u64) {
         let block = consensus_block.into_execution_block();
         let (round, digest, certificate) = match activity.clone() {
             Activity::Notarization(notarization) => (
@@ -235,9 +249,11 @@ impl<TContext: Spawner> Actor<TContext> {
         // Update state and broadcast events
         match activity {
             Activity::Notarization(_) => {
+                self.proposal_budget
+                    .observe_notarization(round, Digest(digest), seen_at_millis);
                 let _ = self.state.events_tx().send(Event::Notarized {
                     block: certified.clone(),
-                    seen: now_millis(),
+                    seen: seen_at_millis,
                 });
 
                 if latest_finalized_round.is_none_or(|r| r < round)
@@ -254,7 +270,7 @@ impl<TContext: Spawner> Actor<TContext> {
                 );
                 let _ = self.state.events_tx().send(Event::Finalized {
                     block: certified.clone(),
-                    seen: now_millis(),
+                    seen: seen_at_millis,
                 });
 
                 if latest_finalized_round.is_none_or(|r| r < round) {

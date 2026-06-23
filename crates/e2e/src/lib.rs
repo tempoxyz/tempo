@@ -327,6 +327,8 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
+            target_block_time: proposal_return_budget,
+            static_network_budget: Duration::ZERO,
             proposal_return_budget,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),

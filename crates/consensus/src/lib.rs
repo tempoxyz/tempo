@@ -120,11 +120,11 @@ pub async fn run_consensus_stack(
     );
 
     let target_block_time = config.target_block_time.into_duration();
+    let network_budget = config.network_budget.into_duration();
     // Consensus owns the end-to-end local proposal window. The network budget
     // is reserved for propagation, and the remaining time is passed down to
     // proposal handling and local payload building.
-    let proposal_return_budget =
-        target_block_time.saturating_sub(config.network_budget.into_duration());
+    let proposal_return_budget = target_block_time.saturating_sub(network_budget);
 
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
@@ -145,6 +145,8 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
+        target_block_time,
+        static_network_budget: network_budget,
         proposal_return_budget,
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),

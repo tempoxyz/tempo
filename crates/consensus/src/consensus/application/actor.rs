@@ -142,13 +142,12 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                proposal_return_budget: config.proposal_return_budget,
-
                 my_mailbox,
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
                 executor: config.executor,
+                proposal_budget: config.proposal_budget,
 
                 subblocks: config.subblocks,
                 ssmr: config.ssmr,
@@ -245,8 +244,6 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    // Local proposal window after reserving network propagation time.
-    proposal_return_budget: Duration,
 
     my_mailbox: Mailbox,
 
@@ -254,6 +251,7 @@ struct Inner<TState> {
 
     execution_node: Arc<TempoFullNode>,
     executor: crate::executor::Mailbox,
+    proposal_budget: crate::consensus::proposal_budget::ProposalBudgetHandle,
     subblocks: Option<subblocks::Mailbox>,
     ssmr: Option<ssmr::Mailbox>,
     scheme_provider: SchemeProvider,
@@ -504,6 +502,8 @@ impl Inner<Init> {
         );
         self.evict_ssmr_streams_through_height(proposal_block.height());
 
+        self.proposal_budget
+            .record_proposal_return(round, proposal_digest);
         response.send(proposal_digest).map_err(|_| {
             eyre!(
                 "failed returning proposal to consensus engine: response \
@@ -738,10 +738,11 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
+        let proposal_pacing = self.proposal_budget.pacing(self.ssmr.is_some());
         // Give the builder only the proposal window that remains when payload
         // construction is requested. This accounts for a late `handle_propose`
         // start instead of resetting the budget at builder entry.
-        let build_budget = self
+        let build_budget = proposal_pacing
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
         let validation_latency_estimate = self
@@ -790,7 +791,8 @@ impl Inner<Init> {
             },
         )
         .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_validation_latency_estimate(validation_latency_estimate)
+        .with_post_return_tail_budget(proposal_pacing.post_return_tail);
         if let Some((sink, shard_target_bytes)) = ssmr_stream {
             attrs = attrs.with_ssmr_builder_sink(sink, shard_target_bytes);
         }
@@ -830,19 +832,24 @@ impl Inner<Init> {
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
-        // need to repeat replayable build work and marshal persistence, so leave
-        // room for those costs before returning the proposal.
-        let return_delay = self
+        // need the reserved post-return tail before returning the proposal.
+        // Before SSMR has learned a tail, keep the conservative validator-work
+        // reserve used by the normal proposal path.
+        let mut return_delay = proposal_pacing
             .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed)
-            .saturating_sub(validator_marshal_persist);
+            .saturating_sub(proposal_elapsed);
+        if proposal_pacing.post_return_tail.is_none() {
+            return_delay = return_delay
+                .saturating_sub(validation_latency_elapsed)
+                .saturating_sub(validator_marshal_persist);
+        }
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
+            post_return_tail_budget = ?proposal_pacing.post_return_tail,
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_estimate_bytes,
             block_size_estimate_bytes,
@@ -1145,11 +1152,11 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
             executor: self.executor.clone(),
+            proposal_budget: self.proposal_budget,
             state: Init {
                 dkg_manager,
                 executor: self.executor.clone(),

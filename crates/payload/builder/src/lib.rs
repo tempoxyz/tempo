@@ -562,6 +562,7 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
+        let post_return_tail_budget = attributes.post_return_tail_budget();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
             loop {
                 check_cancel!();
@@ -715,6 +716,7 @@ where
                         marshal_persist,
                         estimated_rlp_block_size,
                         validation_latency,
+                        post_return_tail_budget,
                         current_workload,
                     );
                     if budget_decision.total_reserved >= build_budget {
@@ -725,6 +727,7 @@ where
                             ?build_budget,
                             predicted_builder_work = ?budget_decision.predicted_builder_work,
                             predicted_validator_work = ?budget_decision.predicted_validator_work,
+                            ?post_return_tail_budget,
                             total_reserved = ?budget_decision.total_reserved,
                             marshal_persist = ?budget_decision.marshal_persist,
                             ?current_workload,

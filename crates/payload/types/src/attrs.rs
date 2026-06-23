@@ -133,6 +133,13 @@ pub struct TempoPayloadAttributes {
     /// means the builder should use its conservative fallback.
     #[serde(skip)]
     validation_latency_estimate: Option<ValidationLatencyEstimate>,
+    /// Post-proposal return tail reserved by consensus.
+    ///
+    /// SSMR uses this after it has observed local proposal return to
+    /// notarization timing. When set, the builder reserves this tail instead of
+    /// a separate validator replay estimate.
+    #[serde(skip)]
+    post_return_tail_budget: Option<Duration>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -195,6 +202,7 @@ impl TempoPayloadAttributes {
             },
             payload_build_budget: None,
             validation_latency_estimate: None,
+            post_return_tail_budget: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -247,6 +255,17 @@ impl TempoPayloadAttributes {
     /// Returns the consensus-provided validation latency estimate.
     pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
         self.validation_latency_estimate
+    }
+
+    /// Sets the post-return tail budget for an SSMR consensus payload build.
+    pub fn with_post_return_tail_budget(mut self, budget: Option<Duration>) -> Self {
+        self.post_return_tail_budget = budget;
+        self
+    }
+
+    /// Returns the post-return tail budget, if consensus provided one.
+    pub fn post_return_tail_budget(&self) -> Option<Duration> {
+        self.post_return_tail_budget
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -314,6 +333,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             inner,
             payload_build_budget: None,
             validation_latency_estimate: None,
+            post_return_tail_budget: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
