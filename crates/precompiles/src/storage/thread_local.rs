@@ -332,6 +332,8 @@ pub struct CheckpointGuard {
 
 impl CheckpointGuard {
     /// Commits all state changes since the checkpoint.
+    #[cold]
+    #[inline(never)]
     pub fn commit(mut self) {
         if let Some(cp) = self.checkpoint.take() {
             StorageCtx::with_storage(|s| s.checkpoint_commit(cp));
@@ -340,6 +342,8 @@ impl CheckpointGuard {
 }
 
 impl Drop for CheckpointGuard {
+    #[cold]
+    #[inline(never)]
     fn drop(&mut self) {
         if let Some(cp) = self.checkpoint.take() {
             StorageCtx::with_storage(|s| s.checkpoint_revert(cp));
