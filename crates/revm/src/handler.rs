@@ -1499,6 +1499,7 @@ where
                 internals,
                 gas_limit,
                 0,
+                block.height_to_epoch.clone(),
                 cfg.spec,
                 amsterdam_eip8037_enabled,
                 false,

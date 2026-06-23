@@ -492,6 +492,10 @@ where
         self.block_number
     }
 
+    fn epoch(&self, _height: u64) -> u64 {
+        panic!("height_to_epoch is not configured")
+    }
+
     fn set_code(&mut self, _address: Address, _code: Bytecode) -> Result<(), TempoPrecompileError> {
         Ok(())
     }

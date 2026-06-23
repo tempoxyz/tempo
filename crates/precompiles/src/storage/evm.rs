@@ -11,8 +11,12 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
+
+fn unconfigured_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
+    Arc::new(|_| panic!("height_to_epoch is not configured"))
+}
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -20,6 +24,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
+    height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -40,6 +45,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         internals: EvmInternals<'a>,
         gas_limit: u64,
         reservoir: u64,
+        height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
         spec: TempoHardfork,
         amsterdam_eip8037_enabled: bool,
         is_static: bool,
@@ -48,6 +54,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
+            height_to_epoch,
             spec,
             amsterdam_eip8037_enabled,
             is_static,
@@ -67,6 +74,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             u64::MAX,
             0,
+            unconfigured_height_to_epoch(),
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
@@ -85,6 +93,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_limit,
             reservoir,
+            unconfigured_height_to_epoch(),
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
@@ -310,6 +319,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn block_number(&self) -> u64 {
         self.internals.block_env().number().to::<u64>()
+    }
+
+    fn epoch(&self, height: u64) -> u64 {
+        (self.height_to_epoch)(height)
     }
 
     #[inline]
@@ -663,6 +676,7 @@ mod tests {
                 evm_internals,
                 gas_limit,
                 reservoir,
+                ctx.block.height_to_epoch.clone(),
                 spec,
                 amsterdam_eip8037_enabled,
                 false,

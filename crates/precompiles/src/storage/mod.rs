@@ -54,6 +54,9 @@ pub trait PrecompileStorageProvider {
     /// Returns the current block number.
     fn block_number(&self) -> u64;
 
+    /// Returns the epoch containing `height`.
+    fn epoch(&self, height: u64) -> u64;
+
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
 

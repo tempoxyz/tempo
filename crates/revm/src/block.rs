@@ -4,9 +4,14 @@ use revm::{
     context::{Block, BlockEnv},
     context_interface::block::BlobExcessGasAndPrice,
 };
+use std::{fmt, sync::Arc};
+
+fn default_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
+    Arc::new(|_| panic!("height_to_epoch is not configured"))
+}
 
 /// Tempo block environment.
-#[derive(Debug, Clone, Default, PartialEq, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Clone, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {
     /// Inner [`BlockEnv`].
@@ -16,6 +21,10 @@ pub struct TempoBlockEnv {
 
     /// Milliseconds portion of the timestamp.
     pub timestamp_millis_part: u64,
+
+    /// Maps block heights to their containing epochs.
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_height_to_epoch"))]
+    pub height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
 }
 
 impl TempoBlockEnv {
@@ -25,6 +34,37 @@ impl TempoBlockEnv {
             .timestamp
             .saturating_mul(uint!(1000_U256))
             .saturating_add(U256::from(self.timestamp_millis_part))
+    }
+
+    /// Returns the epoch containing `height`.
+    pub fn epoch(&self, height: u64) -> u64 {
+        (self.height_to_epoch)(height)
+    }
+}
+
+impl Default for TempoBlockEnv {
+    fn default() -> Self {
+        Self {
+            inner: BlockEnv::default(),
+            timestamp_millis_part: 0,
+            height_to_epoch: default_height_to_epoch(),
+        }
+    }
+}
+
+impl fmt::Debug for TempoBlockEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TempoBlockEnv")
+            .field("inner", &self.inner)
+            .field("timestamp_millis_part", &self.timestamp_millis_part)
+            .field("height_to_epoch", &"<dyn Fn(u64) -> u64>")
+            .finish()
+    }
+}
+
+impl PartialEq for TempoBlockEnv {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner && self.timestamp_millis_part == other.timestamp_millis_part
     }
 }
 
@@ -89,6 +129,7 @@ mod tests {
                 ..Default::default()
             },
             timestamp_millis_part: millis_part,
+            height_to_epoch: default_height_to_epoch(),
         }
     }
 

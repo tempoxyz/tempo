@@ -26,6 +26,7 @@ pub struct HashMapStorageProvider {
     timestamp: U256,
     beneficiary: Address,
     block_number: u64,
+    height_to_epoch: Box<dyn Fn(u64) -> u64 + Send + Sync>,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -74,6 +75,7 @@ impl HashMapStorageProvider {
             ),
             beneficiary: Address::ZERO,
             block_number: 0,
+            height_to_epoch: Box::new(|_| panic!("height_to_epoch is not configured")),
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
@@ -115,6 +117,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn block_number(&self) -> u64 {
         self.block_number
+    }
+
+    fn epoch(&self, height: u64) -> u64 {
+        (self.height_to_epoch)(height)
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {

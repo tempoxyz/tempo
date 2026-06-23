@@ -427,6 +427,10 @@ where
         0
     }
 
+    fn epoch(&self, _height: u64) -> u64 {
+        panic!("height_to_epoch is not configured")
+    }
+
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
