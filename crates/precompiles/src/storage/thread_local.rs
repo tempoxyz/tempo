@@ -282,6 +282,28 @@ impl StorageCtx {
         PrecompileOutput::new(self.gas_used(), output, self.reservoir())
     }
 
+    /// Fills gas, refund, and reservoir accounting on a precompile output.
+    pub fn finalize_precompile_output(&self, output: &mut PrecompileOutput) {
+        Self::with_storage(|storage| {
+            output.gas_used = storage.gas_used();
+
+            let is_success = output.is_success();
+            if is_success && storage.spec().is_t4() {
+                output.gas_refunded = storage.gas_refunded();
+            }
+
+            if storage.amsterdam_eip8037_enabled() {
+                if is_success {
+                    output.reservoir = storage.reservoir();
+                    output.state_gas_used = storage.state_gas_used();
+                } else {
+                    output.reservoir = storage.state_gas_used() + storage.reservoir();
+                    output.state_gas_used = 0;
+                }
+            }
+        });
+    }
+
     /// Returns an ABI-encoded success output.
     pub fn abi_success(&self, output: impl SolInterface) -> PrecompileOutput {
         self.success_output(output.abi_encode().into())
