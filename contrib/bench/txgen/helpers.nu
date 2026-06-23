@@ -5,6 +5,7 @@ const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
+const TXGEN_HELPER_ALWAYS_FUND_PRESETS = ["dex"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-tip20-token-address [token_id: int] {
@@ -279,6 +280,8 @@ def txgen-run-preset-pipeline [
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
+    let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
     let recipient_accounts = if $existing_recipient_end > $existing_recipient_start {
@@ -287,7 +290,7 @@ def txgen-run-preset-pipeline [
         0
     }
     let total_accounts = $accounts + $recipient_accounts
-    if not $skip_funding {
+    if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
