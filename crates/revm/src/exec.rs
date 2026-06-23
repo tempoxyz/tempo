@@ -1,5 +1,5 @@
 use crate::{
-    TempoBlockEnv, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv,
+    ProtocolFeeManager, TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv,
     error::TempoHaltReason,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
@@ -24,7 +24,7 @@ const SYSTEM_CALL_GAS_LIMIT: u64 = 250_000_000;
 impl<DB, I, F> ExecuteEvm for TempoEvm<DB, I, F>
 where
     DB: Database,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     type Tx = TempoTxEnv;
     type Block = TempoBlockEnv;
@@ -60,7 +60,7 @@ where
 impl<DB, I, F> ExecuteCommitEvm for TempoEvm<DB, I, F>
 where
     DB: Database + DatabaseCommit,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     fn commit(&mut self, state: Self::State) {
         self.inner.ctx.db_mut().commit(state);
@@ -71,7 +71,7 @@ impl<DB, I, F> InspectEvm for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     type Inspector = I;
 
@@ -90,14 +90,14 @@ impl<DB, I, F> InspectCommitEvm for TempoEvm<DB, I, F>
 where
     DB: Database + DatabaseCommit,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
 }
 
 impl<DB, I, F> SystemCallEvm for TempoEvm<DB, I, F>
 where
     DB: Database,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     fn system_call_one_with_caller(
         &mut self,
@@ -117,7 +117,7 @@ impl<DB, I, F> InspectSystemCallEvm for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     fn inspect_one_system_call_with_caller(
         &mut self,

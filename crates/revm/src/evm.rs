@@ -1,4 +1,4 @@
-use crate::{L1FeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
+use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -20,7 +20,7 @@ pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardf
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
-pub struct TempoEvm<DB: Database, I, F = L1FeeManager> {
+pub struct TempoEvm<DB: Database, I, F = TempoFeeManager> {
     /// Inner EVM type.
     #[deref]
     #[deref_mut]
@@ -64,13 +64,13 @@ pub struct TempoEvm<DB: Database, I, F = L1FeeManager> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        TempoEvm::new_with_fee_manager(ctx, inspector, L1FeeManager)
+        TempoEvm::new_with_fee_manager(ctx, inspector, TempoFeeManager::new())
     }
 }
 
 impl<DB: Database, I, F> TempoEvm<DB, I, F>
 where
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     /// Create a new Tempo EVM with a custom protocol fee manager.
     pub fn new_with_fee_manager(ctx: TempoContext<DB>, inspector: I, fee_manager: F) -> Self {
@@ -144,7 +144,7 @@ where
 
 impl<DB: Database, I, F> TempoEvm<DB, I, F>
 where
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP, F> {
@@ -185,7 +185,7 @@ where
 impl<DB, I, F> EvmTr for TempoEvm<DB, I, F>
 where
     DB: Database,
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
@@ -244,7 +244,7 @@ impl<DB, I, F> InspectorEvmTr for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     type Inspector = I;
 

@@ -19,7 +19,7 @@ use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::storage::StorageAction;
 use tempo_revm::{
-    L1FeeManager, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv,
+    ProtocolFeeManager, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv,
     ValidationContext, evm::TempoContext, handler::TempoEvmHandler,
 };
 
@@ -27,7 +27,7 @@ use crate::TempoBlockEnv;
 
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoEvmFactory<F = L1FeeManager> {
+pub struct TempoEvmFactory<F = TempoFeeManager> {
     fee_manager: F,
 }
 
@@ -41,14 +41,14 @@ impl<F> TempoEvmFactory<F> {
 impl Default for TempoEvmFactory {
     fn default() -> Self {
         Self {
-            fee_manager: L1FeeManager,
+            fee_manager: TempoFeeManager::new(),
         }
     }
 }
 
 impl<F> EvmFactory for TempoEvmFactory<F>
 where
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I, F>;
     type Context<DB: Database> = TempoContext<DB>;
@@ -84,7 +84,7 @@ where
 /// support. [`Inspector`] support is configurable at runtime because it's part of the underlying
 /// `RevmEvm` type.
 #[expect(missing_debug_implementations)]
-pub struct TempoEvm<DB: Database, I = NoOpInspector, F = L1FeeManager> {
+pub struct TempoEvm<DB: Database, I = NoOpInspector, F = TempoFeeManager> {
     inner: tempo_revm::TempoEvm<DB, I, F>,
     inspect: bool,
 }
@@ -92,13 +92,13 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector, F = L1FeeManager> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        TempoEvm::new_with_fee_manager(db, input, L1FeeManager)
+        TempoEvm::new_with_fee_manager(db, input, TempoFeeManager::new())
     }
 }
 
 impl<DB: Database, F> TempoEvm<DB, NoOpInspector, F>
 where
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     /// Create a new [`TempoEvm`] instance with a custom protocol fee manager.
     pub fn new_with_fee_manager(
@@ -124,7 +124,7 @@ where
 
 impl<DB: Database, I, F> TempoEvm<DB, I, F>
 where
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
     pub fn into_inner(self) -> tempo_revm::TempoEvm<DB, I, F> {
@@ -209,7 +209,7 @@ impl<DB: Database, I, F> Deref for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     type Target = TempoContext<DB>;
 
@@ -223,7 +223,7 @@ impl<DB: Database, I, F> DerefMut for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager,
+    F: ProtocolFeeManager,
 {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -235,7 +235,7 @@ impl<DB, I, F> Evm for TempoEvm<DB, I, F>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: TempoFeeManager + Clone,
+    F: ProtocolFeeManager + Clone,
 {
     type DB = DB;
     type Tx = TempoTxEnv;

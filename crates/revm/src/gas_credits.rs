@@ -1,7 +1,7 @@
 //! TIP-1060 specific implementations.
 
 use crate::{
-    TempoFeeManager, TempoInvalidTransaction,
+    ProtocolFeeManager, TempoInvalidTransaction,
     evm::{TempoContext, TempoEvm},
 };
 use alloy_evm::Database;
@@ -35,7 +35,7 @@ pub fn apply_refund<DB: Database, I, FM>(
     gas: &mut Gas,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>>
 where
-    FM: TempoFeeManager,
+    FM: ProtocolFeeManager,
 {
     if !evm.cfg.spec.is_t7() {
         return Ok(());

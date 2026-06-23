@@ -10,7 +10,7 @@ use tempo_precompiles::{
 /// This is separate from the public FeeManager precompile registration. Replacing this component
 /// changes the pre-transaction and post-transaction protocol fee hooks without changing which
 /// contract is exposed at the FeeManager precompile address.
-pub trait TempoFeeManager: core::fmt::Debug {
+pub trait ProtocolFeeManager: core::fmt::Debug {
     /// Resolves the fee token used to pay fees for a transaction.
     fn get_fee_token<S, TX, M>(
         &self,
@@ -67,9 +67,16 @@ pub trait TempoFeeManager: core::fmt::Debug {
 ///
 /// Delegates to the existing [`TipFeeManager`] implementation so default L1 behavior is unchanged.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct L1FeeManager;
+pub struct TempoFeeManager;
 
-impl TempoFeeManager for L1FeeManager {
+impl TempoFeeManager {
+    /// Create the default Tempo protocol fee manager.
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ProtocolFeeManager for TempoFeeManager {
     fn collect_fee_pre_tx(
         &self,
         fee_payer: Address,

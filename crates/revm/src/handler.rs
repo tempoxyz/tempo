@@ -66,7 +66,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    L1FeeManager, TempoBatchCallEnv, TempoEvm, TempoFeeManager, TempoInvalidTransaction,
+    ProtocolFeeManager, TempoBatchCallEnv, TempoEvm, TempoFeeManager, TempoInvalidTransaction,
     TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
@@ -411,7 +411,7 @@ fn calculate_key_authorization_gas(
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
-pub struct TempoEvmHandler<DB, I, FM = L1FeeManager> {
+pub struct TempoEvmHandler<DB, I, FM = TempoFeeManager> {
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I, FM)>,
 }
@@ -427,7 +427,7 @@ impl<DB, I, FM> TempoEvmHandler<DB, I, FM> {
 
 impl<DB: alloy_evm::Database, I, FM> TempoEvmHandler<DB, I, FM>
 where
-    FM: TempoFeeManager,
+    FM: ProtocolFeeManager,
 {
     fn seed_precompile_tx_context(
         &self,
@@ -463,7 +463,7 @@ where
 impl<DB, I, FM> TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
-    FM: TempoFeeManager + Clone,
+    FM: ProtocolFeeManager + Clone,
 {
     fn prevalidate_keychain_call_scopes(
         &self,
@@ -816,7 +816,7 @@ impl<DB, I, FM> Default for TempoEvmHandler<DB, I, FM> {
 impl<DB, I, FM> Handler for TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
-    FM: TempoFeeManager + Clone,
+    FM: ProtocolFeeManager + Clone,
 {
     type Evm = TempoEvm<DB, I, FM>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
@@ -2169,7 +2169,7 @@ where
 impl<DB, I, FM> TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
-    FM: TempoFeeManager + Clone,
+    FM: ProtocolFeeManager + Clone,
 {
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
@@ -2330,7 +2330,7 @@ fn validate_aa_initial_tx_gas<DB, I, FM>(
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: alloy_evm::Database,
-    FM: TempoFeeManager,
+    FM: ProtocolFeeManager,
 {
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
     let gas_limit = tx.gas_limit();
@@ -2440,7 +2440,7 @@ impl<DB, I, FM> InspectorHandler for TempoEvmHandler<DB, I, FM>
 where
     DB: alloy_evm::Database,
     I: Inspector<TempoContext<DB>>,
-    FM: TempoFeeManager + Clone,
+    FM: ProtocolFeeManager + Clone,
 {
     type IT = EthInterpreter;
 
