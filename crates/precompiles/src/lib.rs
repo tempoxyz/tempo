@@ -275,7 +275,7 @@ macro_rules! tempo_precompile {
                 gas_params.clone(),
             )
             .with_actions(actions.clone())
-            .with_non_creditable_slots(non_creditable_slots.clone());
+            .with_non_creditable_slots(non_creditable_slots.as_ref());
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })
