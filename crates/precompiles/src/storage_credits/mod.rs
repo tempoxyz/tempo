@@ -13,7 +13,7 @@ use crate::{
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::{cell::OnceCell, collections::BTreeMap};
+use std::collections::{BTreeMap, BTreeSet};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -237,6 +237,50 @@ impl StorageCreditDeltas {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NonCreditableSlots(BTreeMap<Address, BTreeSet<U256>>);
+
+impl NonCreditableSlots {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Registers transaction-local bookkeeping slots whose deletion must not mint storage credits.
+    ///
+    /// Fee payment may clear the fee payer's TIP-20 balance slot and, for access-key sponsored
+    /// transactions, the keychain spending-limit `remaining` slot. Those slots are immediately
+    /// recreated by the same transaction bookkeeping and should not earn persistent TIP-1060
+    /// credits for the storage-owning account.
+    pub fn initialize(&mut self, fee_payer: Address, fee_token: Address, key_id: Option<Address>) {
+        self.clear();
+
+        let fee_balance_slot =
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        self.insert(fee_token, fee_balance_slot);
+
+        if let Some(key_id) = key_id {
+            let keychain = AccountKeychain::new();
+            let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+            let remaining_slot = keychain.spending_limits[limit_key][fee_token]
+                .remaining
+                .slot();
+            self.insert(ACCOUNT_KEYCHAIN_ADDRESS, remaining_slot);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn is_non_creditable_slot(&self, owner: Address, key: U256) -> bool {
+        self.0.get(&owner).is_some_and(|slots| slots.contains(&key))
+    }
+
+    fn insert(&mut self, owner: Address, key: U256) {
+        self.0.entry(owner).or_default().insert(key);
     }
 }
 

@@ -13,8 +13,8 @@ use alloy_eips::{BlockId, Encodable2718};
 use alloy_rpc_types_eth::{TransactionReceipt, TransactionRequest};
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20, ITIP20ChannelReserve, ITIP403Registry,
-    ITIPFeeAMM,
+    DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
+    ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
     account_keychain::IAccountKeychain::{
         IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
     },
@@ -22,7 +22,8 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 use tempo_primitives::{
