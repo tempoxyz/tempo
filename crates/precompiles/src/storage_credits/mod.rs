@@ -1,4 +1,8 @@
-//! Storage credits precompile (TIP-1060).
+//! TIP-1060 storage credits precompile and accounting types.
+//!
+//! Storage credits let accounts reuse storage they previously freed: clearing a non-exempt slot
+//! mints a credit, and creating a slot can spend or refund against available credits according to
+//! the account's transaction-local [`CreditMode`].
 
 pub mod accounting;
 pub mod dispatch;
@@ -17,16 +21,61 @@ use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Transaction-local TIP-1060 policy for storage creations (`0→x`).
+///
+/// All storage clears (`x→0`) always mint credits, except for [`NonCreditableSlots`].
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub enum CreditMode {
     #[default]
+    /// Charge creation gas upfront; settle eligible refunds at end-of-transaction.
     Refund,
+    /// Charge creation gas and keep existing credits intact.
     Preserve,
+    /// Spend available credits directly, up to the transaction-local budget.
     Direct,
 }
 
-// NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
+impl TryFrom<u8> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Refund),
+            1 => Ok(Self::Preserve),
+            2 => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl TryFrom<Mode> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(mode: Mode) -> Result<Self> {
+        match mode {
+            Mode::Refund => Ok(Self::Refund),
+            Mode::Preserve => Ok(Self::Preserve),
+            Mode::Direct => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl From<CreditMode> for Mode {
+    fn from(mode: CreditMode) -> Self {
+        match mode {
+            CreditMode::Refund => Self::Refund,
+            CreditMode::Preserve => Self::Preserve,
+            CreditMode::Direct => Self::Direct,
+        }
+    }
+}
+
+// NOTE: Encoded manually as a U256 instead of deriving `Storable` because precompile methods
+// access it through `StorageCtx`, while the opcode-level SSTORE hook and end-of-tx refund
+// settlement read the same transient words directly from revm, where `StorageCtx` handlers are
+// not available.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
     /// Current storage creation mode for this account within the transaction.
@@ -55,88 +104,6 @@ impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
         Self::from_limbs([value.mode as u64, value.budget, 0, value.pending_refunds])
-    }
-}
-
-/// Container for slots which are not eligible for storage credits mints.
-///
-/// There are 2 storage slots that are special in terms of TIP-1060 accounting:
-///   1. Balance of the current transaction's fee payer
-///   2. Spending limit of the current transaction's keychain key
-///
-/// Those two slots might get recreated during `collectFeePostTx` call inside of
-/// which we don't do gas accounting or burn storage credits, and thus allowing to
-/// mint credits for those slots during transaction execution might result in those
-/// credits being unbacked.
-#[derive(Debug, Default)]
-pub struct NonCreditableSlots {
-    fee_payer: Address,
-    fee_token: Address,
-    keychain_fee_key: Option<Address>,
-    fee_balance_slot: OnceCell<U256>,
-    keychain_limit_slot: OnceCell<U256>,
-}
-
-impl NonCreditableSlots {
-    #[inline]
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    pub fn initialize(
-        &mut self,
-        fee_payer: Address,
-        fee_token: Address,
-        keychain_fee_key: Option<Address>,
-    ) {
-        self.fee_payer = fee_payer;
-        self.fee_token = fee_token;
-        self.keychain_fee_key = keychain_fee_key;
-    }
-
-    #[inline]
-    pub fn clear(&mut self) {
-        *self = Self::empty();
-    }
-
-    #[inline]
-    pub(crate) fn is_non_creditable_slot(&self, owner: Address, slot: U256) -> bool {
-        if self.fee_token.is_zero() {
-            return false;
-        }
-
-        if owner == self.fee_token && self.fee_balance_slot() == slot {
-            return true;
-        }
-
-        if owner == ACCOUNT_KEYCHAIN_ADDRESS
-            && self
-                .keychain_limit_slot()
-                .is_some_and(|limit_slot| limit_slot == slot)
-        {
-            return true;
-        }
-
-        false
-    }
-
-    #[inline]
-    fn fee_balance_slot(&self) -> U256 {
-        *self.fee_balance_slot.get_or_init(|| {
-            TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
-        })
-    }
-
-    #[inline]
-    fn keychain_limit_slot(&self) -> Option<U256> {
-        let key_id = self.keychain_fee_key?;
-        Some(*self.keychain_limit_slot.get_or_init(|| {
-            let keychain = AccountKeychain::new();
-            let limit_key = AccountKeychain::spending_limit_key(self.fee_payer, key_id);
-            keychain.spending_limits[limit_key][self.fee_token]
-                .remaining
-                .slot()
-        }))
     }
 }
 
@@ -290,6 +257,88 @@ impl StorageCredits {
     }
 }
 
+/// Container for slots which are not eligible for storage credits mints.
+///
+/// There are 2 storage slots that are special in terms of TIP-1060 accounting:
+///   1. Balance of the current transaction's fee payer
+///   2. Spending limit of the current transaction's keychain key
+///
+/// Those two slots might get recreated during `collectFeePostTx` call inside of
+/// which we don't do gas accounting or burn storage credits, and thus allowing to
+/// mint credits for those slots during transaction execution might result in those
+/// credits being unbacked.
+#[derive(Debug, Default)]
+pub struct NonCreditableSlots {
+    fee_payer: Address,
+    fee_token: Address,
+    keychain_fee_key: Option<Address>,
+    fee_balance_slot: OnceCell<U256>,
+    keychain_limit_slot: OnceCell<U256>,
+}
+
+impl NonCreditableSlots {
+    #[inline]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn initialize(
+        &mut self,
+        fee_payer: Address,
+        fee_token: Address,
+        keychain_fee_key: Option<Address>,
+    ) {
+        self.fee_payer = fee_payer;
+        self.fee_token = fee_token;
+        self.keychain_fee_key = keychain_fee_key;
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        *self = Self::empty();
+    }
+
+    #[inline]
+    pub(crate) fn is_non_creditable_slot(&self, owner: Address, slot: U256) -> bool {
+        if self.fee_token.is_zero() {
+            return false;
+        }
+
+        if owner == self.fee_token && self.fee_balance_slot() == slot {
+            return true;
+        }
+
+        if owner == ACCOUNT_KEYCHAIN_ADDRESS
+            && self
+                .keychain_limit_slot()
+                .is_some_and(|limit_slot| limit_slot == slot)
+        {
+            return true;
+        }
+
+        false
+    }
+
+    #[inline]
+    fn fee_balance_slot(&self) -> U256 {
+        *self.fee_balance_slot.get_or_init(|| {
+            TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
+        })
+    }
+
+    #[inline]
+    fn keychain_limit_slot(&self) -> Option<U256> {
+        let key_id = self.keychain_fee_key?;
+        Some(*self.keychain_limit_slot.get_or_init(|| {
+            let keychain = AccountKeychain::new();
+            let limit_key = AccountKeychain::spending_limit_key(self.fee_payer, key_id);
+            keychain.spending_limits[limit_key][self.fee_token]
+                .remaining
+                .slot()
+        }))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StorageCreditDeltas(BTreeMap<Address, u64>);
 
@@ -319,42 +368,6 @@ impl StorageCreditDeltas {
         }
 
         Ok(())
-    }
-}
-
-impl TryFrom<u8> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(value: u8) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Refund),
-            1 => Ok(Self::Preserve),
-            2 => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
-        }
-    }
-}
-
-impl TryFrom<Mode> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(mode: Mode) -> Result<Self> {
-        match mode {
-            Mode::Refund => Ok(Self::Refund),
-            Mode::Preserve => Ok(Self::Preserve),
-            Mode::Direct => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
-        }
-    }
-}
-
-impl From<CreditMode> for Mode {
-    fn from(mode: CreditMode) -> Self {
-        match mode {
-            CreditMode::Refund => Self::Refund,
-            CreditMode::Preserve => Self::Preserve,
-            CreditMode::Direct => Self::Direct,
-        }
     }
 }
 
