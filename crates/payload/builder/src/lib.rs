@@ -567,8 +567,12 @@ where
             loop {
                 check_cancel!();
 
+                // SSMR replay measures validator CPU separately from shard arrival latency.
+                // Any blocking receive time is stream overlap, not execution work.
                 let wait_start = Instant::now();
-                match replay_source.recv_timeout(Duration::from_millis(1)) {
+                let replay_command = replay_source.recv_timeout(Duration::from_millis(1));
+                normal_transaction_fill_idle_elapsed += wait_start.elapsed();
+                match replay_command {
                     Ok(SsmrReplayCommand::Shard {
                         transactions: encoded_transactions,
                     }) => {
@@ -661,9 +665,7 @@ where
                             BlockBuildStopReason::TxPoolEmpty
                         };
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        normal_transaction_fill_idle_elapsed += wait_start.elapsed();
-                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(PayloadBuilderError::other(std::io::Error::other(
                             "SSMR replay source closed before finish",
