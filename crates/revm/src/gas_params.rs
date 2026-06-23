@@ -50,6 +50,11 @@ pub fn tempo_gas_params_with_amsterdam(
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> GasParams {
+    debug_assert!(
+        !(spec.is_t7() && amsterdam_eip8037_enabled),
+        "TODO(TIP-1016): generate combined TIP-1060 + EIP-8037 gas params before enabling both"
+    );
+
     if amsterdam_eip8037_enabled {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
         return TABLE.get_or_init(amsterdam_gas_params).clone();
