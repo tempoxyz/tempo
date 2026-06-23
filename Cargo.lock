@@ -379,7 +379,7 @@ dependencies = [
 [[package]]
 name = "alloy-evm"
 version = "0.37.0"
-source = "git+https://github.com/alloy-rs/evm?rev=4c791a8ff48c79bcb31861209b4f2f818bc3e7a6#4c791a8ff48c79bcb31861209b4f2f818bc3e7a6"
+source = "git+https://github.com/alloy-rs/evm?rev=7bab834#7bab834ed1841120e8915991a20456d802a73474"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -13502,7 +13502,6 @@ dependencies = [
  "reth-rpc-eth-types",
  "reth-storage-api",
  "revm",
- "serde",
  "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",

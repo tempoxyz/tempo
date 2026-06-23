@@ -37,7 +37,7 @@ use reth_provider::{
     StaticFileWriter as _,
 };
 use revm::{
-    context::journaled_state::JournalCheckpoint,
+    context::{BlockEnv, journaled_state::JournalCheckpoint},
     state::{AccountInfo, Bytecode},
 };
 use serde::Deserialize;
@@ -358,13 +358,16 @@ where
         block_number: u64,
         storage_settings: StorageSettings,
     ) -> Self {
-        let mut block_env = TempoBlockEnv::default();
-        block_env.number = U256::from(block_number);
-
         Self {
             tx,
             chain_id,
-            block_env,
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    number: U256::from(block_number),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             storage_settings,
             overlay: HashMap::new(),
             events: Vec::new(),
