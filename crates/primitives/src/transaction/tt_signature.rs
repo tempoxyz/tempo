@@ -180,6 +180,8 @@ impl PrimitiveSignature {
     /// For backward compatibility:
     /// - Secp256k1: encoded WITHOUT type identifier (65 bytes)
     /// - P256/WebAuthn: encoded WITH type identifier prefix
+    #[cold]
+    #[inline(never)]
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Secp256k1(sig) => {
@@ -598,6 +600,8 @@ impl TempoSignature {
     /// For backward compatibility:
     /// - Secp256k1: encoded WITHOUT type identifier (65 bytes)
     /// - P256/WebAuthn: encoded WITH type identifier prefix
+    #[cold]
+    #[inline(never)]
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
