@@ -1,7 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, U256};
 
@@ -25,32 +22,33 @@ pub enum StorageAction {
 
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
-pub struct StorageActions {
-    enabled: Rc<Cell<bool>>,
-    actions: Rc<RefCell<Vec<StorageAction>>>,
+pub enum StorageActions {
+    Disabled,
+    Enabled(Rc<RefCell<Vec<StorageAction>>>),
 }
 
 impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording disabled.
     pub fn disabled() -> Self {
-        Self {
-            enabled: Rc::new(Cell::new(false)),
-            actions: Rc::default(),
-        }
+        Self::Disabled
     }
 
     /// Returns an [`StorageActions`] instance with actions recording enabled.
     pub fn enabled() -> Self {
-        Self {
-            enabled: Rc::new(Cell::new(true)),
-            actions: Rc::default(),
-        }
+        Self::Enabled(Rc::default())
     }
 
     /// Enables actions recording.
-    pub fn enable(&self) {
-        self.enabled.set(true);
-        self.actions.borrow_mut().clear();
+    pub fn enable(&mut self) {
+        match self {
+            Self::Disabled => *self = Self::enabled(),
+            Self::Enabled(actions) => actions.borrow_mut().clear(),
+        }
+    }
+
+    /// Returns true if actions recording is enabled.
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Enabled(_))
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
@@ -60,19 +58,18 @@ impl StorageActions {
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
-        if !self.enabled.get() {
-            return None;
+        match self {
+            Self::Disabled => None,
+            Self::Enabled(recorded) => {
+                Some(std::mem::replace(&mut *recorded.borrow_mut(), actions))
+            }
         }
-
-        Some(std::mem::replace(&mut *self.actions.borrow_mut(), actions))
     }
 
     /// Records an action if recording is enabled.
     pub fn record(&self, action: StorageAction) {
-        if !self.enabled.get() {
-            return;
+        if let Self::Enabled(actions) = self {
+            actions.borrow_mut().push(action);
         }
-
-        self.actions.borrow_mut().push(action);
     }
 }
