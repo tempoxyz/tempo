@@ -1082,10 +1082,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     return 0
 }
 
-def e2e-run-sides [run_pairs: int] {
+def e2e-run-sides [run_pairs: int, run_side: string] {
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
         exit 1
+    }
+
+    if $run_side == "feature" {
+        return (0..<$run_pairs | each { "feature" })
     }
 
     mut sides = []
@@ -1113,6 +1117,7 @@ def e2e-write-summary-config [
     benchmark_id: string
     reference_epoch: int
     summary_warmup_blocks: int
+    run_side: string
     baseline_hardfork: string
     feature_hardfork: string
     baseline_removed_args: string
@@ -1129,6 +1134,7 @@ def e2e-write-summary-config [
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
         summary_warmup_blocks: $summary_warmup_blocks
+        run_side: $run_side
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
         baseline_removed_args: $baseline_removed_args
@@ -1147,6 +1153,7 @@ def e2e-generate-summary [results_dir: string] {
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     let summary_warmup_blocks = ($config | get -o summary_warmup_blocks | default 0 | into int)
+    let run_side = ($config | get -o run_side | default "comparison")
     generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork --summary-warmup-blocks $summary_warmup_blocks
     let summary_path = $"($results_dir)/summary.json"
     if ($summary_path | path exists) {
@@ -1154,7 +1161,7 @@ def e2e-generate-summary [results_dir: string] {
         let feature_removed_args = ($config | get -o feature_removed_args | default "")
         let token_count = ($config | get -o token_count | default 4 | into int)
         let summary = (open $summary_path)
-        let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        let summary = ($summary | upsert config ($summary.config | upsert token_count $token_count | upsert run_side $run_side | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
         $summary | to json | save -f $summary_path
     }
 
@@ -1209,6 +1216,7 @@ def "main e2e" [
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
     --runner-metrics-url: string = $E2E_RUNNER_METRICS_URL # Runner node-exporter metrics URL (empty disables runner metrics)
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
+    --run-side: string = "comparison"                   # Phases to run: comparison or feature
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1235,6 +1243,10 @@ def "main e2e" [
     }
     if $run_pairs <= 0 {
         print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+    if $run_side not-in ["comparison" "feature"] {
+        print $"Error: --run-side must be one of: comparison, feature \(got '($run_side)'\)"
         exit 1
     }
     if $summary_warmup_blocks < 0 {
@@ -1414,13 +1426,20 @@ def "main e2e" [
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
     let regenesis_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-regenesis-main"
     let regenesis_needed = $hardfork_mode or $gas_limit != ""
-    for wt in [$baseline_wt $feature_wt $regenesis_wt] {
+    let needs_baseline = $run_side == "comparison"
+    mut worktrees = if $needs_baseline { [$baseline_wt $feature_wt] } else { [$feature_wt] }
+    if $regenesis_needed {
+        $worktrees = ($worktrees | append $regenesis_wt)
+    }
+    for wt in $worktrees {
         if ($wt | path exists) {
             print $"Removing stale local e2e worktree: ($wt)"
             try { git worktree remove --force $wt } catch { rm -rf $wt }
         }
     }
-    git worktree add $baseline_wt $baseline
+    if $needs_baseline {
+        git worktree add $baseline_wt $baseline
+    }
     git worktree add $feature_wt $feature
     if $regenesis_needed {
         print "Fetching latest origin/main for tempo regenesis..."
@@ -1438,11 +1457,12 @@ def "main e2e" [
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
-    # with independent target/ directories, so cargo invocations don't collide.
-    mut builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
-    ]
+    # Build worktrees with independent target/ directories, so cargo invocations don't collide.
+    mut builds = []
+    if $needs_baseline {
+        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+    }
+    $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
     if $regenesis_needed {
         $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
@@ -1454,10 +1474,10 @@ def "main e2e" [
             build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
-    let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
+    let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
     let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
-    let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
+    let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
     let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
@@ -1539,7 +1559,7 @@ def "main e2e" [
     mut baseline_run_index = 0
     mut feature_run_index = 0
     mut runs = []
-    for side in (e2e-run-sides $run_pairs) {
+    for side in (e2e-run-sides $run_pairs $run_side) {
         if $side == "baseline" {
             $baseline_run_index = $baseline_run_index + 1
             $runs = ($runs | append {
@@ -1568,7 +1588,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $token_count $preset $tps $duration $benchmark_id $reference_epoch $summary_warmup_blocks $run_side $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1614,7 +1634,9 @@ def "main e2e" [
         }
     }
 
-    try { git worktree remove --force $baseline_wt } catch { }
+    if $needs_baseline {
+        try { git worktree remove --force $baseline_wt } catch { }
+    }
     try { git worktree remove --force $feature_wt } catch { }
     try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes

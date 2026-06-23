@@ -298,6 +298,10 @@ on:
         type: string
         required: false
         default: "3"
+      run-side:
+        type: string
+        required: false
+        default: comparison
       clickhouse-run:
         type: string
         required: false
@@ -390,6 +394,7 @@ jobs:
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
+      BENCH_RUN_SIDE: ${{ inputs.run-side || 'comparison' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -529,9 +534,11 @@ jobs:
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
+            const runSide = process.env.BENCH_RUN_SIDE || 'comparison';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
+            const runSideNote = runSide !== 'comparison' ? `, run-side: \`${runSide}\`` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -722,9 +729,11 @@ jobs:
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
+            const runSide = process.env.BENCH_RUN_SIDE || 'comparison';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
+            const runSideNote = runSide !== 'comparison' ? `, run-side: \`${runSide}\`` : '';
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -761,6 +770,10 @@ jobs:
             echo "::error::run-pairs must be a positive integer"
             exit 1
           fi
+          if [ "$BENCH_RUN_SIDE" != "comparison" ] && [ "$BENCH_RUN_SIDE" != "feature" ]; then
+            echo "::error::run-side must be one of: comparison, feature"
+            exit 1
+          fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"
             exit 1
@@ -776,6 +789,7 @@ jobs:
             --token-count "$BENCH_TOKEN_COUNT"
             --duration "$BENCH_DURATION"
             --run-pairs "$BENCH_RUN_PAIRS"
+            --run-side "$BENCH_RUN_SIDE"
             --tps "$BENCH_TPS"
             --accounts "$BENCH_ACCOUNTS"
             --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
@@ -856,6 +870,7 @@ jobs:
             feature-hardfork="$BENCH_FEATURE_HARDFORK"
             gas-limit="$BENCH_GAS_LIMIT"
             run-pairs="$BENCH_RUN_PAIRS"
+            run-side="$BENCH_RUN_SIDE"
             otlp="$BENCH_OTLP"
             metrics="$BENCH_METRICS"
             no-cache="$BENCH_NO_CACHE"
