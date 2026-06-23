@@ -11,7 +11,6 @@ use reth_revm::context::Transaction as _;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{StorageActionReplay, evm::TempoEvm};
 use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
@@ -292,7 +291,7 @@ where
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
         }
-        if !is_storage_action_replay_candidate(&tx, &tx_env, evm.cfg.spec) {
+        if !is_storage_action_replay_candidate(&tx, &tx_env) {
             let _ = evm.replace_actions(Vec::new());
             return None;
         }
@@ -339,11 +338,7 @@ where
     PlannedTransaction { tx, replay }
 }
 
-fn is_storage_action_replay_candidate(
-    tx: &BestTransaction,
-    tx_env: &TempoTxEnv,
-    spec: TempoHardfork,
-) -> bool {
+fn is_storage_action_replay_candidate(tx: &BestTransaction, tx_env: &TempoTxEnv) -> bool {
     if tx.transaction.inner().tx().subblock_proposer().is_some() {
         return false;
     }
@@ -370,9 +365,6 @@ fn is_storage_action_replay_candidate(
         return false;
     }
     if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY || tx_env.nonce() != 0 {
-        return false;
-    }
-    if aa_env.valid_before.is_none() {
         return false;
     }
     if tx
