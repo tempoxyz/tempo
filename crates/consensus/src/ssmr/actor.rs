@@ -106,8 +106,10 @@ impl IntoPayload for SsmrBuilderShard {
 pub(crate) struct Actor {
     public_key: PublicKey,
     scheme_provider: SchemeProvider,
-    actions_tx: mpsc::UnboundedSender<Message>,
-    actions_rx: mpsc::UnboundedReceiver<Message>,
+    control_tx: mpsc::UnboundedSender<ControlMessage>,
+    control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+    builder_tx: mpsc::UnboundedSender<BuilderMessage>,
+    builder_rx: mpsc::UnboundedReceiver<BuilderMessage>,
     streams: HashMap<StreamKey, StreamBuffer>,
     retired_streams: HashSet<StreamKey>,
     task_executor: TaskExecutor,
@@ -133,12 +135,15 @@ impl Actor {
     where
         TContext: commonware_runtime::Metrics,
     {
-        let (actions_tx, actions_rx) = mpsc::unbounded();
+        let (control_tx, control_rx) = mpsc::unbounded();
+        let (builder_tx, builder_rx) = mpsc::unbounded();
         Self {
             public_key,
             scheme_provider,
-            actions_tx,
-            actions_rx,
+            control_tx,
+            control_rx,
+            builder_tx,
+            builder_rx,
             streams: HashMap::new(),
             retired_streams: HashSet::new(),
             task_executor,
@@ -152,7 +157,8 @@ impl Actor {
 
     pub(crate) fn mailbox(&self) -> Mailbox {
         Mailbox {
-            tx: self.actions_tx.clone(),
+            control_tx: self.control_tx.clone(),
+            builder_tx: self.builder_tx.clone(),
             shard_target_bytes: self.shard_target_bytes,
         }
     }
@@ -168,37 +174,45 @@ impl Actor {
             tokio::select! {
                 biased;
 
-                Some(message) = self.actions_rx.next() => {
-                    self.on_message(message, &mut network_tx).await;
+                Some(message) = self.control_rx.next() => {
+                    self.on_control_message(message);
                 }
                 Ok((sender, message)) = network_rx.recv() => {
                     let _ = self.on_network_message(sender, message);
+                }
+                Some(message) = self.builder_rx.next() => {
+                    self.on_builder_message(message, &mut network_tx).await;
                 }
             }
         }
     }
 
-    async fn on_message(
+    async fn on_builder_message(
         &mut self,
-        message: Message,
+        message: BuilderMessage,
         network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) {
         match message {
-            Message::BuilderEvent { stream, event } => {
+            BuilderMessage::BuilderEvent { stream, event } => {
                 self.broadcast_builder_event(stream, event, network_tx)
                     .await;
             }
-            Message::GetStreamSnapshot { key, response } => {
+        }
+    }
+
+    fn on_control_message(&mut self, message: ControlMessage) {
+        match message {
+            ControlMessage::GetStreamSnapshot { key, response } => {
                 let stream = self.streams.get(&key).map(StreamBuffer::snapshot);
                 let _ = response.send(stream);
             }
-            Message::RetireStream { key } => {
+            ControlMessage::RetireStream { key } => {
                 self.retire_stream(key);
             }
-            Message::EvictStreamsThroughHeight { block_height } => {
+            ControlMessage::EvictStreamsThroughHeight { block_height } => {
                 self.evict_streams_through_height(block_height);
             }
-            Message::OptimisticPayloadReady { key, payload } => match payload {
+            ControlMessage::OptimisticPayloadReady { key, payload } => match payload {
                 Ok(payload) => {
                     if let Some(stream) = self.streams.get_mut(&key) {
                         stream.optimistic_execution = None;
@@ -387,6 +401,7 @@ impl Actor {
             .filter(|stream| {
                 stream.transcript.is_some()
                     && stream.optimistic_execution.is_none()
+                    && stream.optimistic_payload.is_none()
                     && !stream.optimistic_failed
             })
             .and_then(|stream| stream.transcript.as_ref())
@@ -483,7 +498,7 @@ impl Actor {
         key: StreamKey,
         payload_rx: oneshot::Receiver<TempoBuiltPayload>,
     ) {
-        let tx = self.actions_tx.clone();
+        let tx = self.control_tx.clone();
         let metrics = self.metrics.clone();
         let build_start = std::time::Instant::now();
         self.task_executor
@@ -495,7 +510,7 @@ impl Actor {
                         .optimistic_execution_millis_total
                         .inc_by(build_start.elapsed().as_millis() as u64);
                 }
-                let _ = tx.unbounded_send(Message::OptimisticPayloadReady { key, payload });
+                let _ = tx.unbounded_send(ControlMessage::OptimisticPayloadReady { key, payload });
             });
     }
 }
@@ -518,7 +533,8 @@ fn ssmr_replay_attributes(
 /// Handle to the SSMR actor.
 #[derive(Clone)]
 pub(crate) struct Mailbox {
-    tx: mpsc::UnboundedSender<Message>,
+    control_tx: mpsc::UnboundedSender<ControlMessage>,
+    builder_tx: mpsc::UnboundedSender<BuilderMessage>,
     shard_target_bytes: usize,
 }
 
@@ -528,9 +544,9 @@ impl Mailbox {
     }
 
     pub(crate) fn builder_sink(&self, stream: ProposalStream) -> SsmrBuilderSink {
-        let tx = self.tx.clone();
+        let tx = self.builder_tx.clone();
         Arc::new(move |event| {
-            let _ = tx.unbounded_send(Message::BuilderEvent {
+            let _ = tx.unbounded_send(BuilderMessage::BuilderEvent {
                 stream: stream.clone(),
                 event,
             });
@@ -539,28 +555,33 @@ impl Mailbox {
 
     pub(crate) async fn get_stream_snapshot(&self, key: StreamKey) -> Option<SsmrStreamSnapshot> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .unbounded_send(Message::GetStreamSnapshot { key, response: tx })
+        self.control_tx
+            .unbounded_send(ControlMessage::GetStreamSnapshot { key, response: tx })
             .ok()?;
         rx.await.ok().flatten()
     }
 
     pub(crate) fn retire_stream(&self, key: StreamKey) {
-        let _ = self.tx.unbounded_send(Message::RetireStream { key });
+        let _ = self
+            .control_tx
+            .unbounded_send(ControlMessage::RetireStream { key });
     }
 
     pub(crate) fn evict_streams_through_height(&self, block_height: u64) {
         let _ = self
-            .tx
-            .unbounded_send(Message::EvictStreamsThroughHeight { block_height });
+            .control_tx
+            .unbounded_send(ControlMessage::EvictStreamsThroughHeight { block_height });
     }
 }
 
-enum Message {
+enum BuilderMessage {
     BuilderEvent {
         stream: ProposalStream,
         event: SsmrBuilderEvent,
     },
+}
+
+enum ControlMessage {
     GetStreamSnapshot {
         key: StreamKey,
         response: oneshot::Sender<Option<SsmrStreamSnapshot>>,

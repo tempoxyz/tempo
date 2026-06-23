@@ -81,6 +81,7 @@ struct BuildProposalArgs {
 }
 
 const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const BLOCK_SUBSCRIBE_EL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 struct ProposalReturn {
     /// Earliest time the built proposal may be returned to consensus.
@@ -107,12 +108,6 @@ impl SsmrStreamRetirement {
         {
             ssmr.retire_stream(key);
         }
-    }
-}
-
-impl Drop for SsmrStreamRetirement {
-    fn drop(&mut self) {
-        self.retire_now();
     }
 }
 
@@ -593,6 +588,7 @@ impl Inner<Init> {
         } = args;
 
         let parent = subscribe(
+            &context,
             &self.execution_node,
             Round::new(round.epoch(), parent_view),
             parent_digest,
@@ -871,15 +867,17 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<VerifyResult> {
-        let (block, parent) = try_join(
+        let (mut block, parent) = try_join(
             subscribe(
+                &context,
                 &self.execution_node,
                 round,
                 payload,
                 &self.marshal,
-                BlockResolution::RequireConsensusSidecars,
+                BlockResolution::Any,
             ),
             subscribe(
+                &context,
                 &self.execution_node,
                 Round::new(round.epoch(), parent_view),
                 parent_digest,
@@ -969,6 +967,9 @@ impl Inner<Init> {
                             Some(payload) => {
                                 match reconcile_ssmr_optimistic_payload(&block, &payload) {
                                     Ok(()) => {
+                                        if block.missing_required_sidecars() {
+                                            block = block_from_ssmr_optimistic_payload(&payload)?;
+                                        }
                                         optimistic_payload = Some(payload);
                                         debug!(
                                             block.digest = %block.digest(),
@@ -1026,7 +1027,7 @@ impl Inner<Init> {
                 self.metrics.ssmr_missing_shards_at_proposal.inc();
                 self.metrics.ssmr_fallback_validation_count.inc();
                 debug!(
-                    block.digest = %block.digest(),
+                block.digest = %block.digest(),
                     block.height = %block.height(),
                     stream.started = stream_started,
                     "SSMR stream has no optimistic artifact at proposal; using normal validation"
@@ -1041,8 +1042,22 @@ impl Inner<Init> {
                 "no SSMR stream for proposal; using normal validation"
             );
         }
-        ssmr_retirement.retire_now();
-
+        if block.missing_required_sidecars() {
+            debug!(
+                block.digest = %block.digest(),
+                block.height = %block.height(),
+                "proposal block is missing required consensus sidecars; waiting for marshal block"
+            );
+            block = subscribe(
+                &context,
+                &self.execution_node,
+                round,
+                payload,
+                &self.marshal,
+                BlockResolution::RequireConsensusSidecars,
+            )
+            .await?;
+        }
         let validation_duration = verify_block(
             context,
             round.epoch(),
@@ -1058,6 +1073,7 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
+        ssmr_retirement.retire_now();
         if let Some(duration) = validation_duration
             && let Ok(mut estimator) = self.validation_latency_estimator.lock()
         {
@@ -1302,10 +1318,23 @@ fn reconcile_ssmr_optimistic_payload(
     if payload.block() != block.block() {
         return Err(SsmrOptimisticPayloadMismatch::ExecutionBlock);
     }
-    if payload.block_access_list() != block.block_access_list() {
+    if let Some(block_access_list) = block.block_access_list()
+        && payload.block_access_list() != Some(block_access_list)
+    {
         return Err(SsmrOptimisticPayloadMismatch::BlockAccessList);
     }
     Ok(())
+}
+
+fn block_from_ssmr_optimistic_payload(payload: &TempoBuiltPayload) -> eyre::Result<Block> {
+    let (execution_block, block_access_list, execution_block_encoded) =
+        payload.clone().into_consensus_execution_payload();
+    Block::from_execution_block_with_encoded_cache(
+        execution_block,
+        block_access_list,
+        execution_block_encoded,
+    )
+    .wrap_err("SSMR optimistic payload produced an invalid block access list")
 }
 
 #[derive(Debug)]
@@ -1417,45 +1446,67 @@ async fn verify_header(
 /// needs sidecars that EL storage does not retain, subscribes to the CL and
 /// waits until the complete consensus block becomes available.
 #[instrument(skip_all, fields(%round, %digest), err, ret(Display))]
-async fn subscribe(
+async fn subscribe<TContext: commonware_runtime::Clock>(
+    context: &TContext,
     execution_node: &TempoFullNode,
     round: Round,
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
     resolution: BlockResolution,
 ) -> eyre::Result<Block> {
-    let block_from_el = execution_node
-        .provider
-        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
-        .wrap_err_with(|| format!("failed querying execution layer for block `{digest}`"))?
-        .map(|block| {
-            // EL database reads do not include commonware sidecars.
-            Block::from_execution_block_unchecked(block, None)
-        });
-
-    if let Some(block) = block_from_el {
-        if resolution == BlockResolution::Any || !block.missing_required_sidecars() {
+    if let Some(block) = find_block_in_execution_layer(execution_node, digest)? {
+        if resolution.accepts(&block) {
             return Ok(block);
         }
-
-        if block.missing_required_sidecars() {
-            debug!(
-                "execution layer block is missing required consensus sidecars; waiting for marshal block"
-            );
-        }
+        debug!(
+            "execution layer block is missing required consensus sidecars; waiting for marshal block"
+        );
     }
 
-    marshal
-        .subscribe_by_digest(Some(round), digest)
-        .await
-        .await
-        .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+    let block_rx = marshal.subscribe_by_digest(Some(round), digest).await;
+    futures::pin_mut!(block_rx);
+    loop {
+        select! {
+            result = &mut block_rx => {
+                return result.map_err(|_| eyre!("syncer dropped channel before the parent block was sent"));
+            },
+            _ = context.sleep(BLOCK_SUBSCRIBE_EL_POLL_INTERVAL) => {
+                if let Some(block) = find_block_in_execution_layer(execution_node, digest)? {
+                    if resolution.accepts(&block) {
+                        return Ok(block);
+                    }
+                }
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlockResolution {
     Any,
     RequireConsensusSidecars,
+}
+
+impl BlockResolution {
+    fn accepts(self, block: &Block) -> bool {
+        self == Self::Any || !block.missing_required_sidecars()
+    }
+}
+
+fn find_block_in_execution_layer(
+    execution_node: &TempoFullNode,
+    digest: Digest,
+) -> eyre::Result<Option<Block>> {
+    execution_node
+        .provider
+        .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
+        .wrap_err_with(|| format!("failed querying execution layer for block `{digest}`"))
+        .map(|block| {
+            block.map(|block| {
+                // EL database reads do not include commonware sidecars.
+                Block::from_execution_block_unchecked(block, None)
+            })
+        })
 }
 
 #[derive(Clone)]
