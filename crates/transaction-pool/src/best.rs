@@ -151,16 +151,17 @@ pub struct StateAwareBestTransactionsUpdate {
 }
 
 impl StateAwareBestTransactionsUpdate {
-    /// Builds a state-aware iterator update from an executed transaction result.
-    pub fn from_result(result: &TempoTxResult) -> Self {
-        let mut tip20_balances = Vec::new();
+    /// Replaces this update with relevant state changes from an executed transaction result.
+    pub fn update_from_result(&mut self, result: &TempoTxResult) {
+        self.tip20_balances.clear();
+
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;
             }
 
             for (&slot, storage_slot) in &account.storage {
-                tip20_balances.push(StateAwareTip20BalanceUpdate {
+                self.tip20_balances.push(StateAwareTip20BalanceUpdate {
                     address,
                     slot,
                     original_balance: storage_slot.original_value,
@@ -168,12 +169,20 @@ impl StateAwareBestTransactionsUpdate {
                 });
             }
         }
+    }
 
-        Self { tip20_balances }
+    /// Returns true if this update has no state changes relevant to the iterator.
+    pub fn is_empty(&self) -> bool {
+        self.tip20_balances.is_empty()
+    }
+
+    /// Clears this update without releasing its allocation.
+    pub fn clear(&mut self) {
+        self.tip20_balances.clear();
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct StateAwareTip20BalanceUpdate {
     address: Address,
     slot: U256,
@@ -212,8 +221,8 @@ where
     }
 
     /// Applies a compact state update produced from a transaction execution result.
-    pub fn apply_update(&mut self, update: StateAwareBestTransactionsUpdate) {
-        for balance in update.tip20_balances {
+    pub fn apply_update(&mut self, update: &StateAwareBestTransactionsUpdate) {
+        for balance in update.tip20_balances.iter().copied() {
             self.apply_tip20_balance_update(
                 balance.address,
                 balance.slot,
