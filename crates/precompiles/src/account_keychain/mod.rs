@@ -39,7 +39,7 @@ const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
 const TIP20_APPROVE_SELECTOR: [u8; 4] = ITIP20::approveCall::SELECTOR;
 const TIP20_TRANSFER_WITH_MEMO_SELECTOR: [u8; 4] = ITIP20::transferWithMemoCall::SELECTOR;
 
-/// Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
+/// (T7+) Alias for zero remaining periodic spend, used to avoid clearing the storage slot.
 const ZERO_PERIODIC_REMAINING_SENTINEL: U256 = U256::MAX;
 
 #[inline]
@@ -1424,7 +1424,16 @@ impl AccountKeychain {
         }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
-        let refunded = limit_state.remaining.saturating_add(amount);
+        // (T7+) decode the periodic zero sentinel before adding the refund.
+        let refunded = if self.storage.spec().is_t7()
+            && limit_state.period != 0
+            && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL
+        {
+            amount
+        } else {
+            limit_state.remaining.saturating_add(amount)
+        };
+
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
         // with a real T3 max.
@@ -4604,6 +4613,17 @@ mod tests {
                 U256::from(100),
                 U256::ZERO,
             )]);
+
+            keychain.set_transaction_key(key_id)?;
+            keychain.refund_spending_limit(account, token, U256::from(40))?;
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?,
+                U256::from(40)
+            );
 
             Ok(())
         })
