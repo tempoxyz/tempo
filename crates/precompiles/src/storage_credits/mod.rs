@@ -81,21 +81,29 @@ impl StorageCredits {
         u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
     }
 
-    /// Runs `f` and returns the signed change in `account`'s persistent credit balance.
-    pub fn track_credit_delta<T>(
+    /// Runs `f` and returns its value plus the number of credits minted for `account`.
+    ///
+    /// A negative delta means the operation consumed credits where the caller expected
+    /// a mint-only/no-op operation, so it is treated as a fatal bookkeeping error.
+    pub fn track_minted_credits<T>(
         &self,
         account: Address,
         f: impl FnOnce() -> Result<T>,
-    ) -> Result<i128> {
+    ) -> Result<(T, u64)> {
         if !StorageCtx.spec().is_t7() {
-            f()?;
-            return Ok(0);
+            return f().map(|value| (value, 0));
         }
 
         let before = self.balance_of(account)?;
-        f()?;
+        let value = f()?;
         let after = self.balance_of(account)?;
-        Ok(i128::from(after) - i128::from(before))
+        if after < before {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "storage credit operation for owner {account} consumed credits (before: {before}, after: {after})"
+            )));
+        }
+
+        Ok((value, after - before))
     }
 
     pub fn mode_of(&self, account: Address) -> Result<CreditMode> {

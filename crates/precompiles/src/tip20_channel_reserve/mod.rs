@@ -557,13 +557,9 @@ impl TIP20ChannelReserve {
         channel_id: B256,
         payer: Address,
     ) -> Result<()> {
-        let delta = StorageCredits::new()
-            .track_credit_delta(self.address, || self.channel_states[channel_id].delete())?;
-        if delta > 0 {
-            self.credit_channel_storage_slots(payer, delta as u64)?;
-        }
-
-        Ok(())
+        let (_, credits) = StorageCredits::new()
+            .track_minted_credits(self.address, || self.channel_states[channel_id].delete())?;
+        self.credit_channel_storage_slots(payer, credits)
     }
 
     /// Credits `payer` for deleted packed channel-state slots.
