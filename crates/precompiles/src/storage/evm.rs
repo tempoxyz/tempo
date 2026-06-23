@@ -1,7 +1,7 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-    storage_credits::sstore_storage_credits,
+    storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -11,6 +11,7 @@ use revm::{
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
@@ -24,6 +25,8 @@ pub struct EvmPrecompileStorageProvider<'a> {
     is_static: bool,
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
+    tip1060_storage_credit_minting_enabled: bool,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -50,6 +53,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             is_static,
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
+            tip1060_storage_credit_minting_enabled: true,
+            non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -90,6 +95,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Sets the transaction-local non-creditable clear-slot context for this provider.
+    pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
+        self.non_creditable_slots = slots;
         self
     }
 
@@ -202,7 +213,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
-            sstore_storage_credits(self, address, &result)?
+            sstore_storage_credits(self, address, Some(key), &result)?
         }
 
         // dynamic gas
@@ -269,6 +280,18 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) {
         self.internals.tstore(address, key, value);
+    }
+
+    #[inline]
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        self.non_creditable_slots
+            .borrow()
+            .is_non_creditable_slot(owner, key)
+    }
+
+    #[inline]
+    fn tip1060_storage_credit_minting_enabled(&self) -> bool {
+        self.tip1060_storage_credit_minting_enabled
     }
 }
 
@@ -375,8 +398,17 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
 
-        let action = StorageAction::Sinc(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        // If the value goes from zero to non-zero, do not record it as `Sinc`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, delta)
+        } else {
+            StorageAction::Sinc(address, key, delta)
+        };
+
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
@@ -391,8 +423,17 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
 
-        let action = StorageAction::Sdec(address, key, delta);
-        self.sstore_inner(address, key, value, action)
+        // If the value goes from non-zero to zero, do not record it as `Sdec`,
+        // because it requires special TIP-1060 gas credits accounting.
+        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+            self.actions
+                .record(StorageAction::Sload(address, key, current));
+            StorageAction::Sstore(address, key, value)
+        } else {
+            StorageAction::Sdec(address, key, delta)
+        };
+
+        self.sstore_inner(address, key, value, sstore_action)
     }
 
     #[inline]
@@ -512,6 +553,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn set_tip1060_storage_credits(&mut self, enabled: bool) {
         self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
+    }
+
+    #[inline]
+    fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
+        self.tip1060_storage_credit_minting_enabled = enabled;
     }
 }
 

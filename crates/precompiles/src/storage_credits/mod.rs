@@ -6,12 +6,14 @@ pub mod dispatch;
 pub use accounting::{StorageCreditsBackend, StorageCreditsErr, sstore_storage_credits};
 
 use crate::{
-    STORAGE_CREDITS_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType, StorageCtx},
+    tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::collections::BTreeMap;
+use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -78,7 +80,7 @@ impl StorageCredits {
     }
 
     pub fn balance_of(&self, account: Address) -> Result<u64> {
-        u64::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
+        self.handler::<u64>(account).read()
     }
 
     /// Runs `f` and returns its value plus the number of credits minted for `account`.
@@ -142,21 +144,26 @@ impl StorageCredits {
         self.write_credit_state_of(msg_sender, state)
     }
 
+    /// Returns the storage credit balance/state key for `account`.
     #[inline]
     pub fn slot(account: Address) -> U256 {
         U256::from_be_bytes(account.into_word().0)
     }
 
+    /// Returns a full-slot handler for the account's storage-credit balance/state.
+    #[inline]
+    fn handler<T: StorableType>(&self, account: Address) -> T::Handler {
+        T::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+    }
+
     #[inline]
     fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address)
-            .t_read()?
-            .try_into()
+        self.handler::<U256>(account).t_read()?.try_into()
     }
 
     #[inline]
     fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        U256::handle(Self::slot(account), LayoutCtx::FULL, self.address).t_write(state.into())
+        self.handler::<U256>(account).t_write(state.into())
     }
 
     /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
@@ -319,5 +326,54 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn non_creditable_slots_match_fee_bookkeeping_slots() {
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let fee_payer = Address::repeat_byte(0x13);
+        let mut slots = NonCreditableSlots::empty();
+        slots.initialize(fee_payer, fee_token, None);
+
+        let fee_balance_slot =
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+        assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot + U256::ONE));
+    }
+
+    #[test]
+    fn non_creditable_slots_match_keychain_limit_slot() {
+        let fee_payer = Address::repeat_byte(0x16);
+        let key_id = Address::repeat_byte(0x17);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let mut slots = NonCreditableSlots::empty();
+        slots.initialize(fee_payer, fee_token, Some(key_id));
+
+        let keychain = AccountKeychain::new();
+        let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+        let remaining_slot = keychain.spending_limits[limit_key][fee_token]
+            .remaining
+            .slot();
+        assert!(slots.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, remaining_slot));
+        assert!(
+            !slots.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, remaining_slot + U256::ONE)
+        );
+    }
+
+    #[test]
+    fn non_creditable_slots_clear_resets_bookkeeping_slots() {
+        let fee_payer = Address::repeat_byte(0x20);
+        let key_id = Address::repeat_byte(0x21);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let mut slots = NonCreditableSlots::empty();
+        slots.initialize(fee_payer, fee_token, Some(key_id));
+
+        let fee_balance_slot =
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+
+        slots.clear();
+
+        assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot));
     }
 }
