@@ -253,6 +253,8 @@ impl TempoInvalidTransaction {
     ///
     /// Returns `false` for state-dependent errors (balance, nonce, expiry, liquidity)
     /// that may resolve as state advances.
+    #[cold]
+    #[inline(never)]
     pub fn is_bad_transaction(&self) -> bool {
         match self {
             Self::EthInvalidTransaction(eth) => match eth {
@@ -333,6 +335,8 @@ impl TempoInvalidTransaction {
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
+    #[cold]
+    #[inline(never)]
     fn is_nonce_too_low(&self) -> bool {
         match self {
             Self::EthInvalidTransaction(err) => err.is_nonce_too_low(),
@@ -340,6 +344,8 @@ impl InvalidTxError for TempoInvalidTransaction {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn as_invalid_tx_err(&self) -> Option<&InvalidTransaction> {
         match self {
             Self::EthInvalidTransaction(err) => Some(err),
