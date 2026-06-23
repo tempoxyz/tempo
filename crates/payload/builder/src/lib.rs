@@ -1113,7 +1113,7 @@ where
         let execution_block_encoded = execution_block_encoder.encoded_block();
         // Drop the encoder off-thread so its `Drop` impl can populate the cache in the background.
         self.executor.spawn_drop(execution_block_encoder);
-        let eth_payload = EthBuiltPayload::new(block.clone(), draft.total_fees, requests, None);
+        let eth_payload = EthBuiltPayload::new(block, draft.total_fees, requests, None);
 
         let payload = TempoBuiltPayload::new(
             eth_payload,

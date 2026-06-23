@@ -351,7 +351,6 @@ where
                 self.enqueue_execution_request(ExecutionRequest::Canonicalize(Box::new(
                     Canonicalize {
                         cause,
-                        head_or_finalized: HeadOrFinalized::Head,
                         height,
                         digest,
                         response: Some(response),
@@ -373,7 +372,6 @@ where
                 self.enqueue_execution_request(ExecutionRequest::Canonicalize(Box::new(
                     Canonicalize {
                         cause,
-                        head_or_finalized: HeadOrFinalized::Head,
                         height,
                         digest,
                         response: None,
@@ -473,7 +471,7 @@ struct FinalizedBlockRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForkchoiceUpdateKind {
     Heartbeat,
-    Canonicalize { head_or_finalized: HeadOrFinalized },
+    Canonicalize,
 }
 
 enum ExecutionTaskResult {
@@ -487,7 +485,6 @@ enum ExecutionTaskResult {
 
 struct Canonicalize {
     cause: Span,
-    head_or_finalized: HeadOrFinalized,
     height: Height,
     digest: Digest,
     /// Acknowledges to the requester that the execution layer accepted the
@@ -577,7 +574,6 @@ where
     fields(
         %height,
         %digest,
-        head_or_finalized = %head_or_finalized,
     ),
 )]
 async fn run_canonicalize_task<TContext: Pacer>(
@@ -586,16 +582,13 @@ async fn run_canonicalize_task<TContext: Pacer>(
     canonicalized: LastCanonicalized,
     Canonicalize {
         cause,
-        head_or_finalized,
         height,
         digest,
         response,
         mut build_attributes,
     }: Canonicalize,
 ) -> (Option<LastCanonicalized>, Option<StartPayloadJob>) {
-    let new_canonicalized = match head_or_finalized {
-        HeadOrFinalized::Head => canonicalized.update_head(height, digest),
-    };
+    let new_canonicalized = canonicalized.update_head(height, digest);
 
     if build_attributes
         .as_ref()
@@ -627,7 +620,7 @@ async fn run_canonicalize_task<TContext: Pacer>(
         cause.clone(),
         new_canonicalized,
         attributes,
-        ForkchoiceUpdateKind::Canonicalize { head_or_finalized },
+        ForkchoiceUpdateKind::Canonicalize,
     )
     .await
     {
@@ -823,9 +816,7 @@ async fn forward_finalized<TContext: Pacer>(
             cause,
             canonicalized,
             None,
-            ForkchoiceUpdateKind::Canonicalize {
-                head_or_finalized: HeadOrFinalized::Head,
-            },
+            ForkchoiceUpdateKind::Canonicalize,
         )
         .await?;
 
@@ -844,19 +835,4 @@ async fn forward_finalized<TContext: Pacer>(
     acknowledgment.acknowledge();
 
     Ok(canonicalized)
-}
-
-/// Marker to indicate whether the head hash or finalized hash should be updated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HeadOrFinalized {
-    Head,
-}
-
-impl std::fmt::Display for HeadOrFinalized {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let msg = match self {
-            Self::Head => "head",
-        };
-        f.write_str(msg)
-    }
 }
