@@ -95,7 +95,14 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
 const DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES: usize = 5 * 1024;
 const SSMR_REPLAY_SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const SSMR_REPLAY_RECOVERY_QUEUE_CAPACITY: usize = 2;
+const SSMR_REPLAY_RECOVERY_MAX_WORKERS: usize = 8;
+const SSMR_REPLAY_RECOVERY_QUEUE_MULTIPLIER: usize = 4;
+
+#[derive(Debug)]
+struct SsmrReplayRecoveryJob {
+    shard_index: u64,
+    transactions: Vec<Bytes>,
+}
 
 #[derive(Debug)]
 struct SsmrRecoveredShard {
@@ -111,7 +118,9 @@ enum SsmrRecoveredReplayEvent {
     Shard(SsmrRecoveredShard),
     Finish {
         source_wait_elapsed: Duration,
+        recovery_wall_elapsed: Duration,
         recovery_backpressure_elapsed: Duration,
+        recovery_worker_count: usize,
     },
     Error(String),
 }
@@ -162,18 +171,87 @@ fn send_ssmr_replay_event(
     sent
 }
 
+fn ssmr_replay_recovery_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| {
+            parallelism
+                .get()
+                .saturating_sub(2)
+                .clamp(1, SSMR_REPLAY_RECOVERY_MAX_WORKERS)
+        })
+        .unwrap_or(4)
+}
+
+fn forward_ssmr_replay_recovery_event(
+    ready_tx: &Sender<SsmrRecoveredReplayEvent>,
+    event: SsmrRecoveredReplayEvent,
+    inflight_recovery_jobs: &mut usize,
+    recovery_backpressure_elapsed: &mut Duration,
+) -> bool {
+    *inflight_recovery_jobs = inflight_recovery_jobs.saturating_sub(1);
+    let should_continue = !matches!(event, SsmrRecoveredReplayEvent::Error(_));
+    send_ssmr_replay_event(ready_tx, event, recovery_backpressure_elapsed) && should_continue
+}
+
 fn spawn_ssmr_replay_recovery(
     executor: TaskExecutor,
     replay_source: SsmrReplaySource,
 ) -> Receiver<SsmrRecoveredReplayEvent> {
-    let (ready_tx, ready_rx) = crossbeam_channel::bounded(SSMR_REPLAY_RECOVERY_QUEUE_CAPACITY);
+    let recovery_worker_count = ssmr_replay_recovery_worker_count();
+    let recovery_queue_capacity =
+        recovery_worker_count.saturating_mul(SSMR_REPLAY_RECOVERY_QUEUE_MULTIPLIER);
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded(recovery_queue_capacity);
+    let (job_tx, job_rx) = crossbeam_channel::unbounded::<SsmrReplayRecoveryJob>();
+    let (recovered_tx, recovered_rx) = crossbeam_channel::bounded(recovery_queue_capacity);
 
     executor.spawn_blocking(move || {
+        for worker_index in 0..recovery_worker_count {
+            let job_rx = job_rx.clone();
+            let recovered_tx = recovered_tx.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name(format!("ssmr-replay-recovery-{worker_index}"))
+                .spawn(move || {
+                    while let Ok(SsmrReplayRecoveryJob {
+                        shard_index,
+                        transactions,
+                    }) = job_rx.recv()
+                    {
+                        let event = recover_ssmr_replay_shard(shard_index, transactions)
+                            .map(SsmrRecoveredReplayEvent::Shard)
+                            .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
+                        if recovered_tx.send(event).is_err() {
+                            return;
+                        }
+                    }
+                })
+            {
+                let _ = ready_tx.send(SsmrRecoveredReplayEvent::Error(format!(
+                    "failed spawning SSMR replay recovery worker: {error}"
+                )));
+                return;
+            }
+        }
+        drop(job_rx);
+        drop(recovered_tx);
+
         let mut next_shard_index = 0u64;
+        let mut inflight_recovery_jobs = 0usize;
+        let mut recovery_wall_start = None;
         let mut source_wait_elapsed = Duration::ZERO;
         let mut recovery_backpressure_elapsed = Duration::ZERO;
 
         loop {
+            while let Ok(event) = recovered_rx.try_recv() {
+                if !forward_ssmr_replay_recovery_event(
+                    &ready_tx,
+                    event,
+                    &mut inflight_recovery_jobs,
+                    &mut recovery_backpressure_elapsed,
+                ) {
+                    return;
+                }
+            }
+
             let wait_start = Instant::now();
             let command = replay_source.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
             source_wait_elapsed += wait_start.elapsed();
@@ -182,18 +260,61 @@ fn spawn_ssmr_replay_recovery(
                 Ok(SsmrReplayCommand::Shard { transactions }) => {
                     let shard_index = next_shard_index;
                     next_shard_index += 1;
-                    let event = recover_ssmr_replay_shard(shard_index, transactions)
-                        .map(SsmrRecoveredReplayEvent::Shard)
-                        .unwrap_or_else(SsmrRecoveredReplayEvent::Error);
-                    if !send_ssmr_replay_event(&ready_tx, event, &mut recovery_backpressure_elapsed)
+                    if recovery_wall_start.is_none() {
+                        recovery_wall_start = Some(Instant::now());
+                    }
+                    inflight_recovery_jobs += 1;
+                    if job_tx
+                        .send(SsmrReplayRecoveryJob {
+                            shard_index,
+                            transactions,
+                        })
+                        .is_err()
                     {
+                        let _ = send_ssmr_replay_event(
+                            &ready_tx,
+                            SsmrRecoveredReplayEvent::Error(
+                                "SSMR replay recovery workers closed before finish".to_string(),
+                            ),
+                            &mut recovery_backpressure_elapsed,
+                        );
                         return;
                     }
                 }
                 Ok(SsmrReplayCommand::Finish) => {
+                    drop(job_tx);
+                    while inflight_recovery_jobs > 0 {
+                        match recovered_rx.recv() {
+                            Ok(event) => {
+                                if !forward_ssmr_replay_recovery_event(
+                                    &ready_tx,
+                                    event,
+                                    &mut inflight_recovery_jobs,
+                                    &mut recovery_backpressure_elapsed,
+                                ) {
+                                    return;
+                                }
+                            }
+                            Err(_) => {
+                                let _ = send_ssmr_replay_event(
+                                    &ready_tx,
+                                    SsmrRecoveredReplayEvent::Error(
+                                        "SSMR replay recovery closed before finish".to_string(),
+                                    ),
+                                    &mut recovery_backpressure_elapsed,
+                                );
+                                return;
+                            }
+                        }
+                    }
+
                     let _ = ready_tx.send(SsmrRecoveredReplayEvent::Finish {
                         source_wait_elapsed,
+                        recovery_wall_elapsed: recovery_wall_start
+                            .map(|start| start.elapsed())
+                            .unwrap_or_default(),
                         recovery_backpressure_elapsed,
+                        recovery_worker_count,
                     });
                     return;
                 }
@@ -682,7 +803,9 @@ where
         let mut ssmr_replay_decode_elapsed = Duration::ZERO;
         let mut ssmr_replay_recover_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_wait_elapsed = Duration::ZERO;
+        let mut ssmr_replay_recovery_wall_elapsed = Duration::ZERO;
         let mut ssmr_replay_recovery_backpressure_elapsed = Duration::ZERO;
+        let mut ssmr_replay_recovery_worker_count = 0usize;
         let mut ssmr_replay_execute_elapsed = Duration::ZERO;
         let mut ssmr_replay_shards = 0u64;
         let mut ssmr_replay_transactions = 0u64;
@@ -813,10 +936,14 @@ where
                     }
                     Ok(SsmrRecoveredReplayEvent::Finish {
                         source_wait_elapsed,
+                        recovery_wall_elapsed,
                         recovery_backpressure_elapsed,
+                        recovery_worker_count,
                     }) => {
                         ssmr_replay_wait_elapsed += source_wait_elapsed;
+                        ssmr_replay_recovery_wall_elapsed += recovery_wall_elapsed;
                         ssmr_replay_recovery_backpressure_elapsed += recovery_backpressure_elapsed;
+                        ssmr_replay_recovery_worker_count = recovery_worker_count;
                         replay_finished = true;
                     }
                     Ok(SsmrRecoveredReplayEvent::Error(error)) => {
@@ -1430,7 +1557,9 @@ where
             ssmr_replay_enabled = is_ssmr_replay,
             ?ssmr_replay_wait_elapsed,
             ?ssmr_replay_recovery_wait_elapsed,
+            ?ssmr_replay_recovery_wall_elapsed,
             ?ssmr_replay_recovery_backpressure_elapsed,
+            ssmr_replay_recovery_worker_count,
             ?ssmr_replay_compute_elapsed,
             ?ssmr_replay_decode_recover_elapsed,
             ?ssmr_replay_decode_elapsed,
