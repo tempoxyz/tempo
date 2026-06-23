@@ -32,6 +32,42 @@ pub enum CreditMode {
     Direct,
 }
 
+impl TryFrom<u8> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Refund),
+            1 => Ok(Self::Preserve),
+            2 => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl TryFrom<Mode> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(mode: Mode) -> Result<Self> {
+        match mode {
+            Mode::Refund => Ok(Self::Refund),
+            Mode::Preserve => Ok(Self::Preserve),
+            Mode::Direct => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl From<CreditMode> for Mode {
+    fn from(mode: CreditMode) -> Self {
+        match mode {
+            CreditMode::Refund => Self::Refund,
+            CreditMode::Preserve => Self::Preserve,
+            CreditMode::Direct => Self::Direct,
+        }
+    }
+}
+
 // NOTE: Encoded manually as a U256 instead of deriving `Storable` because precompile methods
 // access it through `StorageCtx`, while the opcode-level SSTORE hook and end-of-tx refund
 // settlement read the same transient words directly from revm, where `StorageCtx` handlers are
@@ -328,42 +364,6 @@ impl StorageCreditDeltas {
         }
 
         Ok(())
-    }
-}
-
-impl TryFrom<u8> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(value: u8) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Refund),
-            1 => Ok(Self::Preserve),
-            2 => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
-        }
-    }
-}
-
-impl TryFrom<Mode> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(mode: Mode) -> Result<Self> {
-        match mode {
-            Mode::Refund => Ok(Self::Refund),
-            Mode::Preserve => Ok(Self::Preserve),
-            Mode::Direct => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
-        }
-    }
-}
-
-impl From<CreditMode> for Mode {
-    fn from(mode: CreditMode) -> Self {
-        match mode {
-            CreditMode::Refund => Self::Refund,
-            CreditMode::Preserve => Self::Preserve,
-            CreditMode::Direct => Self::Direct,
-        }
     }
 }
 
