@@ -7,13 +7,13 @@ use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_faucet::args::FaucetArgs;
 use tempo_node::TempoNodeArgs;
 
-pub(crate) type TempoCli =
+pub type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 pub(crate) const TEMPO_CUSTOM_RPC_MODULES: &[&str] = &["consensus", "operator", "tempo", "token"];
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TempoRpcModuleValidator;
+pub struct TempoRpcModuleValidator;
 
 impl RpcModuleValidator for TempoRpcModuleValidator {
     fn parse_selection(s: &str) -> Result<RpcModuleSelection, String> {
@@ -39,7 +39,7 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
-pub(crate) struct TempoArgs {
+pub struct TempoArgs {
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
@@ -48,12 +48,13 @@ pub(crate) struct TempoArgs {
     /// Disable consensus certification in follow mode. The follower syncs execution
     /// state from the upstream node without validating consensus state.
     /// DO NOT USE IN PRODUCTION.
-    #[arg(
-        long = "follow.experimental.certify",
-        requires = "follow",
-        default_value_t = false
-    )]
-    pub(crate) follow_certify: bool,
+    #[arg(long = "follow.nocertify", requires = "follow")]
+    pub(crate) follow_nocertify: bool,
+
+    /// DEPRECATED. Certification is now enabled by default in follow mode. Use
+    /// --follow.nocertify to disable. This argument is a no-op.
+    #[arg(long = "follow.experimental.certify", requires = "follow", hide = true)]
+    pub(crate) follow_experimental_certify: bool,
 
     /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
     ///
@@ -90,13 +91,13 @@ pub(crate) struct TempoArgs {
 
 impl TempoArgs {
     pub(crate) fn is_following_uncertified(&self) -> bool {
-        self.follow.is_some() && !self.follow_certify
+        self.follow.is_some() && self.follow_nocertify
     }
 
     /// Whether the consensus engine should be active.
     ///
     /// The engine runs when not in dev mode and not following uncertified.
-    pub(crate) fn has_consensus_engine(&self, dev: bool) -> bool {
+    pub fn has_consensus_engine(&self, dev: bool) -> bool {
         !dev && !self.is_following_uncertified()
     }
 }

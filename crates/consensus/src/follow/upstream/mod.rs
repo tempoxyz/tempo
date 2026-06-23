@@ -5,7 +5,6 @@
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
-use futures::{stream, stream::StreamExt as _};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 
@@ -56,9 +55,7 @@ pub(crate) fn init<TContext>(
         url,
         pending_connect: OptionFuture::none(),
         pending_stream: OptionFuture::none(),
-        event_stream: stream::empty::<Result<Event, serde_json::Error>>()
-            .boxed()
-            .fuse(),
+        event_stream: actor::inactive_event_stream(),
         waiters: Vec::new(),
     };
 
