@@ -26,7 +26,7 @@ use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 #[derive(Debug)]
 pub(crate) struct PlannedTransaction {
     pub(crate) tx: BestTransaction,
-    pub(crate) replay: Option<StorageActionReplay>,
+    pub(crate) replay: Option<Box<StorageActionReplay>>,
     pub(crate) action_buffer: Option<Vec<StorageAction>>,
 }
 
@@ -345,12 +345,12 @@ where
         }
 
         result.state.clear();
-        Some(StorageActionReplay {
+        Some(Box::new(StorageActionReplay {
             result: result.result,
             actions,
             validator_fee: evm.validator_fee(),
             state: result.state,
-        })
+        }))
     });
 
     PlannedTransaction {

@@ -20,6 +20,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    parallel::{PlannedTransaction, PrewarmingPlanner},
     prewarming::{BestTransactionsPrewarming, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
@@ -102,16 +103,16 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 enum PayloadTransactions<Provider> {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Parallel(parallel::PrewarmingPlanner<Provider>),
+    Parallel(Box<PrewarmingPlanner<Provider>>),
 }
 
 impl<Provider> PayloadTransactions<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn next(&mut self) -> Option<parallel::PlannedTransaction> {
+    fn next(&mut self) -> Option<PlannedTransaction> {
         match self {
-            Self::Sequential(txs) => txs.next().map(parallel::PlannedTransaction::without_replay),
+            Self::Sequential(txs) => txs.next().map(PlannedTransaction::without_replay),
             Self::Parallel(planner) => planner.next(),
         }
     }
@@ -129,7 +130,7 @@ where
         }
     }
 
-    fn recycle_replay(&mut self, replay: Option<StorageActionReplay>) {
+    fn recycle_replay(&mut self, replay: Option<Box<StorageActionReplay>>) {
         if let Some(replay) = replay {
             self.recycle_actions(replay.actions);
         }
@@ -619,10 +620,10 @@ where
             Arc::new(AtomicBool::new(false)),
         );
         let mut best_txs = if self.config.enable_parallel {
-            PayloadTransactions::Parallel(parallel::PrewarmingPlanner::new(
+            PayloadTransactions::Parallel(Box::new(PrewarmingPlanner::new(
                 prewarm_ctx,
                 StateAwareBestTransactions::new(raw_best_txs),
-            ))
+            )))
         } else {
             let inner = if self.config.enable_prewarming {
                 Box::new(BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs))
@@ -790,7 +791,7 @@ where
                 let mut stop_reason = None;
                 let execution_outcome = executor.execute_storage_action_replay_tx(
                     pool_tx.transaction.executable(),
-                    replay,
+                    *replay,
                     &mut action_replay_state,
                     pool_transactions_included as usize,
                     |result| {
