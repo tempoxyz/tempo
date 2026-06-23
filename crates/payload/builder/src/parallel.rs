@@ -369,7 +369,7 @@ fn is_storage_action_replay_candidate(
     if aa_env.key_authorization.is_some() {
         return false;
     }
-    if aa_env.nonce_key != TEMPO_EXPIRING_NONCE_KEY || !spec.is_t1() || tx_env.nonce() != 0 {
+    if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY || tx_env.nonce() != 0 {
         return false;
     }
     if aa_env.valid_before.is_none() {
