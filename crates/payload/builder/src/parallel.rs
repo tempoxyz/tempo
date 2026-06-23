@@ -13,6 +13,7 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{StorageActionReplay, TempoTxResult, evm::TempoEvm};
+use tempo_precompiles::storage::StorageAction;
 use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
@@ -26,11 +27,16 @@ use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 pub(crate) struct PlannedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<StorageActionReplay>,
+    pub(crate) action_buffer: Option<Vec<StorageAction>>,
 }
 
 impl PlannedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self { tx, replay: None }
+        Self {
+            tx,
+            replay: None,
+            action_buffer: None,
+        }
     }
 }
 
@@ -74,6 +80,7 @@ where
             stop: stop.clone(),
             prewarm: prewarm.clone(),
             in_flight: in_flight.clone(),
+            action_buffers: Vec::new(),
             source_exhausted: false,
         };
         prewarm
@@ -126,8 +133,9 @@ where
                     let prewarm = planner.prewarm.clone();
                     let results_tx = planner.results_tx.clone();
                     let commands_tx = planner.commands_tx.clone();
+                    let action_buffer = planner.action_buffers.pop();
                     scope.spawn(move |_| {
-                        let planned = plan_transaction_replay(prewarm, tx);
+                        let planned = plan_transaction_replay(prewarm, tx, action_buffer);
                         let _ = results_tx.send(PlannerMessage::Planned { planned });
                         let _ = commands_tx.send(PlannerCommand::Advance);
                     });
@@ -149,6 +157,10 @@ where
                         ctx.best_txs.apply_update(&update);
                         update.clear();
                         let _ = ctx.state_updates_tx.send(update);
+                    }
+                    PlannerCommand::RecycleActions(mut actions) => {
+                        actions.clear();
+                        ctx.action_buffers.push(actions);
                     }
                     PlannerCommand::Stop {
                         drain_rx: _drain_rx,
@@ -191,6 +203,13 @@ where
             tx: tx.clone(),
             kind,
         });
+    }
+
+    pub(crate) fn recycle_actions(&self, mut actions: Vec<StorageAction>) {
+        actions.clear();
+        let _ = self
+            .commands_tx
+            .send(PlannerCommand::RecycleActions(actions));
     }
 
     pub(crate) fn on_state_update(&mut self, result: &TempoTxResult) {
@@ -237,6 +256,7 @@ struct PlannerContext<Txs, Provider> {
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
     in_flight: Arc<AtomicUsize>,
+    action_buffers: Vec<Vec<StorageAction>>,
     source_exhausted: bool,
 }
 
@@ -247,6 +267,7 @@ enum PlannerCommand {
         kind: InvalidPoolTransactionError,
     },
     StateUpdate(StateAwareBestTransactionsUpdate),
+    RecycleActions(Vec<StorageAction>),
     Stop {
         drain_rx: Receiver<PlannerMessage>,
     },
@@ -261,12 +282,17 @@ enum PlannerMessage {
 fn plan_transaction_replay<Provider>(
     prewarm: PrewarmingExecutionContext<Provider>,
     tx: BestTransaction,
+    mut action_buffer: Option<Vec<StorageAction>>,
 ) -> PlannedTransaction
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
     if prewarm.is_stopped() {
-        return PlannedTransaction::without_replay(tx);
+        return PlannedTransaction {
+            tx,
+            replay: None,
+            action_buffer,
+        };
     }
 
     let replay = WorkerPool::with_worker_mut(|worker| {
@@ -283,14 +309,14 @@ where
         }
 
         if !is_storage_action_replay_candidate(&tx) {
-            let _ = evm.replace_actions(Vec::new());
+            evm.clear_actions();
             return None;
         }
 
         let mut result = match evm.transact_raw(tx.transaction.clone_tx_env()) {
             Ok(result) => result,
             Err(err) => {
-                let _ = evm.replace_actions(Vec::new());
+                evm.clear_actions();
                 trace!(
                     target: "payload_builder",
                     %err,
@@ -302,7 +328,7 @@ where
         };
 
         if !result.result.is_success() {
-            let _ = evm.replace_actions(Vec::new());
+            evm.clear_actions();
             trace!(
                 target: "payload_builder",
                 ?tx_hash,
@@ -312,8 +338,9 @@ where
             return None;
         }
 
-        let actions = evm.take_actions()?;
+        let actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
         if actions.is_empty() {
+            action_buffer = Some(actions);
             return None;
         }
 
@@ -326,7 +353,11 @@ where
         })
     });
 
-    PlannedTransaction { tx, replay }
+    PlannedTransaction {
+        tx,
+        replay,
+        action_buffer,
+    }
 }
 
 fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {

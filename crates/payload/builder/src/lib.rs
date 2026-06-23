@@ -69,13 +69,17 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplayExecutionError, StorageActionReplayFallback, StorageActionReplayState,
-    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
+    StorageActionReplay, StorageActionReplayExecutionError, StorageActionReplayFallback,
+    StorageActionReplayState, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
-use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::{
+    storage::{StorageAction, StorageActions},
+    validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -116,6 +120,18 @@ where
         match self {
             Self::Sequential(txs) => txs.mark_invalid(tx, kind),
             Self::Parallel(planner) => planner.mark_invalid(tx, kind),
+        }
+    }
+
+    fn recycle_actions(&mut self, actions: Vec<StorageAction>) {
+        if let Self::Parallel(planner) = self {
+            planner.recycle_actions(actions);
+        }
+    }
+
+    fn recycle_replay(&mut self, replay: Option<StorageActionReplay>) {
+        if let Some(replay) = replay {
+            self.recycle_actions(replay.actions);
         }
     }
 
@@ -693,6 +709,9 @@ where
                 break stop_reason;
             };
             let parallel_replay = planned_pool_tx.replay;
+            if let Some(actions) = planned_pool_tx.action_buffer {
+                best_txs.recycle_actions(actions);
+            }
             let pool_tx = planned_pool_tx.tx;
             pool_transactions_yielded += 1;
 
@@ -716,6 +735,7 @@ where
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                best_txs.recycle_replay(parallel_replay);
                 continue;
             }
 
@@ -736,6 +756,7 @@ where
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                best_txs.recycle_replay(parallel_replay);
                 continue;
             }
 
@@ -757,6 +778,7 @@ where
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
+                best_txs.recycle_replay(parallel_replay);
                 continue;
             }
 
@@ -766,7 +788,7 @@ where
 
             if let Some(replay) = parallel_replay {
                 let mut stop_reason = None;
-                let execution_result = executor.execute_storage_action_replay_tx(
+                let execution_outcome = executor.execute_storage_action_replay_tx(
                     pool_tx.transaction.executable(),
                     replay,
                     &mut action_replay_state,
@@ -804,6 +826,8 @@ where
                     },
                     bal_task_handle.is_some(),
                 );
+                best_txs.recycle_actions(execution_outcome.actions);
+                let execution_result = execution_outcome.result;
 
                 if let Some(stop_reason) = stop_reason {
                     break stop_reason;

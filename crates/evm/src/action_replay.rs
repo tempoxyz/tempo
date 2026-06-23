@@ -24,6 +24,13 @@ pub struct StorageActionReplay {
     pub state: EvmState,
 }
 
+/// Result of executing a storage-action replay, including the reusable action buffer.
+#[derive(Debug)]
+pub struct StorageActionReplayExecutionOutcome {
+    pub actions: Vec<StorageAction>,
+    pub result: Result<(), StorageActionReplayExecutionError>,
+}
+
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageActionReplayFallback {
@@ -133,67 +140,71 @@ where
         transaction_index: usize,
         should_commit: impl FnOnce(&TempoTxResult) -> bool,
         commit_reads: bool,
-    ) -> Result<(), StorageActionReplayExecutionError> {
+    ) -> StorageActionReplayExecutionOutcome {
         let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
-            result,
+            result: execution_result,
             actions,
             validator_fee,
             state,
         } = replay;
         replay_state.reset_tx_changes();
 
-        if !result.is_success() {
-            return Err(StorageActionReplayExecutionError::Fallback(
-                StorageActionReplayFallback::ActionExecutionFailed,
-            ));
-        }
-
-        let cfg = self.inner.evm.cfg_env().clone();
-        let gas = result.gas();
-        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
-            gas.block_regular_gas_used()
-        } else {
-            gas.tx_gas_used()
-        };
-        let next_section = self
-            .validate_tx(recovered.tx(), block_gas_used)
-            .map_err(|error| StorageActionReplayExecutionError::Execution {
-                transaction_index,
-                error: error.into(),
-            })?;
-        let applied = match action_replay_state(
-            tx_env.caller(),
-            self.inner.evm.db_mut(),
-            &actions,
-            replay_state,
-            state,
-            commit_reads,
-        ) {
-            Ok(applied) => applied,
-            Err(error) => {
-                replay_state.reset_tx_changes();
-                return Err(error);
+        let result = (|| {
+            if !execution_result.is_success() {
+                return Err(StorageActionReplayExecutionError::Fallback(
+                    StorageActionReplayFallback::ActionExecutionFailed,
+                ));
             }
-        };
-        let result = TempoTxResult::new_precomputed(
-            recovered.tx(),
-            result,
-            applied.state,
-            next_section,
-            self.is_payment(recovered.tx()),
-            block_gas_used,
-            validator_fee,
-        );
-        if !should_commit(&result) {
-            replay_state.reset_tx_changes();
-            return Ok(());
-        }
 
-        self.commit_transaction(result);
-        replay_state.commit_tx_changes();
-        Ok(())
+            let cfg = self.inner.evm.cfg_env().clone();
+            let gas = execution_result.gas();
+            let block_gas_used = if cfg.enable_amsterdam_eip8037 {
+                gas.block_regular_gas_used()
+            } else {
+                gas.tx_gas_used()
+            };
+            let next_section =
+                self.validate_tx(recovered.tx(), block_gas_used)
+                    .map_err(|error| StorageActionReplayExecutionError::Execution {
+                        transaction_index,
+                        error: error.into(),
+                    })?;
+            let applied = match action_replay_state(
+                tx_env.caller(),
+                self.inner.evm.db_mut(),
+                &actions,
+                replay_state,
+                state,
+                commit_reads,
+            ) {
+                Ok(applied) => applied,
+                Err(error) => {
+                    replay_state.reset_tx_changes();
+                    return Err(error);
+                }
+            };
+            let result = TempoTxResult::new_precomputed(
+                recovered.tx(),
+                execution_result,
+                applied.state,
+                next_section,
+                self.is_payment(recovered.tx()),
+                block_gas_used,
+                validator_fee,
+            );
+            if !should_commit(&result) {
+                replay_state.reset_tx_changes();
+                return Ok(());
+            }
+
+            self.commit_transaction(result);
+            replay_state.commit_tx_changes();
+            Ok(())
+        })();
+
+        StorageActionReplayExecutionOutcome { actions, result }
     }
 }
 

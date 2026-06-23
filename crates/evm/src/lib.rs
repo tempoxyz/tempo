@@ -6,8 +6,8 @@
 mod action_replay;
 mod assemble;
 pub use action_replay::{
-    StorageActionReplay, StorageActionReplayExecutionError, StorageActionReplayFallback,
-    StorageActionReplayState,
+    StorageActionReplay, StorageActionReplayExecutionError, StorageActionReplayExecutionOutcome,
+    StorageActionReplayFallback, StorageActionReplayState,
 };
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;

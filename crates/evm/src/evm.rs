@@ -181,6 +181,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.actions().take()
     }
 
+    /// Clears the recorded storage actions without releasing the backing allocation.
+    pub fn clear_actions(&mut self) {
+        self.inner.actions().clear();
+    }
+
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
