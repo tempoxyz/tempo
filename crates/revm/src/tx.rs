@@ -255,14 +255,20 @@ impl Transaction for TempoTxEnv {
 }
 
 impl TransactionEnvMut for TempoTxEnv {
+    #[cold]
+    #[inline(never)]
     fn set_gas_limit(&mut self, gas_limit: u64) {
         self.inner.set_gas_limit(gas_limit);
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_nonce(&mut self, nonce: u64) {
         self.inner.set_nonce(nonce);
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_access_list(&mut self, access_list: AccessList) {
         self.inner.set_access_list(access_list);
     }
