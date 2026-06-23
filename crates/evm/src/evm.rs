@@ -25,6 +25,7 @@ use tempo_revm::{
 
 use crate::TempoBlockEnv;
 
+/// Factory for creating Tempo EVM instances.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory<F = TempoFeeManager> {
@@ -32,7 +33,8 @@ pub struct TempoEvmFactory<F = TempoFeeManager> {
 }
 
 impl<F> TempoEvmFactory<F> {
-    pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvmFactory<OF> {
+    /// Replaces the fee manager used by the EVM.
+    pub fn with_fee_manager<T>(self, fee_manager: T) -> TempoEvmFactory<T> {
         TempoEvmFactory { fee_manager }
     }
 }
@@ -159,6 +161,10 @@ where
         }
     }
 
+    /// Replaces the protocol fee manager used by this EVM.
+    ///
+    /// This preserves the current wrapper state, including inspector mode, while swapping the
+    /// hooks used for fee-token resolution and fee collection.
     pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
     where
         OF: ProtocolFeeManager,

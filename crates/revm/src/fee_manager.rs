@@ -8,6 +8,7 @@ use tempo_precompiles::{
 
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager: Debug {
+    /// Resolves the fee token that should pay for `tx`.
     fn get_fee_token<S, TX, M>(
         &self,
         state: &mut S,
@@ -23,6 +24,7 @@ pub trait ProtocolFeeManager: Debug {
         state.get_fee_token(tx, fee_payer, spec, actions)
     }
 
+    /// Returns whether `fee_payer` can transfer fees in `fee_token`.
     fn can_fee_payer_transfer<S, M>(
         &self,
         state: &mut S,
@@ -37,6 +39,7 @@ pub trait ProtocolFeeManager: Debug {
         state.can_fee_payer_transfer(fee_token, fee_payer, spec, actions)
     }
 
+    /// Collects the maximum possible fee before transaction execution.
     fn collect_fee_pre_tx(
         &self,
         fee_payer: Address,
@@ -46,6 +49,7 @@ pub trait ProtocolFeeManager: Debug {
         skip_liquidity_check: bool,
     ) -> TempoResult<Address>;
 
+    /// Settles the final fee after transaction execution.
     fn collect_fee_post_tx(
         &self,
         fee_payer: Address,
@@ -56,11 +60,12 @@ pub trait ProtocolFeeManager: Debug {
     ) -> TempoResult<U256>;
 }
 
-/// Default L1 implementation.
+/// FeeManager for the default TempoEVM configuration
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TempoFeeManager;
 
 impl TempoFeeManager {
+    /// Creates the default Tempo protocol fee manager.
     pub const fn new() -> Self {
         Self
     }

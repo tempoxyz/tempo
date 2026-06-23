@@ -91,6 +91,7 @@ impl<DB: Database, I, F> TempoEvm<DB, I, F>
 where
     F: ProtocolFeeManager,
 {
+    /// Replaces the protocol fee manager used by the EVM
     pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
     where
         OF: ProtocolFeeManager,
