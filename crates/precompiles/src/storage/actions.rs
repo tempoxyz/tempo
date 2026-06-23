@@ -53,8 +53,9 @@ impl StorageActions {
 
     /// Clears recorded storage actions without releasing the backing allocation.
     pub fn clear(&self) {
-        if self.enabled.get() {
-            self.actions.borrow_mut().clear();
+        match self {
+            Self::Disabled => {}
+            Self::Enabled(actions) => actions.borrow_mut().clear(),
         }
     }
 
