@@ -21,10 +21,20 @@ pub enum StorageAction {
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StorageActions {
     Disabled,
     Enabled(Rc<RefCell<Vec<StorageAction>>>),
+}
+
+impl Clone for StorageActions {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        match self {
+            Self::Disabled => Self::Disabled,
+            Self::Enabled(actions) => Self::Enabled(Rc::clone(actions)),
+        }
+    }
 }
 
 impl StorageActions {
