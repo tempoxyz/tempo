@@ -112,6 +112,12 @@ impl SsmrStreamRetirement {
     }
 }
 
+impl Drop for SsmrStreamRetirement {
+    fn drop(&mut self) {
+        self.retire_now();
+    }
+}
+
 impl<TContext, TState> Actor<TContext, TState> {
     pub(super) fn mailbox(&self) -> &Mailbox {
         &self.inner.my_mailbox
@@ -977,6 +983,7 @@ impl Inner<Init> {
         }
 
         let mut optimistic_payload = None;
+        let mut ssmr_fallback_validation = false;
         if let Some(snapshot) = self.ssmr_stream_snapshot(&block).await {
             let stream_started = snapshot.started;
             if let Some(stream) = self
@@ -1001,6 +1008,7 @@ impl Inner<Init> {
                                         );
                                     }
                                     Err(mismatch) => {
+                                        ssmr_fallback_validation = true;
                                         self.metrics.ssmr_fallback_validation_count.inc();
                                         warn!(
                                             ?mismatch,
@@ -1015,6 +1023,7 @@ impl Inner<Init> {
                                 }
                             }
                             None => {
+                                ssmr_fallback_validation = true;
                                 self.metrics.ssmr_fallback_validation_count.inc();
                                 debug!(
                                     block.digest = %block.digest(),
@@ -1027,6 +1036,7 @@ impl Inner<Init> {
                         }
                     }
                     Ok(false) => {
+                        ssmr_fallback_validation = true;
                         self.metrics.ssmr_final_reconciliation_mismatches.inc();
                         self.metrics.ssmr_fallback_validation_count.inc();
                         warn!(
@@ -1036,6 +1046,7 @@ impl Inner<Init> {
                         );
                     }
                     Err(error) => {
+                        ssmr_fallback_validation = true;
                         self.metrics.ssmr_final_reconciliation_mismatches.inc();
                         self.metrics.ssmr_fallback_validation_count.inc();
                         warn!(
@@ -1047,6 +1058,7 @@ impl Inner<Init> {
                     }
                 }
             } else {
+                ssmr_fallback_validation = true;
                 self.metrics.ssmr_missing_shards_at_proposal.inc();
                 self.metrics.ssmr_fallback_validation_count.inc();
                 debug!(
@@ -1057,6 +1069,7 @@ impl Inner<Init> {
                 );
             }
         } else {
+            ssmr_fallback_validation = true;
             self.metrics.ssmr_missing_shards_at_proposal.inc();
             self.metrics.ssmr_fallback_validation_count.inc();
             debug!(
@@ -1064,6 +1077,9 @@ impl Inner<Init> {
                 block.height = %block.height(),
                 "no SSMR stream for proposal; using normal validation"
             );
+        }
+        if ssmr_fallback_validation {
+            ssmr_retirement.retire_now();
         }
         if block.missing_required_sidecars() {
             debug!(
