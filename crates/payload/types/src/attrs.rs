@@ -29,7 +29,7 @@ pub struct SsmrBuilderShard {
 /// Builder-side SSMR event emitted from the roots task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsmrBuilderEvent {
-    /// A non-empty tx-only shard.
+    /// A tx-only shard.
     Shard(SsmrBuilderShard),
     /// End of the ordered transaction stream.
     End {

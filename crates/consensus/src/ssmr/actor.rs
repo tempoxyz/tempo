@@ -54,7 +54,6 @@ pub(crate) struct ProposalStream {
 impl ProposalStream {
     fn message_for_event(&self, event: SsmrBuilderEvent) -> Option<SsmrMessage> {
         match event {
-            SsmrBuilderEvent::Shard(shard) if shard.transactions.is_empty() => None,
             SsmrBuilderEvent::Shard(shard) if shard.shard_index == 0 => {
                 Some(SsmrMessage::Start(SsmrStart {
                     stream_key: self.stream_key,
@@ -884,6 +883,23 @@ mod tests {
             start.first_shard.transactions,
             vec![Bytes::copy_from_slice(b"tx0")]
         );
+        assert!(start.flags.tx_only);
+        assert!(start.flags.bal_enabled);
+    }
+
+    #[test]
+    fn proposal_stream_bundles_empty_first_shard_into_start() {
+        let message = stream()
+            .message_for_event(SsmrBuilderEvent::Shard(builder_shard(0, 0, &[])))
+            .unwrap();
+
+        let SsmrMessage::Start(start) = message else {
+            panic!("expected start");
+        };
+        assert_eq!(start.stream_key, stream_key());
+        assert_eq!(start.first_shard.shard_index, 0);
+        assert_eq!(start.first_shard.first_tx_index, 0);
+        assert!(start.first_shard.transactions.is_empty());
         assert!(start.flags.tx_only);
         assert!(start.flags.bal_enabled);
     }

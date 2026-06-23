@@ -95,8 +95,8 @@ async fn sign_tip20_transfers(chain_id: u64) -> Vec<Bytes> {
             chain_id,
             nonce: 0,
             gas_limit: 1_000_000,
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+            max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
             fee_token: Some(PATH_USD_ADDRESS),
             calls: vec![Call {
                 to: TxKind::Call(PATH_USD_ADDRESS),

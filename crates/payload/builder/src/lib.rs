@@ -2165,12 +2165,20 @@ impl SsmrShardPacker {
 
     fn finish(mut self) {
         self.flush();
-        if self.shard_index > 0 {
-            (self.sink)(SsmrBuilderEvent::End {
-                total_shards: self.shard_index,
-                total_transactions: self.next_tx_index,
-            });
+        if self.shard_index == 0 {
+            (self.sink)(SsmrBuilderEvent::Shard(SsmrBuilderShard {
+                shard_index: 0,
+                first_tx_index: 0,
+                transactions: Vec::new(),
+                cumulative_tx_bytes: 0,
+                cumulative_gas_estimate: 0,
+            }));
+            self.shard_index = 1;
         }
+        (self.sink)(SsmrBuilderEvent::End {
+            total_shards: self.shard_index,
+            total_transactions: self.next_tx_index,
+        });
     }
 
     fn flush(&mut self) {
@@ -2363,6 +2371,37 @@ mod tests {
             SsmrBuilderEvent::End {
                 total_shards: 2,
                 total_transactions: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn ssmr_packer_emits_empty_stream() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let sink: SsmrBuilderSink = Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event);
+        });
+
+        SsmrShardPacker::new(sink, 5).finish();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            SsmrBuilderEvent::Shard(shard) => {
+                assert_eq!(shard.shard_index, 0);
+                assert_eq!(shard.first_tx_index, 0);
+                assert!(shard.transactions.is_empty());
+                assert_eq!(shard.cumulative_tx_bytes, 0);
+                assert_eq!(shard.cumulative_gas_estimate, 0);
+            }
+            other => panic!("expected shard, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            SsmrBuilderEvent::End {
+                total_shards: 1,
+                total_transactions: 0,
             }
         );
     }
