@@ -199,7 +199,7 @@ impl<TContext: Spawner> Actor<TContext> {
 
     #[instrument(skip_all, fields(activity = ?activity))]
     fn handle_activity(&self, activity: FeedActivity, consensus_block: Block) {
-        let block = consensus_block.into_inner().into_block();
+        let block = consensus_block.into_execution_block();
         let (round, digest, certificate) = match activity.clone() {
             Activity::Notarization(notarization) => (
                 notarization.proposal.round,
