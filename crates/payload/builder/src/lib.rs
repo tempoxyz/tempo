@@ -1152,7 +1152,7 @@ where
 
                     let execute_start = Instant::now();
                     executor
-                        .execute_transaction_with_result_closure(recovered.clone(), |result| {
+                        .execute_transaction_with_result_closure(&recovered, |result| {
                             cumulative_gas_used += result.block_gas_used();
                             cumulative_state_gas_used += result.state_gas_used();
                             if !is_payment {
