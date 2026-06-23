@@ -82,6 +82,7 @@ struct BuildProposalArgs {
 
 const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const BLOCK_SUBSCRIBE_EL_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const SSMR_STATIC_BUILD_BUDGET: Duration = Duration::from_millis(400);
 
 struct ProposalReturn {
     /// Earliest time the built proposal may be returned to consensus.
@@ -736,18 +737,31 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
-        let proposal_pacing = self.proposal_budget.pacing(self.ssmr.is_some());
+        let use_static_ssmr_budget = self.ssmr.is_some();
+        let proposal_pacing = self.proposal_budget.pacing(false);
         // Give the builder only the proposal window that remains when payload
         // construction is requested. This accounts for a late `handle_propose`
         // start instead of resetting the budget at builder entry.
-        let build_budget = proposal_pacing
-            .proposal_return_budget
-            .saturating_sub(propose_start.elapsed());
-        let validation_latency_estimate = self
-            .validation_latency_estimator
-            .lock()
-            .ok()
-            .and_then(|estimator| estimator.estimate());
+        let build_budget = if use_static_ssmr_budget {
+            SSMR_STATIC_BUILD_BUDGET.saturating_sub(propose_start.elapsed())
+        } else {
+            proposal_pacing
+                .proposal_return_budget
+                .saturating_sub(propose_start.elapsed())
+        };
+        let validation_latency_estimate = if use_static_ssmr_budget {
+            None
+        } else {
+            self.validation_latency_estimator
+                .lock()
+                .ok()
+                .and_then(|estimator| estimator.estimate())
+        };
+        let post_return_tail_budget = if use_static_ssmr_budget {
+            Some(Duration::ZERO)
+        } else {
+            proposal_pacing.post_return_tail
+        };
         let block_gas_limit = parent.header().gas_limit();
         let chain_spec = self.execution_node.chain_spec();
         let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
@@ -790,7 +804,7 @@ impl Inner<Init> {
         )
         .with_payload_build_budget(build_budget)
         .with_validation_latency_estimate(validation_latency_estimate)
-        .with_post_return_tail_budget(proposal_pacing.post_return_tail);
+        .with_post_return_tail_budget(post_return_tail_budget);
         if let Some((sink, shard_target_bytes)) = ssmr_stream {
             attrs = attrs.with_ssmr_builder_sink(sink, shard_target_bytes);
         }
@@ -833,10 +847,14 @@ impl Inner<Init> {
         // need the reserved post-return tail before returning the proposal.
         // Before SSMR has learned a tail, keep the conservative validator-work
         // reserve used by the normal proposal path.
-        let mut return_delay = proposal_pacing
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed);
-        if proposal_pacing.post_return_tail.is_none() {
+        let mut return_delay = if use_static_ssmr_budget {
+            SSMR_STATIC_BUILD_BUDGET.saturating_sub(proposal_elapsed)
+        } else {
+            proposal_pacing
+                .proposal_return_budget
+                .saturating_sub(proposal_elapsed)
+        };
+        if !use_static_ssmr_budget && proposal_pacing.post_return_tail.is_none() {
             return_delay = return_delay
                 .saturating_sub(validation_latency_elapsed)
                 .saturating_sub(validator_marshal_persist);
@@ -847,7 +865,7 @@ impl Inner<Init> {
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
-            post_return_tail_budget = ?proposal_pacing.post_return_tail,
+            post_return_tail_budget = ?post_return_tail_budget,
             return_time = %display_duration(return_delay),
             execution_block_rlp_size_estimate_bytes,
             block_size_estimate_bytes,
