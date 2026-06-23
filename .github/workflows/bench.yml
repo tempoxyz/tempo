@@ -511,7 +511,7 @@ jobs:
             const samply = process.env.ACK_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.ACK_TRACY;
-            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.ACK_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const valscope = process.env.ACK_VALSCOPE === 'true';

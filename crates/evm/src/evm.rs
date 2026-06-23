@@ -15,9 +15,13 @@ use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{CfgEnv, result::ExecutionResult},
 };
-use std::ops::{Deref, DerefMut};
+use std::{
+    cell::RefCell,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::storage::StorageAction;
+use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -125,6 +129,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
     pub fn validator_fee(&self) -> alloy_primitives::U256 {
         self.inner.validator_fee
+    }
+
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.inner.non_creditable_slots()
     }
 
     /// Sets the inspector for the EVM.
