@@ -81,6 +81,7 @@ where
             prewarm: prewarm.clone(),
             in_flight: in_flight.clone(),
             action_buffers: Vec::new(),
+            next_expiring_nonce_offset: 0,
             source_exhausted: false,
         };
         prewarm
@@ -116,30 +117,40 @@ where
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx().map(TempoEvm::with_actions));
             });
 
-            let advance =
-                |planner: &mut PlannerContext<StateAwareBestTransactions<Txs>, Provider>| {
-                    if planner.source_exhausted || planner.stop.load(Ordering::Relaxed) {
-                        return;
-                    }
+            let advance = |planner: &mut PlannerContext<
+                StateAwareBestTransactions<Txs>,
+                Provider,
+            >| {
+                if planner.source_exhausted || planner.stop.load(Ordering::Relaxed) {
+                    return;
+                }
 
-                    let Some(tx) = planner.best_txs.next() else {
-                        planner.source_exhausted = true;
-                        let _ = planner.results_tx.send(PlannerMessage::SourceExhausted);
-                        return;
-                    };
-
-                    planner.in_flight.fetch_add(1, Ordering::Relaxed);
-
-                    let prewarm = planner.prewarm.clone();
-                    let results_tx = planner.results_tx.clone();
-                    let commands_tx = planner.commands_tx.clone();
-                    let action_buffer = planner.action_buffers.pop();
-                    scope.spawn(move |_| {
-                        let planned = plan_transaction_replay(prewarm, tx, action_buffer);
-                        let _ = results_tx.send(PlannerMessage::Planned { planned });
-                        let _ = commands_tx.send(PlannerCommand::Advance);
-                    });
+                let Some(tx) = planner.best_txs.next() else {
+                    planner.source_exhausted = true;
+                    let _ = planner.results_tx.send(PlannerMessage::SourceExhausted);
+                    return;
                 };
+
+                planner.in_flight.fetch_add(1, Ordering::Relaxed);
+                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                    let offset = planner.next_expiring_nonce_offset;
+                    planner.next_expiring_nonce_offset += 1;
+                    Some(offset)
+                } else {
+                    None
+                };
+
+                let prewarm = planner.prewarm.clone();
+                let results_tx = planner.results_tx.clone();
+                let commands_tx = planner.commands_tx.clone();
+                let action_buffer = planner.action_buffers.pop();
+                scope.spawn(move |_| {
+                    let planned =
+                        plan_transaction_replay(prewarm, tx, action_buffer, expiring_nonce_offset);
+                    let _ = results_tx.send(PlannerMessage::Planned { planned });
+                    let _ = commands_tx.send(PlannerCommand::Advance);
+                });
+            };
 
             for _ in 0..pool.current_num_threads() * 2 {
                 advance(&mut ctx);
@@ -257,6 +268,7 @@ struct PlannerContext<Txs, Provider> {
     prewarm: PrewarmingExecutionContext<Provider>,
     in_flight: Arc<AtomicUsize>,
     action_buffers: Vec<Vec<StorageAction>>,
+    next_expiring_nonce_offset: usize,
     source_exhausted: bool,
 }
 
@@ -283,6 +295,7 @@ fn plan_transaction_replay<Provider>(
     prewarm: PrewarmingExecutionContext<Provider>,
     tx: BestTransaction,
     mut action_buffer: Option<Vec<StorageAction>>,
+    expiring_nonce_offset: Option<usize>,
 ) -> PlannedTransaction
 where
     Provider: StateProviderFactory + Clone + 'static,
@@ -314,7 +327,12 @@ where
         }
 
         let expiring_nonce = expiring_nonce_replay(&tx);
-        let mut result = match evm.transact_raw(tx.transaction.clone_tx_env()) {
+        let mut tx_env = tx.transaction.clone_tx_env();
+        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+            tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+        }
+
+        let mut result = match evm.transact_raw(tx_env) {
             Ok(result) => result,
             Err(err) => {
                 evm.clear_actions();
