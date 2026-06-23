@@ -14,7 +14,6 @@ use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{StorageActionReplay, evm::TempoEvm};
 use tempo_primitives::{TempoAddressExt, transaction::TEMPO_EXPIRING_NONCE_KEY};
-use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},
@@ -69,7 +68,7 @@ where
         let coordinator_scheduled_count = scheduled_count.clone();
         prewarm
             .executor()
-            .spawn_blocking_named("builder-prewarm-planner", move || {
+            .spawn_blocking_named("builder-planner", move || {
                 Self::start_planner(
                     coordinator_executor,
                     PlannerContext {
@@ -80,7 +79,6 @@ where
                         stop: coordinator_stop,
                         prewarm: coordinator_prewarm,
                         scheduled_count: coordinator_scheduled_count,
-                        next_expiring_nonce_offset: 0,
                         source_exhausted: false,
                     },
                 );
@@ -125,19 +123,11 @@ where
 
                     planner.scheduled_count.fetch_add(1, Ordering::Relaxed);
 
-                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                        let offset = planner.next_expiring_nonce_offset;
-                        planner.next_expiring_nonce_offset += 1;
-                        Some(offset)
-                    } else {
-                        None
-                    };
-
                     let prewarm = planner.prewarm.clone();
                     let results_tx = planner.results_tx.clone();
                     let commands_tx = planner.commands_tx.clone();
                     scope.spawn(move |_| {
-                        let planned = plan_transaction_replay(prewarm, tx, expiring_nonce_offset);
+                        let planned = plan_transaction_replay(prewarm, tx);
                         let _ = results_tx.send(PlannerMessage::Planned { planned });
                         let _ = commands_tx.send(PlannerCommand::Advance);
                     });
@@ -240,7 +230,6 @@ struct PlannerContext<Txs, Provider> {
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
     scheduled_count: Arc<AtomicUsize>,
-    next_expiring_nonce_offset: usize,
     source_exhausted: bool,
 }
 
@@ -265,7 +254,6 @@ enum PlannerMessage {
 fn plan_transaction_replay<Provider>(
     prewarm: PrewarmingExecutionContext<Provider>,
     tx: BestTransaction,
-    expiring_nonce_offset: Option<usize>,
 ) -> PlannedTransaction
 where
     Provider: StateProviderFactory + Clone + 'static,
@@ -287,16 +275,12 @@ where
             return None;
         }
 
-        let mut tx_env = tx.transaction.clone_tx_env();
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-        }
-        if !is_storage_action_replay_candidate(&tx, &tx_env) {
+        if !is_storage_action_replay_candidate(&tx) {
             let _ = evm.replace_actions(Vec::new());
             return None;
         }
 
-        let mut result = match evm.transact_raw(tx_env) {
+        let mut result = match evm.transact_raw(tx.transaction.clone_tx_env()) {
             Ok(result) => result,
             Err(err) => {
                 let _ = evm.replace_actions(Vec::new());
@@ -338,7 +322,9 @@ where
     PlannedTransaction { tx, replay }
 }
 
-fn is_storage_action_replay_candidate(tx: &BestTransaction, tx_env: &TempoTxEnv) -> bool {
+fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {
+    let tx_env = tx.transaction.tx_env();
+
     if tx.transaction.inner().tx().subblock_proposer().is_some() {
         return false;
     }
