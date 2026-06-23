@@ -71,7 +71,7 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            last_finalized_height,
+            last_marshal_finalized_height: last_finalized_height,
         }: super::Config<TPeerManager>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> Self {

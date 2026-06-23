@@ -104,8 +104,9 @@ pub(crate) struct Actor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: Arc<TempoFullNode>,
 
-    last_consensus_finalized_height: Height,
-    last_execution_finalized_height: Height,
+    /// Highest finalized height the executor should backfill to on startup.
+    backfill_target_height: Height,
+    execution_finalized_height: Height,
 
     /// The channel over which the agent will receive new commands from the
     /// application actor.
@@ -125,9 +126,9 @@ pub(crate) struct Actor<TContext> {
     /// Armed only when no execution request is active or queued.
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
 
-    /// Gap between the last finalized block on the consensus and execution
-    /// layers. Needs to be handled on startup because the execution layer does
-    /// not reliably flush all blocks.
+    /// Gap between the execution layer's finalized watermark and the startup
+    /// backfill target. Needs to be handled on startup because the execution
+    /// layer does not reliably flush all blocks.
     finalized_heights_to_backfill: RangeInclusive<u64>,
 
     /// Backfills that are currently in-flight and are awaiting resolution.
@@ -146,7 +147,7 @@ pub(crate) struct Actor<TContext> {
     /// discarded.
     payload_jobs: FuturesUnordered<BoxFuture<'static, ()>>,
 
-    latest_observed_finalized_tip: Option<(Height, Digest)>,
+    latest_observed_finalized_tip: (Height, Digest),
 
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
@@ -189,37 +190,44 @@ where
     ) -> eyre::Result<Self> {
         let Config {
             execution_node,
-            last_finalized_height,
+            finalized_floor,
+            finalized_tip,
             marshal,
             fcu_heartbeat_interval,
             public_key,
         } = config;
         let metrics = Metrics::init(&context);
         let canonical_state = execution_node.provider.canonical_in_memory_state();
-        let finalized_num_hash = canonical_state
+        let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
+        let execution_finalized_num_hash = canonical_state
             .get_finalized_num_hash()
             .unwrap_or_else(|| BlockNumHash::new(0, execution_node.chain_spec().genesis_hash()));
-        let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
+        let execution_finalized_height = Height::new(execution_finalized_num_hash.number);
+        let head_num_hash = if head_num_hash.number >= execution_finalized_num_hash.number {
+            head_num_hash
+        } else {
+            execution_finalized_num_hash
+        };
 
         let fcu_heartbeat_timer = OptionFuture::some(context.sleep(fcu_heartbeat_interval).boxed());
-        let last_execution_finalized_height = Height::new(finalized_num_hash.number);
+        let backfill_target_height = finalized_floor;
         let finalized_heights_to_backfill =
-            (last_execution_finalized_height.get() + 1)..=last_finalized_height.get();
+            (execution_finalized_height.get() + 1)..=backfill_target_height.get();
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
-            last_consensus_finalized_height: last_finalized_height,
-            last_execution_finalized_height,
+            backfill_target_height,
+            execution_finalized_height,
             mailbox,
             marshal,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
                     head_block_hash: head_num_hash.hash,
-                    safe_block_hash: finalized_num_hash.hash,
-                    finalized_block_hash: finalized_num_hash.hash,
+                    safe_block_hash: execution_finalized_num_hash.hash,
+                    finalized_block_hash: execution_finalized_num_hash.hash,
                 },
                 head_height: Height::new(head_num_hash.number),
-                finalized_height: Height::new(finalized_num_hash.number),
+                finalized_height: execution_finalized_height,
             },
             fcu_heartbeat_interval,
             fcu_heartbeat_timer,
@@ -230,7 +238,7 @@ where
             execution_task: OptionFuture::none(),
             payload_jobs: FuturesUnordered::new(),
 
-            latest_observed_finalized_tip: None,
+            latest_observed_finalized_tip: finalized_tip,
 
             public_key,
             metrics,
@@ -244,10 +252,12 @@ where
     async fn run(mut self) {
         info_span!("start").in_scope(|| {
             info!(
-                last_finalized_consensus_height = %self.last_consensus_finalized_height,
-                last_finalized_execution_height = %self.last_execution_finalized_height,
-                "consensus and execution layers reported last finalized heights; \
-                backfilling blocks from consensus to execution if necessary",
+                backfill_target_height = %self.backfill_target_height,
+                execution_finalized_height = %self.execution_finalized_height,
+                finalized_tip_height = %self.latest_observed_finalized_tip.0,
+                finalized_tip_digest = %self.latest_observed_finalized_tip.1,
+                "executor initialized finalized startup state; backfilling blocks \
+                from consensus to execution if necessary",
             );
         });
 
@@ -421,7 +431,7 @@ where
             }
             Command::Finalize(finalized) => match *finalized {
                 Update::Tip(_, height, digest) => {
-                    self.latest_observed_finalized_tip.replace((height, digest));
+                    self.latest_observed_finalized_tip = (height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
                     self.enqueue_execution_request(ExecutionRequest::FinalizeBlock(Box::new(
@@ -466,21 +476,20 @@ where
 
         // If nothing is currently scheduled and a newer finalized tip was
         // observed, push it into the queue so that it will be picked up next.
-        if self.execution_queue.is_empty()
-            && !self.is_backfilling()
-            && let Some((height, digest)) = self.latest_observed_finalized_tip
-            && let new_canonicalized = self.last_canonicalized.update_finalized(height, digest)
-            && new_canonicalized != self.last_canonicalized
-        {
-            self.execution_queue
-                .push_back(ExecutionRequest::Canonicalize(Box::new(Canonicalize {
-                    cause: Span::current(),
-                    head_or_finalized: HeadOrFinalized::Finalized,
-                    height,
-                    digest,
-                    response: None,
-                    build_attributes: None,
-                })));
+        if self.execution_queue.is_empty() && !self.is_backfilling() {
+            let (height, digest) = self.latest_observed_finalized_tip;
+            let new_canonicalized = self.last_canonicalized.update_finalized(height, digest);
+            if new_canonicalized != self.last_canonicalized {
+                self.execution_queue
+                    .push_back(ExecutionRequest::Canonicalize(Box::new(Canonicalize {
+                        cause: Span::current(),
+                        head_or_finalized: HeadOrFinalized::Finalized,
+                        height,
+                        digest,
+                        response: None,
+                        build_attributes: None,
+                    })));
+            }
         }
 
         let Some(request) = self.execution_queue.front() else {

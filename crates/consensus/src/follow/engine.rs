@@ -71,6 +71,10 @@ pub struct Config<TUpstream> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
+
+    /// Require startup to use the consensus finalization archive as the
+    /// finalized floor.
+    pub strict_startup: bool,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -105,7 +109,8 @@ impl<TUpstream> Config<TUpstream> {
         let alias::marshal::Initialized {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
-            last_finalized_height,
+            finalized_floor: last_finalized_height,
+            finalized_tip,
         } = alias::marshal::init(
             context.clone(),
             page_cache_ref,
@@ -116,6 +121,7 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
+                strict_startup: self.strict_startup,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
@@ -151,7 +157,8 @@ impl<TUpstream> Config<TUpstream> {
             context.with_label("executor"),
             executor::Config {
                 execution_node: self.execution_node.clone(),
-                last_finalized_height,
+                finalized_floor: last_finalized_height,
+                finalized_tip,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: None,

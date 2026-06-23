@@ -50,10 +50,10 @@ pub(crate) struct Config<TOracle> {
     pub(crate) execution_node: Arc<TempoFullNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// The last finalized height according to the consensus layer (marshal).
+    /// The last finalized height according to the marshal actor.
     /// Used during start to determine the correct boundary block, since
     /// the execution layer may be behind.
-    pub(crate) last_finalized_height: Height,
+    pub(crate) last_marshal_finalized_height: Height,
 }
 
 /// Initializes a peer manager actor from a `config` with runtime `context`.
