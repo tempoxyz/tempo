@@ -555,7 +555,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         self.tip1060_storage_credit_minting_enabled = enabled;
     }

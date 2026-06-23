@@ -229,6 +229,8 @@ impl StorageCtx {
     }
 
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    #[cold]
+    #[inline(never)]
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
     }
