@@ -17,16 +17,25 @@ use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Transaction-local TIP-1060 policy for storage creations (`0→x`).
+///
+/// All storage clears (`x→0`) always mint credits, except for [`NonCreditableSlots`].
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub enum CreditMode {
     #[default]
+    /// Charge creation gas upfront; settle eligible refunds at end-of-transaction.
     Refund,
+    /// Charge creation gas and keep existing credits intact.
     Preserve,
+    /// Spend available credits directly, up to the transaction-local budget.
     Direct,
 }
 
-// NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
+// NOTE: Encoded manually as a U256 instead of deriving `Storable` because precompile methods
+// access it through `StorageCtx`, while the opcode-level SSTORE hook and end-of-tx refund
+// settlement read the same transient words directly from revm, where `StorageCtx` handlers are
+// not available.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
     /// Current storage creation mode for this account within the transaction.

@@ -155,10 +155,19 @@ impl PrecompileEnv {
     }
 }
 
-/// Returns the full Tempo precompiles for the given config.
+/// Returns the full Tempo precompile set for the given EVM config.
 ///
-/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
-/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
+/// Pre-T1C hardforks use Prague built-in precompiles; T1C+ uses Osaka built-ins. Tempo-specific
+/// precompiles are then registered via [`extend_tempo_precompiles`].
+///
+/// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
+/// `SDEC`) for node/validator/builder integrations that use the trace for performance; tooling can
+/// pass [`StorageActions::disabled`].
+///
+/// [`NonCreditableSlots`] identifies transaction-local protocol slots whose clears must not mint
+/// TIP-1060 storage credits: the fee payer's fee-token balance and, when applicable, the keychain
+/// fee key's spending limit. They are part of credit/gas accounting, so gas estimation should pass
+/// values derived from the real transaction context rather than mocks.
 pub fn tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
@@ -179,6 +188,8 @@ pub fn tempo_precompiles(
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
 /// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
+///
+/// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
