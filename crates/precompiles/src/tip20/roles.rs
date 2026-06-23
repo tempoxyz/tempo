@@ -141,10 +141,14 @@ impl TIP20Token {
     }
 
     /// Low-level role grant without authorization checks or events.
+    #[cold]
+    #[inline(never)]
     pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         self.roles[account][role].write(true)
     }
 
+    #[cold]
+    #[inline(never)]
     fn revoke_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
         self.roles[account][role].write(false)
     }
@@ -154,6 +158,8 @@ impl TIP20Token {
         self.role_admins[role].read()
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) -> Result<()> {
         self.role_admins[role].write(admin_role)
     }
