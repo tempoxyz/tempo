@@ -102,6 +102,7 @@ impl ValidationLatencyWorkload {
 struct ValidationLatencySample {
     workload: ValidationLatencyWorkload,
     elapsed: Duration,
+    elapsed_per_transaction: Option<Duration>,
 }
 
 fn insert_count<T: Copy + Ord>(counts: &mut BTreeMap<T, usize>, value: T) {
@@ -185,12 +186,35 @@ fn scale_duration(elapsed: Duration, scale: u128) -> Duration {
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
+fn duration_per_transaction(elapsed: Duration, transaction_count: usize) -> Option<Duration> {
+    if transaction_count == 0 {
+        return None;
+    }
+
+    let nanos = elapsed
+        .as_nanos()
+        .saturating_add(transaction_count as u128 - 1)
+        / transaction_count as u128;
+    Some(Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64))
+}
+
+fn scale_duration_by_count(
+    elapsed_per_transaction: Duration,
+    transaction_count: usize,
+) -> Duration {
+    let nanos = elapsed_per_transaction
+        .as_nanos()
+        .saturating_mul(transaction_count as u128);
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+}
+
 /// Point-in-time validation latency estimate from recent proposal validation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValidationLatencyEstimate {
     elapsed: Duration,
     p90_gas_used: u64,
     p90_transaction_count: usize,
+    p50_elapsed_per_transaction: Option<Duration>,
 }
 
 impl ValidationLatencyEstimate {
@@ -205,6 +229,7 @@ impl ValidationLatencyEstimate {
             elapsed: elapsed_per_transaction,
             p90_gas_used: 0,
             p90_transaction_count: 1,
+            p50_elapsed_per_transaction: Some(elapsed_per_transaction),
         }
     }
 
@@ -250,6 +275,15 @@ impl ValidationLatencyEstimate {
         if workload.gas_used == 0 && workload.transaction_count == 0 {
             return Some(Duration::ZERO);
         }
+        if workload.transaction_count > 0 {
+            if let Some(elapsed_per_transaction) = self.p50_elapsed_per_transaction {
+                return Some(scale_duration_by_count(
+                    elapsed_per_transaction,
+                    workload.transaction_count,
+                ));
+            }
+            return None;
+        }
 
         let scale = [
             scale_proportionally(u128::from(workload.gas_used), u128::from(self.p90_gas_used)),
@@ -267,12 +301,11 @@ impl ValidationLatencyEstimate {
 
 /// Tracks recent local execution-layer block validation latency.
 ///
-/// The validation latency estimate uses the recent P90 successful proposal
-/// validation as an absolute floor, then scales that floor up when the current
-/// workload exceeds the recent P90 gas or transaction count. This avoids
-/// combining independent per-unit rates from different workloads while still
-/// reserving validator headroom when the builder grows beyond the workloads
-/// that produced the feedback.
+/// The full-block validation latency estimate uses the recent P90 successful
+/// proposal validation as an absolute floor, then scales that floor up when the
+/// current workload exceeds the recent P90 gas or transaction count. The
+/// optimistic proportional estimate uses paired P50 per-transaction validation
+/// cost so isolated slow validation samples do not collapse future block size.
 #[derive(Clone, Debug, Default)]
 pub struct ValidationLatencyEstimator {
     /// Samples are kept in id order for retention; count maps are keyed by
@@ -282,6 +315,7 @@ pub struct ValidationLatencyEstimator {
     elapsed_counts: BTreeMap<Duration, usize>,
     gas_used_counts: BTreeMap<u64, usize>,
     transaction_count_counts: BTreeMap<usize, usize>,
+    elapsed_per_transaction_counts: BTreeMap<Duration, usize>,
 }
 
 impl ValidationLatencyEstimator {
@@ -292,6 +326,12 @@ impl ValidationLatencyEstimator {
             &mut self.transaction_count_counts,
             sample.workload.transaction_count,
         );
+        if let Some(elapsed_per_transaction) = sample.elapsed_per_transaction {
+            insert_count(
+                &mut self.elapsed_per_transaction_counts,
+                elapsed_per_transaction,
+            );
+        }
     }
 
     fn remove_sample_counts(&mut self, sample: ValidationLatencySample) {
@@ -301,6 +341,12 @@ impl ValidationLatencyEstimator {
             &mut self.transaction_count_counts,
             sample.workload.transaction_count,
         );
+        if let Some(elapsed_per_transaction) = sample.elapsed_per_transaction {
+            remove_count(
+                &mut self.elapsed_per_transaction_counts,
+                elapsed_per_transaction,
+            );
+        }
     }
 
     fn insert_sample(&mut self, sample_id: u64, sample: ValidationLatencySample) {
@@ -335,7 +381,11 @@ impl ValidationLatencyEstimator {
             return;
         }
 
-        let sample = ValidationLatencySample { workload, elapsed };
+        let sample = ValidationLatencySample {
+            workload,
+            elapsed,
+            elapsed_per_transaction: duration_per_transaction(elapsed, workload.transaction_count),
+        };
         self.insert_sample(sample_id, sample);
 
         debug!(
@@ -356,6 +406,8 @@ impl ValidationLatencyEstimator {
     pub fn estimate(&self) -> Option<ValidationLatencyEstimate> {
         let sample_count = self.sample_window.len();
         let p90_elapsed = percentile_from_counts(&self.elapsed_counts, sample_count, 9, 10)?;
+        let per_transaction_sample_count: usize =
+            self.elapsed_per_transaction_counts.values().sum();
         Some(ValidationLatencyEstimate {
             elapsed: p90_elapsed,
             p90_gas_used: percentile_from_counts(&self.gas_used_counts, sample_count, 9, 10)
@@ -367,6 +419,12 @@ impl ValidationLatencyEstimator {
                 10,
             )
             .unwrap_or_default(),
+            p50_elapsed_per_transaction: percentile_from_counts(
+                &self.elapsed_per_transaction_counts,
+                per_transaction_sample_count,
+                1,
+                2,
+            ),
         })
     }
 }
@@ -495,6 +553,58 @@ mod tests {
         assert_eq!(
             estimate.estimate_proportional(ValidationLatencyWorkload::new(500, 5)),
             Some(Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn proportional_validation_latency_uses_p50_paired_transaction_cost() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        for (sample_id, elapsed_ms) in [(1, 100), (2, 110), (3, 120), (4, 1_000)] {
+            estimator.observe(
+                sample_id,
+                ValidationLatencyWorkload::new(0, 1_000),
+                Duration::from_millis(elapsed_ms),
+            );
+        }
+        let estimate = estimator.estimate().expect("validation estimate");
+
+        assert_eq!(
+            estimate.estimate_proportional(ValidationLatencyWorkload::new(0, 5_000)),
+            Some(Duration::from_millis(550))
+        );
+    }
+
+    #[test]
+    fn proportional_validation_latency_ignores_empty_samples() {
+        let mut estimator = ValidationLatencyEstimator::default();
+        estimator.observe(
+            1,
+            ValidationLatencyWorkload::new(0, 0),
+            Duration::from_secs(1),
+        );
+        estimator.observe(
+            2,
+            ValidationLatencyWorkload::new(0, 1_000),
+            Duration::from_millis(100),
+        );
+        let estimate = estimator.estimate().expect("validation estimate");
+
+        assert_eq!(
+            estimate.estimate_proportional(ValidationLatencyWorkload::new(0, 5_000)),
+            Some(Duration::from_millis(500))
+        );
+
+        let mut empty_estimator = ValidationLatencyEstimator::default();
+        empty_estimator.observe(
+            1,
+            ValidationLatencyWorkload::new(0, 0),
+            Duration::from_secs(1),
+        );
+        let empty_estimate = empty_estimator.estimate().expect("validation estimate");
+
+        assert_eq!(
+            empty_estimate.estimate_proportional(ValidationLatencyWorkload::new(0, 5_000)),
+            None
         );
     }
 
