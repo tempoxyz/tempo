@@ -72,6 +72,7 @@ impl Pool {
 impl PoolKey {
     /// Creates a new pool key from user and validator token addresses.
     /// This key uniquely identifies a trading pair in the AMM.
+    #[inline]
     pub fn new(user_token: Address, validator_token: Address) -> Self {
         Self {
             user_token,
@@ -81,6 +82,7 @@ impl PoolKey {
 
     /// Generates a unique pool ID by hashing the token pair addresses.
     /// Uses keccak256 to create a deterministic identifier for this pool.
+    #[inline]
     pub fn get_id(&self) -> B256 {
         keccak256((self.user_token, self.validator_token).abi_encode())
     }
@@ -104,6 +106,7 @@ pub type PoolData = ((Address, Address), u128);
 impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
     /// order-dependent: `(A, B)` produces a different ID than `(B, A)`.
+    #[inline]
     pub fn pool_id(&self, user_token: Address, validator_token: Address) -> B256 {
         PoolKey::new(user_token, validator_token).get_id()
     }
