@@ -90,8 +90,8 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
     (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
-    (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
+    (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
 ];
 
 /// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
@@ -229,10 +229,10 @@ pub fn extend_tempo_precompiles(
             Some(SignatureVerifier::create_precompile(&env))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&env))
-        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t6() {
-            Some(CurrentCommittee::create_precompile(&env))
         } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
             Some(StorageCredits::create_precompile(&env))
+        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t6() {
+            Some(CurrentCommittee::create_precompile(&env))
         } else {
             None
         }
