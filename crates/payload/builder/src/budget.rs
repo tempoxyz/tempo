@@ -75,8 +75,10 @@ pub(crate) struct PayloadBudgetDecision {
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
-/// work once capped at the conservative builder-work projection, and marshal
-/// persistence once for each side.
+/// work once capped at the conservative builder-work projection for non-empty
+/// blocks, and marshal persistence once for each side. Empty payloads can have
+/// almost no local builder work while still requiring validators to validate
+/// the previous proposal, so they use the learned validation floor directly.
 pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -91,7 +93,13 @@ pub(crate) fn payload_budget_decision(
     let validation_latency_estimate =
         validation_latency.and_then(|estimate| estimate.estimate(current_workload));
     let predicted_validator_work = validation_latency_estimate
-        .map(|estimate| estimate.min(predicted_builder_work))
+        .map(|estimate| {
+            if current_workload.is_empty() {
+                estimate
+            } else {
+                estimate.min(predicted_builder_work)
+            }
+        })
         .unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
@@ -242,6 +250,34 @@ mod tests {
             Duration::from_millis(135)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(270));
+    }
+
+    #[test]
+    fn payload_budget_uses_empty_validator_floor_without_builder_cap() {
+        let workload = ValidationLatencyWorkload::default();
+        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(100));
+        let decision = payload_budget_decision(
+            Duration::from_millis(10),
+            Duration::ZERO,
+            1_350_000,
+            MarshalPersistEstimator::default(),
+            0,
+            validation_latency,
+            workload,
+        );
+
+        assert_eq!(
+            decision.predicted_builder_work,
+            Duration::from_millis(13) + Duration::from_micros(500)
+        );
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            decision.total_reserved,
+            Duration::from_millis(113) + Duration::from_micros(500)
+        );
     }
 
     #[test]

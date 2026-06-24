@@ -96,6 +96,11 @@ impl ValidationLatencyWorkload {
             transaction_count,
         }
     }
+
+    /// Returns true when the workload has no executable transactions.
+    pub fn is_empty(self) -> bool {
+        self.gas_used == 0 && self.transaction_count == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
