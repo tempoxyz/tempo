@@ -196,7 +196,7 @@ pub async fn run_follow_stack(
         context.with_label("upstream"),
         crate::follow::upstream::Config { upstream_url },
     )
-    .wrap_err("failed to initialize upstream follow actor")?;
+    .wrap_err("failed to initialize client to upstream node")?;
 
     let config = follow::Config {
         execution_node,
