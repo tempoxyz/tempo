@@ -241,7 +241,7 @@ where
     }
 
     fn apply_current_committee_system_call(&mut self) -> Result<(), BlockExecutionError> {
-        if !self.evm().cfg.spec.is_t6() {
+        if !self.evm().cfg.spec.is_t8() {
             return Ok(());
         }
 
