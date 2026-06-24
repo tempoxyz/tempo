@@ -7,7 +7,7 @@
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
 use alloy_evm::{
-    Evm, EvmEnv, EvmFactory,
+    Evm, EvmEnv, EvmFactory, FromRecoveredTx,
     block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
 };
@@ -71,7 +71,7 @@ use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
 };
-use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+use tempo_revm::{TempoTxEnv, gas_params::tempo_gas_params_with_amsterdam};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -883,8 +883,9 @@ where
             tx.inner().is_aa(),
             "tip20 execution bench expects Tempo AA transactions"
         );
+        let tx_env = TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer());
         let output = executor
-            .execute_transaction_without_commit(tx)
+            .execute_transaction_without_commit((tx_env, tx))
             .expect("TIP20 transaction execution failed");
         assert!(
             output.result().result.is_success(),
