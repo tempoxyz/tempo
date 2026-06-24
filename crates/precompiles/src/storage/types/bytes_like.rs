@@ -48,6 +48,24 @@ pub struct BytesLikeHandler<T> {
     _ty: PhantomData<T>,
 }
 
+struct BytesLikeStorageOps {
+    address: Address,
+}
+
+impl StorageOps for BytesLikeStorageOps {
+    #[inline]
+    fn load(&self, slot: U256) -> Result<U256> {
+        let storage = StorageCtx;
+        storage.sload(self.address, slot)
+    }
+
+    #[inline]
+    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
+        let mut storage = StorageCtx;
+        storage.sstore(self.address, slot, value)
+    }
+}
+
 impl<T: Storable> BytesLikeHandler<T> {
     /// Creates a new handler for the bytes-like value at the given base slot.
     #[inline]
@@ -62,6 +80,13 @@ impl<T: Storable> BytesLikeHandler<T> {
     #[inline]
     fn as_slot(&self) -> Slot<T> {
         Slot::new(self.base_slot, self.address)
+    }
+
+    #[inline]
+    fn storage_ops(&self) -> BytesLikeStorageOps {
+        BytesLikeStorageOps {
+            address: self.address,
+        }
     }
 
     /// Returns the byte length without loading all data (only reads base slot).
@@ -82,7 +107,8 @@ impl<T: Storable> BytesLikeHandler<T> {
 impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
     #[inline]
     fn read(&self) -> Result<T> {
-        self.as_slot().read()
+        let storage = self.storage_ops();
+        T::load(&storage, self.base_slot, LayoutCtx::FULL)
     }
 
     #[inline]
