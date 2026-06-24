@@ -12,7 +12,7 @@
 
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use alloy_consensus::BlockHeader;
@@ -77,11 +77,6 @@ struct BuildProposalArgs {
 }
 
 struct ProposalReturn {
-    /// Earliest time the built proposal may be returned to consensus.
-    ///
-    /// After the proposal is persisted locally, the actor sleeps until this time
-    /// so early builds still respect the proposal pacing budget.
-    return_at: SystemTime,
     /// Approximate encoded proposal size used for marshal-persist pacing.
     ///
     /// This is a reasonably close estimate derived during payload building, not the exact final
@@ -502,9 +497,6 @@ impl Inner<Init> {
                         proposal_return.block_size_estimate_bytes,
                         persist_start.elapsed(),
                     );
-
-                    // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.return_at).await;
                 }
 
                 eyre::Ok(block)
@@ -795,26 +787,16 @@ impl Inner<Init> {
             execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
-        // Pace proposal return from the original propose start. Validators still
-        // need to repeat replayable build work and marshal persistence, so leave
-        // room for those costs before returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(validation_latency_elapsed)
-            .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
             validation_latency_time = %display_duration(validation_latency_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
-            return_time = %display_duration(return_delay),
             execution_block_rlp_size_estimate_bytes,
             block_size_estimate_bytes,
-            "sleeping before returning proposal"
+            "returning proposal after optimistic build"
         );
-        let return_at = context.current() + return_delay;
 
         self.schedule_background_validation(
             validation_context,
@@ -827,7 +809,6 @@ impl Inner<Init> {
         Ok((
             proposal,
             Some(ProposalReturn {
-                return_at,
                 block_size_estimate_bytes,
             }),
         ))
