@@ -371,11 +371,11 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
-        if tx.is_system_tx() {
-            self.validate_system_tx(tx).map(Some)
-        } else {
-            Ok(None)
+        if !tx.is_system_tx() {
+            return Ok(None);
         }
+
+        self.validate_system_tx(tx).map(Some)
     }
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
