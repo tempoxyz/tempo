@@ -22,7 +22,6 @@ pub struct TempoBlockEnv {
     pub timestamp_millis_part: u64,
 
     /// Number of blocks in a consensus epoch.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub epoch_length: u64,
 }
 
