@@ -577,6 +577,9 @@ where
         if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
         }
+        if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+        }
 
         Ok(())
     }

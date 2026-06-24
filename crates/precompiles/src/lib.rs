@@ -202,10 +202,10 @@ pub fn extend_tempo_precompiles(
             Some(SignatureVerifier::create_precompile(&env))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&env))
-        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t6() {
-            Some(CurrentCommittee::create_precompile(&env))
         } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
             Some(StorageCredits::create_precompile(&env))
+        } else if *address == CURRENT_COMMITTEE_ADDRESS && env.cfg.spec.is_t6() {
+            Some(CurrentCommittee::create_precompile(&env))
         } else {
             None
         }
