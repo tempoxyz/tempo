@@ -10,7 +10,7 @@ pub mod evm;
 pub mod hashmap;
 
 pub mod thread_local;
-use alloy::primitives::keccak256;
+use alloy::primitives::utils::keccak256_cached;
 pub use thread_local::{CheckpointGuard, StorageCtx};
 
 mod types;
@@ -177,7 +177,7 @@ pub trait PrecompileStorageProvider {
             .and_then(|w| w.checked_add(KECCAK256))
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.deduct_gas(price)?;
-        Ok(keccak256(data))
+        Ok(keccak256_cached(data))
     }
 
     /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
