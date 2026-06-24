@@ -727,7 +727,7 @@ where
     ) -> eyre::Result<Self::PayloadBuilder> {
         let conf = ctx.payload_builder_config();
         let chain = ctx.chain_spec().chain();
-        let gas_limit = conf.gas_limit().or_else(|| match chain.kind() {
+        let desired_gas_limit = conf.gas_limit().or_else(|| match chain.kind() {
             ChainKind::Named(NamedChain::Tempo | NamedChain::TempoModerato) => {
                 Some(BLOCK_GAS_LIMIT_500M)
             }
@@ -740,7 +740,7 @@ where
             ctx.task_executor().clone(),
             evm_config,
             TempoPayloadBuilderConfig {
-                desired_gas_limit: gas_limit,
+                desired_gas_limit,
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
