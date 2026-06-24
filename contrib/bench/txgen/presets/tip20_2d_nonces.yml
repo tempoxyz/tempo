@@ -93,6 +93,7 @@ templates:
       choice: ${TXGEN_TIP20_TOKENS}
     nonce_key:
       uniform: [1, 18446744073709551615]
+    nonce: 0
     call:
       to:
         choice: ${TXGEN_TIP20_TOKENS}
