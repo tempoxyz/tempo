@@ -830,9 +830,7 @@ impl AccountKeychain {
         }
 
         // Scoped targets next match on the 4-byte selector.
-        let selector = FixedBytes::<4>::from(
-            <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
-        );
+        let selector = FixedBytes::<4>::from_slice(&input[..4]);
         if !self.key_scopes[key_hash].target_scopes[target]
             .selectors
             .contains(&selector)?
@@ -855,7 +853,7 @@ impl AccountKeychain {
 
         // Recipient-constrained selectors only permit ABI-encoded address arguments.
         let recipient_word = &input[4..36];
-        if recipient_word[..12].iter().any(|byte| *byte != 0) {
+        if recipient_word[..12] != [0; 12] {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
