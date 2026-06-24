@@ -2475,7 +2475,7 @@ fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
 ///
 /// For T0+, validates gas limit covers intrinsic gas. For pre-T0, skips check
 /// to maintain backward compatibility.
-#[inline]
+#[inline(always)]
 fn check_gas_limit(
     spec: tempo_chainspec::hardfork::TempoHardfork,
     tx: &TempoTxEnv,
