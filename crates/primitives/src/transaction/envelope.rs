@@ -249,6 +249,7 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
+    #[inline]
     pub fn as_aa(&self) -> Option<&AASigned> {
         match self {
             Self::AA(tx) => Some(tx),
