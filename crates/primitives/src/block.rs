@@ -37,11 +37,7 @@ impl TempoBlockEnv {
 
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
-        if self.epoch_length == 0 {
-            0
-        } else {
-            height / self.epoch_length
-        }
+        height.checked_div(self.epoch_length).unwrap_or(0)
     }
 }
 
