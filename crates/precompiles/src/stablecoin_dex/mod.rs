@@ -89,6 +89,8 @@ impl StablecoinDEX {
     }
 
     /// Adds reusable-order storage credits for `user`.
+    #[cold]
+    #[inline(never)]
     fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
         if slots == 0 || !self.storage.spec().is_t7() {
             return Ok(());
@@ -119,6 +121,8 @@ impl StablecoinDEX {
     }
 
     /// Deletes an order and returns the number of DEX TIP-1060 credits minted.
+    #[cold]
+    #[inline(never)]
     fn delete_order(&mut self, order: &Order) -> Result<u64> {
         StorageCredits::new()
             .track_minted_credits(self.address, || self.orders[order.order_id()].delete())
@@ -126,6 +130,8 @@ impl StablecoinDEX {
     }
 
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
+    #[cold]
+    #[inline(never)]
     fn unlink_neighbor_and_credit_maker(
         &mut self,
         order_id: u128,
@@ -142,6 +148,8 @@ impl StablecoinDEX {
     }
 
     /// Deletes an order and tracks the maker's minted DEX TIP-1060 credits for deferred flush.
+    #[cold]
+    #[inline(never)]
     fn delete_order_and_track_deltas(
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
@@ -156,6 +164,8 @@ impl StablecoinDEX {
     ///
     /// Credits are scoped to the physical `Order` record. Shared book metadata writes performed by
     /// `commit_order_to_book` remain outside this budget and stay in preserve mode.
+    #[cold]
+    #[inline(never)]
     fn write_order_spending_dex_storage_credits(&mut self, order: Order) -> Result<()> {
         let user = order.maker();
         let user_credits = self.dex_storage_credits[user].read()?;
