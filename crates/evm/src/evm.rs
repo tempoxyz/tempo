@@ -93,6 +93,8 @@ impl<DB: Database> TempoEvm<DB> {
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
+    #[cold]
+    #[inline(never)]
     pub fn into_inner(self) -> tempo_revm::TempoEvm<DB, I> {
         self.inner
     }
@@ -103,11 +105,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Consumes this EVM wrapper and returns the EVM context.
+    #[cold]
+    #[inline(never)]
     pub fn into_ctx(self) -> TempoContext<DB> {
         self.inner.inner.ctx
     }
 
     /// Returns the [`EvmEnv`] for the current block.
+    #[cold]
+    #[inline(never)]
     pub fn evm_env(&self) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
         EvmEnv {
             cfg_env: self.ctx().cfg.clone(),
@@ -121,6 +127,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Provides a mutable reference to the inner [`tempo_revm::TempoEvm`].
+    #[cold]
+    #[inline(never)]
     pub fn inner_mut(&mut self) -> &mut tempo_revm::TempoEvm<DB, I> {
         &mut self.inner
     }
