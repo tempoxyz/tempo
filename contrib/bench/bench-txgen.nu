@@ -220,7 +220,6 @@ def "main run" [
     --feature-env: string = ""
     --bench-env: string = ""
     --bloat: int = 0
-    --bloat-balance: int = $DEFAULT_BLOAT_BALANCE
     --no-infra
     --baseline: string = ""
     --feature: string = ""
@@ -242,9 +241,6 @@ def "main run" [
     let runtime_mode = (resolved-runtime-mode $mode)
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
-    }
-    if $bloat > 0 and $bloat_balance <= 0 {
-        error make { msg: "--bloat-balance must be greater than 0 when --bloat is enabled" }
     }
     let preset_path = (txgen-preset-path $preset)
     txgen-validate-bench-args $bench_args
@@ -379,7 +375,6 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
-            and ($marker | get -o bloat_balance | default 0 | into int) == $bloat_balance
             and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
             and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
@@ -426,11 +421,11 @@ def "main run" [
             if $bloat > 0 and not ($bloat_file | path exists) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                     }
                 }
             }
@@ -446,7 +441,6 @@ def "main run" [
 
             bench-save-and-promote $datadir $meta_dir {
                 bloat_mib: $bloat
-                bloat_balance: $bloat_balance
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
                 txgen_mnemonic: $txgen_mnemonic
@@ -463,7 +457,6 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
-            and ($marker | get -o bloat_balance | default 0 | into int) == $bloat_balance
             and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o gas_limit | default "") == $gas_limit
             and ($"($datadir)/db" | path exists)
@@ -489,11 +482,11 @@ def "main run" [
             if $bloat > 0 and not ($bloat_file | path exists) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                     }
                 }
             }
@@ -502,7 +495,6 @@ def "main run" [
             bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
             bench-save-and-promote $datadir $meta_dir {
                 bloat_mib: $bloat
-                bloat_balance: $bloat_balance
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
                 txgen_mnemonic: $txgen_mnemonic
