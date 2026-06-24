@@ -378,6 +378,8 @@ impl ReceivePolicyGuard {
 
 impl StorageCredits {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
     }
