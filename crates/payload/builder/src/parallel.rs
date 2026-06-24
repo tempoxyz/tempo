@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
@@ -46,7 +46,6 @@ pub(crate) struct PrewarmingPlanner<Provider> {
     results_rx: Receiver<PlannedTransaction>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    in_flight: Arc<AtomicUsize>,
     state_updates_rx: Receiver<StateAwareBestTransactionsUpdate>,
     state_update_pool: Vec<StateAwareBestTransactionsUpdate>,
     completed: usize,
@@ -67,7 +66,6 @@ where
         let (commands_tx, commands_rx) = mpsc::channel();
         let (state_updates_tx, state_updates_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let in_flight = Arc::new(AtomicUsize::new(0));
 
         let executor = prewarm.executor();
         let planner_ctx = PlannerContext {
@@ -78,7 +76,6 @@ where
             state_updates_tx,
             stop: stop.clone(),
             prewarm: prewarm.clone(),
-            in_flight: in_flight.clone(),
             action_buffers: Vec::new(),
             next_expiring_nonce_offset: 0,
         };
@@ -93,7 +90,6 @@ where
             results_rx,
             stop,
             prewarm,
-            in_flight,
             state_updates_rx,
             state_update_pool: Vec::new(),
             completed: 0,
@@ -126,7 +122,6 @@ where
                     return;
                 };
 
-                planner.in_flight.fetch_add(1, Ordering::Relaxed);
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = planner.next_expiring_nonce_offset;
                     planner.next_expiring_nonce_offset += 1;
@@ -183,11 +178,7 @@ where
     }
 
     pub(crate) fn next(&mut self) -> Option<PlannedTransaction> {
-        if self.completed == self.in_flight.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        let Ok(planned) = self.results_rx.recv() else {
+        let Ok(planned) = self.results_rx.try_recv() else {
             self.commands_tx.send(PlannerCommand::Advance).ok()?;
             return None;
         };
@@ -253,7 +244,6 @@ struct PlannerContext<Txs, Provider> {
     state_updates_tx: Sender<StateAwareBestTransactionsUpdate>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    in_flight: Arc<AtomicUsize>,
     action_buffers: Vec<Vec<StorageAction>>,
     next_expiring_nonce_offset: usize,
 }
