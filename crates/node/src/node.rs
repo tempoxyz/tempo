@@ -732,9 +732,12 @@ where
             limit
         } else {
             match chain.kind() {
-                ChainKind::Named(NamedChain::Tempo | NamedChain::TempoModerato) => {
-                    BLOCK_GAS_LIMIT_500M
-                }
+                ChainKind::Named(
+                    NamedChain::Tempo
+                    | NamedChain::TempoModerato
+                    | NamedChain::TempoDevnet
+                    | NamedChain::Dev,
+                ) => BLOCK_GAS_LIMIT_500M,
                 _ => bail!("unsupported chain kind: {:?}", chain.kind()),
             }
         };
