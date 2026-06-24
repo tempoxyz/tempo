@@ -15,6 +15,7 @@ const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
+const DEFAULT_BLOAT_BALANCE = 1_000_000_000
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
@@ -141,7 +142,7 @@ def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file "--balance" $"($DEFAULT_BLOAT_BALANCE)" ...$token_args]
 }
 
 # Load the bloat file into a single node's database
@@ -2260,6 +2261,7 @@ def restore-system-tuning [tuning_state: record] {
 # if the marker in the benchmark datadir matches the requested config.
 def "main bench-init" [
     --bloat: int = 1024                                 # State bloat size in MiB
+    --bloat-balance: int = $DEFAULT_BLOAT_BALANCE       # TIP20 balance assigned to each state-bloat account
     --accounts: int = 1000                              # Number of genesis accounts
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
@@ -2275,6 +2277,10 @@ def "main bench-init" [
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
+    if $bloat > 0 and $bloat_balance <= 0 {
+        print "Error: --bloat-balance must be greater than 0 when --bloat is enabled"
+        exit 1
+    }
 
     # Mount schelk first so we can read the marker from the datadir
     bench-mount
@@ -2283,7 +2289,7 @@ def "main bench-init" [
     if not $force {
         let marker = (read-bench-marker $datadir)
         if $marker != null {
-            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
+            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o bloat_balance | default 0 | into int) == $bloat_balance and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -2309,7 +2315,7 @@ def "main bench-init" [
     if $bloat > 0 {
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
     }
 
     bench-clean-datadir $datadir
@@ -2317,6 +2323,7 @@ def "main bench-init" [
 
     bench-save-and-promote $datadir $meta_dir {
         bloat_mib: $bloat,
+        bloat_balance: $bloat_balance,
         accounts: $genesis_accounts,
         bench_datadir: $datadir,
         txgen_mnemonic: (txgen-account-mnemonic)
@@ -2352,6 +2359,7 @@ def "main bench" [
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
+    --bloat-balance: int = $DEFAULT_BLOAT_BALANCE   # TIP20 balance assigned to each state-bloat account
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
     --feature: string = ""                          # Git ref for feature (comparison mode)
@@ -2370,6 +2378,10 @@ def "main bench" [
     --general-gas-limit: string = ""                # General (non-payment) gas limit for genesis
 ] {
     validate-mode $mode
+    if $bloat > 0 and $bloat_balance <= 0 {
+        print "Error: --bloat-balance must be greater than 0 when --bloat is enabled"
+        exit 1
+    }
 
     # Validate --nodes is only used with consensus mode
     if $mode == "dev" and $nodes != 3 {
@@ -2588,6 +2600,7 @@ def "main bench" [
                 not $force
                 and $marker != null
                 and ($marker.bloat_mib | into int) == $bloat
+                and ($marker | get -o bloat_balance | default 0 | into int) == $bloat_balance
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
@@ -2642,11 +2655,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
                         }
                     }
                 }
@@ -2663,6 +2676,7 @@ def "main bench" [
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
+                    bloat_balance: $bloat_balance
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
@@ -2684,6 +2698,7 @@ def "main bench" [
                 not $force
                 and $marker != null
                 and ($marker.bloat_mib | into int) == $bloat
+                and ($marker | get -o bloat_balance | default 0 | into int) == $bloat_balance
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
@@ -2714,11 +2729,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --balance $bloat_balance ...$token_args
                         }
                     }
                 }
@@ -2728,6 +2743,7 @@ def "main bench" [
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat,
+                    bloat_balance: $bloat_balance,
                     accounts: $genesis_accounts,
                     bench_datadir: $datadir,
                     gas_limit: $gas_limit,

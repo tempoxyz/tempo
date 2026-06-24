@@ -376,6 +376,14 @@ def e2e-snapshot-state-gas-limit [datadir: string] {
     ""
 }
 
+def e2e-snapshot-state-bloat-balance [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker == null {
+        return 0
+    }
+    $marker | get -o bloat_balance | default 0 | into int
+}
+
 def e2e-update-snapshot-genesis-marker [
     datadir: string,
     hardfork: string,
@@ -1270,6 +1278,7 @@ def "main e2e" [
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
+    --bloat-balance: int = $DEFAULT_BLOAT_BALANCE       # TIP20 balance assigned to each state-bloat account
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
@@ -1329,6 +1338,10 @@ def "main e2e" [
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
+    if $bloat_mib > 0 and $bloat_balance <= 0 {
+        print "Error: --bloat-balance must be greater than 0 when --bloat is enabled"
+        exit 1
+    }
     e2e-validate-token-count $token_count
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
@@ -1400,10 +1413,14 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    let snapshot_bloat_balance_matches = $bloat_mib == 0 or (
+        (e2e-snapshot-state-bloat-balance $a_db) == $bloat_balance
+        and (e2e-snapshot-state-bloat-balance $b_db) == $bloat_balance
+    )
+    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db) and $snapshot_bloat_balance_matches
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+        print $"Local e2e snapshot ($bloat) is missing required files or has stale metadata; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
         let missing_b = (e2e-snapshot-missing-files $b_db)
         if ($missing_a | length) > 0 {
@@ -1411,6 +1428,9 @@ def "main e2e" [
         }
         if ($missing_b | length) > 0 {
             print $"  Missing from b: ($missing_b | str join ', ')"
+        }
+        if not $snapshot_bloat_balance_matches {
+            print $"  State bloat balance marker does not match requested balance ($bloat_balance)"
         }
     }
 
@@ -1441,12 +1461,13 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file --balance $bloat_balance ...$token_args
         }
 
         let marker = {
             bloat_mib: $bloat_mib
             bloat: $bloat
+            bloat_balance: $bloat_balance
             accounts: $genesis_accounts
             validators: $E2E_VALIDATORS
             seed: $E2E_SEED
