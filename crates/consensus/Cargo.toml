@@ -75,6 +75,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }

@@ -3,10 +3,13 @@
 //! Maintains a regular connection to an upstream node over websocker
 //! or `in_process::Actor` as an in-process actor working off of channels.
 
+use std::net::SocketAddr;
+
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
+use url::Url;
 
 use crate::utils::OptionFuture;
 
@@ -43,11 +46,13 @@ where
 pub(crate) fn init<TContext>(
     context: TContext,
     config: Config,
-) -> (Actor<TContext>, ingress::Mailbox) {
+) -> eyre::Result<(Actor<TContext>, ingress::Mailbox)> {
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = ingress::Mailbox::new(tx);
 
-    let url = Box::leak(Box::<str>::from(config.upstream_url));
+    let url = Box::leak(Box::<str>::from(
+        parse_upstream_url(&config.upstream_url)?.to_string(),
+    ));
     let actor = Actor {
         context: ContextCell::new(context),
         connection: None,
@@ -59,10 +64,51 @@ pub(crate) fn init<TContext>(
         waiters: Vec::new(),
     };
 
-    (actor, mailbox)
+    Ok((actor, mailbox))
 }
 
 pub(crate) struct Config {
     /// The URL to connect to.
     pub(crate) upstream_url: String,
+}
+
+fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
+    if url.starts_with("localhost:") || url.parse::<SocketAddr>().is_ok() {
+        Ok(format!("ws://{url}").parse()?)
+    } else {
+        Ok(url.parse()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_upstream_url_preserves_explicit_url() {
+        assert_eq!(
+            parse_upstream_url("wss://upstream.example:8546")
+                .unwrap()
+                .to_string(),
+            "wss://upstream.example:8546/"
+        );
+    }
+
+    #[test]
+    fn parse_upstream_url_prefixes_localhost_and_socketaddr() {
+        assert_eq!(
+            parse_upstream_url("localhost:8546").unwrap().to_string(),
+            "ws://localhost:8546/"
+        );
+        assert_eq!(
+            parse_upstream_url("127.0.0.1:8546").unwrap().to_string(),
+            "ws://127.0.0.1:8546/"
+        );
+    }
+
+    #[test]
+    fn parse_upstream_url_rejects_non_url_values() {
+        assert!(parse_upstream_url("not a url").is_err());
+        assert!(parse_upstream_url("localhost").is_err());
+    }
 }
