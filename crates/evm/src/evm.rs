@@ -15,10 +15,7 @@ use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{CfgEnv, result::ExecutionResult},
 };
-use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
-};
+use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::storage::StorageAction;
 use tempo_revm::{
@@ -144,13 +141,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     where
         F: ProtocolFeeManager<DB> + 'static,
     {
-        self.with_fee_manager_arc(Arc::new(fee_manager))
-    }
-
-    /// Replaces the protocol fee manager used by this EVM.
-    pub fn with_fee_manager_arc(self, fee_manager: Arc<dyn ProtocolFeeManager<DB>>) -> Self {
         TempoEvm {
-            inner: self.inner.with_fee_manager_arc(fee_manager),
+            inner: self.inner.with_fee_manager(fee_manager),
             inspect: self.inspect,
         }
     }
