@@ -726,10 +726,9 @@ impl Inner<Init> {
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
         let phase_budget = half_duration(self.proposal_return_budget);
-        // Give the builder only the build-phase window that remains when
-        // payload construction is requested. The validation budget is kept as a
-        // fixed target for transaction selection.
-        let build_budget = phase_budget.saturating_sub(propose_start.elapsed());
+        // Validation-gate waits happen before payload construction starts and
+        // should not shrink the builder's transaction-selection budget.
+        let build_budget = phase_budget;
         let validation_latency_estimate = self
             .validation_latency_estimator
             .lock()
