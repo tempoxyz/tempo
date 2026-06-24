@@ -561,7 +561,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.assume(!token.paused());
 
         (address currentRecipient,,) = token.userRewardInfo(actor);
-        uint256 actorBalance = token.balanceOf(actor);
         uint128 optedInSupplyBefore = token.optedInSupply();
 
         vm.startPrank(actor);
@@ -575,23 +574,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
             (address storedRecipient,,) = token.userRewardInfo(actor);
 
-            assertEq(storedRecipient, newRecipient, "Reward recipient not set correctly");
+            assertEq(storedRecipient, currentRecipient, "T7 setRewardRecipient should be a no-op");
 
-            // Opted-in supply should update correctly
+            // T7 disables reward-recipient updates, so opted-in supply should not change.
             uint128 optedInSupplyAfter = token.optedInSupply();
-            if (currentRecipient == address(0) && newRecipient != address(0)) {
-                assertEq(
-                    optedInSupplyAfter,
-                    optedInSupplyBefore + uint128(actorBalance),
-                    "Opted-in supply not increased"
-                );
-            } else if (currentRecipient != address(0) && newRecipient == address(0)) {
-                assertEq(
-                    optedInSupplyAfter,
-                    optedInSupplyBefore - uint128(actorBalance),
-                    "Opted-in supply not decreased"
-                );
-            }
+            assertEq(optedInSupplyAfter, optedInSupplyBefore, "T7 opted-in supply changed");
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -616,38 +603,23 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.assume(token.optedInSupply() > 0);
 
         uint256 globalRPTBefore = token.globalRewardPerToken();
+        uint256 actorBalanceBefore = token.balanceOf(actor);
         uint256 tokenBalanceBefore = token.balanceOf(address(token));
 
         vm.startPrank(actor);
         try token.distributeReward(amount) {
             vm.stopPrank();
 
-            _totalRewardsDistributed++;
-            _ghostRewardInputSum += amount;
-            _tokenRewardsDistributed[address(token)] += amount;
-            _tokenDistributionCount[address(token)]++;
-            _registerHolder(address(token), actor);
-            _registerHolder(address(token), address(token));
-
-            // TEMPO-TIP12: Global reward per token should increase by exact floor division
-            // Formula: delta = floor(amount * ACC_PRECISION / optedInSupply)
-            // Note: optedInSupply may change during _transfer before the delta calculation,
-            // so we verify the delta is consistent with the post-transfer optedInSupply
-            uint256 globalRPTAfter = token.globalRewardPerToken();
-            uint256 actualDelta = globalRPTAfter - globalRPTBefore;
-
-            // Verify delta is reasonable (non-zero when amount > 0 and optedInSupply is reasonable)
-            // The exact formula verification is complex due to optedInSupply changes during transfer
-            assertTrue(
-                actualDelta > 0 || amount * ACC_PRECISION < token.optedInSupply(),
-                "TEMPO-TIP12: globalRewardPerToken should increase unless amount is tiny relative to optedInSupply"
-            );
-
-            // TEMPO-TIP13: Tokens should be transferred to the token contract
+            assertEq(token.balanceOf(actor), actorBalanceBefore, "T7 reward no-op changed actor");
             assertEq(
                 token.balanceOf(address(token)),
-                tokenBalanceBefore + amount,
-                "TEMPO-TIP13: Tokens not transferred to contract"
+                tokenBalanceBefore,
+                "T7 reward no-op changed token balance"
+            );
+            assertEq(
+                token.globalRewardPerToken(),
+                globalRPTBefore,
+                "T7 reward no-op changed globalRewardPerToken"
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -677,25 +649,21 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.assume(actorBalance >= amount);
 
         uint256 globalRPTBefore = token.globalRewardPerToken();
+        uint256 actorBalanceBefore = token.balanceOf(actor);
+        uint256 tokenBalanceBefore = token.balanceOf(address(token));
 
         vm.startPrank(actor);
         try token.distributeReward(amount) {
             vm.stopPrank();
 
-            // Update ghost variables (same as distributeReward)
-            _totalRewardsDistributed++;
-            _ghostRewardInputSum += amount;
-            _tokenRewardsDistributed[address(token)] += amount;
-            _tokenDistributionCount[address(token)]++;
-            _registerHolder(address(token), actor);
-            _registerHolder(address(token), address(token));
-
-            // TEMPO-TIP12: When delta == 0, globalRewardPerToken must stay constant
-            uint256 globalRPTAfter = token.globalRewardPerToken();
+            assertEq(token.balanceOf(actor), actorBalanceBefore, "T7 tiny reward changed actor");
             assertEq(
-                globalRPTAfter,
+                token.balanceOf(address(token)), tokenBalanceBefore, "T7 tiny reward changed token"
+            );
+            assertEq(
+                token.globalRewardPerToken(),
                 globalRPTBefore,
-                "TEMPO-TIP12: Zero-delta distribution should not change globalRewardPerToken"
+                "T7 tiny reward changed globalRewardPerToken"
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
@@ -719,10 +687,24 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 actorBalance = token.balanceOf(actor);
         vm.assume(actorBalance >= 1000);
 
+        uint256 actorBalanceBefore = token.balanceOf(actor);
+        uint256 tokenBalanceBefore = token.balanceOf(address(token));
+        uint256 globalRPTBefore = token.globalRewardPerToken();
+
         vm.startPrank(actor);
         try token.distributeReward(1000) {
             vm.stopPrank();
-            revert("TEMPO-TIP12: distributeReward should revert when optedInSupply == 0");
+            assertEq(token.balanceOf(actor), actorBalanceBefore, "T7 reward no-op changed actor");
+            assertEq(
+                token.balanceOf(address(token)),
+                tokenBalanceBefore,
+                "T7 reward no-op changed token balance"
+            );
+            assertEq(
+                token.globalRewardPerToken(),
+                globalRPTBefore,
+                "T7 reward no-op changed globalRewardPerToken"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertEq(
