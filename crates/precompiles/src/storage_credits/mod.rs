@@ -295,6 +295,15 @@ impl NonCreditableSlots {
 
     #[inline]
     pub fn clear(&mut self) {
+        if self.fee_payer.is_zero()
+            && self.fee_token.is_zero()
+            && self.keychain_fee_key.is_none()
+            && self.fee_balance_slot.get().is_none()
+            && self.keychain_limit_slot.get().is_none()
+        {
+            return;
+        }
+
         *self = Self::empty();
     }
 
