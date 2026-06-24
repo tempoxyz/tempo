@@ -450,7 +450,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(
+        deduct_gas(
+            &mut self.gas_tracker,
             gas::LOG
                 + self
                     .gas_params
