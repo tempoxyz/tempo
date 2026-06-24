@@ -292,6 +292,8 @@ impl TipFeeManager {
 
 impl AddressRegistry {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("AddressRegistry", env: env, |input| { Self::new() })
     }
@@ -371,6 +373,8 @@ impl TIP20ChannelReserve {
 
 impl ReceivePolicyGuard {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ReceivePolicyGuard", env: env, |input| { Self::new() })
     }
