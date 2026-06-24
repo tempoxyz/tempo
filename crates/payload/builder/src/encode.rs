@@ -313,6 +313,7 @@ mod tests {
                         ..Default::default()
                     },
                     consensus_context: None,
+                    proof_root: None,
                 },
             )
     }
