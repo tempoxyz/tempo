@@ -10,6 +10,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
+use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
 use once_cell::sync::Lazy as LazyLock;
@@ -33,7 +34,7 @@ pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 pub struct TempoGenesisInfo {
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
-    epoch_length: Option<u64>,
+    epoch_length: Option<NonZeroU64>,
     /// Optional override for the general (non-payment) gas limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     general_gas_limit: Option<u64>,
@@ -85,7 +86,7 @@ impl TempoGenesisInfo {
             .unwrap_or_default()
     }
 
-    pub fn epoch_length(&self) -> Option<u64> {
+    pub fn epoch_length(&self) -> Option<NonZeroU64> {
         self.epoch_length
     }
 

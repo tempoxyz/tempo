@@ -167,7 +167,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .chain_spec()
                     .info
                     .epoch_length()
-                    .and_then(NonZeroU64::new)
                     .unwrap_or(NonZeroU64::MIN),
             },
         })
@@ -222,7 +221,6 @@ impl ConfigureEvm for TempoEvmConfig {
                     .chain_spec()
                     .info
                     .epoch_length()
-                    .and_then(NonZeroU64::new)
                     .unwrap_or(NonZeroU64::MIN),
             },
         })
