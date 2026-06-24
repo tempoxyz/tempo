@@ -561,6 +561,7 @@ where
         })
     }
 
+    #[inline(always)]
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
         let TempoTxResult {
             inner,
