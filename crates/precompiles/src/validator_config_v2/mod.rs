@@ -52,6 +52,8 @@ struct Config {
 }
 
 impl Config {
+    #[cold]
+    #[inline(never)]
     fn new(owner: Address, is_init: bool, init_at_height: u64) -> Self {
         Self {
             owner,
@@ -62,10 +64,14 @@ impl Config {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn is_owner(&self, addr: Address) -> bool {
         self.owner == addr
     }
 
+    #[cold]
+    #[inline(never)]
     fn require_init(self) -> Result<Self> {
         if self.is_init {
             return Ok(self);
@@ -73,6 +79,8 @@ impl Config {
         Err(ValidatorConfigV2Error::not_initialized())?
     }
 
+    #[cold]
+    #[inline(never)]
     fn require_not_init(self) -> Result<Self> {
         if self.is_init {
             Err(ValidatorConfigV2Error::already_initialized())?
@@ -80,6 +88,8 @@ impl Config {
         Ok(self)
     }
 
+    #[cold]
+    #[inline(never)]
     fn require_owner(self, caller: Address) -> Result<Self> {
         if !self.is_owner(caller) {
             Err(ValidatorConfigV2Error::unauthorized())?
@@ -87,6 +97,8 @@ impl Config {
         Ok(self)
     }
 
+    #[cold]
+    #[inline(never)]
     fn require_owner_or_validator(self, caller: Address, validator: Address) -> Result<Self> {
         if caller != validator && !self.is_owner(caller) {
             Err(ValidatorConfigV2Error::unauthorized())?
