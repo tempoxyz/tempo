@@ -225,6 +225,8 @@ impl TempoPrecompileError {
     /// # Errors
     /// - `PrecompileOutput::halt(PrecompileHalt::OutOfGas, ..)` — if the variant is [`OutOfGas`](Self::OutOfGas)
     /// - `PrecompileError::Fatal` — if the variant is [`Fatal`](Self::Fatal)
+    #[cold]
+    #[inline(never)]
     pub fn into_precompile_result(self, gas: u64, reservoir: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
