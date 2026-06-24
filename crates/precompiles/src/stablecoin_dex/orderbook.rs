@@ -170,6 +170,8 @@ pub struct Orderbook {
 
 impl Orderbook {
     /// Creates a new orderbook for a token pair
+    #[cold]
+    #[inline(never)]
     pub fn new(base: Address, quote: Address) -> Self {
         Self {
             base,
@@ -181,11 +183,15 @@ impl Orderbook {
     }
 
     /// Returns true if this orderbook is initialized
+    #[cold]
+    #[inline(never)]
     pub fn is_initialized(&self) -> bool {
         self.base != Address::ZERO
     }
 
     /// Returns true if the base and quote tokens match the provided base and quote token options.
+    #[cold]
+    #[inline(never)]
     pub fn matches_tokens(
         &self,
         base_token: Option<Address>,
