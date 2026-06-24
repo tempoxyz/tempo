@@ -6,7 +6,10 @@ use tempo_contracts::precompiles::CurrentCommitteeError;
 pub use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee};
 use tempo_precompiles_macros::contract;
 
-use crate::{error::Result, storage::Handler};
+use crate::{
+    error::Result,
+    storage::{ContractStorage, Handler},
+};
 use alloy::primitives::{Address, B256};
 
 #[contract(addr = CURRENT_COMMITTEE_ADDRESS)]
@@ -16,15 +19,11 @@ pub struct CurrentCommittee {
 
 impl CurrentCommittee {
     pub fn get_committee_members(&self) -> Result<ICurrentCommittee::getCommitteeMembersReturn> {
+        let current_epoch = self.storage().epoch(self.storage().block_number());
         Ok(ICurrentCommittee::getCommitteeMembersReturn {
-            epoch: self.current_epoch(),
+            epoch: current_epoch,
             publicKeys: self.public_keys.read()?,
         })
-    }
-
-    fn current_epoch(&self) -> u64 {
-        let block_number = self.storage.block_number();
-        self.storage.epoch(block_number)
     }
 
     pub fn set_committee_members(
