@@ -388,6 +388,8 @@ pub struct UserRewardInfo {
 }
 
 impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
+    #[cold]
+    #[inline(never)]
     fn from(value: UserRewardInfo) -> Self {
         Self {
             rewardRecipient: value.reward_recipient,
