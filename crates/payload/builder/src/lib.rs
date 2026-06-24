@@ -10,7 +10,7 @@ mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
-use reth_trie_common::{Nibbles, ordered_root::OrderedTrieRootEncodedBuilder};
+use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
@@ -21,7 +21,9 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
+use alloy_consensus::{
+    BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt, constants::EMPTY_ROOT_HASH,
+};
 use alloy_eip7928::bal::Bal;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
@@ -916,6 +918,13 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
+        let proof_root = self.proof_root_for_payload_timestamp(
+            &finish_provider,
+            &parent_header,
+            &db.bundle_state,
+            evm_env.block_env.inner.timestamp.to::<u64>(),
+        )?;
+
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
@@ -992,13 +1001,6 @@ where
         } = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
-
-        let proof_root = self.proof_root_for_payload_timestamp(
-            &finish_provider,
-            &parent_header,
-            &db.bundle_state,
-            evm_env.block_env.inner.timestamp.to::<u64>(),
-        )?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1215,20 +1217,10 @@ where
         }
 
         let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
-        let mut proof_trie_input =
-            proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
+        let proof_trie_input = proof_trie_input_from_bundle_state(bundle_state, provable_accounts);
 
         if proof_trie_input.state.is_empty() {
-            if let Some(parent_root) = parent_header.proof_root {
-                return Ok(Some(parent_root));
-            }
-
-            for address in provable_accounts {
-                proof_trie_input
-                    .prefix_sets
-                    .account_prefix_set
-                    .insert(Nibbles::unpack(keccak256(address)));
-            }
+            return Ok(Some(parent_header.proof_root.unwrap_or(EMPTY_ROOT_HASH)));
         }
 
         // Compute the proof root through the same provider path used by the serial state-root
