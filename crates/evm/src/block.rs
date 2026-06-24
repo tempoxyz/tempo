@@ -173,7 +173,6 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
-    epoch_length: Option<u64>,
     extra_data: Bytes,
 
     pub(crate) replay_state: StorageActionReplayState,
@@ -211,7 +210,6 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
             replay_state: StorageActionReplayState::default(),
-            epoch_length: chain_spec.info.epoch_length(),
         }
     }
 
@@ -247,11 +245,9 @@ where
             return Ok(());
         }
 
-        let Some(epoch_length) = self.epoch_length else {
-            return Ok(());
-        };
-        let block_number = self.evm().block().number.to::<u64>();
-        if block_number == 0 || block_number % epoch_length != 0 {
+        let epoch_length = self.evm().block().epoch_length.get();
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        if !block_number.is_multiple_of(epoch_length) {
             return Ok(());
         }
 
