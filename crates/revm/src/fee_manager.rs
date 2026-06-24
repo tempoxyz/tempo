@@ -2,6 +2,7 @@ use crate::{TempoStateAccess, TempoTxEnv};
 use alloy_primitives::{Address, U256};
 use core::fmt::Debug;
 use revm::{Database, context::Journal};
+use std::sync::Arc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::Result as TempoResult, storage::StorageActions, tip_fee_manager::TipFeeManager,
@@ -86,5 +87,113 @@ impl<DB: Database> ProtocolFeeManager<DB> for TempoFeeManager {
             fee_token,
             beneficiary,
         )
+    }
+}
+
+/// Internal protocol fee hook storage.
+///
+/// The default EVM path can call `TempoFeeManager` directly, while custom fee
+/// hooks keep the trait-object extension point.
+#[derive(Debug)]
+pub(crate) enum ProtocolFeeManagerHook<DB: Database> {
+    Default(TempoFeeManager),
+    Custom(Arc<dyn ProtocolFeeManager<DB>>),
+}
+
+impl<DB: Database> Clone for ProtocolFeeManagerHook<DB> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Default(manager) => Self::Default(*manager),
+            Self::Custom(manager) => Self::Custom(Arc::clone(manager)),
+        }
+    }
+}
+
+impl<DB: Database> Default for ProtocolFeeManagerHook<DB> {
+    fn default() -> Self {
+        Self::Default(TempoFeeManager::new())
+    }
+}
+
+impl<DB: Database> ProtocolFeeManagerHook<DB> {
+    pub(crate) fn custom(fee_manager: Arc<dyn ProtocolFeeManager<DB>>) -> Self {
+        Self::Custom(fee_manager)
+    }
+
+    #[inline]
+    pub(crate) fn get_fee_token(
+        &self,
+        journal: &mut Journal<DB>,
+        tx: &TempoTxEnv,
+        fee_payer: Address,
+        spec: TempoHardfork,
+        actions: StorageActions,
+    ) -> TempoResult<Address> {
+        match self {
+            Self::Default(manager) => <TempoFeeManager as ProtocolFeeManager<DB>>::get_fee_token(
+                manager, journal, tx, fee_payer, spec, actions,
+            ),
+            Self::Custom(manager) => manager.get_fee_token(journal, tx, fee_payer, spec, actions),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn collect_fee_pre_tx(
+        &self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> TempoResult<Address> {
+        match self {
+            Self::Default(manager) => {
+                <TempoFeeManager as ProtocolFeeManager<DB>>::collect_fee_pre_tx(
+                    manager,
+                    fee_payer,
+                    user_token,
+                    max_amount,
+                    beneficiary,
+                    skip_liquidity_check,
+                )
+            }
+            Self::Custom(manager) => manager.collect_fee_pre_tx(
+                fee_payer,
+                user_token,
+                max_amount,
+                beneficiary,
+                skip_liquidity_check,
+            ),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn collect_fee_post_tx(
+        &self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> TempoResult<U256> {
+        match self {
+            Self::Default(manager) => {
+                <TempoFeeManager as ProtocolFeeManager<DB>>::collect_fee_post_tx(
+                    manager,
+                    fee_payer,
+                    actual_spending,
+                    refund_amount,
+                    fee_token,
+                    beneficiary,
+                )
+            }
+            Self::Custom(manager) => manager.collect_fee_post_tx(
+                fee_payer,
+                actual_spending,
+                refund_amount,
+                fee_token,
+                beneficiary,
+            ),
+        }
     }
 }
