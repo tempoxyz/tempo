@@ -1773,6 +1773,8 @@ def "main localnet" [
     --skip-build                           # Skip building tempo and tempo-xtask (assumes binaries are already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
+    --gas-limit: string = ""               # Block gas limit for generated genesis
+    --general-gas-limit: string = ""       # General (non-payment) gas limit for generated genesis
 ] {
     validate-mode $mode
     if $epoch_length <= 0 {
@@ -1789,6 +1791,8 @@ def "main localnet" [
     # Parse custom args
     let extra_args = (parse-cli-args $node_args)
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
 
     # Build first (unless skipped)
     if not $skip_build {
@@ -1800,9 +1804,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit_args $general_gas_limit_args
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit_args $general_gas_limit_args
     }
 }
 
@@ -1810,7 +1814,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit_args: list<string>, general_gas_limit_args: list<string>] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1839,7 +1843,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis"]
+            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis" ...$gas_limit_args ...$general_gas_limit_args]
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1902,7 +1906,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit_args: list<string>, general_gas_limit_args: list<string>] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1922,7 +1926,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force"] | ignore
+            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force" ...$gas_limit_args ...$general_gas_limit_args] | ignore
         }
     }
 
@@ -2895,6 +2899,8 @@ def "main bench" [
     | append (if $loud { ["--loud"] } else { [] })
     | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
     | append (if $bloat > 0 { ["--bloat" $"($bloat)"] } else { [] })
+    | append (if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] })
+    | append (if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
@@ -3440,7 +3446,8 @@ def main [] {
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
-    print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
+    print "  --gas-limit <N>          Block gas limit for genesis"
+    print "  --general-gas-limit <N>  General (non-payment) gas limit for genesis"
     print ""
     print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
@@ -3448,6 +3455,8 @@ def main [] {
     print "  --accounts <N>           Genesis accounts (default: 1000)"
     print "  --epoch-length <N>       Epoch length in blocks for generated genesis/localnet (default: 302400)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
+    print "  --gas-limit <N>          Block gas limit for generated genesis"
+    print "  --general-gas-limit <N>  General (non-payment) gas limit for generated genesis"
     print "  --samply                 Enable samply profiling (foreground node only)"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
