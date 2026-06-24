@@ -247,7 +247,7 @@ where
 
         let epoch_length = self.evm().block().epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
-        if !block_number.is_multiple_of(epoch_length) {
+        if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
 
