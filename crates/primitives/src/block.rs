@@ -1,11 +1,15 @@
-use alloy_evm::env::BlockEnvironment;
-use alloy_primitives::{Address, B256, U256, uint};
-use revm::{
-    context::{Block, BlockEnv},
-    context_interface::block::BlobExcessGasAndPrice,
-};
+//! Tempo EVM block environment.
 
-/// Tempo block environment.
+use alloy_evm::{
+    env::BlockEnvironment,
+    revm::{
+        context::{Block, BlockEnv},
+        context_interface::block::BlobExcessGasAndPrice,
+    },
+};
+use alloy_primitives::{Address, B256, U256, uint};
+
+/// Tempo EVM block environment.
 #[derive(Debug, Clone, Default, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {

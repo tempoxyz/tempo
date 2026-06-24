@@ -1,12 +1,13 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::{
-    context::journaled_state::JournalCheckpoint,
+    context::{BlockEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::GasParams,
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     error::TempoPrecompileError,
@@ -23,9 +24,7 @@ pub struct HashMapStorageProvider {
     accounts: HashMap<Address, AccountInfo>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
-    timestamp: U256,
-    beneficiary: Address,
-    block_number: u64,
+    block_env: TempoBlockEnv,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -65,15 +64,19 @@ impl HashMapStorageProvider {
             events: HashMap::new(),
             snapshots: Vec::new(),
             chain_id,
-            #[expect(clippy::disallowed_methods)]
-            timestamp: U256::from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            ),
-            beneficiary: Address::ZERO,
-            block_number: 0,
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    #[expect(clippy::disallowed_methods)]
+                    timestamp: U256::from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             spec,
             amsterdam_eip8037_enabled: false,
             is_static: false,
@@ -105,16 +108,8 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.chain_id
     }
 
-    fn timestamp(&self) -> U256 {
-        self.timestamp
-    }
-
-    fn beneficiary(&self) -> Address {
-        self.beneficiary
-    }
-
-    fn block_number(&self) -> u64 {
-        self.block_number
+    fn block_env(&self) -> &TempoBlockEnv {
+        &self.block_env
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
@@ -374,17 +369,17 @@ impl HashMapStorageProvider {
 
     /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
-        self.timestamp = timestamp;
+        self.block_env.timestamp = timestamp;
     }
 
     /// Overrides the block beneficiary (coinbase).
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
-        self.beneficiary = beneficiary;
+        self.block_env.beneficiary = beneficiary;
     }
 
     /// Overrides the block number.
     pub fn set_block_number(&mut self, block_number: u64) {
-        self.block_number = block_number;
+        self.block_env.number = U256::from(block_number);
     }
 
     /// Overrides the active hardfork spec.
