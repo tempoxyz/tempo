@@ -34,6 +34,9 @@ pub struct TempoGenesisInfo {
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<u64>,
+    /// Optional override for the general (non-payment) gas limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    general_gas_limit: Option<u64>,
     /// Activation timestamp for T0 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t0_time: Option<u64>,
@@ -84,6 +87,10 @@ impl TempoGenesisInfo {
 
     pub fn epoch_length(&self) -> Option<u64> {
         self.epoch_length
+    }
+
+    pub fn general_gas_limit(&self) -> Option<u64> {
+        self.general_gas_limit
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
@@ -195,6 +202,22 @@ impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
+    }
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and block.
+    /// - Genesis override: fixed at the configured value
+    /// - T1+: fixed at 30M gas
+    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    pub fn general_gas_limit_at(
+        &self,
+        timestamp: u64,
+        gas_limit: u64,
+        shared_gas_limit: u64,
+    ) -> u64 {
+        self.info
+            .general_gas_limit()
+            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -563,6 +586,24 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(0), latest);
         assert_eq!(chainspec.tempo_hardfork_at(1000), latest);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
+    }
+
+    #[test]
+    fn test_general_gas_limit_at_uses_genesis_override() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "t1Time": 0,
+                "generalGasLimit": 123456789
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert_eq!(chainspec.info.general_gas_limit(), Some(123456789));
+        assert_eq!(chainspec.general_gas_limit_at(0, 500_000_000, 0), 123456789);
     }
 
     fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {

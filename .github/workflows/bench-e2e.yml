@@ -116,6 +116,11 @@ on:
         type: string
         required: true
         default: "5000000000"
+      general-gas-limit:
+        description: General non-payment gas limit override.
+        type: string
+        required: false
+        default: ""
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -258,6 +263,10 @@ on:
         type: string
         required: false
         default: "5000000000"
+      general-gas-limit:
+        type: string
+        required: false
+        default: ""
       run-type:
         type: string
         required: false
@@ -384,6 +393,7 @@ jobs:
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '5000000000' }}
+      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
@@ -554,12 +564,14 @@ jobs:
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
+            const generalGasLimit = process.env.BENCH_GENERAL_GAS_LIMIT || '';
+            const generalGasLimitNote = generalGasLimit ? `, general-gas-limit: \`${generalGasLimit}\`` : '';
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const runSide = process.env.BENCH_RUN_SIDE || 'comparison';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const runSideNote = runSide !== 'comparison' ? `, run-side: \`${runSide}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`${generalGasLimitNote}, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -798,12 +810,14 @@ jobs:
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
+            const generalGasLimit = process.env.BENCH_GENERAL_GAS_LIMIT || '';
+            const generalGasLimitNote = generalGasLimit ? `, general-gas-limit: \`${generalGasLimit}\`` : '';
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const runSide = process.env.BENCH_RUN_SIDE || 'comparison';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const runSideNote = runSide !== 'comparison' ? `, run-side: \`${runSide}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, token-count: \`${tokenCount}\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`${generalGasLimitNote}, run-pairs: \`${runPairs}\`${runSideNote}, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -877,6 +891,7 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_GENERAL_GAS_LIMIT" ] && cmd+=(--general-gas-limit "$BENCH_GENERAL_GAS_LIMIT")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
           [ -n "$BENCH_BASELINE_FEATURES" ] && cmd+=(--baseline-features="$BENCH_BASELINE_FEATURES")
@@ -946,6 +961,7 @@ jobs:
             no-cache="$BENCH_NO_CACHE"
             force-bloat="$BENCH_FORCE_BLOAT"
           )
+          [ -n "$BENCH_GENERAL_GAS_LIMIT" ] && derek_cmd+=(general-gas-limit="$BENCH_GENERAL_GAS_LIMIT")
           [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
           [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
