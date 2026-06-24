@@ -269,6 +269,8 @@ impl TransactionEnvMut for TempoTxEnv {
 }
 
 impl IntoTxEnv<Self> for TempoTxEnv {
+    #[cold]
+    #[inline(never)]
     fn into_tx_env(self) -> Self {
         self
     }
