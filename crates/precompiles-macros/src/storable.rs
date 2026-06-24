@@ -378,7 +378,7 @@ fn gen_handler_struct(
             }
 
             /// Returns a `Slot<T>` for whole-struct storage operations.
-            #[inline]
+            #[inline(always)]
             fn as_slot(&self) -> crate::storage::Slot<#struct_name> {
                 crate::storage::Slot::<#struct_name>::new(
                     self.base_slot,
