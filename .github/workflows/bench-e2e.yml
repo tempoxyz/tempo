@@ -127,7 +127,7 @@ on:
         required: true
         default: "5000000000"
       general-gas-limit:
-        description: General non-payment gas limit override.
+        description: General non-payment gas limit override. Defaults to gas-limit for keychain setup presets.
         type: string
         required: false
         default: ""
@@ -403,7 +403,7 @@ jobs:
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '5000000000' }}
-      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit }}
+      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit != '' && inputs.general-gas-limit || (contains(fromJSON('["tip20_keychain","tip20_keychain_2d_nonces","tip20_keychain_random_recipients","tip20_keychain_existing_recipients"]'), inputs.preset) && (inputs.gas-limit || '5000000000') || '') }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}

@@ -1357,6 +1357,11 @@ def "main e2e" [
 ] {
     let preset_path = (txgen-preset-path $preset)
     txgen-validate-bench-args $bench_args
+    let general_gas_limit = if $general_gas_limit == "" and (txgen-spec-has-keychain-setup $preset_path) {
+        $gas_limit
+    } else {
+        $general_gas_limit
+    }
     if $tracy not-in ["off" "tracy"] {
         print $"Error: --tracy must be one of: off, tracy \(got '($tracy)'\)"
         exit 1
