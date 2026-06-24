@@ -19,6 +19,7 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
@@ -162,7 +163,12 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
-                epoch_length: self.chain_spec().info.epoch_length().unwrap_or_default(),
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .and_then(NonZeroU64::new)
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }
@@ -212,7 +218,12 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
-                epoch_length: self.chain_spec().info.epoch_length().unwrap_or_default(),
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .and_then(NonZeroU64::new)
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }

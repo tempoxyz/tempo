@@ -1,5 +1,7 @@
 //! Tempo EVM block environment.
 
+use core::num::NonZeroU64;
+
 use alloy_evm::{
     env::BlockEnvironment,
     revm::{
@@ -10,7 +12,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, B256, U256, uint};
 
 /// Tempo EVM block environment.
-#[derive(Debug, Clone, Default, PartialEq, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {
     /// Inner [`BlockEnv`].
@@ -22,7 +24,17 @@ pub struct TempoBlockEnv {
     pub timestamp_millis_part: u64,
 
     /// Number of blocks in a consensus epoch.
-    pub epoch_length: u64,
+    pub epoch_length: NonZeroU64,
+}
+
+impl Default for TempoBlockEnv {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+            timestamp_millis_part: 0,
+            epoch_length: NonZeroU64::MIN,
+        }
+    }
 }
 
 impl TempoBlockEnv {
@@ -36,7 +48,7 @@ impl TempoBlockEnv {
 
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
-        height.checked_div(self.epoch_length).unwrap_or(0)
+        height / self.epoch_length.get()
     }
 }
 
@@ -113,7 +125,7 @@ mod tests {
     #[test]
     fn epoch_uses_epoch_length() {
         let block = TempoBlockEnv {
-            epoch_length: 10,
+            epoch_length: NonZeroU64::new(10).unwrap(),
             ..Default::default()
         };
 
@@ -124,11 +136,11 @@ mod tests {
     }
 
     #[test]
-    fn epoch_defaults_to_zero_when_epoch_length_is_zero() {
+    fn epoch_defaults_to_height_when_epoch_length_is_one() {
         let block = TempoBlockEnv::default();
 
         assert_eq!(block.epoch(0), 0);
-        assert_eq!(block.epoch(100), 0);
+        assert_eq!(block.epoch(100), 100);
     }
 
     proptest! {
