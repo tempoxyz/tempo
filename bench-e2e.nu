@@ -376,10 +376,31 @@ def e2e-snapshot-state-gas-limit [datadir: string] {
     ""
 }
 
+def e2e-snapshot-state-general-gas-limit [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker != null {
+        let marker_general_gas_limit = ($marker | get -o general_gas_limit | default "")
+        if $marker_general_gas_limit != "" {
+            return (normalize-gas-limit $marker_general_gas_limit)
+        }
+    }
+
+    let genesis_path = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
+    if ($genesis_path | path exists) {
+        let genesis_general_gas_limit = (open $genesis_path | get -o config.generalGasLimit | default "")
+        if $genesis_general_gas_limit != "" {
+            return (normalize-gas-limit $genesis_general_gas_limit)
+        }
+    }
+
+    ""
+}
+
 def e2e-update-snapshot-genesis-marker [
     datadir: string,
     hardfork: string,
     gas_limit: string,
+    general_gas_limit: string,
 ] {
     let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
     mut marker = (open $marker_path)
@@ -390,6 +411,11 @@ def e2e-update-snapshot-genesis-marker [
     if $gas_limit != "" {
         $marker = ($marker | upsert gas_limit (normalize-gas-limit $gas_limit))
     }
+    if $general_gas_limit != "" {
+        $marker = ($marker | upsert general_gas_limit (normalize-gas-limit $general_gas_limit))
+    } else {
+        $marker = ($marker | reject -o general_gas_limit)
+    }
     $marker | to json | save -f $marker_path
 }
 
@@ -398,6 +424,7 @@ def e2e-synthesize-genesis [
     target_genesis: string,
     hardfork: string,
     gas_limit: string,
+    general_gas_limit: string,
 ] {
     let source = (open $source_genesis)
     mut config = ($source | get config)
@@ -408,6 +435,13 @@ def e2e-synthesize-genesis [
             $config = ($config | upsert $field.name $field.value)
         }
         $patch_labels = ($patch_labels | append $"hardfork=($fork)")
+    }
+    if $general_gas_limit != "" {
+        let normalized_general_gas_limit = (normalize-gas-limit $general_gas_limit)
+        $config = ($config | upsert generalGasLimit ($normalized_general_gas_limit | into int))
+        $patch_labels = ($patch_labels | append $"general_gas_limit=($normalized_general_gas_limit)")
+    } else {
+        $config = ($config | reject -o generalGasLimit)
     }
     mut genesis = ($source | upsert config $config)
     if $gas_limit != "" {
@@ -432,14 +466,18 @@ def e2e-regenesis [
     datadir: string,
     hardfork: string,
     gas_limit: string,
+    general_gas_limit: string,
 ] {
     let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { latest-tempo-hardfork }
     let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
+    let target_general_gas_limit = if $general_gas_limit != "" { normalize-gas-limit $general_gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
     let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
+    let current_general_gas_limit = (e2e-snapshot-state-general-gas-limit $datadir)
     let hardfork_matches = $current_hardfork == $target_hardfork
     let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
-    if $hardfork_matches and $gas_limit_matches {
+    let general_gas_limit_matches = $current_general_gas_limit == $target_general_gas_limit
+    if $hardfork_matches and $gas_limit_matches and $general_gas_limit_matches {
         mut matches = []
         if $target_hardfork != "" {
             $matches = ($matches | append $"state_hardfork=($target_hardfork)")
@@ -447,12 +485,15 @@ def e2e-regenesis [
         if $target_gas_limit != "" {
             $matches = ($matches | append $"gas_limit=($target_gas_limit)")
         }
+        if $target_general_gas_limit != "" {
+            $matches = ($matches | append $"general_gas_limit=($target_general_gas_limit)")
+        }
         print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
         return
     }
 
     let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
-    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit
+    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit $target_general_gas_limit
 
     mut changes = []
     if not $hardfork_matches {
@@ -460,6 +501,9 @@ def e2e-regenesis [
     }
     if not $gas_limit_matches {
         $changes = ($changes | append $"gas_limit=($current_gas_limit) -> ($target_gas_limit)")
+    }
+    if not $general_gas_limit_matches {
+        $changes = ($changes | append $"general_gas_limit=($current_general_gas_limit) -> ($target_general_gas_limit)")
     }
     print $"Running tempo regenesis for ($datadir): ($changes | str join ', ') with ($target_genesis)..."
     let result = (run-external $tempo_bin "regenesis" "--chain" $target_genesis "--datadir" $datadir | complete)
@@ -469,8 +513,8 @@ def e2e-regenesis [
         print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
-    e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit
-    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit
+    e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit $target_general_gas_limit
+    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit $target_general_gas_limit
     rm $target_genesis
 }
 
@@ -937,9 +981,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
             exit 1
         }
     }
-    if $hardfork != "" or $ctx.gas_limit != "" {
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+    if $hardfork != "" or $ctx.gas_limit != "" or $ctx.general_gas_limit != "" {
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit $ctx.general_gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1272,6 +1316,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+    --general-gas-limit: string = ""                    # General (non-payment) gas limit override
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -1389,6 +1434,7 @@ def "main e2e" [
     }
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
@@ -1430,7 +1476,7 @@ def "main e2e" [
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$general_gas_limit_args ...$snapshot_hardfork_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1451,6 +1497,7 @@ def "main e2e" [
             validators: $E2E_VALIDATORS
             seed: $E2E_SEED
             gas_limit: $gas_limit
+            general_gas_limit: $general_gas_limit
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
@@ -1476,8 +1523,8 @@ def "main e2e" [
     if $hardfork_mode {
         if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
         mkdir $hardfork_genesis_dir
-        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
-        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit
+        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit $general_gas_limit
+        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit $general_gas_limit
     }
     let trusted_peers = if ($a_trusted_peers_path | path exists) {
         open $a_trusted_peers_path | str trim
@@ -1499,7 +1546,7 @@ def "main e2e" [
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
-    let regenesis_needed = $hardfork_mode or $gas_limit != ""
+    let regenesis_needed = $hardfork_mode or $gas_limit != "" or $general_gas_limit != ""
     let needs_baseline = $run_side == "comparison"
     let worktrees = if $needs_baseline { [$baseline_wt $feature_wt] } else { [$feature_wt] }
     for wt in $worktrees {
@@ -1606,6 +1653,7 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        general_gas_limit: $general_gas_limit
         baseline_local_reth_args: $baseline_arg_filter.supported
         feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo

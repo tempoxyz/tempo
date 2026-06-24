@@ -39,7 +39,7 @@ use alloy_hardforks::hardfork;
 ///   - `tempo_fork_activation()` (required — the only method implementors provide)
 ///   - `tempo_hardfork_at()` — walks `VARIANTS` in reverse to find the latest active fork
 ///   - `is_<fork>_active_at_timestamp()` — per-fork convenience helpers
-///   - `general_gas_limit_at()` — gas limit lookup by timestamp
+///   - `shared_gas_limit_at()` — shared gas limit lookup by timestamp
 /// * Generates a `#[cfg(test)] mod tests` with activation, naming, trait, and serde tests
 ///
 /// `Genesis` (first variant) is treated as the baseline and does not get `is_*()` methods.
@@ -97,15 +97,6 @@ macro_rules! tempo_hardfork {
                             .active_at_timestamp(timestamp)
                     }
                 )*
-            }
-
-            /// Returns the general (non-payment) gas limit for the given timestamp and block.
-            /// - T1+: fixed at 30M gas
-            /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
-            fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
-                self.tempo_hardfork_at(timestamp)
-                    .general_gas_limit()
-                    .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
             }
 
             /// Returns the shared gas limit for the given timestamp and block.
