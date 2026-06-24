@@ -144,19 +144,6 @@ pub struct TempoPayloadBuilderConfig {
     pub build_time_multiplier: f64,
 }
 
-impl Default for TempoPayloadBuilderConfig {
-    fn default() -> Self {
-        Self {
-            desired_gas_limit: None,
-            is_dev: false,
-            state_provider_metrics: false,
-            enable_prewarming: true,
-            skip_state_root: false,
-            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-        }
-    }
-}
-
 impl TempoPayloadBuilderConfig {
     /// Returns the gas limit for the next block based on the parent gas limit and an optional
     /// target from payload attributes.
