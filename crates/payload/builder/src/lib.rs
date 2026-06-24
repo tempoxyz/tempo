@@ -132,6 +132,8 @@ pub struct TempoPayloadBuilderConfig {
     pub state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     pub enable_prewarming: bool,
+    /// Whether payload builds should skip state-root computation.
+    pub skip_state_root: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
@@ -937,7 +939,15 @@ where
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
+            if self.config.skip_state_root {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    state_root = ?parent_header.state_root(),
+                    "skipping payload state-root computation"
+                );
+                None
+            } else if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -976,7 +986,9 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
+        let (state_root, trie_updates) = if self.config.skip_state_root {
+            (parent_header.state_root(), Arc::new(Default::default()))
+        } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
             let (state_root, trie_updates) = finish_provider
