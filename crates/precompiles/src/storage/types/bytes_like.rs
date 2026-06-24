@@ -67,7 +67,8 @@ impl<T: Storable> BytesLikeHandler<T> {
     /// Returns the byte length without loading all data (only reads base slot).
     #[inline]
     pub fn len(&self) -> Result<usize> {
-        let base_value = Slot::<U256>::new(self.base_slot, self.address).read()?;
+        let storage = StorageCtx;
+        let base_value = storage.sload(self.address, self.base_slot)?;
         let is_long = is_long_string(base_value);
         calc_string_length(base_value, is_long)
     }
