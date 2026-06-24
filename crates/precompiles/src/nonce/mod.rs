@@ -148,8 +148,7 @@ impl NonceManager {
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
-        let old_hash = self.expiring_nonce_ring[idx].read()?;
+        let old_hash = self.expiring_nonce_ring[ptr].read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
         // Safety check: buffer is sized so entries should always be expired, but verify
@@ -165,7 +164,7 @@ impl NonceManager {
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
+        self.expiring_nonce_ring[ptr].write(expiring_nonce_hash)?;
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
