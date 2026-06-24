@@ -343,6 +343,8 @@ impl AccountKeychain {
 
 impl ValidatorConfig {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", env: env, |input| { Self::new() })
     }
@@ -350,6 +352,8 @@ impl ValidatorConfig {
 
 impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
     }
