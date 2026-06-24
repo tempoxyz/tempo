@@ -1645,6 +1645,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
@@ -1661,6 +1662,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
@@ -1677,6 +1679,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
@@ -1693,6 +1696,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
         let info = acc.account_info();
@@ -1721,6 +1725,7 @@ mod tests {
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr).unwrap();
+        drop(executor);
 
         // Verify code was deployed.
         let acc = db.load_cache_account(addr).unwrap();
