@@ -8,7 +8,6 @@ use tempo_precompiles_macros::contract;
 
 use crate::{error::Result, storage::Handler};
 use alloy::primitives::{Address, B256};
-use tempo_chainspec::spec::chainspec_from_chain_id;
 
 #[contract(addr = CURRENT_COMMITTEE_ADDRESS)]
 pub struct CurrentCommittee {
@@ -25,9 +24,7 @@ impl CurrentCommittee {
 
     fn current_epoch(&self) -> u64 {
         let block_number = self.storage.block_number();
-        chainspec_from_chain_id(self.storage.chain_id())
-            .and_then(|chain_spec| chain_spec.info.epoch_length())
-            .map_or(0, |epoch_length| block_number / epoch_length)
+        self.storage.epoch(block_number)
     }
 
     pub fn set_committee_members(
