@@ -364,7 +364,7 @@ where
 impl<N> EthState for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
-    <TempoEthApi<N> as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    <Self as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
 {
     #[inline]
     async fn balance(
@@ -410,12 +410,13 @@ where
                 let provable_accounts = chain_spec.provable_accounts_at_timestamp(timestamp);
                 if !provable_accounts.contains(&address) {
                     return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
-                        "account is not in the active TIP-1082 provable account whitelist".into(),
+                        "account is not in the active TIP-1082 provable account whitelist"
+                            .to_string(),
                     )));
                 }
 
                 return Err(Self::Error::from_eth_err(EthApiError::Unsupported(
-                    "TIP-1082 proof_root RPC serving requires persisted provable trie data".into(),
+                    "TIP-1082 proof_root RPC serving requires persisted provable trie data",
                 )));
             }
 

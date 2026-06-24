@@ -53,12 +53,14 @@ std = [
     "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
+    "tempo-contracts/std",
     "tempo-primitives/std",
 ]
 serde = [
     "alloy-eips/serde",
     "alloy-hardforks/serde",
     "alloy-primitives/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
 evm = ["dep:alloy-evm", "tempo-primitives/evm"]
