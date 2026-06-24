@@ -10,6 +10,7 @@ use tempo_precompiles::{
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager<DB: Database>: Debug {
     /// Resolves the fee token that should pay for `tx`.
+    #[inline(always)]
     fn get_fee_token(
         &self,
         journal: &mut Journal<DB>,
@@ -48,12 +49,14 @@ pub struct TempoFeeManager;
 
 impl TempoFeeManager {
     /// Creates the default Tempo protocol fee manager.
+    #[inline(always)]
     pub const fn new() -> Self {
         Self
     }
 }
 
 impl<DB: Database> ProtocolFeeManager<DB> for TempoFeeManager {
+    #[inline(always)]
     fn collect_fee_pre_tx(
         &self,
         fee_payer: Address,
@@ -71,6 +74,7 @@ impl<DB: Database> ProtocolFeeManager<DB> for TempoFeeManager {
         )
     }
 
+    #[inline(always)]
     fn collect_fee_post_tx(
         &self,
         fee_payer: Address,
