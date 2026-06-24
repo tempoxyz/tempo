@@ -157,6 +157,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Enables recording of storage actions.
+    #[cold]
+    #[inline(never)]
     pub fn with_actions(mut self) -> Self {
         let mut actions = self.inner.actions().clone();
         actions.enable();
@@ -165,11 +167,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
         self.inner.actions().take()
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn replace_actions(&mut self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.inner.actions().replace(actions)
     }
