@@ -807,20 +807,22 @@ impl AccountKeychain {
 
         let key_hash = Self::spending_limit_key(account, key_id);
 
+        let key_scope = self.key_scopes.at(&key_hash);
+
         // Key-level scoped flag decides whether this CALL must match the stored scope tree.
-        if !self.key_scopes[key_hash].is_scoped.read()? {
+        if !key_scope.is_scoped.read()? {
             return Ok(());
         }
 
-        if !self.key_scopes[key_hash].targets.contains(&target)? {
+        if !key_scope.targets.contains(&target)? {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
+        let target_scope = key_scope.target_scopes.at(&target);
+
         // Empty child sets mean "no further restriction" once the parent target was explicitly
         // allowed, so a present target with `selectors = []` allows any selector.
-        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .is_empty()?;
+        let target_is_unconstrained = target_scope.selectors.is_empty()?;
         if target_is_unconstrained {
             return Ok(());
         }
@@ -833,18 +835,14 @@ impl AccountKeychain {
         let selector = FixedBytes::<4>::from(
             <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
         );
-        if !self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .contains(&selector)?
-        {
+        if !target_scope.selectors.contains(&selector)? {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
+        let selector_scope = target_scope.selector_scopes.at(&selector);
+
         // Likewise, a present selector with `recipients = []` means any recipient is allowed.
-        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selector_scopes[selector]
-            .recipients
-            .is_empty()?;
+        let selector_is_unconstrained = selector_scope.recipients.is_empty()?;
         if selector_is_unconstrained {
             return Ok(());
         }
@@ -860,10 +858,7 @@ impl AccountKeychain {
         }
 
         let recipient = Address::from_slice(&recipient_word[12..]);
-        if self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
-            .recipients
-            .contains(&recipient)?
-        {
+        if selector_scope.recipients.contains(&recipient)? {
             Ok(())
         } else {
             Err(AccountKeychainError::call_not_allowed().into())
