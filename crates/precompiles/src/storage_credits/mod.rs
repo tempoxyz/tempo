@@ -282,6 +282,7 @@ impl NonCreditableSlots {
         Self::default()
     }
 
+    #[inline(always)]
     pub fn initialize(
         &mut self,
         fee_payer: Address,
