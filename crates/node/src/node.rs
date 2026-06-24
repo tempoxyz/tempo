@@ -9,7 +9,8 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::EthChainSpec;
+use eyre::bail;
+use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -58,6 +59,8 @@ use tempo_transaction_pool::{
         TempoTransactionValidator,
     },
 };
+
+pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
@@ -724,7 +727,16 @@ where
     ) -> eyre::Result<Self::PayloadBuilder> {
         let conf = ctx.payload_builder_config();
         let chain = ctx.chain_spec().chain();
-        let gas_limit = conf.gas_limit_for(chain);
+        let gas_limit = if let Some(limit) = conf.gas_limit() {
+            limit
+        } else {
+            match chain.kind() {
+                ChainKind::Named(NamedChain::Tempo | NamedChain::TempoModerato) => {
+                    BLOCK_GAS_LIMIT_500M
+                }
+                _ => bail!("unsupported chain kind: {:?}", chain.kind()),
+            }
+        };
 
         Ok(TempoPayloadBuilder::new(
             pool,
