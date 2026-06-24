@@ -552,6 +552,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
+    #[cold]
+    #[inline(never)]
     fn delete_channel_state_and_credit_payer(
         &mut self,
         channel_id: B256,
@@ -563,6 +565,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Credits `payer` for deleted packed channel-state slots.
+    #[cold]
+    #[inline(never)]
     fn credit_channel_storage_slots(&mut self, payer: Address, slots: u64) -> Result<()> {
         if slots == 0 {
             return Ok(());
@@ -590,6 +594,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Creates a packed channel-state slot, consuming one payer-attributed credit when available.
+    #[cold]
+    #[inline(never)]
     fn write_channel_state_spending_credit(
         &mut self,
         payer: Address,
