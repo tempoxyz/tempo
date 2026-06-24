@@ -269,7 +269,6 @@ macro_rules! tempo_precompile {
                 $input.internals,
                 $input.gas,
                 $input.reservoir,
-                std::sync::Arc::new(|_| panic!("height_to_epoch is not configured")),
                 spec,
                 amsterdam_eip8037_enabled,
                 $input.is_static,

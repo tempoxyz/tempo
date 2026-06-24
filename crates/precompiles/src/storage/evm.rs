@@ -6,17 +6,14 @@ use crate::{
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
-    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
+    context::{CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-
-fn unconfigured_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
-    Arc::new(|_| panic!("height_to_epoch is not configured"))
-}
+use tempo_primitives::TempoBlockEnv;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -24,7 +21,6 @@ fn unconfigured_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
-    height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
@@ -45,7 +41,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         internals: EvmInternals<'a>,
         gas_limit: u64,
         reservoir: u64,
-        height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
         spec: TempoHardfork,
         amsterdam_eip8037_enabled: bool,
         is_static: bool,
@@ -54,7 +49,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
-            height_to_epoch,
             spec,
             amsterdam_eip8037_enabled,
             is_static,
@@ -74,7 +68,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             u64::MAX,
             0,
-            unconfigured_height_to_epoch(),
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
@@ -93,7 +86,6 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_limit,
             reservoir,
-            unconfigured_height_to_epoch(),
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
@@ -309,20 +301,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.chain_id()
     }
 
-    fn timestamp(&self) -> U256 {
-        self.internals.block_timestamp()
-    }
-
-    fn beneficiary(&self) -> Address {
-        self.internals.block_env().beneficiary()
-    }
-
-    fn block_number(&self) -> u64 {
-        self.internals.block_env().number().to::<u64>()
-    }
-
-    fn epoch(&self, height: u64) -> u64 {
-        (self.height_to_epoch)(height)
+    fn block_env(&self) -> &TempoBlockEnv {
+        self.internals
+            .block_env_downcast_ref::<TempoBlockEnv>()
+            .expect("EvmPrecompileStorageProvider requires TempoBlockEnv")
     }
 
     #[inline]
@@ -676,7 +658,6 @@ mod tests {
                 evm_internals,
                 gas_limit,
                 reservoir,
-                ctx.block.height_to_epoch.clone(),
                 spec,
                 amsterdam_eip8037_enabled,
                 false,

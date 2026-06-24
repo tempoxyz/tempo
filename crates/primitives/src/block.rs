@@ -1,16 +1,21 @@
-use alloy_evm::env::BlockEnvironment;
-use alloy_primitives::{Address, B256, U256, uint};
-use revm::{
-    context::{Block, BlockEnv},
-    context_interface::block::BlobExcessGasAndPrice,
+//! Tempo EVM block environment.
+
+use alloc::sync::Arc;
+use alloy_evm::{
+    env::BlockEnvironment,
+    revm::{
+        context::{Block, BlockEnv},
+        context_interface::block::BlobExcessGasAndPrice,
+    },
 };
-use std::{fmt, sync::Arc};
+use alloy_primitives::{Address, B256, U256, uint};
+use core::fmt;
 
 fn default_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
     Arc::new(|_| panic!("height_to_epoch is not configured"))
 }
 
-/// Tempo block environment.
+/// Tempo EVM block environment.
 #[derive(Clone, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {

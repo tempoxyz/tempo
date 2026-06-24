@@ -1383,7 +1383,7 @@ where
             let skip_liquidity_check = evm.skip_liquidity_check;
             let result = StorageCtx::enter_evm_without_tip1060_accounting(
                 journal,
-                &block,
+                block,
                 cfg,
                 tx,
                 actions.clone(),
@@ -1499,7 +1499,6 @@ where
                 internals,
                 gas_limit,
                 0,
-                block.height_to_epoch.clone(),
                 cfg.spec,
                 amsterdam_eip8037_enabled,
                 false,
