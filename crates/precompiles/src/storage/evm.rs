@@ -347,7 +347,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // T4+: pre-charge static gas to avoid cheap useless work.
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
             self.gas_tracker.remaining() < additional_cost
         } else {
             false
