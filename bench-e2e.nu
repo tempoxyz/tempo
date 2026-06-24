@@ -329,6 +329,35 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
 }
 
+def e2e-snapshot-hardfork-rebuild-reason [a_db: string, b_db: string, target_hardfork: string] {
+    if $target_hardfork == "" {
+        return "snapshot hardfork target missing; rebuilding"
+    }
+
+    let snapshots = [
+        { role: "a", state_hardfork: (e2e-snapshot-state-hardfork $a_db) }
+        { role: "b", state_hardfork: (e2e-snapshot-state-hardfork $b_db) }
+    ]
+    let missing = ($snapshots | where { |snapshot| $snapshot.state_hardfork == "" })
+    if ($missing | length) > 0 {
+        let roles = ($missing | get role | str join ", ")
+        return $"snapshot hardfork missing for ($roles); rebuilding"
+    }
+
+    let mismatched = ($snapshots | where { |snapshot| $snapshot.state_hardfork != $target_hardfork })
+    if ($mismatched | length) == 0 {
+        return ""
+    }
+
+    let current_values = ($mismatched | get state_hardfork | uniq)
+    let current = if ($current_values | length) == 1 {
+        $current_values | first
+    } else {
+        $mismatched | each { |snapshot| $"($snapshot.role)=($snapshot.state_hardfork)" } | str join ", "
+    }
+    $"snapshot hardfork mismatch: ($current) -> ($target_hardfork); rebuilding"
+}
+
 def e2e-snapshot-state-hardfork [datadir: string] {
     let marker = (read-bench-marker $datadir)
     if $marker == null {
@@ -1447,7 +1476,12 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    let snapshot_hardfork_rebuild_reason = if $snapshots_ready {
+        e2e-snapshot-hardfork-rebuild-reason $a_db $b_db $snapshot_state_hardfork
+    } else {
+        ""
+    }
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready) or $snapshot_hardfork_rebuild_reason != ""
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
         let missing_a = (e2e-snapshot-missing-files $a_db)
@@ -1458,6 +1492,9 @@ def "main e2e" [
         if ($missing_b | length) > 0 {
             print $"  Missing from b: ($missing_b | str join ', ')"
         }
+    }
+    if $snapshot_hardfork_rebuild_reason != "" and (not $force_bloat) {
+        print $snapshot_hardfork_rebuild_reason
     }
 
     if $should_init_snapshots {
