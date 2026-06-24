@@ -724,6 +724,7 @@ impl AccountKeychain {
     /// root/admin checks can distinguish root-signed transactions from access-key-signed
     /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
+    #[inline(always)]
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
         self.transaction_key.t_write(key_id)
     }
@@ -732,6 +733,7 @@ impl AccountKeychain {
     ///
     /// Called by the handler before transaction execution.
     /// Uses transient storage, so it's automatically cleared after the transaction.
+    #[inline(always)]
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
         self.tx_origin.t_write(origin)
     }
