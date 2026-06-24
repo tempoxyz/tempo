@@ -31,7 +31,7 @@ use crate::{
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, utils::keccak256_cached};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
@@ -211,7 +211,7 @@ impl AccountKeychain {
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
         data[20..].copy_from_slice(key_id.as_slice());
-        keccak256(data)
+        keccak256_cached(data)
     }
 
     #[inline]
