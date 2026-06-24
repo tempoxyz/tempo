@@ -999,13 +999,13 @@ async fn verify_block<TContext: Pacer>(
         .scoped(epoch)
         .ok_or_eyre("cannot determine participants in the current epoch")?;
 
-    let validator_set = Some(
+    let validator_set = block_needs_subblock_validator_set(block).then(|| {
         scheme
             .participants()
             .into_iter()
             .map(|p| B256::from_slice(p))
-            .collect(),
-    );
+            .collect()
+    });
     let execution_data = TempoExecutionData {
         block: block.execution_block().clone(),
         block_access_list: block.block_access_list().cloned(),
@@ -1040,6 +1040,15 @@ async fn verify_block<TContext: Pacer>(
             )
         }
     }
+}
+
+fn block_needs_subblock_validator_set(block: &Block) -> bool {
+    block
+        .block()
+        .body()
+        .transactions
+        .iter()
+        .any(|tx| tx.is_system_tx() || tx.subblock_proposer().is_some())
 }
 
 #[instrument(skip_all, err(Display))]
