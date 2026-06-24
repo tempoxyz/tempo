@@ -60,6 +60,7 @@ use tempo_transaction_pool::{
     },
 };
 
+/// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
 /// Tempo node CLI arguments.
