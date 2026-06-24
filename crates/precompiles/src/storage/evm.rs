@@ -337,7 +337,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn with_account_info(
         &mut self,
         address: Address,
