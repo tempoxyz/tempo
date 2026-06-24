@@ -769,7 +769,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         vm.recordLogs();
         vm.prank(actor);
         try token.setRewardRecipient(virtualAddr) {
-            revert("TEMPO-VA16: setRewardRecipient unexpectedly succeeded");
+            // T7 accepts this call as a no-op; the state checks below still apply.
         } catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
