@@ -332,6 +332,35 @@ impl TIP403Registry {
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
         let config = self.receive_policies[receiver].config.read()?;
+        self.check_receive_policy_with_config(token, sender, receiver, config)
+    }
+
+    /// Checks the receive policy without constructing the full registry on the common
+    /// unconfigured path.
+    pub(crate) fn check_receive_policy_for_transfer(
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        let receive_policies = Mapping::<Address, ReceivePolicy>::new(
+            slots::RECEIVE_POLICIES,
+            TIP403_REGISTRY_ADDRESS,
+        );
+        let config = receive_policies[receiver].config.read()?;
+        if !config.has_receive_policy {
+            return Ok(None);
+        }
+
+        Self::new().check_receive_policy_with_config(token, sender, receiver, config)
+    }
+
+    fn check_receive_policy_with_config(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+        config: ReceivePolicyConfig,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
         if !config.has_receive_policy {
             return Ok(None);
         }

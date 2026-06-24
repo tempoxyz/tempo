@@ -1222,7 +1222,7 @@ impl TIP20Token {
 
         let token = self.address;
         let Some((reason, recovery)) =
-            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+            TIP403Registry::check_receive_policy_for_transfer(token, originator, to.target)?
         else {
             return Ok(false);
         };
