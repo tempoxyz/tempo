@@ -41,6 +41,8 @@ pub struct Pool {
 }
 
 impl From<Pool> for ITIPFeeAMM::Pool {
+    #[cold]
+    #[inline(never)]
     fn from(value: Pool) -> Self {
         Self {
             reserveUserToken: value.reserve_user_token,
