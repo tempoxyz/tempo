@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
+use eyre::{WrapErr as _, ensure};
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 use url::Url;
@@ -50,8 +51,13 @@ pub(crate) fn init<TContext>(
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = ingress::Mailbox::new(tx);
 
-    let url = Box::leak(Box::<str>::from(
-        parse_upstream_url(&config.upstream_url)?.to_string(),
+    let url = Box::leak(Box::from(
+        parse_upstream_url(&config.upstream_url).wrap_err_with(|| {
+            format!(
+                "failed parsing upstream location as websocket URL: `{}`",
+                config.upstream_url
+            )
+        })?,
     ));
     let actor = Actor {
         context: ContextCell::new(context),
@@ -73,11 +79,17 @@ pub(crate) struct Config {
 }
 
 fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
-    if url.starts_with("localhost:") || url.parse::<SocketAddr>().is_ok() {
-        Ok(format!("ws://{url}").parse()?)
+    let url: Url = if url.starts_with("localhost:") || url.parse::<SocketAddr>().is_ok() {
+        format!("ws://{url}").parse()?
     } else {
-        Ok(url.parse()?)
-    }
+        url.parse()?
+    };
+    ensure!(
+        matches!(url.scheme(), "ws" | "wss"),
+        "URL scheme must be ws or wss, was `{}`",
+        url.scheme()
+    );
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -104,6 +116,11 @@ mod tests {
             parse_upstream_url("127.0.0.1:8546").unwrap().to_string(),
             "ws://127.0.0.1:8546/"
         );
+    }
+
+    #[test]
+    fn parse_upstream_url_rejects_non_ws_schemes() {
+        assert!(parse_upstream_url("http://upstream.example:8546").is_err());
     }
 
     #[test]

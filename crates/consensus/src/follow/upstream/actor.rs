@@ -20,6 +20,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tracing::{debug, debug_span, instrument, warn, warn_span};
+use url::Url;
 
 use crate::utils::OptionFuture;
 
@@ -38,7 +39,7 @@ pub(crate) struct Actor<TContext> {
     pub(super) context: ContextCell<TContext>,
     pub(super) connection: Option<Arc<WsClient>>,
     pub(super) mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
-    pub(super) url: &'static str,
+    pub(super) url: &'static Url,
     pub(super) pending_connect: OptionFuture<BoxFuture<'static, (u64, eyre::Result<WsClient>)>>,
     pub(super) pending_stream:
         OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
@@ -78,7 +79,7 @@ where
                                 %reason,
                                 attempts,
                                 reconnect_in = %display_duration(reconnect_in),
-                                url = self.url,
+                                url = %self.url,
                                 "connecting to upstream node failed, attempting again",
                             ));
                             self.pending_connect.replace({
@@ -128,7 +129,7 @@ where
                         }
                         None => {
                             warn_span!("event_subscription").in_scope(|| warn!(
-                                url = self.url,
+                                url = %self.url,
                                 "event stream terminated",
                             ));
                             self.event_stream = inactive_event_stream();
@@ -165,7 +166,7 @@ where
         if client.is_connected() {
             self.pending_stream.replace(subscribe(client));
         } else {
-            warn!(url = self.url, "upstream client disconnected, reconnecting");
+            warn!(url = %self.url, "upstream client disconnected, reconnecting");
             self.connection.take();
             self.pending_connect.replace(connect(self.url, 1));
         }
@@ -198,12 +199,12 @@ where
     }
 }
 
-fn connect(url: &'static str, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<WsClient>)> {
+fn connect(url: &'static Url, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<WsClient>)> {
     async move {
         (
             attempts,
             WsClientBuilder::default()
-                .build(&url)
+                .build(url)
                 .await
                 .map_err(Report::new),
         )
