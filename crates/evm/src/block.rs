@@ -548,8 +548,6 @@ where
         } else {
             self.validate_tx(recovered.tx(), block_gas_used)?
         };
-        // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
-        let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
             next_section,
@@ -557,7 +555,8 @@ where
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
-            validator_fee,
+            // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`.
+            validator_fee: self.evm().validator_fee(),
         })
     }
 
