@@ -39,6 +39,12 @@ use tempo_primitives::{
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
+fn is_last_block_of_epoch(block_number: u64, epoch_length: u64) -> bool {
+    block_number
+        .checked_add(1)
+        .is_some_and(|next_block| next_block.is_multiple_of(epoch_length))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
@@ -220,7 +226,7 @@ where
 
         let epoch_length = self.evm().block().epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
-        if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
+        if !is_last_block_of_epoch(block_number, epoch_length) {
             return Ok(());
         }
 
@@ -789,6 +795,17 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    #[test]
+    fn test_current_committee_update_runs_on_last_block_of_epoch() {
+        let epoch_length = 10;
+
+        assert!(!is_last_block_of_epoch(0, epoch_length));
+        assert!(!is_last_block_of_epoch(8, epoch_length));
+        assert!(is_last_block_of_epoch(9, epoch_length));
+        assert!(!is_last_block_of_epoch(10, epoch_length));
+        assert!(is_last_block_of_epoch(19, epoch_length));
     }
 
     #[test]
