@@ -43,9 +43,9 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         Ok(block.into_sealed_block())
     }
 
-    fn validate_block_post_execution_with_hashed_state(
+    fn validate_block_post_execution_with_hashed_state<'a>(
         &self,
-        _state_updates: &HashedPostState,
+        _state_updates: &dyn FnOnce() -> &'a HashedPostState,
         block: &RecoveredBlock<Self::Block>,
     ) -> Result<(), ConsensusError> {
         let timestamp = block.header().timestamp();
@@ -180,7 +180,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &state_updates,
+                &|| &state_updates,
                 &recovered_block(9, None),
             )
             .expect("pre-activation proof_root omission is valid");
@@ -188,7 +188,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
+                    &|| &state_updates,
                     &recovered_block(9, Some(EMPTY_ROOT_HASH)),
                 )
                 .is_err(),
@@ -197,7 +197,7 @@ mod tests {
 
         validator
             .validate_block_post_execution_with_hashed_state(
-                &state_updates,
+                &|| &state_updates,
                 &recovered_block(10, Some(EMPTY_ROOT_HASH)),
             )
             .expect("activation proof_root must be present");
@@ -205,7 +205,7 @@ mod tests {
         assert!(
             validator
                 .validate_block_post_execution_with_hashed_state(
-                    &state_updates,
+                    &|| &state_updates,
                     &recovered_block(10, None),
                 )
                 .is_err(),
