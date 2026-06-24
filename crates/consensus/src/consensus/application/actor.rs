@@ -510,13 +510,15 @@ impl Inner<Init> {
             leader,
         } = args;
 
-        let parent = subscribe(
+        let subscribed_parent = subscribe_with_source(
             &self.execution_node,
             Round::new(round.epoch(), parent_view),
             parent_digest,
             &self.marshal,
         )
         .await?;
+        let parent_available_in_execution_layer = subscribed_parent.from_execution_layer;
+        let parent = subscribed_parent.block;
 
         debug!(height = %parent.height(), "retrieved parent block",);
 
@@ -566,6 +568,7 @@ impl Inner<Init> {
         // (genesis/boundary block) must exist and be finalized, so we can skip
         // it.
         if !is_genesis_parent
+            && !parent_available_in_execution_layer
             && verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
@@ -1139,21 +1142,46 @@ async fn subscribe(
     digest: Digest,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
-    let block = if let Some(block) = execution_node
+    Ok(
+        subscribe_with_source(execution_node, round, digest, marshal)
+            .await?
+            .block,
+    )
+}
+
+struct SubscribedBlock {
+    block: Block,
+    from_execution_layer: bool,
+}
+
+/// Resolves a block by digest and records whether it was already present in
+/// the execution layer.
+async fn subscribe_with_source(
+    execution_node: &TempoFullNode,
+    round: Round,
+    digest: Digest,
+    marshal: &crate::alias::marshal::Mailbox,
+) -> eyre::Result<SubscribedBlock> {
+    if let Some(block) = execution_node
         .provider
         .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block, None)
+        return Ok(SubscribedBlock {
+            block: Block::from_execution_block_unchecked(block, None),
+            from_execution_layer: true,
+        });
     } else {
-        marshal
-            .subscribe_by_digest(Some(round), digest)
-            .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
-    };
-    Ok(block)
+        Ok(SubscribedBlock {
+            block: marshal
+                .subscribe_by_digest(Some(round), digest)
+                .await
+                .await
+                .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?,
+            from_execution_layer: false,
+        })
+    }
 }
 
 #[derive(Clone)]
