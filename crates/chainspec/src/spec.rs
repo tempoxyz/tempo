@@ -214,12 +214,10 @@ impl TempoChainSpec {
         gas_limit: u64,
         shared_gas_limit: u64,
     ) -> u64 {
-        self.info.general_gas_limit()
-        .or_else(|| {
-            self.tempo_hardfork_at(timestamp)
-                .general_gas_limit()
-        })
-        .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+        self.info
+            .general_gas_limit()
+            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
