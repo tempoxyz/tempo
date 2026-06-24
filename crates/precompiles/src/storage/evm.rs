@@ -400,7 +400,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+        let sstore_action = if current.is_zero() && !value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, delta)
@@ -425,7 +425,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+        let sstore_action = if !current.is_zero() && value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, value)
