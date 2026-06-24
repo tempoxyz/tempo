@@ -101,6 +101,12 @@ impl HashMapStorageProvider {
         self.gas_params = GasParams::new_spec(self.spec.into());
         self
     }
+
+    /// Returns self with the block number overridden (builder pattern).
+    pub fn with_block_number(mut self, block_number: u64) -> Self {
+        self.block_env.number = U256::from(block_number);
+        self
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
