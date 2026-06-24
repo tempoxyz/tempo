@@ -404,12 +404,16 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
+    #[cold]
+    #[inline(never)]
     fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
+    #[cold]
+    #[inline(never)]
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
