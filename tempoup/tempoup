@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.12"
+TEMPOUP_INSTALLER_VERSION="0.0.14"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -100,6 +100,94 @@ gh_authenticated() {
     check_cmd gh && gh auth status >/dev/null 2>&1
 }
 
+ensure_runtime_dependencies() {
+    local platform="$1"
+    local binary_path="${2:-}"
+    local dylib=""
+    local prefix
+
+    [[ "$platform" == "darwin" ]] || return 0
+
+    if [[ -n "$binary_path" ]] && check_cmd otool; then
+        dylib="$(otool -L "$binary_path" 2>/dev/null | awk '/libusb-1\.0\.0\.dylib/ {print $1; exit}')"
+        [[ -n "$dylib" ]] || return 0
+    fi
+
+    if [[ -z "$dylib" || "$dylib" != /* ]]; then
+        prefix="$(brew --prefix libusb 2>/dev/null || true)"
+        [[ -n "$prefix" ]] && dylib="$prefix/lib/libusb-1.0.0.dylib"
+    fi
+
+    if [[ -n "$dylib" && -r "$dylib" ]]; then
+        info "macOS runtime dependency found: libusb"
+        return
+    fi
+
+    if ! check_cmd brew; then
+        error "macOS runtime dependency libusb is missing and Homebrew was not found.
+  Install Homebrew from https://brew.sh, then run:
+    brew install libusb
+  Then re-run tempoup."
+    fi
+
+    warn "macOS runtime dependency libusb not found; installing with Homebrew..."
+    if brew list --versions libusb >/dev/null 2>&1; then
+        brew reinstall libusb || error "Failed to reinstall libusb with Homebrew."
+    else
+        brew install libusb || error "Failed to install libusb with Homebrew."
+    fi
+
+    if [[ -z "$dylib" || "$dylib" != /* ]]; then
+        dylib="$(brew --prefix libusb 2>/dev/null)/lib/libusb-1.0.0.dylib"
+    fi
+    [[ -r "$dylib" ]] || error "Homebrew did not install libusb where tempo can load it.
+  Try running:
+    brew install libusb
+  Then re-run tempoup."
+
+    info "macOS runtime dependency installed: libusb"
+}
+
+verify_tempo_binary() {
+    local binary_path="$1"
+    local output
+
+    if output="$("$binary_path" --version 2>&1)"; then
+        local first_line
+        first_line="$(printf '%s\n' "$output" | head -n 1)"
+        info "Verified tempo launches: $first_line"
+        return
+    fi
+
+    if [[ "$output" == *"libusb"* ]]; then
+        error "Downloaded tempo binary could not launch because libusb is missing.
+  Try running:
+    brew install libusb
+  Then re-run tempoup.
+
+$output"
+    fi
+
+    error "Downloaded tempo binary could not launch.
+
+$output"
+}
+
+rollback_tempo_install() {
+    local status="$?"
+    trap - EXIT
+
+    if [[ "$status" -ne 0 ]]; then
+        if [[ "${TEMPOUP_HAD_OLD_BINARY:-0}" -eq 1 ]]; then
+            mv -f "$TEMPOUP_OLD_BINARY" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null || true
+        elif [[ -n "${TEMPOUP_INSTALL_TARGET:-}" ]]; then
+            rm -f "$TEMPOUP_INSTALL_TARGET" 2>/dev/null || true
+        fi
+    fi
+
+    exit "$status"
+}
+
 # Verifies the GitHub release attestation.
 verify_attestation() {
     local archive_path="$1"
@@ -145,7 +233,8 @@ check_installer_up_to_date() {
     fi
 
     # Fetch the remote version
-    local remote_version=$(curl -fsSL "$TEMPOUP_BIN_URL" 2>/dev/null | \
+    local remote_version
+    remote_version=$(curl -fsSL "$TEMPOUP_BIN_URL" 2>/dev/null | \
         grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
 
     if [[ -z "$remote_version" ]]; then
@@ -171,8 +260,9 @@ update_tempoup() {
     fi
 
     # Create temporary file
-    local tmp_file=$(mktemp)
-    trap "rm -f $tmp_file" EXIT
+    local tmp_file
+    tmp_file=$(mktemp)
+    trap 'rm -f "$tmp_file"' EXIT
 
     # Download latest tempoup script
     info "Downloading latest tempoup..."
@@ -182,7 +272,8 @@ update_tempoup() {
     fi
 
     # Extract remote version
-    local remote_version=$(grep '^TEMPOUP_INSTALLER_VERSION=' "$tmp_file" | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+    local remote_version
+    remote_version=$(grep '^TEMPOUP_INSTALLER_VERSION=' "$tmp_file" | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
 
     if [[ -z "$remote_version" ]]; then
         error "Failed to determine remote version"
@@ -254,7 +345,8 @@ done
 
 # Detect platform
 detect_platform() {
-    local platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local platform
+    platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
     case "$platform" in
         linux*)
@@ -274,7 +366,8 @@ detect_platform() {
 
 # Detect architecture
 detect_arch() {
-    local arch="$(uname -m)"
+    local arch
+    arch="$(uname -m)"
 
     case "$arch" in
         x86_64 | x64 | amd64)
@@ -382,9 +475,7 @@ main() {
         fi
     fi
 
-    # Strip 'v' prefix if present for consistency
     VERSION_TAG="$VERSION"
-    VERSION_NUMBER="${VERSION#v}"
 
     info "Installing tempo $VERSION_TAG"
 
@@ -399,7 +490,7 @@ main() {
 
     # Create temporary directory
     TMP_DIR=$(mktemp -d)
-    trap "rm -rf $TMP_DIR" EXIT
+    trap 'rm -rf "$TMP_DIR"' EXIT
 
     # Download archive
     info "Downloading tempo binary..."
@@ -481,6 +572,7 @@ main() {
     if [[ -z "$BINARY_PATH" ]]; then
         error "Could not find tempo binary in downloaded archive"
     fi
+    ensure_runtime_dependencies "$PLATFORM" "$BINARY_PATH"
 
     # Final binary name (just "tempo" or "tempo.exe")
     BINARY_NAME="tempo"
@@ -494,19 +586,28 @@ main() {
     # while the tempo binary is still mapped). If the script fails at any
     # point after this, the trap restores the old binary.
     info "Installing to $BIN_DIR/$BINARY_NAME..."
-    local OLD_BINARY="$BIN_DIR/$BINARY_NAME.old"
-    mv -f "$BIN_DIR/$BINARY_NAME" "$OLD_BINARY" 2>/dev/null || true
-    trap 'mv -f "$OLD_BINARY" "$BIN_DIR/$BINARY_NAME" 2>/dev/null || true' ERR EXIT
-    if cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
-        chmod 755 "$BIN_DIR/$BINARY_NAME"
-    elif sudo cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME" 2>/dev/null; then
-        sudo chmod 755 "$BIN_DIR/$BINARY_NAME"
+    TEMPOUP_INSTALL_TARGET="$BIN_DIR/$BINARY_NAME"
+    TEMPOUP_OLD_BINARY="$TEMPOUP_INSTALL_TARGET.old"
+    TEMPOUP_HAD_OLD_BINARY=0
+    if [[ -e "$TEMPOUP_INSTALL_TARGET" ]]; then
+        mv -f "$TEMPOUP_INSTALL_TARGET" "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
+        TEMPOUP_HAD_OLD_BINARY=1
+    else
+        rm -f "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
+    fi
+    trap rollback_tempo_install EXIT
+    if cp "$BINARY_PATH" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null; then
+        chmod 755 "$TEMPOUP_INSTALL_TARGET"
+    elif sudo cp "$BINARY_PATH" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null; then
+        sudo chmod 755 "$TEMPOUP_INSTALL_TARGET"
     else
         error "Failed to install to $BIN_DIR. Try running with sudo."
     fi
+    verify_tempo_binary "$TEMPOUP_INSTALL_TARGET"
+
     # Installation succeeded — remove backup and clear the trap
-    rm -f "$OLD_BINARY" 2>/dev/null || true
-    trap - ERR EXIT
+    rm -f "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
+    trap - EXIT
 
     # Success message
     echo ""

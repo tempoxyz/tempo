@@ -22,6 +22,18 @@ warn() {
     echo -e "${YELLOW}warn${NC}: $1"
 }
 
+should_verify_tempo_after_tempoup() {
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help|-v|--version|-U|--update)
+                return 1
+                ;;
+        esac
+    done
+
+    return 0
+}
+
 # Install a file to BIN_DIR, using sudo if necessary
 install_bin() {
     local src="$1"
@@ -49,7 +61,7 @@ main() {
     # Download tempoup script to a temp file
     local tmp_file
     tmp_file="$(mktemp 2>/dev/null || mktemp -t tempoup)"
-    trap "rm -f '$tmp_file'" EXIT
+    trap 'rm -f "$tmp_file"' EXIT
 
     info "Downloading tempoup script..."
     if command -v curl >/dev/null 2>&1; then
@@ -88,6 +100,20 @@ ENVEOF
     echo ""
 
     TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" "$@"
+    if should_verify_tempo_after_tempoup "$@"; then
+        local tempo_bin="$BIN_DIR/tempo"
+        [[ -x "$tempo_bin" ]] || tempo_bin="$BIN_DIR/tempo.exe"
+        if [[ -x "$tempo_bin" ]]; then
+            local output
+            if output="$("$tempo_bin" --version 2>&1)"; then
+                info "Tempo ready: $(printf '%s\n' "$output" | head -n 1)"
+            else
+                echo "$output" >&2
+                echo "error: tempo failed to launch after installation" >&2
+                exit 1
+            fi
+        fi
+    fi
 
     echo ""
     local user_shell
@@ -152,9 +178,11 @@ configure_shell() {
             continue
         fi
 
-        echo >> "$cfg"
-        echo "# Added by tempoup installer" >> "$cfg"
-        echo "$source_line" >> "$cfg"
+        {
+            echo
+            echo "# Added by tempoup installer"
+            echo "$source_line"
+        } >> "$cfg"
         info "Added tempo to PATH in $cfg"
         modified=1
     done
