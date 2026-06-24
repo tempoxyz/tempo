@@ -2137,8 +2137,12 @@ where
             Some(
                 TempoInvalidTransaction::ExpiringNonceReplay
                     | TempoInvalidTransaction::ExpiringNonceSetFull
+                    | TempoInvalidTransaction::EthInvalidTransaction(
+                        InvalidTransaction::LackOfFundForMaxFee { .. },
+                    )
             )
-        ) {
+        ) && !evm.ctx.tx.is_subblock_transaction()
+        {
             evm.ctx().local_mut().clear();
             evm.ctx.journaled_state.discard_tx();
             evm.frame_stack().clear();
@@ -6359,6 +6363,12 @@ mod tests {
         for err in [
             TempoInvalidTransaction::ExpiringNonceReplay,
             TempoInvalidTransaction::ExpiringNonceSetFull,
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::LackOfFundForMaxFee {
+                    fee: Box::new(U256::from(30_001)),
+                    balance: Box::new(U256::from(28_368)),
+                },
+            ),
         ] {
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv {
