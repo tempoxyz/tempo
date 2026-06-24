@@ -206,6 +206,37 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         let result = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions.record(action);
 
+        self.finish_sstore_inner(address, key, result)
+    }
+
+    /// Performs a metered precompile SSTORE without recording a storage action.
+    #[inline]
+    fn sstore_inner_unrecorded(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
+        let skip_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
+        } else {
+            false
+        };
+
+        let result = self.sstore_journal(address, key, value, skip_cold_load)?;
+
+        self.finish_sstore_inner(address, key, result)
+    }
+
+    #[inline]
+    fn finish_sstore_inner(
+        &mut self,
+        address: Address,
+        key: U256,
+        result: StateLoad<SStoreResult>,
+    ) -> Result<(), TempoPrecompileError> {
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
@@ -398,6 +429,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_add(delta)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
 
+        if matches!(&self.actions, StorageActions::Disabled) {
+            return self.sstore_inner_unrecorded(address, key, value);
+        }
+
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
         let sstore_action = if current == U256::ZERO && value != U256::ZERO {
@@ -422,6 +457,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let value = current
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+
+        if matches!(&self.actions, StorageActions::Disabled) {
+            return self.sstore_inner_unrecorded(address, key, value);
+        }
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
