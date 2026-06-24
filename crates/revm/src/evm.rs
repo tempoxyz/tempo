@@ -189,6 +189,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         )
     }
 
+    /// Consumes self and returns a new Evm type with given storage actions.
+    pub fn with_actions(mut self, actions: StorageActions) -> Self {
+        self.inner.precompiles = tempo_precompiles::tempo_precompiles(
+            &self.inner.ctx.cfg,
+            actions.clone(),
+            self.non_creditable_slots.clone(),
+        );
+        self.actions = actions;
+        self
+    }
+
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
@@ -197,6 +208,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Returns a reference to the recorded storage actions.
     pub fn actions(&self) -> &StorageActions {
         &self.actions
+    }
+
+    /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.non_creditable_slots.clone()
     }
 
     /// Clears all intermediate state from the EVM.
@@ -3188,7 +3204,7 @@ mod tests {
         let unlimited_contract = Address::repeat_byte(0x87);
 
         let mut budgeted_bytecode = Vec::new();
-        let set_budget_input = IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode();
+        let set_budget_input = IStorageCredits::setBudgetCall { credits: 1 }.abi_encode();
         append_tip1060_precompile_call(&mut budgeted_bytecode, &set_budget_input);
         budgeted_bytecode.extend_from_slice(&bytes!("6001600055600160015500"));
 
@@ -3266,7 +3282,7 @@ mod tests {
 
         append_tip1060_precompile_call(
             &mut bytecode,
-            &IStorageCredits::setBudgetCall { creditBudget: 1 }.abi_encode(),
+            &IStorageCredits::setBudgetCall { credits: 1 }.abi_encode(),
         );
         bytecode.extend_from_slice(&bytes!("6001600055")); // budgeted create
         append_tip1060_precompile_call_store_return(

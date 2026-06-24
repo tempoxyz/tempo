@@ -31,7 +31,7 @@ impl Precompile for StorageCredits {
                 }
                 IStorageCreditsCalls::setBudget(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
-                        self.set_budget(sender, c.creditBudget)
+                        self.set_budget(sender, c.credits)
                     })
                 }
             },
@@ -75,7 +75,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut storage_credits_precompile = StorageCredits::new();
 
-            let set_budget = IStorageCredits::setBudgetCall { creditBudget: 7 };
+            let set_budget = IStorageCredits::setBudgetCall { credits: 7 };
             let output = storage_credits_precompile.call(&set_budget.abi_encode(), caller)?;
             assert!(!output.is_revert());
 
@@ -97,7 +97,7 @@ mod tests {
                 7
             );
 
-            let zero_budget = IStorageCredits::setBudgetCall { creditBudget: 0 };
+            let zero_budget = IStorageCredits::setBudgetCall { credits: 0 };
             let output = storage_credits_precompile.call(&zero_budget.abi_encode(), caller)?;
             assert!(!output.is_revert());
 
