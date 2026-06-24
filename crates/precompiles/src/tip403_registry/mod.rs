@@ -713,10 +713,7 @@ impl TIP403Registry {
         let hardfork = self.storage.spec();
 
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
+        if Self::is_always_authorized(hardfork, user) {
             return Ok(true);
         }
 
@@ -753,6 +750,12 @@ impl TIP403Registry {
         }
 
         self.is_authorized_simple_inner(policy_id, user, &data)
+    }
+
+    /// Returns whether `user` is a built-in protocol address that cannot be policed.
+    #[inline]
+    fn is_always_authorized(hardfork: TempoHardfork, user: Address) -> bool {
+        hardfork.is_t6() && user == RECEIVE_POLICY_GUARD_ADDRESS
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
