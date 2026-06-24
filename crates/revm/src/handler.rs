@@ -968,7 +968,7 @@ where
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
+        let fee_manager = &*evm.fee_manager;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -1650,7 +1650,8 @@ where
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
+        let fee_manager = &*evm.fee_manager;
+        let fee_token = evm.fee_token;
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
@@ -1691,8 +1692,7 @@ where
             || {
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
                     let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                    let fee_token = evm
-                        .fee_token
+                    let fee_token = fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
                     fee_manager
                         .collect_fee_post_tx(
