@@ -2,7 +2,6 @@ use crate::{TempoStateAccess, TempoTxEnv};
 use alloy_primitives::{Address, U256};
 use core::fmt::Debug;
 use revm::{Database, context::Journal};
-use std::sync::Arc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::Result as TempoResult, storage::StorageActions, tip_fee_manager::TipFeeManager,
@@ -43,12 +42,6 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
     ) -> TempoResult<U256>;
 }
 
-/// Creates protocol fee manager instances for each EVM database type.
-pub trait ProtocolFeeManagerProvider: Debug + Clone {
-    /// Returns a fee manager object for the requested database type.
-    fn fee_manager<DB: Database>(&self) -> Arc<dyn ProtocolFeeManager<DB>>;
-}
-
 /// FeeManager for the default TempoEVM configuration
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TempoFeeManager;
@@ -57,12 +50,6 @@ impl TempoFeeManager {
     /// Creates the default Tempo protocol fee manager.
     pub const fn new() -> Self {
         Self
-    }
-}
-
-impl ProtocolFeeManagerProvider for TempoFeeManager {
-    fn fee_manager<DB: Database>(&self) -> Arc<dyn ProtocolFeeManager<DB>> {
-        Arc::new(*self)
     }
 }
 

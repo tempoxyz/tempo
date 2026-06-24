@@ -22,42 +22,18 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::storage::StorageAction;
 use tempo_revm::{
-    ProtocolFeeManager, ProtocolFeeManagerProvider, TempoFeeManager, TempoHaltReason,
-    TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
-    handler::TempoEvmHandler,
+    ProtocolFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    evm::TempoContext, handler::TempoEvmHandler,
 };
 
 use crate::TempoBlockEnv;
 
 /// Factory for creating Tempo EVM instances.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoEvmFactory<P = TempoFeeManager> {
-    fee_manager: P,
-}
+pub struct TempoEvmFactory;
 
-impl<P> TempoEvmFactory<P> {
-    /// Replaces the fee manager used by the EVM.
-    pub fn with_fee_manager<T>(self, fee_manager: T) -> TempoEvmFactory<T>
-    where
-        T: ProtocolFeeManagerProvider,
-    {
-        TempoEvmFactory { fee_manager }
-    }
-}
-
-impl Default for TempoEvmFactory {
-    fn default() -> Self {
-        Self {
-            fee_manager: TempoFeeManager::new(),
-        }
-    }
-}
-
-impl<P> EvmFactory for TempoEvmFactory<P>
-where
-    P: ProtocolFeeManagerProvider,
-{
+impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
@@ -72,7 +48,7 @@ where
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new(db, input).with_fee_manager_arc(self.fee_manager.fee_manager())
+        TempoEvm::new(db, input)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -81,9 +57,7 @@ where
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        TempoEvm::new(db, input)
-            .with_fee_manager_arc(self.fee_manager.fee_manager())
-            .with_inspector(inspector)
+        TempoEvm::new(db, input).with_inspector(inspector)
     }
 }
 
