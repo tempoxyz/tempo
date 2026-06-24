@@ -111,7 +111,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             ..
         } = self;
 
-        TempoEvm {
+        Self {
             inner,
             collected_fee,
             validator_fee,
