@@ -1,6 +1,5 @@
 //! Tempo EVM block environment.
 
-use alloc::sync::Arc;
 use alloy_evm::{
     env::BlockEnvironment,
     revm::{
@@ -9,14 +8,9 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, B256, U256, uint};
-use core::fmt;
-
-fn default_height_to_epoch() -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
-    Arc::new(|_| panic!("height_to_epoch is not configured"))
-}
 
 /// Tempo EVM block environment.
-#[derive(Clone, derive_more::Deref, derive_more::DerefMut)]
+#[derive(Debug, Clone, Default, PartialEq, derive_more::Deref, derive_more::DerefMut)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TempoBlockEnv {
     /// Inner [`BlockEnv`].
@@ -27,9 +21,9 @@ pub struct TempoBlockEnv {
     /// Milliseconds portion of the timestamp.
     pub timestamp_millis_part: u64,
 
-    /// Maps block heights to their containing epochs.
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_height_to_epoch"))]
-    pub height_to_epoch: Arc<dyn Fn(u64) -> u64 + Send + Sync>,
+    /// Number of blocks in a consensus epoch.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub epoch_length: u64,
 }
 
 impl TempoBlockEnv {
@@ -43,33 +37,11 @@ impl TempoBlockEnv {
 
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
-        (self.height_to_epoch)(height)
-    }
-}
-
-impl Default for TempoBlockEnv {
-    fn default() -> Self {
-        Self {
-            inner: BlockEnv::default(),
-            timestamp_millis_part: 0,
-            height_to_epoch: default_height_to_epoch(),
+        if self.epoch_length == 0 {
+            0
+        } else {
+            height / self.epoch_length
         }
-    }
-}
-
-impl fmt::Debug for TempoBlockEnv {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TempoBlockEnv")
-            .field("inner", &self.inner)
-            .field("timestamp_millis_part", &self.timestamp_millis_part)
-            .field("height_to_epoch", &"<dyn Fn(u64) -> u64>")
-            .finish()
-    }
-}
-
-impl PartialEq for TempoBlockEnv {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner == other.inner && self.timestamp_millis_part == other.timestamp_millis_part
     }
 }
 
@@ -134,13 +106,34 @@ mod tests {
                 ..Default::default()
             },
             timestamp_millis_part: millis_part,
-            height_to_epoch: default_height_to_epoch(),
+            ..Default::default()
         }
     }
 
     /// Strategy for random U256 values.
     fn arb_u256() -> impl Strategy<Value = U256> {
         any::<[u64; 4]>().prop_map(U256::from_limbs)
+    }
+
+    #[test]
+    fn epoch_uses_epoch_length() {
+        let block = TempoBlockEnv {
+            epoch_length: 10,
+            ..Default::default()
+        };
+
+        assert_eq!(block.epoch(0), 0);
+        assert_eq!(block.epoch(9), 0);
+        assert_eq!(block.epoch(10), 1);
+        assert_eq!(block.epoch(29), 2);
+    }
+
+    #[test]
+    fn epoch_defaults_to_zero_when_epoch_length_is_zero() {
+        let block = TempoBlockEnv::default();
+
+        assert_eq!(block.epoch(0), 0);
+        assert_eq!(block.epoch(100), 0);
     }
 
     proptest! {

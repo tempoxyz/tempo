@@ -88,16 +88,6 @@ impl TempoEvmConfig {
     }
 }
 
-fn fixed_height_to_epoch(epoch_length: u64) -> Arc<dyn Fn(u64) -> u64 + Send + Sync> {
-    Arc::new(move |height| {
-        if epoch_length == 0 {
-            0
-        } else {
-            height / epoch_length
-        }
-    })
-}
-
 impl BlockExecutorFactory for TempoEvmConfig {
     type EvmFactory = TempoEvmFactory;
     type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
@@ -172,9 +162,7 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
-                height_to_epoch: fixed_height_to_epoch(
-                    self.chain_spec().info.epoch_length().unwrap_or_default(),
-                ),
+                epoch_length: self.chain_spec().info.epoch_length().unwrap_or_default(),
             },
         })
     }
@@ -224,9 +212,7 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
-                height_to_epoch: fixed_height_to_epoch(
-                    self.chain_spec().info.epoch_length().unwrap_or_default(),
-                ),
+                epoch_length: self.chain_spec().info.epoch_length().unwrap_or_default(),
             },
         })
     }
