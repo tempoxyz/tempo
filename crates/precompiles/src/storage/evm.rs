@@ -123,7 +123,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Performs a raw journaled SLOAD without metering gas or recording a storage action.
-    #[inline]
+    #[inline(always)]
     fn sload_journal(
         &mut self,
         address: Address,
@@ -136,7 +136,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Performs a raw journaled SSTORE without metering gas or recording a storage action.
-    #[inline]
+    #[inline(always)]
     fn sstore_journal(
         &mut self,
         address: Address,
