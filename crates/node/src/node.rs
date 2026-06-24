@@ -9,12 +9,13 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use reth_chainspec::EthChainSpec;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
-    BuilderContext, DebugNode, Node, NodeAdapter,
+    BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
         PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
@@ -721,12 +722,17 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
+        let conf = ctx.payload_builder_config();
+        let chain = ctx.chain_spec().chain();
+        let gas_limit = conf.gas_limit_for(chain);
+
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             ctx.task_executor().clone(),
             evm_config,
             TempoPayloadBuilderConfig {
+                desired_gas_limit: gas_limit,
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,

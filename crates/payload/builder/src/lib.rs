@@ -23,7 +23,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
@@ -117,6 +117,8 @@ pub struct TempoPayloadBuilder<Provider> {
     enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
+    /// Desired gas limit.
+    desired_gas_limit: u64,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -127,6 +129,8 @@ pub struct TempoPayloadBuilder<Provider> {
 /// Runtime settings for the Tempo payload builder.
 #[derive(Debug, Clone, Copy)]
 pub struct TempoPayloadBuilderConfig {
+    /// Desired gas limit.
+    pub desired_gas_limit: u64,
     /// Whether the node is configured in `--dev` miner mode.
     pub is_dev: bool,
     /// Whether to enable state provider metrics.
@@ -144,11 +148,27 @@ pub struct TempoPayloadBuilderConfig {
 impl Default for TempoPayloadBuilderConfig {
     fn default() -> Self {
         Self {
+            desired_gas_limit: alloy_eips::eip1559::ETHEREUM_BLOCK_GAS_LIMIT_30M,
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: true,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
+    }
+}
+
+impl TempoPayloadBuilderConfig {
+    /// Returns the gas limit for the next block based on the parent gas limit and an optional
+    /// target from payload attributes.
+    pub fn gas_limit_with_target(
+        &self,
+        parent_gas_limit: u64,
+        target_gas_limit: Option<u64>,
+    ) -> u64 {
+        calculate_block_gas_limit(
+            parent_gas_limit,
+            target_gas_limit.unwrap_or(self.desired_gas_limit),
+        )
     }
 }
 
@@ -172,6 +192,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
+            desired_gas_limit: config.desired_gas_limit,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -384,7 +405,11 @@ where
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp);
 
-        let block_gas_limit: u64 = parent_header.gas_limit();
+        let block_gas_limit = TempoPayloadBuilderConfig {
+            desired_gas_limit: self.desired_gas_limit,
+            ..Default::default()
+        }
+        .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let shared_gas_limit =
             chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
