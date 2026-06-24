@@ -136,6 +136,8 @@ impl StorageCredits {
     ///
     /// A negative delta means the operation consumed credits where the caller expected
     /// a mint-only/no-op operation, so it is treated as a fatal bookkeeping error.
+    #[cold]
+    #[inline(never)]
     pub fn track_minted_credits<T>(
         &self,
         account: Address,
@@ -220,6 +222,8 @@ impl StorageCredits {
     ///
     /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
     /// before this returns so later storage writes cannot consume the remaining allowance.
+    #[cold]
+    #[inline(never)]
     pub fn with_budget<T>(
         &mut self,
         credit_owner: Address,
