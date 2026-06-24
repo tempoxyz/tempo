@@ -37,6 +37,7 @@ on:
         options:
           - tip20
           - tip20_2d_nonces
+          - tip20_protocol_nonces
           - tip20_random_recipients
           - tip20_existing_recipients
           - mpp
