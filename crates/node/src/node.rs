@@ -9,12 +9,13 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
-    BuilderContext, DebugNode, Node, NodeAdapter,
+    BuilderContext, DebugNode, Node, NodeAdapter, PayloadBuilderConfig,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
         PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
@@ -57,6 +58,9 @@ use tempo_transaction_pool::{
         TempoTransactionValidator,
     },
 };
+
+/// 500M gas limit
+pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
@@ -721,12 +725,22 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
+        let conf = ctx.payload_builder_config();
+        let chain = ctx.chain_spec().chain();
+        let desired_gas_limit = conf.gas_limit().or_else(|| match chain.kind() {
+            ChainKind::Named(NamedChain::Tempo | NamedChain::TempoModerato) => {
+                Some(BLOCK_GAS_LIMIT_500M)
+            }
+            _ => None,
+        });
+
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             ctx.task_executor().clone(),
             evm_config,
             TempoPayloadBuilderConfig {
+                desired_gas_limit,
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
