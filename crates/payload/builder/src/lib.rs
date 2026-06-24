@@ -605,6 +605,13 @@ fn spawn_ssmr_replay_recovery(
                         recovery_wall_start = Some(Instant::now());
                     }
                     let tx_count = transactions.len();
+                    debug!(
+                        ssmr_replay_shard_index = shard_index,
+                        ssmr_replay_shard_transactions = tx_count,
+                        ssmr_replay_inflight_recovery_jobs = recovery_state.inflight_recovery_jobs,
+                        ssmr_replay_pending_shards = recovery_state.pending_shards.len(),
+                        "SSMR replay source received shard"
+                    );
                     if !insert_ssmr_replay_shard(
                         &ready_tx,
                         &mut recovery_state,
@@ -646,6 +653,12 @@ fn spawn_ssmr_replay_recovery(
                     }
                 }
                 Ok(SsmrReplayCommand::Finish) => {
+                    debug!(
+                        ssmr_replay_shards_received = next_shard_index,
+                        ssmr_replay_inflight_recovery_jobs = recovery_state.inflight_recovery_jobs,
+                        ssmr_replay_pending_shards = recovery_state.pending_shards.len(),
+                        "SSMR replay source received finish"
+                    );
                     drop(job_tx);
                     while recovery_state.inflight_recovery_jobs > 0 {
                         match recovered_rx.recv() {
@@ -704,6 +717,12 @@ fn spawn_ssmr_replay_recovery(
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    warn!(
+                        ssmr_replay_shards_received = next_shard_index,
+                        ssmr_replay_inflight_recovery_jobs = recovery_state.inflight_recovery_jobs,
+                        ssmr_replay_pending_shards = recovery_state.pending_shards.len(),
+                        "SSMR replay source closed before finish"
+                    );
                     let _ = send_ssmr_replay_event(
                         &ready_tx,
                         SsmrRecoveredReplayEvent::Error(
@@ -2188,6 +2207,14 @@ impl SsmrShardPacker {
     fn finish(mut self) {
         self.flush();
         if self.shard_index == 0 {
+            debug!(
+                ssmr_builder_shard_index = 0,
+                ssmr_builder_first_tx_index = 0,
+                ssmr_builder_shard_transactions = 0,
+                ssmr_builder_cumulative_tx_bytes = 0,
+                ssmr_builder_cumulative_gas_estimate = 0,
+                "emitted SSMR builder shard"
+            );
             (self.sink)(SsmrBuilderEvent::Shard(SsmrBuilderShard {
                 shard_index: 0,
                 first_tx_index: 0,
@@ -2197,6 +2224,11 @@ impl SsmrShardPacker {
             }));
             self.shard_index = 1;
         }
+        debug!(
+            ssmr_builder_total_shards = self.shard_index,
+            ssmr_builder_total_transactions = self.next_tx_index,
+            "emitted SSMR builder end"
+        );
         (self.sink)(SsmrBuilderEvent::End {
             total_shards: self.shard_index,
             total_transactions: self.next_tx_index,
@@ -2215,6 +2247,14 @@ impl SsmrShardPacker {
             cumulative_tx_bytes: self.cumulative_tx_bytes,
             cumulative_gas_estimate: self.cumulative_gas_estimate,
         };
+        debug!(
+            ssmr_builder_shard_index = shard.shard_index,
+            ssmr_builder_first_tx_index = shard.first_tx_index,
+            ssmr_builder_shard_transactions = shard.transactions.len(),
+            ssmr_builder_cumulative_tx_bytes = shard.cumulative_tx_bytes,
+            ssmr_builder_cumulative_gas_estimate = shard.cumulative_gas_estimate,
+            "emitted SSMR builder shard"
+        );
         (self.sink)(SsmrBuilderEvent::Shard(shard));
 
         self.shard_index += 1;

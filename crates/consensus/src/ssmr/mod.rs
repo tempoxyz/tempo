@@ -226,6 +226,18 @@ pub(crate) struct SsmrCompleteStream {
 #[derive(Clone, Debug)]
 pub(crate) struct SsmrStreamSnapshot {
     pub(crate) started: bool,
+    pub(crate) end_received: bool,
+    pub(crate) received_shards: u64,
+    pub(crate) expected_shards: Option<u64>,
+    pub(crate) received_transactions: u64,
+    pub(crate) expected_transactions: Option<u64>,
+    pub(crate) buffered_bytes: usize,
+    pub(crate) next_missing_shard: Option<u64>,
+    pub(crate) next_execution_shard: u64,
+    pub(crate) optimistic_execution_started: bool,
+    pub(crate) optimistic_execution_finalizing: bool,
+    pub(crate) optimistic_execution_failed: bool,
+    pub(crate) optimistic_payload_ready: bool,
     pub(crate) complete: Option<SsmrCompleteStream>,
 }
 

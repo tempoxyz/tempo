@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
+    time::Instant,
 };
 
 use alloy_primitives::{B256, Bytes};
@@ -81,6 +82,44 @@ impl ProposalStream {
                 total_transactions,
             })),
             SsmrBuilderEvent::End { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SsmrMessageMetadata {
+    kind: &'static str,
+    shard_index: Option<u64>,
+    first_tx_index: Option<u64>,
+    tx_count: Option<usize>,
+    total_shards: Option<u64>,
+    total_transactions: Option<u64>,
+}
+
+impl SsmrMessageMetadata {
+    fn from_message(message: &SsmrMessage) -> Self {
+        match message {
+            SsmrMessage::Start(start) => Self::from_payload("start", &start.first_shard),
+            SsmrMessage::TxShard(shard) => Self::from_payload("tx_shard", &shard.shard),
+            SsmrMessage::End(end) => Self {
+                kind: "end",
+                shard_index: None,
+                first_tx_index: None,
+                tx_count: None,
+                total_shards: Some(end.total_shards),
+                total_transactions: Some(end.total_transactions),
+            },
+        }
+    }
+
+    fn from_payload(kind: &'static str, payload: &SsmrShardPayload) -> Self {
+        Self {
+            kind,
+            shard_index: Some(payload.shard_index),
+            first_tx_index: Some(payload.first_tx_index),
+            tx_count: Some(payload.tx_count()),
+            total_shards: None,
+            total_transactions: None,
         }
     }
 }
@@ -174,15 +213,39 @@ impl Actor {
         self.task_executor
             .spawn_critical_task("ssmr-outbound", async move {
                 while let Some(outbound) = outbound_rx.next().await {
+                    let send_start = Instant::now();
                     if network_tx
                         .send(Recipients::All, outbound.bytes, true)
                         .await
                         .is_ok()
                     {
+                        let send_elapsed = send_start.elapsed();
                         metrics.bytes_sent.inc_by(outbound.byte_len as u64);
                         if outbound.byte_len != 0 {
                             metrics.shards_sent.inc();
                         }
+                        debug!(
+                            stream.parent = %outbound.key.parent_hash,
+                            stream.height = outbound.key.block_height,
+                            message.kind = outbound.metadata.kind,
+                            shard.index = ?outbound.metadata.shard_index,
+                            shard.first_tx = ?outbound.metadata.first_tx_index,
+                            shard.tx_count = ?outbound.metadata.tx_count,
+                            stream.total_shards = ?outbound.metadata.total_shards,
+                            stream.total_transactions = ?outbound.metadata.total_transactions,
+                            bytes = outbound.byte_len,
+                            ?send_elapsed,
+                            "sent SSMR side-channel message"
+                        );
+                    } else {
+                        warn!(
+                            stream.parent = %outbound.key.parent_hash,
+                            stream.height = outbound.key.block_height,
+                            message.kind = outbound.metadata.kind,
+                            shard.index = ?outbound.metadata.shard_index,
+                            stream.total_shards = ?outbound.metadata.total_shards,
+                            "failed sending SSMR side-channel message"
+                        );
                     }
                 }
             });
@@ -230,6 +293,11 @@ impl Actor {
             }
             ControlMessage::OptimisticPayloadReady { key, payload } => match payload {
                 Ok(payload) => {
+                    debug!(
+                        stream.parent = %key.parent_hash,
+                        stream.height = key.block_height,
+                        "SSMR optimistic payload ready"
+                    );
                     if let Some(stream) = self.streams.get_mut(&key) {
                         stream.optimistic_execution = None;
                         stream.optimistic_payload = Some(payload);
@@ -266,9 +334,24 @@ impl Actor {
         let Some(message) = stream.message_for_event(event) else {
             return;
         };
+        let metadata = SsmrMessageMetadata::from_message(&message);
         let encoded = message.encode();
         let bytes = encoded.len();
+        debug!(
+            stream.parent = %stream.stream_key.parent_hash,
+            stream.height = stream.stream_key.block_height,
+            message.kind = metadata.kind,
+            shard.index = ?metadata.shard_index,
+            shard.first_tx = ?metadata.first_tx_index,
+            shard.tx_count = ?metadata.tx_count,
+            stream.total_shards = ?metadata.total_shards,
+            stream.total_transactions = ?metadata.total_transactions,
+            bytes,
+            "queued SSMR side-channel message"
+        );
         let _ = outbound_tx.unbounded_send(OutboundMessage {
+            key: stream.stream_key,
+            metadata,
             bytes: bytes::Bytes::copy_from_slice(encoded.as_ref()),
             byte_len: bytes,
         });
@@ -276,9 +359,11 @@ impl Actor {
 
     #[instrument(skip_all, err(level = Level::DEBUG), fields(sender = %sender, msg_bytes = message.len()))]
     fn on_network_message(&mut self, sender: PublicKey, message: IoBuf) -> eyre::Result<()> {
-        self.metrics.bytes_received.inc_by(message.len() as u64);
+        let byte_len = message.len();
+        self.metrics.bytes_received.inc_by(byte_len as u64);
         let message = SsmrMessage::decode(message.as_ref()).map_err(|error| eyre::eyre!(error))?;
         let key = message.stream_key();
+        let metadata = SsmrMessageMetadata::from_message(&message);
 
         if key.proposer() != public_key_to_tempo_primitive(&sender) {
             warn!(%sender, "discarding SSMR message from non-proposer sender");
@@ -290,6 +375,19 @@ impl Actor {
         }
 
         self.metrics.shards_received.inc();
+        debug!(
+            %sender,
+            stream.parent = %key.parent_hash,
+            stream.height = key.block_height,
+            message.kind = metadata.kind,
+            shard.index = ?metadata.shard_index,
+            shard.first_tx = ?metadata.first_tx_index,
+            shard.tx_count = ?metadata.tx_count,
+            stream.total_shards = ?metadata.total_shards,
+            stream.total_transactions = ?metadata.total_transactions,
+            bytes = byte_len,
+            "received SSMR side-channel message"
+        );
         self.insert_stream_message(message);
         Ok(())
     }
@@ -307,10 +405,13 @@ impl Actor {
 
     fn insert_stream_message(&mut self, message: SsmrMessage) {
         let key = message.stream_key();
+        let metadata = SsmrMessageMetadata::from_message(&message);
         if self.stream_retired(key) {
             debug!(
                 stream.parent = %key.parent_hash,
                 stream.height = key.block_height,
+                message.kind = metadata.kind,
+                shard.index = ?metadata.shard_index,
                 "discarding retired SSMR stream message"
             );
             return;
@@ -345,6 +446,23 @@ impl Actor {
         };
 
         self.buffered_bytes = self.buffered_bytes.saturating_add(inserted_bytes);
+        if let Some(progress) = self.streams.get(&key).map(StreamBuffer::progress) {
+            debug!(
+                stream.parent = %key.parent_hash,
+                stream.height = key.block_height,
+                message.kind = metadata.kind,
+                shard.index = ?metadata.shard_index,
+                inserted_bytes,
+                stream.buffered_bytes = progress.buffered_bytes,
+                stream.received_shards = progress.received_shards,
+                stream.expected_shards = ?progress.expected_shards,
+                stream.received_transactions = progress.received_transactions,
+                stream.expected_transactions = ?progress.expected_transactions,
+                stream.end_received = progress.end_received,
+                stream.next_missing_shard = ?progress.next_missing_shard,
+                "inserted SSMR stream message"
+            );
+        }
         if self.buffered_bytes > self.max_buffered_bytes {
             self.metrics.streams_invalid.inc();
             warn!(
@@ -364,9 +482,12 @@ impl Actor {
 
         if !was_complete && is_complete {
             self.metrics.streams_completed.inc();
+            let progress = self.streams.get(&key).map(StreamBuffer::progress);
             debug!(
                 stream.parent = %key.parent_hash,
                 stream.height = key.block_height,
+                stream.received_shards = ?progress.map(|progress| progress.received_shards),
+                stream.received_transactions = ?progress.map(|progress| progress.received_transactions),
                 "completed SSMR transcript"
             );
         }
@@ -433,6 +554,11 @@ impl Actor {
                         should_spawn = true;
                     }
                     if should_spawn {
+                        debug!(
+                            stream.parent = %key.parent_hash,
+                            stream.height = key.block_height,
+                            "started SSMR optimistic execution"
+                        );
                         self.spawn_optimistic_execution(key, payload_rx);
                     }
                 }
@@ -461,7 +587,10 @@ impl Actor {
             let mut commands = Vec::new();
 
             while let Some(shard) = transcript.shard(stream.next_execution_shard) {
-                commands.push(ReplaySend::Shard(shard.transactions.clone()));
+                commands.push(ReplaySend::Shard {
+                    shard_index: shard.shard_index,
+                    transactions: shard.transactions.clone(),
+                });
                 stream.next_execution_shard += 1;
             }
 
@@ -470,7 +599,9 @@ impl Actor {
                 && stream.next_execution_shard == transcript.shard_count()
             {
                 execution.finalizing = true;
-                commands.push(ReplaySend::Finish);
+                commands.push(ReplaySend::Finish {
+                    sent_shards: stream.next_execution_shard,
+                });
             }
 
             (!commands.is_empty()).then(|| (execution.tx.clone(), commands))
@@ -480,8 +611,29 @@ impl Actor {
 
         for command in commands {
             let sent = match command {
-                ReplaySend::Shard(transactions) => tx.send_shard(transactions),
-                ReplaySend::Finish => tx.finish(),
+                ReplaySend::Shard {
+                    shard_index,
+                    transactions,
+                } => {
+                    let tx_count = transactions.len();
+                    debug!(
+                        stream.parent = %key.parent_hash,
+                        stream.height = key.block_height,
+                        shard.index = shard_index,
+                        shard.tx_count = tx_count,
+                        "feeding SSMR shard to optimistic execution"
+                    );
+                    tx.send_shard(transactions)
+                }
+                ReplaySend::Finish { sent_shards } => {
+                    debug!(
+                        stream.parent = %key.parent_hash,
+                        stream.height = key.block_height,
+                        sent_shards,
+                        "finishing SSMR optimistic execution stream"
+                    );
+                    tx.finish()
+                }
             };
             if !sent {
                 self.metrics.optimistic_payload_failures.inc();
@@ -588,6 +740,8 @@ enum BuilderMessage {
 }
 
 struct OutboundMessage {
+    key: StreamKey,
+    metadata: SsmrMessageMetadata,
     bytes: bytes::Bytes,
     byte_len: usize,
 }
@@ -628,16 +782,116 @@ struct OptimisticExecutionState {
 }
 
 enum ReplaySend {
-    Shard(Vec<Bytes>),
-    Finish,
+    Shard {
+        shard_index: u64,
+        transactions: Vec<Bytes>,
+    },
+    Finish {
+        sent_shards: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StreamProgress {
+    started: bool,
+    end_received: bool,
+    received_shards: u64,
+    expected_shards: Option<u64>,
+    received_transactions: u64,
+    expected_transactions: Option<u64>,
+    buffered_bytes: usize,
+    next_missing_shard: Option<u64>,
+    next_execution_shard: u64,
+    optimistic_execution_started: bool,
+    optimistic_execution_finalizing: bool,
+    optimistic_execution_failed: bool,
+    optimistic_payload_ready: bool,
 }
 
 impl StreamBuffer {
     fn snapshot(&self) -> SsmrStreamSnapshot {
+        let progress = self.progress();
         SsmrStreamSnapshot {
-            started: self.transcript.is_some(),
+            started: progress.started,
+            end_received: progress.end_received,
+            received_shards: progress.received_shards,
+            expected_shards: progress.expected_shards,
+            received_transactions: progress.received_transactions,
+            expected_transactions: progress.expected_transactions,
+            buffered_bytes: progress.buffered_bytes,
+            next_missing_shard: progress.next_missing_shard,
+            next_execution_shard: progress.next_execution_shard,
+            optimistic_execution_started: progress.optimistic_execution_started,
+            optimistic_execution_finalizing: progress.optimistic_execution_finalizing,
+            optimistic_execution_failed: progress.optimistic_execution_failed,
+            optimistic_payload_ready: progress.optimistic_payload_ready,
             complete: self.complete_stream(),
         }
+    }
+
+    fn progress(&self) -> StreamProgress {
+        let transcript = self.transcript.as_ref();
+        let expected_shards = transcript
+            .and_then(|transcript| transcript.end.as_ref())
+            .map(|end| end.total_shards)
+            .or_else(|| self.pending_end.as_ref().map(|end| end.total_shards));
+        let expected_transactions = transcript
+            .and_then(|transcript| transcript.end.as_ref())
+            .map(|end| end.total_transactions)
+            .or_else(|| self.pending_end.as_ref().map(|end| end.total_transactions));
+        let transcript_shards = transcript.map_or(0, SsmrTranscript::shard_count);
+        let pending_shards = self.pending_shards.len() as u64;
+        let transcript_transactions = transcript.map_or(0, SsmrTranscript::total_transactions);
+        let pending_transactions = self
+            .pending_shards
+            .values()
+            .map(|shard| shard.shard.tx_count() as u64)
+            .sum::<u64>();
+        let optimistic_execution_finalizing = self
+            .optimistic_execution
+            .as_ref()
+            .is_some_and(|execution| execution.finalizing);
+
+        StreamProgress {
+            started: transcript.is_some(),
+            end_received: expected_shards.is_some(),
+            received_shards: transcript_shards + pending_shards,
+            expected_shards,
+            received_transactions: transcript_transactions + pending_transactions,
+            expected_transactions,
+            buffered_bytes: self.buffered_bytes,
+            next_missing_shard: self.next_missing_shard(expected_shards),
+            next_execution_shard: self.next_execution_shard,
+            optimistic_execution_started: self.optimistic_execution.is_some(),
+            optimistic_execution_finalizing,
+            optimistic_execution_failed: self.optimistic_failed,
+            optimistic_payload_ready: self.optimistic_payload.is_some(),
+        }
+    }
+
+    fn next_missing_shard(&self, expected_shards: Option<u64>) -> Option<u64> {
+        let search_limit = if let Some(expected_shards) = expected_shards {
+            expected_shards
+        } else {
+            let transcript_max = self
+                .transcript
+                .as_ref()
+                .and_then(|transcript| transcript.shards.keys().next_back().copied());
+            let pending_max = self.pending_shards.keys().next_back().copied();
+            match transcript_max.max(pending_max) {
+                Some(max_seen) => max_seen.saturating_add(1),
+                None => return None,
+            }
+        };
+
+        (0..search_limit).find(|index| !self.has_shard(*index))
+    }
+
+    fn has_shard(&self, shard_index: u64) -> bool {
+        self.transcript
+            .as_ref()
+            .is_some_and(|transcript| transcript.has_shard(shard_index))
+            || self.pending_shards.contains_key(&shard_index)
     }
 
     fn complete_stream(&self) -> Option<SsmrCompleteStream> {

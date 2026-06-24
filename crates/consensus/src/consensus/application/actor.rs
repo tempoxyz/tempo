@@ -81,6 +81,7 @@ struct BuildProposalArgs {
 }
 
 const SSMR_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const SSMR_WAIT_PROGRESS_LOG_INTERVAL: Duration = Duration::from_millis(250);
 const BLOCK_SUBSCRIBE_EL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SSMR_STATIC_BUILD_BUDGET: Duration = Duration::from_millis(400);
 
@@ -289,6 +290,64 @@ impl<TState> Inner<TState> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SsmrWaitSnapshotState {
+    has_stream: bool,
+    started: bool,
+    end_received: bool,
+    received_shards: u64,
+    expected_shards: Option<u64>,
+    received_transactions: u64,
+    expected_transactions: Option<u64>,
+    buffered_bytes: usize,
+    next_missing_shard: Option<u64>,
+    next_execution_shard: u64,
+    optimistic_execution_started: bool,
+    optimistic_execution_finalizing: bool,
+    optimistic_execution_failed: bool,
+    optimistic_payload_ready: bool,
+}
+
+impl SsmrWaitSnapshotState {
+    fn from_snapshot(snapshot: Option<&SsmrStreamSnapshot>) -> Self {
+        let Some(snapshot) = snapshot else {
+            return Self {
+                has_stream: false,
+                started: false,
+                end_received: false,
+                received_shards: 0,
+                expected_shards: None,
+                received_transactions: 0,
+                expected_transactions: None,
+                buffered_bytes: 0,
+                next_missing_shard: None,
+                next_execution_shard: 0,
+                optimistic_execution_started: false,
+                optimistic_execution_finalizing: false,
+                optimistic_execution_failed: false,
+                optimistic_payload_ready: false,
+            };
+        };
+
+        Self {
+            has_stream: true,
+            started: snapshot.started,
+            end_received: snapshot.end_received,
+            received_shards: snapshot.received_shards,
+            expected_shards: snapshot.expected_shards,
+            received_transactions: snapshot.received_transactions,
+            expected_transactions: snapshot.expected_transactions,
+            buffered_bytes: snapshot.buffered_bytes,
+            next_missing_shard: snapshot.next_missing_shard,
+            next_execution_shard: snapshot.next_execution_shard,
+            optimistic_execution_started: snapshot.optimistic_execution_started,
+            optimistic_execution_finalizing: snapshot.optimistic_execution_finalizing,
+            optimistic_execution_failed: snapshot.optimistic_execution_failed,
+            optimistic_payload_ready: snapshot.optimistic_payload_ready,
+        }
+    }
+}
+
 impl Inner<Init> {
     async fn wait_for_started_ssmr_stream<TContext>(
         &self,
@@ -299,7 +358,38 @@ impl Inner<Init> {
     where
         TContext: commonware_runtime::Clock,
     {
+        let wait_start = Instant::now();
+        let mut last_log_state = None;
+        let mut last_log_at = Instant::now();
         loop {
+            let log_state = SsmrWaitSnapshotState::from_snapshot(snapshot.as_ref());
+            if last_log_state != Some(log_state)
+                || last_log_at.elapsed() >= SSMR_WAIT_PROGRESS_LOG_INTERVAL
+            {
+                debug!(
+                    block.digest = %block.digest(),
+                    block.height = %block.height(),
+                    wait_elapsed = ?wait_start.elapsed(),
+                    stream.has_stream = log_state.has_stream,
+                    stream.started = log_state.started,
+                    stream.end_received = log_state.end_received,
+                    stream.received_shards = log_state.received_shards,
+                    stream.expected_shards = ?log_state.expected_shards,
+                    stream.received_transactions = log_state.received_transactions,
+                    stream.expected_transactions = ?log_state.expected_transactions,
+                    stream.buffered_bytes = log_state.buffered_bytes,
+                    stream.next_missing_shard = ?log_state.next_missing_shard,
+                    stream.next_execution_shard = log_state.next_execution_shard,
+                    optimistic.started = log_state.optimistic_execution_started,
+                    optimistic.finalizing = log_state.optimistic_execution_finalizing,
+                    optimistic.failed = log_state.optimistic_execution_failed,
+                    optimistic.ready = log_state.optimistic_payload_ready,
+                    "waiting for SSMR stream"
+                );
+                last_log_state = Some(log_state);
+                last_log_at = Instant::now();
+            }
+
             if let Some(current) = snapshot.take() {
                 if let Some(stream) = current.complete.as_ref()
                     && stream.optimistic_payload.is_none()
@@ -315,6 +405,17 @@ impl Inner<Init> {
                 if !ssmr_snapshot_waiting_for_optimistic_payload(&current)
                     && let Some(stream) = current.complete
                 {
+                    debug!(
+                        block.digest = %block.digest(),
+                        block.height = %block.height(),
+                        wait_elapsed = ?wait_start.elapsed(),
+                        stream.received_shards = log_state.received_shards,
+                        stream.expected_shards = ?log_state.expected_shards,
+                        stream.received_transactions = log_state.received_transactions,
+                        stream.expected_transactions = ?log_state.expected_transactions,
+                        stream.next_execution_shard = log_state.next_execution_shard,
+                        "SSMR stream ready for proposal verification"
+                    );
                     return stream;
                 }
             }
