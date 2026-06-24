@@ -19,7 +19,7 @@ use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},
 };
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 
@@ -128,6 +128,7 @@ where
                 let Some(tx) = planner.best_txs.next() else {
                     planner.source_exhausted = true;
                     let _ = planner.results_tx.send(PlannerMessage::SourceExhausted);
+                    debug!(target: "payload_builder", "Source for builder planner exhausted");
                     return;
                 };
 
