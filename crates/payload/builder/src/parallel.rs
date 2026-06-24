@@ -19,7 +19,7 @@ use tempo_transaction_pool::{
     StateAwareBestTransactions,
     best::{BestTransaction, StateAwareBestTransactionsUpdate},
 };
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
 
@@ -43,14 +43,13 @@ impl PlannedTransaction {
 /// Streams speculative action collection on the prewarming worker pool.
 pub(crate) struct PrewarmingPlanner<Provider> {
     commands_tx: Sender<PlannerCommand>,
-    results_rx: Receiver<PlannerMessage>,
+    results_rx: Receiver<PlannedTransaction>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
     in_flight: Arc<AtomicUsize>,
     state_updates_rx: Receiver<StateAwareBestTransactionsUpdate>,
     state_update_pool: Vec<StateAwareBestTransactionsUpdate>,
     completed: usize,
-    source_exhausted: bool,
 }
 
 impl<Provider> PrewarmingPlanner<Provider>
@@ -82,7 +81,6 @@ where
             in_flight: in_flight.clone(),
             action_buffers: Vec::new(),
             next_expiring_nonce_offset: 0,
-            source_exhausted: false,
         };
         prewarm
             .executor()
@@ -99,7 +97,6 @@ where
             state_updates_rx,
             state_update_pool: Vec::new(),
             completed: 0,
-            source_exhausted: false,
         }
     }
 
@@ -121,14 +118,11 @@ where
                 StateAwareBestTransactions<Txs>,
                 Provider,
             >| {
-                if planner.source_exhausted || planner.stop.load(Ordering::Relaxed) {
+                if planner.stop.load(Ordering::Relaxed) {
                     return;
                 }
 
                 let Some(tx) = planner.best_txs.next() else {
-                    planner.source_exhausted = true;
-                    let _ = planner.results_tx.send(PlannerMessage::SourceExhausted);
-                    debug!(target: "payload_builder", "Source for builder planner exhausted");
                     return;
                 };
 
@@ -148,7 +142,7 @@ where
                 scope.spawn(move |_| {
                     let planned =
                         plan_transaction_replay(prewarm, tx, action_buffer, expiring_nonce_offset);
-                    let _ = results_tx.send(PlannerMessage::Planned { planned });
+                    let _ = results_tx.send(planned);
                     let _ = commands_tx.send(PlannerCommand::Advance);
                 });
             };
@@ -189,25 +183,17 @@ where
     }
 
     pub(crate) fn next(&mut self) -> Option<PlannedTransaction> {
-        loop {
-            if self.source_exhausted && self.completed == self.in_flight.load(Ordering::Relaxed) {
-                return None;
-            }
-
-            let Ok(message) = self.results_rx.recv() else {
-                return None;
-            };
-
-            match message {
-                PlannerMessage::Planned { planned } => {
-                    self.completed += 1;
-                    return Some(planned);
-                }
-                PlannerMessage::SourceExhausted => {
-                    self.source_exhausted = true;
-                }
-            }
+        if self.completed == self.in_flight.load(Ordering::Relaxed) {
+            return None;
         }
+
+        let Ok(planned) = self.results_rx.recv() else {
+            self.commands_tx.send(PlannerCommand::Advance).ok()?;
+            return None;
+        };
+
+        self.completed += 1;
+        Some(planned)
     }
 
     pub(crate) fn mark_invalid(&self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
@@ -261,7 +247,7 @@ impl<Provider> Drop for PrewarmingPlanner<Provider> {
 
 struct PlannerContext<Txs, Provider> {
     best_txs: Txs,
-    results_tx: Sender<PlannerMessage>,
+    results_tx: Sender<PlannedTransaction>,
     commands_tx: Sender<PlannerCommand>,
     commands_rx: Receiver<PlannerCommand>,
     state_updates_tx: Sender<StateAwareBestTransactionsUpdate>,
@@ -270,7 +256,6 @@ struct PlannerContext<Txs, Provider> {
     in_flight: Arc<AtomicUsize>,
     action_buffers: Vec<Vec<StorageAction>>,
     next_expiring_nonce_offset: usize,
-    source_exhausted: bool,
 }
 
 enum PlannerCommand {
@@ -282,14 +267,8 @@ enum PlannerCommand {
     StateUpdate(StateAwareBestTransactionsUpdate),
     RecycleActions(Vec<StorageAction>),
     Stop {
-        drain_rx: Receiver<PlannerMessage>,
+        drain_rx: Receiver<PlannedTransaction>,
     },
-}
-
-#[derive(Debug)]
-enum PlannerMessage {
-    Planned { planned: PlannedTransaction },
-    SourceExhausted,
 }
 
 fn plan_transaction_replay<Provider>(
