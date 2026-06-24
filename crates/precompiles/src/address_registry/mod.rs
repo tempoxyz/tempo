@@ -140,6 +140,7 @@ impl AddressRegistry {
     // ────────────────── View Functions ──────────────────
 
     /// Returns the registered master address for `master_id`, or `None` if unregistered.
+    #[inline]
     pub fn get_master(&self, master_id: MasterId) -> Result<Option<Address>> {
         Ok(self.data[master_id].read()?.master_address())
     }
@@ -151,6 +152,7 @@ impl AddressRegistry {
     ///
     /// # Errors
     /// - `VirtualAddressUnregistered` — `to` is a virtual address whose `masterId` is not registered
+    #[inline]
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
