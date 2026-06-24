@@ -17,6 +17,13 @@ impl<K, H> Default for LinearCache<K, H> {
     }
 }
 
+impl<K, H> LinearCache<K, H> {
+    #[inline(never)]
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 impl<K: Eq + Clone, H> LinearCache<K, H> {
     #[inline]
     fn len(&self) -> usize {
@@ -84,6 +91,13 @@ impl<K, H> Default for MapCache<K, H> {
     }
 }
 
+impl<K, H> MapCache<K, H> {
+    #[inline(never)]
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
     #[inline]
     fn reserve(&mut self, additional: usize) {
@@ -126,6 +140,16 @@ enum HandlerCacheState<K, H> {
     Mapped(MapCache<K, H>),
 }
 
+impl<K, H> HandlerCacheState<K, H> {
+    #[inline(never)]
+    fn clear(&mut self) {
+        match self {
+            Self::Linear(linear) => linear.clear(),
+            Self::Mapped(map) => map.clear(),
+        }
+    }
+}
+
 /// Hybrid linear/map cache for lazily computed handlers with stable references.
 ///
 /// Enables `Index` implementations on handlers by storing child handlers and
@@ -145,6 +169,13 @@ impl<K, H, const THRESHOLD: usize> HandlerCache<K, H, THRESHOLD> {
         Self {
             inner: RefCell::new(HandlerCacheState::Linear(LinearCache::default())),
         }
+    }
+}
+
+impl<K, H, const THRESHOLD: usize> Drop for HandlerCache<K, H, THRESHOLD> {
+    #[inline(never)]
+    fn drop(&mut self) {
+        self.inner.get_mut().clear();
     }
 }
 
