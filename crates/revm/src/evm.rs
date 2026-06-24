@@ -88,7 +88,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
-    /// Replaces the protocol fee manager used by the EVM.
+    /// Updates the protocol fee manager used by the EVM.
     pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
     where
         F: ProtocolFeeManager<DB> + 'static,
@@ -96,7 +96,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.with_fee_manager_arc(Arc::new(fee_manager))
     }
 
-    /// Replaces the protocol fee manager used by the EVM.
+    /// Updates the protocol fee manager used by the EVM.
     pub fn with_fee_manager_arc(self, fee_manager: Arc<dyn ProtocolFeeManager<DB>>) -> Self {
         let Self {
             inner,
