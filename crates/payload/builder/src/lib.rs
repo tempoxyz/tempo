@@ -96,6 +96,7 @@ pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
     executor: TaskExecutor,
+    config: TempoPayloadBuilderConfig,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
@@ -109,16 +110,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
-    /// Whether the node is configured in `--dev` miner mode.
-    is_dev: bool,
-    /// Whether to enable state provider metrics.
-    state_provider_metrics: bool,
-    /// Whether to enable prewarming of best transactions.
-    enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
-    /// Desired gas limit.
-    desired_gas_limit: u64,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -143,18 +136,6 @@ pub struct TempoPayloadBuilderConfig {
     /// above `1.0` stop transaction execution earlier to leave room for
     /// `builder_finish`, which validators also repeat.
     pub build_time_multiplier: f64,
-}
-
-impl Default for TempoPayloadBuilderConfig {
-    fn default() -> Self {
-        Self {
-            desired_gas_limit: alloy_eips::eip1559::ETHEREUM_BLOCK_GAS_LIMIT_30M,
-            is_dev: false,
-            state_provider_metrics: false,
-            enable_prewarming: true,
-            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-        }
-    }
 }
 
 impl TempoPayloadBuilderConfig {
@@ -184,15 +165,12 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             pool,
             provider,
             executor,
+            config,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
-            is_dev: config.is_dev,
-            state_provider_metrics: config.state_provider_metrics,
-            enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
-            desired_gas_limit: config.desired_gas_limit,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -354,7 +332,7 @@ where
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
-            && !self.is_dev;
+            && !self.config.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -383,7 +361,7 @@ where
                 Some(self.cache_metrics.clone()),
             ));
         }
-        if self.state_provider_metrics {
+        if self.config.state_provider_metrics {
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
@@ -405,11 +383,9 @@ where
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp);
 
-        let block_gas_limit = TempoPayloadBuilderConfig {
-            desired_gas_limit: self.desired_gas_limit,
-            ..Default::default()
-        }
-        .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
+        let block_gas_limit = self
+            .config
+            .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let shared_gas_limit =
             chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
@@ -573,7 +549,7 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+        let mut best_txs = StateAwareBestTransactions::new(if self.config.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
