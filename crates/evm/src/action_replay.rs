@@ -173,8 +173,8 @@ impl ExpiringNonceReplayState {
     fn ring_ptr<DB: Database>(
         &mut self,
         db: &mut State<DB>,
-    ) -> Result<u32, StorageActionReplayExecutionError> {
-        let ptr = match self.ring_ptr {
+    ) -> Result<U256, StorageActionReplayExecutionError> {
+        Ok(match self.ring_ptr {
             Some(ptr) => ptr,
             None => {
                 let ptr = state_storage(
@@ -185,8 +185,7 @@ impl ExpiringNonceReplayState {
                 self.ring_ptr = Some(ptr);
                 ptr
             }
-        };
-        u256_to_u32(ptr)
+        })
     }
 
     fn store(&mut self, slot: U256, original: U256, current: U256) {
@@ -200,13 +199,9 @@ impl ExpiringNonceReplayState {
         ));
     }
 
-    fn set_next_ring_ptr(&mut self, next: u32) {
-        self.pending_ring_ptr = Some(U256::from(next));
+    fn set_next_ring_ptr(&mut self, next: U256) {
+        self.pending_ring_ptr = Some(next);
     }
-}
-
-struct AppliedActionReplay {
-    state: EvmState,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
@@ -260,7 +255,7 @@ where
                         error: error.into(),
                     })?;
             let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
-            let applied = match action_replay_state(
+            let state = match action_replay_state(
                 tx_env.caller(),
                 self.inner.evm.db_mut(),
                 &actions,
@@ -279,7 +274,7 @@ where
             let result = TempoTxResult::new_precomputed(
                 recovered.tx(),
                 execution_result,
-                applied.state,
+                state,
                 next_section,
                 self.is_payment(recovered.tx()),
                 block_gas_used,
@@ -308,7 +303,7 @@ fn action_replay_state<DB: Database>(
     commit_reads: bool,
     expiring_nonce: Option<ExpiringNonceReplay>,
     block_timestamp: u64,
-) -> Result<AppliedActionReplay, StorageActionReplayExecutionError> {
+) -> Result<EvmState, StorageActionReplayExecutionError> {
     if actions.is_empty() && expiring_nonce.is_none() {
         return Err(StorageActionReplayExecutionError::Fallback(
             StorageActionReplayFallback::MissingActions,
@@ -447,7 +442,7 @@ fn action_replay_state<DB: Database>(
         }
     }
 
-    Ok(AppliedActionReplay { state })
+    Ok(state)
 }
 
 fn apply_expiring_nonce_replay<DB: Database>(
@@ -463,19 +458,21 @@ fn apply_expiring_nonce_replay<DB: Database>(
         return Err(action_conflict());
     }
 
+    let nonce_manager = NonceManager::new();
     let now = U256::from(block_timestamp);
     let ptr = replay_state.ring_ptr(db)?;
 
-    let seen_slot = expiring_nonce_seen_slot(expiring_nonce.hash);
+    let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
     let seen_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
     if !seen_expiry.is_zero() && seen_expiry > now {
         return Err(action_conflict());
     }
 
-    let ring_slot = NonceManager::new().expiring_nonce_ring[ptr].slot();
+    let ptr_u32 = ptr.try_into().map_err(|_| action_conflict())?;
+    let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
     let old_hash = state_storage(db, NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
     if !old_hash.is_zero() {
-        let old_seen_slot = expiring_nonce_seen_slot(B256::from(old_hash));
+        let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
         let old_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
         if !old_expiry.is_zero() && old_expiry > now {
             return Err(action_conflict());
@@ -495,14 +492,10 @@ fn apply_expiring_nonce_replay<DB: Database>(
     );
 
     let next = ptr
-        .checked_add(1)
+        .checked_add(U256::ONE)
         .filter(|next| *next < EXPIRING_NONCE_SET_CAPACITY)
-        .unwrap_or(0);
-    replay_state.store(
-        NonceManager::new().expiring_nonce_ring_ptr.slot(),
-        U256::from(ptr),
-        U256::from(next),
-    );
+        .unwrap_or(U256::ZERO);
+    replay_state.store(nonce_manager.expiring_nonce_ring_ptr.slot(), ptr, next);
     replay_state.set_next_ring_ptr(next);
 
     Ok(())
@@ -533,17 +526,6 @@ fn apply_expiring_nonce_state_changes<DB: Database>(
     }
 
     Ok(())
-}
-
-fn expiring_nonce_seen_slot(hash: B256) -> U256 {
-    NonceManager::new().expiring_nonce_seen[hash].slot()
-}
-
-fn u256_to_u32(value: U256) -> Result<u32, StorageActionReplayExecutionError> {
-    if value > U256::from(u32::MAX) {
-        return Err(action_conflict());
-    }
-    Ok(value.to::<u32>())
 }
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {
