@@ -769,8 +769,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         vm.recordLogs();
         vm.prank(actor);
         try token.setRewardRecipient(virtualAddr) {
-            // T7 accepts this call as a no-op; the state checks below still apply.
-        } catch (bytes memory reason) {
+        // T7 accepts this call as a no-op; the state checks below still apply.
+        }
+        catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
                 ITIP20.InvalidRecipient.selector,
