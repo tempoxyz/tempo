@@ -403,6 +403,7 @@ where
         }
     }
 
+    #[inline(always)]
     fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = Some(actions);
         self
