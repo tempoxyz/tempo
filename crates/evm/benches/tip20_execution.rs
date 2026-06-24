@@ -862,7 +862,7 @@ where
             ommers: &[],
             withdrawals: None,
             extra_data: Bytes::new(),
-            tx_count_hint: Some(txs.len()),
+            tx_count_hint: None,
             slot_number: None,
         },
         general_gas_limit: 10_000_000_000,
