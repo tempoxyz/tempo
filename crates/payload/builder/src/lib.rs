@@ -123,7 +123,9 @@ pub struct TempoPayloadBuilder<Provider> {
 #[derive(Debug, Clone, Copy)]
 pub struct TempoPayloadBuilderConfig {
     /// Desired gas limit.
-    pub desired_gas_limit: u64,
+    ///
+    /// If not set, the parent gas limit is used.
+    pub desired_gas_limit: Option<u64>,
     /// Whether the node is configured in `--dev` miner mode.
     pub is_dev: bool,
     /// Whether to enable state provider metrics.
@@ -141,6 +143,8 @@ pub struct TempoPayloadBuilderConfig {
 impl TempoPayloadBuilderConfig {
     /// Returns the gas limit for the next block based on the parent gas limit and an optional
     /// target from payload attributes.
+    ///
+    /// If [`TempoPayloadBuilderConfig::desired_gas_limit`] is [`None`], the parent gas limit is used.
     pub fn gas_limit_with_target(
         &self,
         parent_gas_limit: u64,
@@ -148,7 +152,9 @@ impl TempoPayloadBuilderConfig {
     ) -> u64 {
         calculate_block_gas_limit(
             parent_gas_limit,
-            target_gas_limit.unwrap_or(self.desired_gas_limit),
+            target_gas_limit
+                .or(self.desired_gas_limit)
+                .unwrap_or(parent_gas_limit),
         )
     }
 }

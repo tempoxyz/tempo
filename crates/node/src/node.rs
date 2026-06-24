@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use eyre::bail;
 use reth_chainspec::{ChainKind, EthChainSpec, NamedChain};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
@@ -728,19 +727,12 @@ where
     ) -> eyre::Result<Self::PayloadBuilder> {
         let conf = ctx.payload_builder_config();
         let chain = ctx.chain_spec().chain();
-        let gas_limit = if let Some(limit) = conf.gas_limit() {
-            limit
-        } else {
-            match chain.kind() {
-                ChainKind::Named(
-                    NamedChain::Tempo
-                    | NamedChain::TempoModerato
-                    | NamedChain::TempoDevnet
-                    | NamedChain::Dev,
-                ) => BLOCK_GAS_LIMIT_500M,
-                _ => bail!("unsupported chain kind: {:?}", chain.kind()),
+        let gas_limit = conf.gas_limit().or_else(|| match chain.kind() {
+            ChainKind::Named(NamedChain::Tempo | NamedChain::TempoModerato) => {
+                Some(BLOCK_GAS_LIMIT_500M)
             }
-        };
+            _ => None,
+        });
 
         Ok(TempoPayloadBuilder::new(
             pool,
