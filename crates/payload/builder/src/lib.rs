@@ -417,6 +417,7 @@ where
             + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
+        let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut total_fees = U256::ZERO;
@@ -766,10 +767,11 @@ where
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+            let receipt = executor.receipts().last().unwrap().clone();
+            if !receipt.success {
+                reverted_transactions += 1;
+            }
+            let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -844,10 +846,11 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
-                    BuilderTx::Owned(Box::new(tx)),
-                    executor.receipts().last().unwrap().clone(),
-                ));
+                let receipt = executor.receipts().last().unwrap().clone();
+                if !receipt.success {
+                    reverted_transactions += 1;
+                }
+                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
             }
 
             self.metrics
@@ -1045,6 +1048,12 @@ where
         self.metrics
             .total_transactions_last
             .set(total_transactions as f64);
+        self.metrics
+            .reverted_transactions
+            .record(reverted_transactions as f64);
+        self.metrics
+            .reverted_transactions_last
+            .set(reverted_transactions as f64);
 
         let gas_used = block.gas_used();
         self.metrics.gas_used.record(gas_used as f64);
