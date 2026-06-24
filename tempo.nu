@@ -1467,6 +1467,9 @@ def generate-summary [
             $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
         } else { null }
     }
+    let count_row = { |label: string, base: float, feature: float|
+        $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
+    }
     let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
     let b_builder_mgas = do $to_mgas_s $b_builder_gas
     let f_builder_mgas = do $to_mgas_s $f_builder_gas
@@ -1563,7 +1566,7 @@ def generate-summary [
         $"| Pool Fetch P99 [ms] | (do $fmt_stat $b_builder_pool_fetch p99) | (do $fmt_stat $f_builder_pool_fetch p99) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p99) |"
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
-        (do $nonzero_count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
+        (do $count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
         (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
