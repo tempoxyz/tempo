@@ -66,8 +66,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    ProtocolFeeManager, TempoBatchCallEnv, TempoEvm, TempoFeeManager, TempoInvalidTransaction,
-    TempoTxEnv,
+    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -411,12 +410,12 @@ fn calculate_key_authorization_gas(
 ///
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
-pub struct TempoEvmHandler<DB, I, T = TempoFeeManager> {
+pub struct TempoEvmHandler<DB, I> {
     /// Phantom data to avoid type inference issues.
-    _phantom: core::marker::PhantomData<(DB, I, T)>,
+    _phantom: core::marker::PhantomData<(DB, I)>,
 }
 
-impl<DB, I, T> TempoEvmHandler<DB, I, T> {
+impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
@@ -425,13 +424,10 @@ impl<DB, I, T> TempoEvmHandler<DB, I, T> {
     }
 }
 
-impl<DB: alloy_evm::Database, I, T> TempoEvmHandler<DB, I, T>
-where
-    T: ProtocolFeeManager,
-{
+impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
@@ -460,14 +456,13 @@ where
     }
 }
 
-impl<DB, I, T> TempoEvmHandler<DB, I, T>
+impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
-    T: ProtocolFeeManager + Clone,
 {
     fn prevalidate_keychain_call_scopes(
         &self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         calls: &[tempo_primitives::transaction::Call],
         remaining_gas: &mut u64,
         reservoir: u64,
@@ -562,7 +557,7 @@ where
     /// execution can use by providing the appropriate exec loop function.
     fn execute_single_call_with<F>(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
         mut run_loop: F,
@@ -570,8 +565,8 @@ where
     where
         F: FnMut(
             &mut Self,
-            &mut TempoEvm<DB, I, T>,
-            <<TempoEvm<DB, I, T> as EvmTr>::Frame as FrameTr>::FrameInit,
+            &mut TempoEvm<DB, I>,
+            <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         // Create first frame action
@@ -591,7 +586,7 @@ where
     /// This calls the same helper methods used by the default [`Handler::execution`] implementation.
     fn execute_single_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
@@ -619,7 +614,7 @@ where
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
     fn execute_multi_call_with<F>(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
@@ -628,7 +623,7 @@ where
     where
         F: FnMut(
             &mut Self,
-            &mut TempoEvm<DB, I, T>,
+            &mut TempoEvm<DB, I>,
             u64,
             u64,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
@@ -759,7 +754,7 @@ where
     /// Executes a multi-call AA transaction atomically.
     fn execute_multi_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
@@ -773,7 +768,7 @@ where
     /// inspect_run_exec_loop instead of run_exec_loop.
     fn inspect_execute_single_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -789,7 +784,7 @@ where
     /// inspect_execute_single_call instead of execute_single_call.
     fn inspect_execute_multi_call(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
         calls: Vec<tempo_primitives::transaction::Call>,
@@ -807,18 +802,17 @@ where
     }
 }
 
-impl<DB, I, T> Default for TempoEvmHandler<DB, I, T> {
+impl<DB, I> Default for TempoEvmHandler<DB, I> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<DB, I, T> Handler for TempoEvmHandler<DB, I, T>
+impl<DB, I> Handler for TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
-    T: ProtocolFeeManager + Clone,
 {
-    type Evm = TempoEvm<DB, I, T>;
+    type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
 
@@ -2163,17 +2157,16 @@ where
     }
 }
 
-impl<DB, I, T> TempoEvmHandler<DB, I, T>
+impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
-    T: ProtocolFeeManager + Clone,
 {
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(
         &mut self,
-        evm: &mut TempoEvm<DB, I, T>,
+        evm: &mut TempoEvm<DB, I>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         let mut init_and_floor_gas = self.validate(evm)?;
         self.pre_execution(evm, &mut init_and_floor_gas)?;
@@ -2322,12 +2315,11 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 /// Calculates intrinsic gas based on:
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
 /// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
-fn validate_aa_initial_tx_gas<DB, I, T>(
-    evm: &TempoEvm<DB, I, T>,
+fn validate_aa_initial_tx_gas<DB, I>(
+    evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: alloy_evm::Database,
-    T: ProtocolFeeManager,
 {
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
     let gas_limit = tx.gas_limit();
@@ -2433,11 +2425,10 @@ where
     Ok(balance)
 }
 
-impl<DB, I, T> InspectorHandler for TempoEvmHandler<DB, I, T>
+impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
     I: Inspector<TempoContext<DB>>,
-    T: ProtocolFeeManager + Clone,
 {
     type IT = EthInterpreter;
 

@@ -1,42 +1,25 @@
-use crate::{TempoStateAccess, TempoTx};
+use crate::{TempoStateAccess, TempoTxEnv};
 use alloy_primitives::{Address, U256};
 use core::fmt::Debug;
+use revm::{Database, context::Journal};
+use std::sync::Arc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::Result as TempoResult, storage::StorageActions, tip_fee_manager::TipFeeManager,
 };
 
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
-pub trait ProtocolFeeManager: Debug {
+pub trait ProtocolFeeManager<DB: Database>: Debug {
     /// Resolves the fee token that should pay for `tx`.
-    fn get_fee_token<S, TX, M>(
+    fn get_fee_token(
         &self,
-        state: &mut S,
-        tx: TX,
+        journal: &mut Journal<DB>,
+        tx: &TempoTxEnv,
         fee_payer: Address,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address>
-    where
-        S: TempoStateAccess<M> + Sized,
-        TX: TempoTx,
-    {
-        state.get_fee_token(tx, fee_payer, spec, actions)
-    }
-
-    /// Returns whether `fee_payer` can transfer fees in `fee_token`.
-    fn can_fee_payer_transfer<S, M>(
-        &self,
-        state: &mut S,
-        fee_token: Address,
-        fee_payer: Address,
-        spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> TempoResult<bool>
-    where
-        S: TempoStateAccess<M> + Sized,
-    {
-        state.can_fee_payer_transfer(fee_token, fee_payer, spec, actions)
+    ) -> TempoResult<Address> {
+        journal.get_fee_token(tx, fee_payer, spec, actions)
     }
 
     /// Collects the maximum possible fee before transaction execution.
@@ -60,6 +43,12 @@ pub trait ProtocolFeeManager: Debug {
     ) -> TempoResult<U256>;
 }
 
+/// Creates protocol fee manager instances for each EVM database type.
+pub trait ProtocolFeeManagerProvider: Debug + Clone {
+    /// Returns a fee manager object for the requested database type.
+    fn fee_manager<DB: Database>(&self) -> Arc<dyn ProtocolFeeManager<DB>>;
+}
+
 /// FeeManager for the default TempoEVM configuration
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TempoFeeManager;
@@ -71,7 +60,13 @@ impl TempoFeeManager {
     }
 }
 
-impl ProtocolFeeManager for TempoFeeManager {
+impl ProtocolFeeManagerProvider for TempoFeeManager {
+    fn fee_manager<DB: Database>(&self) -> Arc<dyn ProtocolFeeManager<DB>> {
+        Arc::new(*self)
+    }
+}
+
+impl<DB: Database> ProtocolFeeManager<DB> for TempoFeeManager {
     fn collect_fee_pre_tx(
         &self,
         fee_payer: Address,

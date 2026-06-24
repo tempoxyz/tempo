@@ -23,7 +23,7 @@ mod tx;
 pub use block::TempoBlockEnv;
 pub use error::{TempoHaltReason, TempoInvalidTransaction};
 pub use evm::TempoEvm;
-pub use fee_manager::{ProtocolFeeManager, TempoFeeManager};
+pub use fee_manager::{ProtocolFeeManager, ProtocolFeeManagerProvider, TempoFeeManager};
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tx::{TempoBatchCallEnv, TempoTxEnv};

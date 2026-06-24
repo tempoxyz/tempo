@@ -10,7 +10,7 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
@@ -20,7 +20,7 @@ pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardf
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
-pub struct TempoEvm<DB: Database, I, F = TempoFeeManager> {
+pub struct TempoEvm<DB: Database, I> {
     /// Inner EVM type.
     #[deref]
     #[deref_mut]
@@ -58,7 +58,7 @@ pub struct TempoEvm<DB: Database, I, F = TempoFeeManager> {
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
-    pub(crate) fee_manager: F,
+    pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -82,20 +82,22 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             },
             actions,
             non_creditable_slots,
-            TempoFeeManager::new(),
+            Arc::new(TempoFeeManager::new()),
         )
     }
 }
 
-impl<DB: Database, I, F> TempoEvm<DB, I, F>
-where
-    F: ProtocolFeeManager,
-{
+impl<DB: Database, I> TempoEvm<DB, I> {
     /// Replaces the protocol fee manager used by the EVM
-    pub fn with_fee_manager<OF>(self, fee_manager: OF) -> TempoEvm<DB, I, OF>
+    pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
     where
-        OF: ProtocolFeeManager,
+        F: ProtocolFeeManager<DB> + 'static,
     {
+        self.with_fee_manager_arc(Arc::new(fee_manager))
+    }
+
+    /// Replaces the protocol fee manager used by the EVM.
+    pub fn with_fee_manager_arc(self, fee_manager: Arc<dyn ProtocolFeeManager<DB>>) -> Self {
         let Self {
             inner,
             collected_fee,
@@ -136,7 +138,7 @@ where
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-        fee_manager: F,
+        fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
     ) -> Self {
         Self {
             inner,
@@ -169,12 +171,9 @@ where
     }
 }
 
-impl<DB: Database, I, F> TempoEvm<DB, I, F>
-where
-    F: ProtocolFeeManager,
-{
+impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
-    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP, F> {
+    pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         let Self {
             inner,
             actions,
@@ -209,10 +208,9 @@ where
     }
 }
 
-impl<DB, I, F> EvmTr for TempoEvm<DB, I, F>
+impl<DB, I> EvmTr for TempoEvm<DB, I>
 where
     DB: Database,
-    F: ProtocolFeeManager,
 {
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
@@ -267,11 +265,10 @@ where
     }
 }
 
-impl<DB, I, F> InspectorEvmTr for TempoEvm<DB, I, F>
+impl<DB, I> InspectorEvmTr for TempoEvm<DB, I>
 where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
-    F: ProtocolFeeManager,
 {
     type Inspector = I;
 
