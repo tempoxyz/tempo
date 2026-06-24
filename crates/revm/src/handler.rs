@@ -37,6 +37,8 @@ use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
+#[cfg(test)]
+use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -52,7 +54,6 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
         evm::EvmPrecompileStorageProvider,
     },
-    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -967,14 +968,15 @@ where
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
+        let fee_manager = evm.fee_manager.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec, actions.clone())
+        let fee_token = fee_manager
+            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         evm.fee_token = Some(fee_token);
@@ -1388,7 +1390,7 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    TipFeeManager::new().collect_fee_pre_tx(
+                    fee_manager.collect_fee_pre_tx(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
@@ -1648,7 +1650,7 @@ where
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
-        // Call collectFeePostTx on TipFeeManager precompile
+        let fee_manager = evm.fee_manager.clone();
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
@@ -1677,7 +1679,6 @@ where
             return Ok(());
         }
 
-        // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
@@ -1688,14 +1689,11 @@ where
             tx,
             actions,
             || {
-                let mut fee_manager = TipFeeManager::new();
-
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
                     let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
                     let fee_token = evm
                         .fee_token
                         .expect("set in `validate_against_state_and_deduct_caller`");
-                    // Call collectFeePostTx (handles both refund and fee queuing)
                     fee_manager
                         .collect_fee_post_tx(
                             fee_payer,

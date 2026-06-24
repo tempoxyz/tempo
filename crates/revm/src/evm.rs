@@ -1,4 +1,4 @@
-use crate::{TempoBlockEnv, TempoTxEnv, instructions};
+use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -10,7 +10,7 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
@@ -57,6 +57,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Internal protocol fee hooks.
+    pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -80,7 +82,47 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             },
             actions,
             non_creditable_slots,
+            Arc::new(TempoFeeManager::new()),
         )
+    }
+}
+
+impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Updates the protocol fee manager used by the EVM.
+    pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
+    where
+        F: ProtocolFeeManager<DB> + 'static,
+    {
+        self.with_fee_manager_arc(Arc::new(fee_manager))
+    }
+
+    /// Updates the protocol fee manager used by the EVM.
+    pub fn with_fee_manager_arc(self, fee_manager: Arc<dyn ProtocolFeeManager<DB>>) -> Self {
+        let Self {
+            inner,
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            actions,
+            non_creditable_slots,
+            ..
+        } = self;
+
+        Self {
+            inner,
+            collected_fee,
+            validator_fee,
+            fee_token,
+            key_expiry,
+            skip_valid_after_check,
+            skip_liquidity_check,
+            actions,
+            non_creditable_slots,
+            fee_manager,
+        }
     }
 
     /// Inner helper function to create a new Tempo EVM with empty logs.
@@ -96,6 +138,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
     ) -> Self {
         Self {
             inner,
@@ -107,6 +150,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check: false,
             actions,
             non_creditable_slots,
+            fee_manager,
         }
     }
 
@@ -134,12 +178,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             actions,
             non_creditable_slots,
+            fee_manager,
             ..
         } = self;
         TempoEvm::new_inner(
             inner.with_inspector(inspector),
             actions,
             non_creditable_slots,
+            fee_manager,
         )
     }
 
