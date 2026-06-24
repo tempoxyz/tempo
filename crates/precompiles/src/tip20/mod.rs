@@ -1118,13 +1118,16 @@ impl TIP20Token {
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
+        let hardfork = self.storage.spec();
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
-        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
-        if self.storage.spec().is_t2() && !sender_auth {
+        let sender_auth =
+            registry.is_authorized_as(policy_id, from, AuthRole::sender_for_hardfork(hardfork))?;
+        if hardfork.is_t2() && !sender_auth {
             return Ok(false);
         }
-        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        let recipient_auth =
+            registry.is_authorized_as(policy_id, to, AuthRole::recipient_for_hardfork(hardfork))?;
         Ok(sender_auth && recipient_auth)
     }
 

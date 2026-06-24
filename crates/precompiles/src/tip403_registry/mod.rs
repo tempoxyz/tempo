@@ -876,12 +876,17 @@ impl TIP403Registry {
 
 impl AuthRole {
     #[inline]
-    fn transfer_or(t2_variant: Self) -> Self {
-        if StorageCtx.spec().is_t2() {
+    fn transfer_or_hardfork(t2_variant: Self, hardfork: TempoHardfork) -> Self {
+        if hardfork.is_t2() {
             t2_variant
         } else {
             Self::Transfer
         }
+    }
+
+    #[inline]
+    fn transfer_or(t2_variant: Self) -> Self {
+        Self::transfer_or_hardfork(t2_variant, StorageCtx.spec())
     }
 
     /// Hardfork-aware: always returns `Transfer`.
@@ -894,9 +899,19 @@ impl AuthRole {
         Self::transfer_or(Self::Sender)
     }
 
+    /// Hardfork-aware: returns `Sender` for T2+, `Transfer` for pre-T2.
+    pub fn sender_for_hardfork(hardfork: TempoHardfork) -> Self {
+        Self::transfer_or_hardfork(Self::Sender, hardfork)
+    }
+
     /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
     pub fn recipient() -> Self {
         Self::transfer_or(Self::Recipient)
+    }
+
+    /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
+    pub fn recipient_for_hardfork(hardfork: TempoHardfork) -> Self {
+        Self::transfer_or_hardfork(Self::Recipient, hardfork)
     }
 
     /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
