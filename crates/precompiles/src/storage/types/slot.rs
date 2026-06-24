@@ -50,7 +50,7 @@ impl<T> Slot<T> {
     /// Creates a new `Slot` with the given slot number, layout context, and address.
     ///
     /// This is used by the handler system to create slots with specific packing contexts.
-    #[inline]
+    #[inline(always)]
     pub fn new_with_ctx(slot: U256, ctx: LayoutCtx, address: Address) -> Self {
         Self {
             slot,
