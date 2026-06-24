@@ -662,6 +662,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
+    #[cold]
+    #[inline(never)]
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_approve(
@@ -712,6 +714,8 @@ impl TIP20Token {
     /// # Errors
     /// - `PermitExpired` — current timestamp exceeds permit deadline
     /// - `InvalidSignature` — ECDSA recovery failed or recovered signer ≠ owner
+    #[cold]
+    #[inline(never)]
     pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
         // 1. Check deadline
         if self.storage.timestamp() > call.deadline {
