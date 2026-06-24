@@ -107,6 +107,7 @@ impl TempoTxEnvelope {
     }
 
     /// Resolves fee payer for the transaction.
+    #[inline]
     pub fn fee_payer(&self, sender: Address) -> Result<Address, RecoveryError> {
         match self {
             Self::AA(tx) => tx.tx().recover_fee_payer(sender),
