@@ -73,7 +73,7 @@ setup:
             - "0xfeec000000000000000000000000000000000000"
 
 templates:
-  tip20_transfer_pathusd:
+  tip20_transfer:
     type: tempo
     from:
       pool: users
@@ -81,70 +81,8 @@ templates:
     gas_limit: 300000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 5
-    call:
-      to:
-        choice: ${TXGEN_TIP20_TOKENS}
-      abi: ERC20
-      function: transfer
-      args:
-        - pool:
-            pool: users
-            select: random
-        - 1
-  tip20_transfer_alpha:
-    type: tempo
-    from:
-      pool: users
-      select: random
-    gas_limit: 300000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000001"
-    expiring_nonce: true
-    valid_for_secs: 5
-    call:
-      to:
-        choice: ${TXGEN_TIP20_TOKENS}
-      abi: ERC20
-      function: transfer
-      args:
-        - pool:
-            pool: users
-            select: random
-        - 1
-  tip20_transfer_beta:
-    type: tempo
-    from:
-      pool: users
-      select: random
-    gas_limit: 300000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000002"
-    expiring_nonce: true
-    valid_for_secs: 5
-    call:
-      to:
-        choice: ${TXGEN_TIP20_TOKENS}
-      abi: ERC20
-      function: transfer
-      args:
-        - pool:
-            pool: users
-            select: random
-        - 1
-  tip20_transfer_theta:
-    type: tempo
-    from:
-      pool: users
-      select: random
-    gas_limit: 300000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000003"
+    fee_token:
+      choice: ${TXGEN_TIP20_TOKENS}
     expiring_nonce: true
     valid_for_secs: 5
     call:
@@ -159,11 +97,5 @@ templates:
         - 1
 
 mix:
-  - template: tip20_transfer_pathusd
-    weight: 25
-  - template: tip20_transfer_alpha
-    weight: 25
-  - template: tip20_transfer_beta
-    weight: 25
-  - template: tip20_transfer_theta
-    weight: 25
+  - template: tip20_transfer
+    weight: 100
