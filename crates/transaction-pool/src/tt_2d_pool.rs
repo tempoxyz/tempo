@@ -659,12 +659,7 @@ impl AA2dPool {
 
         BestAA2dTransactions {
             independent,
-            by_id: self
-                .by_id
-                .iter()
-                .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+            by_id: self.by_id.clone(),
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
@@ -1978,7 +1973,7 @@ pub(crate) struct BestAA2dTransactions {
     ///
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
     /// separately by `expiring_nonce_order`.
-    by_id: HashMap<AA2dTransactionId, AA2dStoredTransaction>,
+    by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
     /// Expiring nonce pending transactions in eviction order. The best
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
@@ -2096,10 +2091,13 @@ impl BestAA2dTransactions {
                     }
                     self.by_id.insert(
                         id,
-                        AA2dStoredTransaction {
-                            submission_id: tx.submission_id,
-                            transaction: tx.transaction,
-                        },
+                        Arc::new(AA2dInternalTransaction {
+                            inner: AA2dStoredTransaction {
+                                submission_id: tx.submission_id,
+                                transaction: tx.transaction,
+                            },
+                            is_pending: AtomicBool::new(true),
+                        }),
                     );
                 }
             } else {
@@ -2129,7 +2127,7 @@ impl BestAA2dTransactions {
                     // Advance transaction that just got unlocked, if any.
                     if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
                         self.independent
-                            .insert(unlocked.clone_into_pending(self.base_fee));
+                            .insert(unlocked.inner.clone_into_pending(self.base_fee));
                     }
                     best
                 }
