@@ -49,7 +49,7 @@ use crate::utils::{
     block_on_consensus_public_key, fetch_bootnodes, install_crypto_provider,
     print_extensions_footer,
 };
-use clap::{CommandFactory, FromArgMatches};
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use commonware_runtime::{Metrics, Runner};
 use eyre::{OptionExt, WrapErr as _};
 use futures::{
@@ -197,6 +197,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+    let logs_otlp_filter_overridden = arg_was_provided(&matches, "logs_otlp_filter");
 
     apply_tempo_cli_overrides(&mut cli);
 
@@ -250,10 +251,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
-        cli.traces.logs_otlp_filter = config
-            .logs_otlp_filter
-            .parse()
-            .wrap_err("invalid default logs filter")?;
+        if !logs_otlp_filter_overridden {
+            cli.traces.logs_otlp_filter = config
+                .logs_otlp_filter
+                .parse()
+                .wrap_err("invalid default logs filter")?;
+        }
 
         telemetry_config = Some(config);
     }
@@ -583,6 +586,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     Ok(())
 }
 
+fn arg_was_provided(matches: &clap::ArgMatches, id: &str) -> bool {
+    matches.value_source(id) == Some(ValueSource::CommandLine)
+        || matches
+            .subcommand()
+            .is_some_and(|(_, sub)| arg_was_provided(sub, id))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{sync::Once, time::Duration};
@@ -590,7 +600,8 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        TempoCli, apply_tempo_cli_overrides, defaults, follow::FollowMode, snapshot_download,
+        TempoCli, apply_tempo_cli_overrides, arg_was_provided, defaults, follow::FollowMode,
+        snapshot_download,
     };
     use reth_ethereum::cli::Commands;
 
@@ -630,6 +641,42 @@ mod tests {
 
         assert!(matches!(cli.command, Commands::Download(_)));
         assert_eq!(cli.logs.log_stdout_filter, "debug");
+    }
+
+    #[test]
+    fn logs_otlp_filter_override_is_detected() {
+        init_defaults_once();
+
+        let matches = TempoCli::command()
+            .try_get_matches_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--telemetry-url",
+                "https://user:pass@example.com",
+                "--logs-otlp.filter",
+                "warn",
+            ])
+            .unwrap();
+
+        assert!(arg_was_provided(&matches, "logs_otlp_filter"));
+    }
+
+    #[test]
+    fn logs_otlp_filter_default_is_not_detected_as_override() {
+        init_defaults_once();
+
+        let matches = TempoCli::command()
+            .try_get_matches_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--telemetry-url",
+                "https://user:pass@example.com",
+            ])
+            .unwrap();
+
+        assert!(!arg_was_provided(&matches, "logs_otlp_filter"));
     }
 
     #[test]
