@@ -257,29 +257,32 @@ macro_rules! tempo_precompile {
         let gas_params = env.cfg.gas_params.clone();
         let actions = env.actions.clone();
         let non_creditable_slots = env.non_creditable_slots.clone();
-        DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
-            if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::revert(
-                    0,
-                    DelegateCallNotAllowed {}.abi_encode().into(),
+        DynPrecompile::new_stateful(
+            PrecompileId::Custom(std::borrow::Cow::Borrowed($id)),
+            move |$input| {
+                if !$input.is_direct_call() {
+                    return Ok(PrecompileOutput::revert(
+                        0,
+                        DelegateCallNotAllowed {}.abi_encode().into(),
+                        $input.reservoir,
+                    ));
+                }
+                let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
+                    $input.internals,
+                    $input.gas,
                     $input.reservoir,
-                ));
-            }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
-                $input.internals,
-                $input.gas,
-                $input.reservoir,
-                spec,
-                amsterdam_eip8037_enabled,
-                $input.is_static,
-                gas_params.clone(),
-            )
-            .with_actions(actions.clone())
-            .with_non_creditable_slots(non_creditable_slots.clone());
-            crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
-            })
-        })
+                    spec,
+                    amsterdam_eip8037_enabled,
+                    $input.is_static,
+                    gas_params.clone(),
+                )
+                .with_actions(actions.clone())
+                .with_non_creditable_slots(non_creditable_slots.clone());
+                crate::storage::StorageCtx::enter(&mut storage, || {
+                    $impl.call($input.data, $input.caller)
+                })
+            },
+        )
     }};
 }
 
