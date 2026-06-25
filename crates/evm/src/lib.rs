@@ -132,6 +132,8 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
+    #[cold]
+    #[inline(never)]
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
@@ -175,6 +177,8 @@ impl ConfigureEvm for TempoEvmConfig {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     fn next_evm_env(
         &self,
         parent: &TempoHeader,
@@ -229,6 +233,8 @@ impl ConfigureEvm for TempoEvmConfig {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<Block>,
@@ -275,6 +281,8 @@ impl ConfigureEvm for TempoEvmConfig {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     fn context_for_next_block(
         &self,
         parent: &SealedHeader<TempoHeader>,
