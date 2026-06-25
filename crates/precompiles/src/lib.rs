@@ -364,6 +364,8 @@ impl SignatureVerifier {
 
 impl TIP20ChannelReserve {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("TIP20ChannelReserve", env: env, |input| { Self::new() })
     }
