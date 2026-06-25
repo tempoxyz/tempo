@@ -654,7 +654,15 @@ impl AA2dPool {
         let independent = self
             .independent_transactions
             .values()
-            .map(|tx| tx.clone_into_pending(base_fee))
+            .map(|tx| {
+                (
+                    tx.eviction_key(base_fee),
+                    tx.transaction
+                        .transaction
+                        .aa_transaction_id()
+                        .expect("is AA transaction"),
+                )
+            })
             .collect();
 
         BestAA2dTransactions {
@@ -805,10 +813,8 @@ impl AA2dPool {
     }
 
     fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>) {
-        self.by_eviction_order.remove(&EvictionOrderKey::new(
-            TempoTipOrdering::default().priority(&tx.inner.transaction.transaction, self.base_fee),
-            tx.inner.submission_id,
-        ));
+        self.by_eviction_order
+            .remove(&tx.inner.eviction_key(self.base_fee));
     }
 
     /// Removes the independent transaction if it matches the given id.
@@ -1259,11 +1265,7 @@ impl AA2dPool {
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
         self.expiring_nonce_eviction_order
-            .remove(&EvictionOrderKey::new(
-                TempoTipOrdering::default()
-                    .priority(&pending_tx.transaction.transaction, self.base_fee),
-                pending_tx.submission_id,
-            ));
+            .remove(&pending_tx.eviction_key(self.base_fee));
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
@@ -1707,12 +1709,12 @@ impl AA2dStoredTransaction {
         }
     }
 
-    fn clone_into_pending(&self, base_fee: u64) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.submission_id,
-            priority: TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
-            transaction: self.transaction.clone(),
-        }
+    /// Returns the eviction key for this transaction.
+    fn eviction_key(&self, base_fee: u64) -> EvictionOrderKey {
+        EvictionOrderKey::new(
+            TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
+            self.submission_id,
+        )
     }
 }
 
@@ -1797,10 +1799,7 @@ struct ExpiringNonceEvictionKey {
 impl ExpiringNonceEvictionKey {
     fn from_pending_with_base_fee(tx: &AA2dStoredTransaction, base_fee: u64) -> Self {
         Self {
-            order: EvictionOrderKey::new(
-                TempoTipOrdering::default().priority(&tx.transaction.transaction, base_fee),
-                tx.submission_id,
-            ),
+            order: tx.eviction_key(base_fee),
             transaction: tx.transaction.clone(),
         }
     }
@@ -1887,13 +1886,10 @@ impl EvictionKey {
         tx_id: AA2dTransactionId,
         base_fee: u64,
     ) -> Self {
-        let priority =
-            TempoTipOrdering::default().priority(&tx.inner.transaction.transaction, base_fee);
-        let submission_id = tx.inner.submission_id;
         Self {
+            order: tx.inner.eviction_key(base_fee),
             tx,
             tx_id,
-            order: EvictionOrderKey::new(priority, submission_id),
         }
     }
 
@@ -1968,7 +1964,7 @@ pub(crate) struct BestAA2dTransactions {
     ///
     /// Expiring nonce transactions are not included here because they are keyed
     /// by expiring nonce hash, not `AA2dTransactionId`.
-    independent: BTreeSet<PendingTransaction<TxOrdering>>,
+    independent: BTreeMap<EvictionOrderKey, AA2dTransactionId>,
     /// Regular 2D nonce pending transactions grouped by their unique identifier.
     ///
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
@@ -1992,13 +1988,14 @@ pub(crate) struct BestAA2dTransactions {
 impl BestAA2dTransactions {
     /// Removes the best regular transaction from the set.
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
-        let tx = self.independent.pop_last()?;
-        let id = tx
-            .transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("Transaction in AA2D pool must be an AA transaction with valid nonce key");
-        self.by_id.remove(&id);
+        let (key, id) = self.independent.pop_last()?;
+
+        let tx = PendingTransaction {
+            submission_id: key.submission_id,
+            priority: key.priority,
+            transaction: self.by_id.remove(&id)?.inner.transaction.clone(),
+        };
+
         Some((id, tx))
     }
 
@@ -2010,7 +2007,10 @@ impl BestAA2dTransactions {
 
     /// Removes the best regular or expiring nonce transaction.
     fn pop_best(&mut self) -> Option<PoppedAA2dTransaction> {
-        match (self.independent.last(), self.expiring_nonce_order.last()) {
+        match (
+            self.independent.last_key_value().map(|(key, _)| key),
+            self.expiring_nonce_order.last(),
+        ) {
             (Some(regular), Some(expiring)) => {
                 if regular
                     .priority
@@ -2086,7 +2086,8 @@ impl BestAA2dTransactions {
                             id.nonce.saturating_sub(1),
                         )) || id.nonce == 0
                         {
-                            self.independent.insert(tx.clone());
+                            let key = EvictionOrderKey::new(tx.priority, tx.submission_id);
+                            self.independent.insert(key, id);
                         }
                     }
                     self.by_id.insert(
@@ -2126,8 +2127,8 @@ impl BestAA2dTransactions {
                     }
                     // Advance transaction that just got unlocked, if any.
                     if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
-                        self.independent
-                            .insert(unlocked.inner.clone_into_pending(self.base_fee));
+                        let key = unlocked.inner.eviction_key(self.base_fee);
+                        self.independent.insert(key, id.unlocks());
                     }
                     best
                 }
