@@ -285,6 +285,8 @@ macro_rules! tempo_precompile {
 
 impl TipFeeManager {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", env: env, |input| { Self::new() })
     }
