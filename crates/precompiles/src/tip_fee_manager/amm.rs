@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, StorageCtx},
+    storage::{Handler, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -567,34 +567,13 @@ impl TipFeeManager {
         amount_in: U256,
     ) -> Result<U256> {
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
 
         // Calculate output at fixed price m = 0.9970
         let amount_out = compute_amount_out(amount_in)?;
 
-        // Check if there's enough validatorToken available
-        if amount_out > U256::from(pool.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
-        // Update reserves
-        let amount_in_u128: u128 = amount_in
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let amount_out_u128: u128 = amount_out
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-
-        pool.reserve_user_token = pool
-            .reserve_user_token
-            .checked_add(amount_in_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        pool.reserve_validator_token = pool
-            .reserve_validator_token
-            .checked_sub(amount_out_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        self.pools[pool_id].write(pool)?;
+        let pool_slot = pool_id.mapping_slot(self.pools.slot());
+        self.storage
+            .fee_amm_swap(self.address, pool_slot, amount_in, amount_out)?;
 
         Ok(amount_out)
     }

@@ -4,7 +4,7 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod actions;
-pub use actions::{StorageAction, StorageActions};
+pub use actions::{StorageAction, StorageActions, apply_fee_amm_swap_to_pool_slot};
 
 pub mod evm;
 pub mod hashmap;
@@ -89,6 +89,22 @@ pub trait PrecompileStorageProvider {
         let value = current
             .checked_sub(delta)
             .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.sstore(address, key, value)
+    }
+
+    /// Applies a checked FeeAMM fee swap to a packed pool slot.
+    ///
+    /// This is intentionally domain-specific so FeeAMM fee settlement can be recorded as one
+    /// semantic storage action instead of exposing an arbitrary unrecorded SLOAD and SSTORE.
+    fn fee_amm_swap(
+        &mut self,
+        address: Address,
+        key: U256,
+        amount_in: U256,
+        amount_out: U256,
+    ) -> Result<()> {
+        let value =
+            apply_fee_amm_swap_to_pool_slot(self.sload(address, key)?, amount_in, amount_out)?;
         self.sstore(address, key, value)
     }
 

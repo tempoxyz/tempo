@@ -327,9 +327,11 @@ mod tests {
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-        storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
+        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        TIP403_REGISTRY_ADDRESS,
+        storage::{
+            StorageAction, StorageActions, StorageCtx, StorageKey, apply_fee_amm_swap_to_pool_slot,
+        },
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip_fee_manager::{IFeeManager, TipFeeManager, amm::PoolKey, slots as fee_manager_slots},
@@ -575,6 +577,29 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
+                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
+                    let key = (address, slot);
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "FeeAmmSwap without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = apply_fee_amm_swap_to_pool_slot(current, amount_in, amount_out)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}"
+                            )
+                        });
+                    reconstructed.insert(key, value);
+                }
             }
         }
 
@@ -642,6 +667,13 @@ mod tests {
                 StorageAction::Sdec(address, slot, delta) => {
                     format!(
                         "Sdec({}, {}, {delta})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
+                    format!(
+                        "FeeAmmSwap({}, {}, {amount_in}, {amount_out})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
