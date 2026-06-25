@@ -878,7 +878,7 @@ where
     /// refunds are credited to the transaction's gas refund counter in full,
     /// regardless of the transaction's gas used. Pre-T7 keeps the standard
     /// capped behavior (`Gas::set_final_refund`).
-    #[inline]
+    #[inline(always)]
     fn refund(&self, evm: &mut Self::Evm, exec_result: &mut FrameResult, eip7702_refund: i64) {
         let spec = evm.ctx.cfg.spec;
         let gas = exec_result.gas_mut();
