@@ -16,6 +16,7 @@ use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
     storage::StorageAction,
+    tip_fee_manager::amm::apply_fee_amm_swap_to_pool_slot,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
@@ -318,63 +319,104 @@ fn action_replay_state<DB: Database>(
         }
 
         match *action {
-            StorageAction::Sload(address, slot, value) => {
-                if replay_state.has_store(address, slot) {
+            StorageAction::Sload {
+                address,
+                key,
+                value,
+            } => {
+                if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
                 let _ = action_current_value(
                     db,
                     &mut replay_state.tx_changes,
                     address,
-                    slot,
+                    key,
                     Some(value),
                 )?;
             }
-            StorageAction::Sstore(address, slot, value) => {
-                if replay_state.has_write(address, slot) {
+            StorageAction::Sstore {
+                address,
+                key,
+                value,
+            } => {
+                if replay_state.has_write(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
                     address,
-                    slot,
+                    key,
                     value,
                     WriteKind::Store,
                 )?;
             }
-            StorageAction::Sinc(address, slot, delta) => {
-                if replay_state.has_store(address, slot) {
+            StorageAction::Sinc {
+                address,
+                key,
+                delta,
+            } => {
+                if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
 
                 let value =
-                    action_current_value(db, &mut replay_state.tx_changes, address, slot, None)?
+                    action_current_value(db, &mut replay_state.tx_changes, address, key, None)?
                         .checked_add(delta)
                         .ok_or(StorageActionReplayFallback::BalanceOverflow)?;
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
                     address,
-                    slot,
+                    key,
                     value,
                     WriteKind::Delta,
                 )?;
             }
-            StorageAction::Sdec(address, slot, delta) => {
-                if replay_state.has_store(address, slot) {
+            StorageAction::Sdec {
+                address,
+                key,
+                delta,
+            } => {
+                if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
 
                 let value =
-                    action_current_value(db, &mut replay_state.tx_changes, address, slot, None)?
+                    action_current_value(db, &mut replay_state.tx_changes, address, key, None)?
                         .checked_sub(delta)
                         .ok_or(StorageActionReplayFallback::InsufficientBalance)?;
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
                     address,
-                    slot,
+                    key,
+                    value,
+                    WriteKind::Delta,
+                )?;
+            }
+            StorageAction::FeeAmmSwap {
+                address,
+                key,
+                amount_in,
+                amount_out,
+            } => {
+                if replay_state.has_store(address, key) {
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                }
+
+                let value = apply_fee_amm_swap_to_pool_slot(
+                    action_current_value(db, &mut replay_state.tx_changes, address, key, None)?,
+                    amount_in,
+                    amount_out,
+                )
+                .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+                action_write_value(
+                    db,
+                    &mut replay_state.tx_changes,
+                    address,
+                    key,
                     value,
                     WriteKind::Delta,
                 )?;
@@ -525,10 +567,11 @@ fn apply_expiring_nonce_state_changes<DB: Database>(
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {
     let address = match *action {
-        StorageAction::Sload(address, ..)
-        | StorageAction::Sstore(address, ..)
-        | StorageAction::Sinc(address, ..)
-        | StorageAction::Sdec(address, ..) => address,
+        StorageAction::Sload { address, .. }
+        | StorageAction::Sstore { address, .. }
+        | StorageAction::Sinc { address, .. }
+        | StorageAction::Sdec { address, .. }
+        | StorageAction::FeeAmmSwap { address, .. } => address,
     };
     address == NONCE_PRECOMPILE_ADDRESS
 }
@@ -637,4 +680,110 @@ fn action_account_info<DB: StateDB>(
         .map_err(BlockExecutionError::other)
         .map_err(StorageActionReplayExecutionError::Database)
         .map(|account| account.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::{
+        database::{EmptyDB, in_memory_db::CacheDB},
+        state::{EvmState, EvmStorageSlot},
+    };
+    use tempo_precompiles::tip_fee_manager::amm::Pool;
+
+    #[test]
+    fn fee_amm_swap_replay_updates_packed_pool_slot() {
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+        let amount_in = U256::from(3);
+        let amount_out = U256::from(2);
+        let original_pool = Pool {
+            reserve_user_token: 10,
+            reserve_validator_token: 20,
+        }
+        .encode_to_slot()
+        .unwrap();
+        let expected_pool =
+            apply_fee_amm_swap_to_pool_slot(original_pool, amount_in, amount_out).unwrap();
+
+        let mut db = state_db_with_storage(address, key, original_pool);
+        let mut replay_state = StorageActionReplayState::default();
+        let state = action_replay_state(
+            Address::ZERO,
+            &mut db,
+            &[StorageAction::FeeAmmSwap {
+                address,
+                key,
+                amount_in,
+                amount_out,
+            }],
+            &mut replay_state,
+            EvmState::default(),
+            false,
+            None,
+            0,
+        )
+        .unwrap();
+
+        let slot = state
+            .get(&address)
+            .and_then(|account| account.storage.get(&key))
+            .expect("pool slot changed");
+        assert_storage_slot(slot, original_pool, expected_pool);
+    }
+
+    #[test]
+    fn fee_amm_swap_replay_falls_back_on_invalid_swap() {
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+        let original_pool = Pool {
+            reserve_user_token: 10,
+            reserve_validator_token: 1,
+        }
+        .encode_to_slot()
+        .unwrap();
+
+        let mut db = state_db_with_storage(address, key, original_pool);
+        let mut replay_state = StorageActionReplayState::default();
+        let err = action_replay_state(
+            Address::ZERO,
+            &mut db,
+            &[StorageAction::FeeAmmSwap {
+                address,
+                key,
+                amount_in: U256::from(3),
+                amount_out: U256::from(2),
+            }],
+            &mut replay_state,
+            EvmState::default(),
+            false,
+            None,
+            0,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StorageActionReplayExecutionError::Fallback(
+                StorageActionReplayFallback::ActionConflict
+            )
+        ));
+    }
+
+    fn state_db_with_storage(address: Address, key: U256, value: U256) -> State<CacheDB<EmptyDB>> {
+        let mut cache_db = CacheDB::new(EmptyDB::default());
+        cache_db.insert_account_info(address, AccountInfo::default());
+        cache_db
+            .insert_account_storage(address, key, value)
+            .expect("storage inserted");
+        State::builder()
+            .with_database(cache_db)
+            .with_bundle_update()
+            .build()
+    }
+
+    fn assert_storage_slot(slot: &EvmStorageSlot, original: U256, present: U256) {
+        assert_eq!(slot.original_value(), original);
+        assert_eq!(slot.present_value(), present);
+    }
 }
