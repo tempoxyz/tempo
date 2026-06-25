@@ -3,7 +3,7 @@
 # E2E benchmarks run `nu bench-e2e.nu e2e` against the dual-schelk runner.
 # Replay benchmarks use `nu tempo.nu bench-replay`.
 #
-# Trigger via PR comment (`@decofe bench` or `derek bench`).
+# Trigger via PR comment (`@decofe bench`, `derek bench`, or `derek clear`).
 
 on:
   issue_comment:
@@ -80,10 +80,12 @@ jobs:
           script: |
             const body = context.payload.comment.body.trim();
             const isBenchCommand = body.startsWith('@decofe bench') || body.startsWith('derek bench');
+            const isClearCommand = body === 'derek clear' || body === '@decofe clear';
             core.setOutput('is-bench-command', String(isBenchCommand));
+            core.setOutput('is-clear-command', String(isClearCommand));
 
       - name: Check org membership
-        if: steps.command.outputs.is-bench-command == 'true'
+        if: steps.command.outputs.is-bench-command == 'true' || steps.command.outputs.is-clear-command == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ secrets.DEREK_BENCH_ACK_TOKEN }}
@@ -113,6 +115,53 @@ jobs:
             if (!await checkMembership(prAuthor)) {
               core.setFailed(`PR author @${prAuthor} is not a member of ${org}`);
             }
+
+      - name: Clear benchmark comments
+        if: steps.command.outputs.is-clear-command == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+            const markers = [
+              '🚀 Benchmark queued!',
+              '🚀 Benchmark started!',
+              '🚀 Replay benchmark started!',
+              '✅ Benchmark complete',
+              '✅ Replay benchmark complete',
+              '❌ Benchmark failed.',
+              '❌ Replay benchmark failed.',
+              '⚠️ Benchmark cancelled.',
+              '⚠️ Replay benchmark cancelled.',
+              '❌ **Invalid bench command**',
+            ];
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const triggerCommentId = context.payload.comment.id;
+            let deleted = 0;
+            for (const comment of comments) {
+              if (comment.id === triggerCommentId) continue;
+              if (!markers.some(marker => comment.body.includes(marker))) continue;
+
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: comment.id,
+              });
+              deleted += 1;
+            }
+
+            core.notice(`Deleted ${deleted} benchmark comment(s).`);
 
       - name: Parse arguments
         id: args
