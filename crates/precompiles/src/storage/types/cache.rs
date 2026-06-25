@@ -95,7 +95,7 @@ impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
         self.entries.insert(key, value);
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_or_insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
         if let Some(boxed) = self.entries.get(key) {
             boxed.as_ref() as *const H
@@ -107,7 +107,7 @@ impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
         if let Some(boxed) = self.entries.get_mut(key) {
             boxed.as_mut() as *mut H
@@ -161,7 +161,7 @@ where
     }
 
     /// Returns a reference to a lazily initialized handler for the given key.
-    #[inline]
+    #[inline(always)]
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
         let mut cache = self.inner.borrow_mut();
         let ptr = match &mut *cache {
@@ -186,7 +186,7 @@ where
     }
 
     /// Returns a mutable reference to a lazily initialized handler for the given key.
-    #[inline]
+    #[inline(always)]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
         let ptr = match &mut *cache {
