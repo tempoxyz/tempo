@@ -264,6 +264,7 @@ impl TempoHardfork {
     }
 
     /// Gas cost for using an existing 2D nonce key
+    #[inline(always)]
     pub const fn gas_existing_nonce_key(&self) -> u64 {
         if self.is_t2() {
             return gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS;
@@ -272,6 +273,7 @@ impl TempoHardfork {
     }
 
     /// Gas cost for using a new 2D nonce key
+    #[inline(always)]
     pub const fn gas_new_nonce_key(&self) -> u64 {
         if self.is_t2() {
             return gas::TEMPO_T2_NEW_NONCE_KEY_GAS;
