@@ -302,9 +302,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     fn block_env(&self) -> &TempoBlockEnv {
-        self.internals
-            .block_env_downcast_ref::<TempoBlockEnv>()
-            .expect("EvmPrecompileStorageProvider requires TempoBlockEnv")
+        match self.internals.block_env_downcast_ref::<TempoBlockEnv>() {
+            Some(block_env) => block_env,
+            None => missing_tempo_block_env(),
+        }
     }
 
     #[inline]
@@ -593,6 +594,12 @@ pub fn deduct_gas(
         return Err(TempoPrecompileError::OutOfGas);
     }
     Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn missing_tempo_block_env() -> ! {
+    panic!("EvmPrecompileStorageProvider requires TempoBlockEnv")
 }
 
 #[cfg(test)]
