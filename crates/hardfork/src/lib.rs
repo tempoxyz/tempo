@@ -282,6 +282,8 @@ impl TempoHardfork {
     /// Returns the active hardfork at the given timestamp for the specified chain.
     ///
     /// Returns `None` if the chain ID is not a known Tempo chain.
+    #[cold]
+    #[inline(never)]
     pub const fn from_chain_and_timestamp(chain_id: u64, timestamp: u64) -> Option<Self> {
         // Walk variants in reverse to find the latest active fork, mirroring
         // `TempoHardforks::tempo_hardfork_at` but without needing a chainspec instance.
@@ -304,6 +306,8 @@ impl TempoHardfork {
     }
 
     /// Retrieves the activation block for this hardfork on mainnet.
+    #[cold]
+    #[inline(never)]
     pub const fn mainnet_activation_block(&self) -> Option<u64> {
         use crate::constants::mainnet::*;
         match self {
@@ -324,6 +328,8 @@ impl TempoHardfork {
     }
 
     /// Retrieves the activation timestamp for this hardfork on mainnet.
+    #[cold]
+    #[inline(never)]
     pub const fn mainnet_activation_timestamp(&self) -> Option<u64> {
         use crate::constants::mainnet::*;
         match self {
@@ -344,6 +350,8 @@ impl TempoHardfork {
     }
 
     /// Retrieves the activation block for this hardfork on moderato testnet.
+    #[cold]
+    #[inline(never)]
     pub const fn moderato_activation_block(&self) -> Option<u64> {
         use crate::constants::moderato::*;
         match self {
@@ -364,6 +372,8 @@ impl TempoHardfork {
     }
 
     /// Retrieves the activation timestamp for this hardfork on moderato testnet.
+    #[cold]
+    #[inline(never)]
     pub const fn moderato_activation_timestamp(&self) -> Option<u64> {
         use crate::constants::moderato::*;
         match self {
