@@ -617,7 +617,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -757,7 +757,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
     }
@@ -787,7 +787,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
@@ -836,9 +836,25 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, gas_limit, reservoir, calls)
+        if evm.ctx().tx().tempo_tx_env.is_some() {
+            let calls = {
+                let tx = &mut evm.ctx().tx;
+                core::mem::take(
+                    &mut tx
+                        .tempo_tx_env
+                        .as_mut()
+                        .expect("checked above")
+                        .aa_calls,
+                )
+            };
+            let result = self.execute_multi_call(evm, gas_limit, reservoir, &calls);
+            let tx = &mut evm.ctx().tx;
+            tx
+                .tempo_tx_env
+                .as_mut()
+                .expect("AA transaction env must remain available after execution")
+                .aa_calls = calls;
+            result
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
         }
@@ -2448,9 +2464,25 @@ where
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
+        if evm.ctx().tx().tempo_tx_env.is_some() {
+            let calls = {
+                let tx = &mut evm.ctx().tx;
+                core::mem::take(
+                    &mut tx
+                        .tempo_tx_env
+                        .as_mut()
+                        .expect("checked above")
+                        .aa_calls,
+                )
+            };
+            let result = self.inspect_execute_multi_call(evm, gas_limit, reservoir, &calls);
+            let tx = &mut evm.ctx().tx;
+            tx
+                .tempo_tx_env
+                .as_mut()
+                .expect("AA transaction env must remain available after execution")
+                .aa_calls = calls;
+            result
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
         }
@@ -4381,7 +4413,7 @@ mod tests {
             &mut evm,
             GAS_LIMIT - INTRINSIC_GAS,
             0,
-            calls,
+            &calls,
             |_handler, _evm, gas, _reservoir| {
                 let (spent, refund) = calls_gas[call_idx];
                 call_idx += 1;
@@ -6811,7 +6843,7 @@ mod tests {
                 &mut test.evm,
                 gas_limit,
                 reservoir,
-                calls,
+                &calls,
                 |_handler, _evm, gas, _reservoir| {
                     // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                     let (instruction_result, spent) = call_results[call_idx];
