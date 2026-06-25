@@ -417,7 +417,6 @@ where
             + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
-        let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut total_fees = U256::ZERO;
@@ -768,9 +767,6 @@ where
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
-            if !receipt.success {
-                reverted_transactions += 1;
-            }
             let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
         };
 
@@ -847,9 +843,6 @@ where
 
                 subblock_tx_count += 1.0;
                 let receipt = executor.receipts().last().unwrap().clone();
-                if !receipt.success {
-                    reverted_transactions += 1;
-                }
                 let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
             }
 
@@ -1008,6 +1001,7 @@ where
             transactions,
             senders,
             encoded_block_transactions,
+            reverted_transactions,
         } = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
@@ -1238,6 +1232,7 @@ where
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
+                let mut reverted_transactions = 0u64;
 
                 let mut buf = Vec::new();
 
@@ -1250,6 +1245,9 @@ where
                     transactions.push(tx);
                     senders.push(sender);
 
+                    if !receipt.success {
+                        reverted_transactions += 1;
+                    }
                     let receipt = receipt.with_bloom_ref();
 
                     buf.clear();
@@ -1266,6 +1264,7 @@ where
                     transactions,
                     senders,
                     encoded_block_transactions: encoded_block_transactions.finish(),
+                    reverted_transactions,
                 });
             });
 
@@ -1444,6 +1443,8 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+    /// Number of transaction receipts that indicate a revert.
+    reverted_transactions: u64,
 }
 
 #[cfg(test)]
