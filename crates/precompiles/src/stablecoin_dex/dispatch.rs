@@ -62,13 +62,7 @@ impl Precompile for StablecoinDEX {
                     }),
                     swapExactAmountOut(call) => mutate(call, msg_sender, |s, c| {
                         preserve_storage_credits(self.address)?;
-                        self.swap_exact_amount_out(
-                        s,
-                        c.tokenIn,
-                        c.tokenOut,
-                        c.amountOut,
-                        c.maxAmountIn,
-                        )
+                        self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                     }),
                     quoteSwapExactAmountIn(call) => view(call, |c| {
                         self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)

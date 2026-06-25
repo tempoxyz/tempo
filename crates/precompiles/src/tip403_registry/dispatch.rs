@@ -45,11 +45,11 @@ impl Precompile for TIP403Registry {
                     #[schedule(since = T6)]
                     validateReceivePolicy(call) => view(call, |c| {
                         let blocked_reason = self
-                        .validate_receive_policy(c.token, c.sender, c.receiver)?
-                        .unwrap_or(ITIP403Registry::BlockedReason::NONE);
+                            .validate_receive_policy(c.token, c.sender, c.receiver)?
+                            .unwrap_or(ITIP403Registry::BlockedReason::NONE);
                         Ok(ITIP403Registry::validateReceivePolicyReturn {
-                        authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
-                        blockedReason: blocked_reason,
+                            authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
+                            blockedReason: blocked_reason,
                         })
                     }),
                     #[schedule(since = T6)]

@@ -20,35 +20,35 @@ impl Precompile for AccountKeychain {
                 IAccountKeychain::IAccountKeychainCalls {
                     authorizeKey_0(call) => {
                         if self.storage.spec().is_t3() {
-                        return self.storage.error_result(
-                        AccountKeychainError::legacy_authorize_key_selector_changed(
-                        authorizeKeyCall::SELECTOR.into(),
-                        ),
-                        );
+                            return self.storage.error_result(
+                                AccountKeychainError::legacy_authorize_key_selector_changed(
+                                    authorizeKeyCall::SELECTOR.into(),
+                                ),
+                            );
                         }
 
                         let call = authorizeKeyCall {
-                        keyId: call.keyId,
-                        signatureType: call.signatureType,
-                        config: KeyRestrictions {
-                        expiry: call.expiry,
-                        enforceLimits: call.enforceLimits,
-                        limits: call
-                        .limits
-                        .into_iter()
-                        .map(|limit| TokenLimit {
-                        token: limit.token,
-                        amount: limit.amount,
-                        period: 0,
-                        })
-                        .collect(),
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                        },
+                            keyId: call.keyId,
+                            signatureType: call.signatureType,
+                            config: KeyRestrictions {
+                                expiry: call.expiry,
+                                enforceLimits: call.enforceLimits,
+                                limits: call
+                                    .limits
+                                    .into_iter()
+                                    .map(|limit| TokenLimit {
+                                        token: limit.token,
+                                        amount: limit.amount,
+                                        period: 0,
+                                    })
+                                    .collect(),
+                                allowAnyCalls: true,
+                                allowedCalls: vec![],
+                            },
                         };
 
                         mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                            self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
                         })
                     },
                     #[schedule(since = T3)]
@@ -57,13 +57,7 @@ impl Precompile for AccountKeychain {
                     }),
                     #[schedule(since = T5)]
                     authorizeKey_2(call) => mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key(
-                        sender,
-                        c.keyId,
-                        c.signatureType,
-                        c.config,
-                        Some(c.witness),
-                        )
+                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, Some(c.witness))
                     }),
                     #[schedule(since = T6)]
                     authorizeAdminKey(call) => mutate_void(call, msg_sender, |sender, c| {

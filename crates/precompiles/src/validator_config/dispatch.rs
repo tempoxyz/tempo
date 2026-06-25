@@ -22,8 +22,8 @@ impl Precompile for ValidatorConfig {
                     getValidators(call) => view(call, |_| self.get_validators()),
                     getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
                     validatorsArray(call) => view(call, |c| {
-                        let index =
-                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
+                        let index = u64::try_from(c.index)
+                            .map_err(|_| TempoPrecompileError::array_oob())?;
                         self.validators_array(index)
                     }),
                     validators(call) => view(call, |c| self.validators(c.validator)),

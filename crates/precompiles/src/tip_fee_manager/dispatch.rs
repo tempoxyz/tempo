@@ -54,20 +54,14 @@ impl Precompile for TipFeeManager {
 
                     // ITIPFeeAMM mutate functions
                     mint(call) => mutate(call, msg_sender, |s, c| {
-                        self.mint(
-                        s,
-                        c.userToken,
-                        c.validatorToken,
-                        c.amountValidatorToken,
-                        c.to,
-                        )
+                        self.mint(s, c.userToken, c.validatorToken, c.amountValidatorToken, c.to)
                     }),
                     burn(call) => mutate(call, msg_sender, |s, c| {
                         let (amount_user_token, amount_validator_token) =
-                        self.burn(s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
+                            self.burn(s, c.userToken, c.validatorToken, c.liquidity, c.to)?;
                         Ok(ITIPFeeAMM::burnReturn {
-                        amountUserToken: amount_user_token,
-                        amountValidatorToken: amount_validator_token,
+                            amountUserToken: amount_user_token,
+                            amountValidatorToken: amount_validator_token,
                         })
                     }),
                     rebalanceSwap(call) => mutate(call, msg_sender, |s, c| {
