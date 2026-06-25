@@ -53,26 +53,13 @@ pub enum StorageActionReplayFallback {
     InsufficientBalance,
 }
 
-impl StorageActionReplayFallback {
-    /// Returns the stable metric label for this fallback reason.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ActionExecutionFailed => "action_execution_failed",
-            Self::MissingActions => "missing_actions",
-            Self::ActionConflict => "action_conflict",
-            Self::BalanceOverflow => "balance_overflow",
-            Self::InsufficientBalance => "insufficient_balance",
-        }
-    }
-}
-
 /// Error returned by the storage-action replay execution API.
 #[derive(Debug)]
 pub enum StorageActionReplayExecutionError {
     /// The precomputed replay cannot be used; no state was committed.
     Fallback(StorageActionReplayFallback),
     /// Synthetic validation rejected a transaction.
-    Execution {
+    Validation {
         /// Index of the failed transaction in the streaming sequence.
         transaction_index: usize,
         /// Execution error returned by synthetic result construction or block validation.
@@ -80,6 +67,12 @@ pub enum StorageActionReplayExecutionError {
     },
     /// Preflight failed while reading state; no state was committed.
     Database(BlockExecutionError),
+}
+
+impl From<StorageActionReplayFallback> for StorageActionReplayExecutionError {
+    fn from(reason: StorageActionReplayFallback) -> Self {
+        Self::Fallback(reason)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -250,7 +243,7 @@ where
             };
             let next_section =
                 self.validate_tx(recovered.tx(), block_gas_used)
-                    .map_err(|error| StorageActionReplayExecutionError::Execution {
+                    .map_err(|error| StorageActionReplayExecutionError::Validation {
                         transaction_index,
                         error: error.into(),
                     })?;
@@ -327,7 +320,7 @@ fn action_replay_state<DB: Database>(
         match *action {
             StorageAction::Sload(address, slot, value) => {
                 if replay_state.has_store(address, slot) {
-                    return Err(action_conflict());
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
                 let _ = action_current_value(
                     db,
@@ -339,7 +332,7 @@ fn action_replay_state<DB: Database>(
             }
             StorageAction::Sstore(address, slot, value) => {
                 if replay_state.has_write(address, slot) {
-                    return Err(action_conflict());
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
                 action_write_value(
                     db,
@@ -352,13 +345,13 @@ fn action_replay_state<DB: Database>(
             }
             StorageAction::Sinc(address, slot, delta) => {
                 if replay_state.has_store(address, slot) {
-                    return Err(action_conflict());
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
 
                 let value =
                     action_current_value(db, &mut replay_state.tx_changes, address, slot, None)?
                         .checked_add(delta)
-                        .ok_or_else(balance_overflow)?;
+                        .ok_or(StorageActionReplayFallback::BalanceOverflow)?;
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
@@ -370,13 +363,13 @@ fn action_replay_state<DB: Database>(
             }
             StorageAction::Sdec(address, slot, delta) => {
                 if replay_state.has_store(address, slot) {
-                    return Err(action_conflict());
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
 
                 let value =
                     action_current_value(db, &mut replay_state.tx_changes, address, slot, None)?
                         .checked_sub(delta)
-                        .ok_or_else(insufficient_balance)?;
+                        .ok_or(StorageActionReplayFallback::InsufficientBalance)?;
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
@@ -455,7 +448,7 @@ fn apply_expiring_nonce_replay<DB: Database>(
         || expiring_nonce.valid_before
             > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
     {
-        return Err(action_conflict());
+        return Err(StorageActionReplayFallback::ActionConflict.into());
     }
 
     let nonce_manager = NonceManager::new();
@@ -465,17 +458,19 @@ fn apply_expiring_nonce_replay<DB: Database>(
     let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
     let seen_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
     if !seen_expiry.is_zero() && seen_expiry > now {
-        return Err(action_conflict());
+        return Err(StorageActionReplayFallback::ActionConflict.into());
     }
 
-    let ptr_u32 = ptr.try_into().map_err(|_| action_conflict())?;
+    let ptr_u32 = ptr
+        .try_into()
+        .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
     let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
     let old_hash = state_storage(db, NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
     if !old_hash.is_zero() {
         let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
         let old_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
         if !old_expiry.is_zero() && old_expiry > now {
-            return Err(action_conflict());
+            return Err(StorageActionReplayFallback::ActionConflict.into());
         }
         replay_state.store(old_seen_slot, old_expiry, U256::ZERO);
     }
@@ -642,16 +637,4 @@ fn action_account_info<DB: StateDB>(
         .map_err(BlockExecutionError::other)
         .map_err(StorageActionReplayExecutionError::Database)
         .map(|account| account.unwrap_or_default())
-}
-
-fn action_conflict() -> StorageActionReplayExecutionError {
-    StorageActionReplayExecutionError::Fallback(StorageActionReplayFallback::ActionConflict)
-}
-
-fn balance_overflow() -> StorageActionReplayExecutionError {
-    StorageActionReplayExecutionError::Fallback(StorageActionReplayFallback::BalanceOverflow)
-}
-
-fn insufficient_balance() -> StorageActionReplayExecutionError {
-    StorageActionReplayExecutionError::Fallback(StorageActionReplayFallback::InsufficientBalance)
 }

@@ -869,11 +869,10 @@ where
                     }
                     Err(StorageActionReplayExecutionError::Fallback(reason)) => {
                         return Err(PayloadBuilderError::evm(BlockExecutionError::msg(format!(
-                            "storage action replay failed: {}",
-                            reason.as_str()
+                            "storage action replay failed: {reason:?}",
                         ))));
                     }
-                    Err(StorageActionReplayExecutionError::Execution { error, .. })
+                    Err(StorageActionReplayExecutionError::Validation { error, .. })
                     | Err(StorageActionReplayExecutionError::Database(error)) => {
                         return Err(PayloadBuilderError::evm(error));
                     }
