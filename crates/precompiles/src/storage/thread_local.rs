@@ -232,9 +232,16 @@ impl StorageCtx {
         Self::with_storage(|s| s.spec())
     }
 
-    /// Returns the shared storage-actions recorder for the current storage context.
-    pub fn actions(&self) -> StorageActions {
-        Self::with_storage(|s| s.storage_actions())
+    /// Returns whether packed struct writes should start from a zeroed word.
+    ///
+    /// When no storage context is active, callers are using the packing code as a pure in-memory
+    /// encoder, so zero-init is the only meaningful behavior.
+    pub fn zero_init_packed_store(&self) -> bool {
+        if !STORAGE.is_set() {
+            return true;
+        }
+
+        Self::with_storage(|s| s.spec().is_t4())
     }
 
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016

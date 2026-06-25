@@ -322,19 +322,21 @@ mod tests {
         DatabaseCommit,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
-        state::EvmState,
+        state::{Account, EvmState, EvmStorageSlot, TransactionId},
     };
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-        TIP403_REGISTRY_ADDRESS,
-        storage::{
-            StorageAction, StorageActions, StorageCtx, StorageKey, apply_fee_amm_swap_to_pool_slot,
-        },
+        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
-        tip_fee_manager::{IFeeManager, TipFeeManager, amm::PoolKey, slots as fee_manager_slots},
+        tip_fee_manager::{
+            IFeeManager, TipFeeManager,
+            amm::{Pool, PoolKey, apply_fee_amm_swap_to_pool_slot},
+            slots as fee_manager_slots,
+        },
         tip20::{
             ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
@@ -650,6 +652,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_fee_amm_swap_storage_action_reconstructs_evm_state() {
+        let address = TIP_FEE_MANAGER_ADDRESS;
+        let key = U256::from(42);
+        let amount_in = U256::from(3);
+        let amount_out = U256::from(2);
+        let original_pool = Pool {
+            reserve_user_token: 10,
+            reserve_validator_token: 20,
+        }
+        .encode_to_slot()
+        .unwrap();
+        let present_pool =
+            apply_fee_amm_swap_to_pool_slot(original_pool, amount_in, amount_out).unwrap();
+
+        let mut account = Account::default();
+        account.storage.insert(
+            key,
+            EvmStorageSlot::new_changed(original_pool, present_pool, TransactionId::ZERO),
+        );
+        let state = EvmState::from_iter([(address, account)]);
+        let actions = vec![StorageAction::FeeAmmSwap {
+            address,
+            key,
+            amount_in,
+            amount_out,
+        }];
+
+        assert_storage_actions_reconstruct_evm_state(&actions, &state, TempoHardfork::default());
     }
 
     struct StorageActionSnapshotLabels {
