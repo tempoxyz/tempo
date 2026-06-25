@@ -59,7 +59,7 @@ pub struct AA2dPool {
     ///
     /// Expiring nonce transactions are not included here because they are keyed
     /// by expiring nonce hash, not `AASequenceId`.
-    independent_transactions: HashMap<AASequenceId, AA2dStoredTransaction>,
+    independent_transactions: IndependentTransactions,
     /// _All_ regular 2D nonce transactions that are currently inside the pool,
     /// grouped by their unique identifier.
     ///
@@ -175,6 +175,7 @@ impl AA2dPool {
 
         self.base_fee = base_fee;
         self.rebuild_eviction_order();
+        self.independent_transactions.on_new_base_fee(base_fee);
     }
 
     fn rebuild_eviction_order(&mut self) {
@@ -387,8 +388,7 @@ impl AA2dPool {
             }
             // if this is the next nonce in line we can mark it as independent
             if tx_id.nonce == on_chain_nonce {
-                self.independent_transactions
-                    .insert(tx_id.seq_id, tx.inner.clone());
+                self.independent_transactions.insert(tx.inner.clone());
             }
 
             // Notify active BestAA2dTransactions iterators about new pending transactions.
@@ -651,22 +651,9 @@ impl AA2dPool {
                 .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
                 .collect()
         };
-        let independent = self
-            .independent_transactions
-            .values()
-            .map(|tx| {
-                (
-                    tx.eviction_key(base_fee),
-                    tx.transaction
-                        .transaction
-                        .aa_transaction_id()
-                        .expect("is AA transaction"),
-                )
-            })
-            .collect();
 
         BestAA2dTransactions {
-            independent,
+            independent: self.independent_transactions.eviction_order_for(base_fee),
             by_id: self.by_id.clone(),
             expiring_nonce_order,
             invalid: Default::default(),
@@ -790,7 +777,8 @@ impl AA2dPool {
             self.slot_to_seq_id.remove(&slot);
         }
 
-        self.remove_independent(id);
+        self.independent_transactions
+            .remove(id.seq_id, Some(id.nonce));
         let removed_tx = tx.inner.transaction.clone();
         self.by_hash.remove(removed_tx.hash());
         self.remove_from_counts(tx.is_pending());
@@ -815,21 +803,6 @@ impl AA2dPool {
     fn remove_eviction_key(&mut self, tx: &Arc<AA2dInternalTransaction>) {
         self.by_eviction_order
             .remove(&tx.inner.eviction_key(self.base_fee));
-    }
-
-    /// Removes the independent transaction if it matches the given id.
-    fn remove_independent(&mut self, id: &AA2dTransactionId) -> Option<AA2dStoredTransaction> {
-        // Only remove from independent_transactions if this is the independent transaction
-        match self.independent_transactions.entry(id.seq_id) {
-            hash_map::Entry::Occupied(entry) => {
-                // we know it's the independent tx if the tracked tx has the same nonce
-                if entry.get().transaction.nonce() == id.nonce {
-                    return Some(entry.remove());
-                }
-            }
-            hash_map::Entry::Vacant(_) => {}
-        };
-        None
     }
 
     /// Removes the transaction by its hash from all internal sets.
@@ -1079,7 +1052,7 @@ impl AA2dPool {
                     if existing_id.nonce == on_chain_nonce {
                         // if this is the on chain nonce we can mark it as the next independent transaction
                         self.independent_transactions
-                            .insert(existing_id.seq_id, existing_tx.inner.clone());
+                            .insert(existing_tx.inner.clone());
                     }
 
                     next_nonce = next_nonce.saturating_add(1);
@@ -1099,7 +1072,7 @@ impl AA2dPool {
             // remove any stale independent transaction entry for this seq_id.
             // This handles reorgs where the on-chain nonce decreases.
             if next_nonce == on_chain_nonce {
-                self.independent_transactions.remove(&sender_id);
+                self.independent_transactions.remove(sender_id, None);
             }
         }
 
@@ -1430,7 +1403,7 @@ impl AA2dPool {
         );
 
         // All independent transactions must exist in by_id
-        for (seq_id, independent_tx) in &self.independent_transactions {
+        for (seq_id, independent_tx) in &self.independent_transactions.transactions {
             let tx_id = independent_tx
                 .transaction
                 .transaction
@@ -1658,6 +1631,80 @@ impl AA2dPool {
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched transaction hash"
             );
         }
+    }
+}
+
+#[derive(Debug, Default, derive_more::Deref)]
+struct IndependentTransactions {
+    /// Regular 2D nonce independent, pending, executable transactions, one per
+    /// sequence id.
+    ///
+    /// Expiring nonce transactions are not included here because they are keyed
+    /// by expiring nonce hash, not `AASequenceId`.
+    #[deref]
+    transactions: HashMap<AASequenceId, AA2dStoredTransaction>,
+    /// Eviction order of the independent transactions, based on the latest known basefee.
+    order: BTreeMap<EvictionOrderKey, AA2dTransactionId>,
+    /// The latest known basefee.
+    base_fee: u64,
+}
+
+impl IndependentTransactions {
+    fn insert(&mut self, tx: AA2dStoredTransaction) {
+        let id = tx
+            .transaction
+            .transaction
+            .aa_transaction_id()
+            .expect("is AA transaction");
+        self.order.insert(tx.eviction_key(self.base_fee), id);
+        self.transactions.insert(id.seq_id, tx);
+    }
+
+    fn remove(
+        &mut self,
+        seq_id: AASequenceId,
+        nonce: Option<u64>,
+    ) -> Option<AA2dStoredTransaction> {
+        // Only remove from independent_transactions if this is the independent transaction
+        match self.transactions.entry(seq_id) {
+            hash_map::Entry::Occupied(entry) => {
+                // If nonce was provided, only remove transaction if it matches
+                if nonce.is_none_or(|nonce| entry.get().transaction.nonce() == nonce) {
+                    let tx = entry.remove();
+                    self.order.remove(&tx.eviction_key(self.base_fee));
+                    return Some(tx);
+                }
+            }
+            hash_map::Entry::Vacant(_) => {}
+        };
+        None
+    }
+
+    fn on_new_base_fee(&mut self, base_fee: u64) {
+        self.base_fee = base_fee;
+        self.order.clear();
+        for (seq_id, tx) in &self.transactions {
+            self.order.insert(
+                tx.eviction_key(base_fee),
+                AA2dTransactionId::new(*seq_id, tx.transaction.nonce()),
+            );
+        }
+    }
+
+    fn eviction_order_for(&self, base_fee: u64) -> BTreeMap<EvictionOrderKey, AA2dTransactionId> {
+        if base_fee == self.base_fee {
+            return self.order.clone();
+        }
+
+        self.transactions
+            .iter()
+            .map(|(seq_id, tx)| {
+                (
+                    tx.eviction_key(base_fee),
+                    AA2dTransactionId::new(*seq_id, tx.transaction.nonce()),
+                )
+            })
+            .collect()
     }
 }
 
