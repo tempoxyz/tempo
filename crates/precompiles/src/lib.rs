@@ -59,7 +59,7 @@ use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
-    precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
 };
 
@@ -90,6 +90,13 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
     (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
 ];
+
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use alloy::primitives::Bytes;
+    pub use alloy_evm::precompiles::DynPrecompile;
+    pub use revm::precompile::{PrecompileId, PrecompileOutput};
+}
 
 /// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
 /// or a fixed system precompile.
@@ -152,6 +159,18 @@ impl PrecompileEnv {
             actions,
             non_creditable_slots,
         }
+    }
+
+    pub fn cfg(&self) -> &CfgEnv<TempoHardfork> {
+        &self.cfg
+    }
+
+    pub fn actions(&self) -> StorageActions {
+        self.actions.clone()
+    }
+
+    pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
+        self.non_creditable_slots.clone()
     }
 }
 
@@ -238,48 +257,56 @@ sol! {
     error StaticCallNotAllowed();
 }
 
+/// Creates a stateful Tempo precompile wrapper around a [`Precompile`] implementation.
+#[macro_export]
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
         #[cfg(not(test))]
         compile_error!("tempo_precompile! without actions is only available in tests");
         #[cfg(test)]
-        let env = PrecompileEnv::new(
+        let env = $crate::PrecompileEnv::new(
             $cfg,
-            StorageActions::disabled(),
-            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            $crate::storage::StorageActions::disabled(),
+            ::std::rc::Rc::new(::std::cell::RefCell::new(
+                $crate::storage_credits::NonCreditableSlots::empty(),
+            )),
         );
-        tempo_precompile!($id, env: &env, |$input| $impl)
+        $crate::tempo_precompile!($id, env: &env, |$input| $impl)
     }};
     ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
         let env = $env.clone();
-        let spec = env.cfg.spec;
-        let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
-        let gas_params = env.cfg.gas_params.clone();
-        let actions = env.actions.clone();
-        let non_creditable_slots = env.non_creditable_slots.clone();
-        DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
-            if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::revert(
-                    0,
-                    DelegateCallNotAllowed {}.abi_encode().into(),
+        let spec = env.cfg().spec;
+        let amsterdam_eip8037_enabled = env.cfg().enable_amsterdam_eip8037;
+        let gas_params = env.cfg().gas_params.clone();
+        let actions = env.actions();
+        let non_creditable_slots = env.non_creditable_slots();
+        $crate::__macro_support::DynPrecompile::new_stateful(
+            $crate::__macro_support::PrecompileId::Custom($id.into()),
+            move |$input| {
+                if !$input.is_direct_call() {
+                    return Ok($crate::__macro_support::PrecompileOutput::revert(
+                        0,
+                        $crate::__macro_support::Bytes::from_static(&[0x0d, 0x89, 0x43, 0x8e]),
+                        $input.reservoir,
+                    ));
+                }
+                let mut storage = $crate::storage::evm::EvmPrecompileStorageProvider::new(
+                    $input.internals,
+                    $input.gas,
                     $input.reservoir,
-                ));
-            }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
-                $input.internals,
-                $input.gas,
-                $input.reservoir,
-                spec,
-                amsterdam_eip8037_enabled,
-                $input.is_static,
-                gas_params.clone(),
-            )
-            .with_actions(actions.clone())
-            .with_non_creditable_slots(non_creditable_slots.clone());
-            crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
-            })
-        })
+                    spec,
+                    amsterdam_eip8037_enabled,
+                    $input.is_static,
+                    gas_params.clone(),
+                )
+                .with_actions(actions.clone())
+                .with_non_creditable_slots(non_creditable_slots.clone());
+                $crate::storage::StorageCtx::enter(&mut storage, || {
+                    let mut precompile = $impl;
+                    $crate::Precompile::call(&mut precompile, $input.data, $input.caller)
+                })
+            },
+        )
     }};
 }
 
