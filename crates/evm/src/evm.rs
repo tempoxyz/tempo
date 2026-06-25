@@ -225,14 +225,17 @@ where
     type Precompiles = PrecompilesMap;
     type Inspector = I;
 
+    #[inline(always)]
     fn block(&self) -> &Self::BlockEnv {
         &self.block
     }
 
+    #[inline(always)]
     fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
         &self.cfg
     }
 
+    #[inline(always)]
     fn chain_id(&self) -> u64 {
         self.cfg.chain_id
     }
