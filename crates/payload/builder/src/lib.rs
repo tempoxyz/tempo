@@ -78,7 +78,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
+    StateAwareBestTransactions, TempoPoolDebugSnapshot, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -229,6 +229,7 @@ where
     general_gas_limit: u64,
     hardfork: TempoHardfork,
     is_osaka: bool,
+    best_txs_empty_snapshot: &'a dyn Fn() -> TempoPoolDebugSnapshot,
 }
 
 impl<DB, E, I> BlockDraftBuilder<'_, DB, E, I>
@@ -260,6 +261,7 @@ where
             general_gas_limit,
             hardfork,
             is_osaka,
+            best_txs_empty_snapshot,
         } = self;
 
         let execution_start = Instant::now();
@@ -275,6 +277,8 @@ where
         let mut skipped_oversized_block = false;
         let invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut best_txs_empty_polls = 0u64;
+        let mut last_best_txs_empty_log_idle = Duration::ZERO;
         let marshal_persist = marshal_persist_estimate();
 
         let stop_reason = loop {
@@ -355,6 +359,34 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
+                best_txs_empty_polls += 1;
+                let snapshot = (best_txs_empty_snapshot)();
+                metrics.record_best_txs_empty(&snapshot);
+                if normal_transaction_fill_idle_elapsed.saturating_sub(last_best_txs_empty_log_idle)
+                    >= Duration::from_millis(50)
+                {
+                    last_best_txs_empty_log_idle = normal_transaction_fill_idle_elapsed;
+                    debug!(
+                        target: "payload_builder",
+                        elapsed = ?started_at.elapsed(),
+                        ?normal_transaction_fill_idle_elapsed,
+                        best_txs_empty_polls,
+                        gas_used = cumulative_gas_used,
+                        transactions = pool_transactions_included,
+                        pool_pending = snapshot.total_pending(),
+                        pool_queued = snapshot.total_queued(),
+                        protocol_pending = snapshot.protocol_pending,
+                        aa_pending = snapshot.aa_pending,
+                        aa_queued = snapshot.aa_queued,
+                        aa_total = snapshot.aa_total,
+                        aa_regular_independent_pending = snapshot.aa_regular_independent_pending,
+                        aa_regular_total = snapshot.aa_regular_total,
+                        aa_expiring_pending = snapshot.aa_expiring_pending,
+                        aa_expiring_order = snapshot.aa_expiring_order,
+                        aa_live_update_receivers = snapshot.aa_live_update_receivers,
+                        "best transaction iterator returned empty while building payload"
+                    );
+                }
                 if wait_for_pool_transactions && cumulative_gas_used < non_shared_gas_limit {
                     if let Some(build_budget) = payload_build_budget {
                         if started_at.elapsed() < build_budget {
@@ -900,6 +932,7 @@ where
         let payload_validation_budget = attributes.payload_validation_budget();
         let validation_latency = attributes.validation_latency_estimate();
         let is_cancelled = || cancel.is_cancelled();
+        let best_txs_empty_snapshot = || self.pool.debug_snapshot();
         let Some(draft) = BlockDraftBuilder {
             metrics: &self.metrics,
             executor: &mut executor,
@@ -918,6 +951,7 @@ where
             general_gas_limit,
             hardfork,
             is_osaka,
+            best_txs_empty_snapshot: &best_txs_empty_snapshot,
         }
         .build()?
         else {

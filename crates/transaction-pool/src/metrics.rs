@@ -32,6 +32,42 @@ pub struct AA2dPoolMetrics {
 
     /// Number of transactions demoted from pending to queued
     pub demoted_transactions: Counter,
+
+    /// Number of live-update transactions received by active best-transaction iterators.
+    pub best_live_updates_received: Counter,
+
+    /// Number of times an active best-transaction iterator found no live updates waiting.
+    pub best_live_updates_empty: Counter,
+
+    /// Number of broadcast lag events seen by active best-transaction iterators.
+    pub best_live_updates_lagged_events: Counter,
+
+    /// Number of live-update transactions skipped by broadcast lag.
+    pub best_live_updates_lagged_skipped: Counter,
+
+    /// Number of live updates processed into active best-transaction iterators.
+    pub best_live_updates_processed: Counter,
+
+    /// Number of live updates stashed to preserve iterator ordering.
+    pub best_live_updates_stashed: Counter,
+
+    /// Number of expiring nonce live updates inserted into active iterator ordering.
+    pub best_live_updates_expiring_inserted: Counter,
+
+    /// Number of expiring nonce live updates skipped because they were underpriced.
+    pub best_live_updates_expiring_underpriced: Counter,
+
+    /// Number of times a best-transaction iterator returned empty.
+    pub best_iterator_empty: Counter,
+
+    /// Local regular pending transaction count when a best-transaction iterator last returned empty.
+    pub best_iterator_empty_regular_pending_last: Gauge,
+
+    /// Local expiring nonce order count when a best-transaction iterator last returned empty.
+    pub best_iterator_empty_expiring_order_last: Gauge,
+
+    /// Live-update receiver count when a best-transaction iterator last returned empty.
+    pub best_iterator_empty_receivers_last: Gauge,
 }
 
 impl AA2dPoolMetrics {
@@ -71,6 +107,66 @@ impl AA2dPoolMetrics {
     #[inline]
     pub fn inc_demoted(&self, count: usize) {
         self.demoted_transactions.increment(count as u64);
+    }
+
+    /// Increment best-iterator live-update receive count.
+    #[inline]
+    pub fn inc_best_live_update_received(&self) {
+        self.best_live_updates_received.increment(1);
+    }
+
+    /// Increment best-iterator live-update empty count.
+    #[inline]
+    pub fn inc_best_live_update_empty(&self) {
+        self.best_live_updates_empty.increment(1);
+    }
+
+    /// Increment best-iterator live-update lag counters.
+    #[inline]
+    pub fn inc_best_live_update_lagged(&self, skipped: u64) {
+        self.best_live_updates_lagged_events.increment(1);
+        self.best_live_updates_lagged_skipped.increment(skipped);
+    }
+
+    /// Increment best-iterator live-update processing count.
+    #[inline]
+    pub fn inc_best_live_update_processed(&self) {
+        self.best_live_updates_processed.increment(1);
+    }
+
+    /// Increment best-iterator live-update stashed count.
+    #[inline]
+    pub fn inc_best_live_update_stashed(&self) {
+        self.best_live_updates_stashed.increment(1);
+    }
+
+    /// Increment best-iterator expiring nonce insert count.
+    #[inline]
+    pub fn inc_best_live_update_expiring_inserted(&self) {
+        self.best_live_updates_expiring_inserted.increment(1);
+    }
+
+    /// Increment best-iterator expiring nonce underpriced count.
+    #[inline]
+    pub fn inc_best_live_update_expiring_underpriced(&self) {
+        self.best_live_updates_expiring_underpriced.increment(1);
+    }
+
+    /// Record that a best-transaction iterator returned empty.
+    #[inline]
+    pub fn record_best_iterator_empty(
+        &self,
+        regular_pending: usize,
+        expiring_order: usize,
+        receivers: usize,
+    ) {
+        self.best_iterator_empty.increment(1);
+        self.best_iterator_empty_regular_pending_last
+            .set(regular_pending as f64);
+        self.best_iterator_empty_expiring_order_last
+            .set(expiring_order as f64);
+        self.best_iterator_empty_receivers_last
+            .set(receivers as f64);
     }
 }
 

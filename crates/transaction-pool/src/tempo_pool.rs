@@ -41,6 +41,33 @@ use tempo_precompiles::{
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
 
+/// Debug counts for diagnosing payload-builder pool starvation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TempoPoolDebugSnapshot {
+    pub protocol_pending: usize,
+    pub protocol_queued: usize,
+    pub protocol_basefee: usize,
+    pub protocol_blob: usize,
+    pub aa_pending: usize,
+    pub aa_queued: usize,
+    pub aa_total: usize,
+    pub aa_regular_independent_pending: usize,
+    pub aa_regular_total: usize,
+    pub aa_expiring_pending: usize,
+    pub aa_expiring_order: usize,
+    pub aa_live_update_receivers: usize,
+}
+
+impl TempoPoolDebugSnapshot {
+    pub fn total_pending(&self) -> usize {
+        self.protocol_pending + self.aa_pending
+    }
+
+    pub fn total_queued(&self) -> usize {
+        self.protocol_queued + self.protocol_basefee + self.protocol_blob + self.aa_queued
+    }
+}
+
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -87,6 +114,26 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
+    }
+
+    /// Returns debug counts for diagnosing payload-builder pool starvation.
+    pub fn debug_snapshot(&self) -> TempoPoolDebugSnapshot {
+        let protocol = self.protocol_pool.pool_size();
+        let aa = self.aa_2d_pool.read().debug_snapshot();
+        TempoPoolDebugSnapshot {
+            protocol_pending: protocol.pending,
+            protocol_queued: protocol.queued,
+            protocol_basefee: protocol.basefee,
+            protocol_blob: protocol.blob,
+            aa_pending: aa.pending,
+            aa_queued: aa.queued,
+            aa_total: aa.total,
+            aa_regular_independent_pending: aa.regular_independent_pending,
+            aa_regular_total: aa.regular_total,
+            aa_expiring_pending: aa.expiring_pending,
+            aa_expiring_order: aa.expiring_order,
+            aa_live_update_receivers: aa.live_update_receivers,
+        }
     }
 
     /// Updates the 2d nonce pool with the given state changes.

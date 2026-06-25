@@ -37,6 +37,20 @@ type PoolUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+
+/// Debug counts for the AA2D pool, including its expiring nonce side index.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AA2dPoolDebugSnapshot {
+    pub total: usize,
+    pub pending: usize,
+    pub queued: usize,
+    pub regular_independent_pending: usize,
+    pub regular_total: usize,
+    pub expiring_pending: usize,
+    pub expiring_order: usize,
+    pub live_update_receivers: usize,
+}
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -166,6 +180,20 @@ impl AA2dPool {
         let (pending, queued) = self.pending_and_queued_txn_count();
         let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
+    }
+
+    /// Returns debug counts for diagnosing best-transaction iterator starvation.
+    pub fn debug_snapshot(&self) -> AA2dPoolDebugSnapshot {
+        AA2dPoolDebugSnapshot {
+            total: self.by_id.len() + self.expiring_nonce_txs.len(),
+            pending: self.pending_count,
+            queued: self.queued_count,
+            regular_independent_pending: self.independent_transactions.len(),
+            regular_total: self.by_id.len(),
+            expiring_pending: self.expiring_nonce_txs.len(),
+            expiring_order: self.expiring_nonce_eviction_order.len(),
+            live_update_receivers: self.new_transaction_notifier.receiver_count(),
+        }
     }
 
     pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
@@ -678,6 +706,7 @@ impl AA2dPool {
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
             base_fee,
+            metrics: self.metrics.clone(),
         }
     }
 
@@ -2000,6 +2029,8 @@ pub(crate) struct BestAA2dTransactions {
     last_priority: Option<Priority<u64>>,
     /// Base fee used to filter and prioritize this block-building snapshot.
     base_fee: u64,
+    /// Metrics for live-update and empty-iterator diagnostics.
+    metrics: AA2dPoolMetrics,
 }
 
 impl BestAA2dTransactions {
@@ -2054,6 +2085,7 @@ impl BestAA2dTransactions {
         loop {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
+                    self.metrics.inc_best_live_update_received();
                     let priority = TempoTipOrdering::default()
                         .priority(&tx.transaction.transaction, self.base_fee);
                     let tx = PendingTransaction {
@@ -2070,10 +2102,15 @@ impl BestAA2dTransactions {
                     }
                     return Some(IncomingAA2dTransaction::Process(tx));
                 }
-                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    self.metrics.inc_best_live_update_lagged(skipped);
                     // Buffer overflowed; self-corrects on next call.
                 }
-                Err(_) => return None,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    self.metrics.inc_best_live_update_empty();
+                    return None;
+                }
+                Err(broadcast::error::TryRecvError::Closed) => return None,
             }
         }
     }
@@ -2083,13 +2120,22 @@ impl BestAA2dTransactions {
         for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
             if let Some(incoming) = self.try_recv() {
                 let (tx, process) = match incoming {
-                    IncomingAA2dTransaction::Process(tx) => (tx, true),
-                    IncomingAA2dTransaction::Stash(tx) => (tx, false),
+                    IncomingAA2dTransaction::Process(tx) => {
+                        self.metrics.inc_best_live_update_processed();
+                        (tx, true)
+                    }
+                    IncomingAA2dTransaction::Stash(tx) => {
+                        self.metrics.inc_best_live_update_stashed();
+                        (tx, false)
+                    }
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process && can_pay_base_fee(&tx, self.base_fee) {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
+                        self.metrics.inc_best_live_update_expiring_inserted();
+                    } else if process {
+                        self.metrics.inc_best_live_update_expiring_underpriced();
                     }
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
                     if process {
@@ -2116,6 +2162,24 @@ impl BestAA2dTransactions {
         }
     }
 
+    fn record_empty(&self) {
+        let receiver_present = usize::from(self.new_transaction_receiver.is_some());
+        self.metrics.record_best_iterator_empty(
+            self.independent.len(),
+            self.expiring_nonce_order.len(),
+            receiver_present,
+        );
+        trace!(
+            target: "txpool",
+            regular_independent_pending = self.independent.len(),
+            regular_tracked = self.by_id.len(),
+            expiring_order = self.expiring_nonce_order.len(),
+            receiver_present,
+            base_fee = self.base_fee,
+            "AA best transaction iterator returned empty"
+        );
+    }
+
     /// Returns the next best transaction with its priority.
     pub(crate) fn next_tx_and_priority(
         &mut self,
@@ -2125,7 +2189,11 @@ impl BestAA2dTransactions {
     )> {
         loop {
             self.add_new_transactions();
-            let best = match self.pop_best()? {
+            let Some(popped) = self.pop_best() else {
+                self.record_empty();
+                return None;
+            };
+            let best = match popped {
                 PoppedAA2dTransaction::Regular(id, best) => {
                     if self.invalid.contains(&id.seq_id) {
                         continue;

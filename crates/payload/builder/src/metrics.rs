@@ -12,6 +12,7 @@ use reth_trie_common::{
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::time::Instant;
+use tempo_transaction_pool::TempoPoolDebugSnapshot;
 use tracing::debug_span;
 
 #[derive(Metrics, Clone)]
@@ -101,6 +102,24 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) builder_finish_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
+    /// Combined pending transactions in the pool when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_pool_pending_last: Gauge,
+    /// Combined queued transactions in the pool when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_pool_queued_last: Gauge,
+    /// Protocol pending transactions when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_protocol_pending_last: Gauge,
+    /// AA pending transactions when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_pending_last: Gauge,
+    /// AA queued transactions when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_queued_last: Gauge,
+    /// AA expiring nonce transactions when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_expiring_pending_last: Gauge,
+    /// AA expiring nonce order entries when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_expiring_order_last: Gauge,
+    /// AA live-update receivers when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_live_update_receivers_last: Gauge,
+    /// AA regular independent pending transactions when the best-tx iterator last returned empty.
+    pub(crate) best_txs_empty_aa_regular_independent_pending_last: Gauge,
     /// Gas per second calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
@@ -157,6 +176,30 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_subblocks_expired(&self) {
         metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
+    }
+
+    /// Records a pool snapshot when the active best-transaction iterator returns empty.
+    #[inline]
+    pub(crate) fn record_best_txs_empty(&self, snapshot: &TempoPoolDebugSnapshot) {
+        metrics::counter!("tempo_payload_builder_best_txs_empty_polls_total").increment(1);
+        self.best_txs_empty_pool_pending_last
+            .set(snapshot.total_pending() as f64);
+        self.best_txs_empty_pool_queued_last
+            .set(snapshot.total_queued() as f64);
+        self.best_txs_empty_protocol_pending_last
+            .set(snapshot.protocol_pending as f64);
+        self.best_txs_empty_aa_pending_last
+            .set(snapshot.aa_pending as f64);
+        self.best_txs_empty_aa_queued_last
+            .set(snapshot.aa_queued as f64);
+        self.best_txs_empty_aa_expiring_pending_last
+            .set(snapshot.aa_expiring_pending as f64);
+        self.best_txs_empty_aa_expiring_order_last
+            .set(snapshot.aa_expiring_order as f64);
+        self.best_txs_empty_aa_live_update_receivers_last
+            .set(snapshot.aa_live_update_receivers as f64);
+        self.best_txs_empty_aa_regular_independent_pending_last
+            .set(snapshot.aa_regular_independent_pending as f64);
     }
 }
 
