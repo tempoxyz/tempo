@@ -6,18 +6,28 @@
 //!
 //! ## Adding a New Hardfork
 //!
-//! When a new hardfork is needed, append a variant to `tempo_hardfork!`. This automatically:
+//! When a new hardfork is needed (e.g., `Vivace`):
 //!
-//! * defines the enum variant via [`hardfork!`]
-//! * adds the variant to [`TempoHardfork::VARIANTS`]
-//! * generates the `is_<fork>()` inherent helper
-//! * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
-//! * adds tests for the generated hardfork helpers
+//! ### In `tempo-hardfork`
+//! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
+//!    * defines the enum variant via [`hardfork!`]
+//!    * adds the variant to [`TempoHardfork::VARIANTS`]
+//!    * generates the `is_vivace()` inherent helper
+//!    * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
+//!    * adds tests for the generated hardfork helpers
+//! 2. Update activation schedule methods/constants for the new fork.
+//! 3. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum
+//!    `SpecId`.
 //!
-//! Then update this crate's activation schedule methods/constants as needed. If the fork is
-//! configurable in genesis, update `tempo-chainspec`'s `TempoGenesisInfo` fields; chainspec uses
-//! [`tempo_post_genesis_hardforks!`] to generate fork-time matching, so missing fields for new
-//! hardfork variants fail at compile time.
+//! ### In `tempo-chainspec`
+//! 4. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo` if the fork is configurable in
+//!    genesis. `fork_time()` is generated through [`tempo_post_genesis_hardforks!`], so missing
+//!    fields for new hardfork variants fail at compile time.
+//!
+//! ### In genesis files and generator
+//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
+//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
+//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
