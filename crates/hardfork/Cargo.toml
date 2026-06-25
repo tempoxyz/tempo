@@ -33,5 +33,5 @@ std = [
     "alloy-evm?/std",
     "serde?/std",
 ]
-serde = ["dep:serde", "alloy-hardforks/serde"]
+serde = ["dep:serde", "alloy-eips/serde", "alloy-hardforks/serde"]
 evm = ["dep:alloy-evm"]

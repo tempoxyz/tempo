@@ -24,7 +24,7 @@ use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
-use core::option::Option::{None, Some};
+use core::option::Option::{self, None, Some};
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///

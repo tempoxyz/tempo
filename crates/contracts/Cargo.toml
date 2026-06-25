@@ -32,4 +32,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 default = ["std", "rpc"]
 std = ["alloy-primitives/std", "alloy-sol-types/std", "serde?/std"]
 rpc = ["dep:alloy-contract"]
-serde = ["dep:serde", "alloy-primitives/serde"]
+serde = ["dep:serde", "alloy-primitives/serde", "tempo-hardfork/serde"]
