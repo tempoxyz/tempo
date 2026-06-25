@@ -182,6 +182,7 @@ impl StorageCtx {
     }
 
     /// Emits an event from the given contract address.
+    #[inline(always)]
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
