@@ -206,6 +206,8 @@ impl TempoPrecompileError {
     }
 
     /// Creates a storage delta underflow that carries the current slot value.
+    #[cold]
+    #[inline(never)]
     pub fn storage_delta_underflow(current: U256) -> Self {
         Self::StorageDeltaUnderflow(current)
     }
