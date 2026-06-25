@@ -661,7 +661,9 @@ impl AA2dPool {
                     .aa_transaction_id()
                     .expect("Independent transaction must have AA transaction ID");
                 let tx = self.by_id.get(&id)?;
-                Some(tx.inner.clone_into_pending(base_fee))
+                Some(IndependentTransactionKey::from_stored(
+                    id, &tx.inner, base_fee,
+                ))
             })
             .collect();
 
@@ -1720,11 +1722,11 @@ impl AA2dStoredTransaction {
         }
     }
 
-    fn clone_into_pending(&self, base_fee: u64) -> PendingTransaction<TxOrdering> {
+    fn into_pending_with_priority(self, priority: Priority<u64>) -> PendingTransaction<TxOrdering> {
         PendingTransaction {
             submission_id: self.submission_id,
-            priority: TempoTipOrdering::default().priority(&self.transaction.transaction, base_fee),
-            transaction: self.transaction.clone(),
+            priority,
+            transaction: self.transaction,
         }
     }
 }
@@ -1974,6 +1976,64 @@ enum PoppedAA2dTransaction {
     Expiring(PendingTransaction<TxOrdering>),
 }
 
+/// Lightweight execution-order key for regular 2D nonce transactions.
+///
+/// This keeps `BestAA2dTransactions` from eagerly cloning every independent
+/// transaction into a `PendingTransaction` when block building starts. The
+/// transaction itself is cloned only when the key is popped for execution.
+#[derive(Debug, Clone)]
+struct IndependentTransactionKey {
+    id: AA2dTransactionId,
+    order: EvictionOrderKey,
+}
+
+impl IndependentTransactionKey {
+    fn from_stored(id: AA2dTransactionId, tx: &AA2dStoredTransaction, base_fee: u64) -> Self {
+        Self {
+            id,
+            order: EvictionOrderKey::new(
+                TempoTipOrdering::default().priority(&tx.transaction.transaction, base_fee),
+                tx.submission_id,
+            ),
+        }
+    }
+
+    fn from_pending(id: AA2dTransactionId, tx: &PendingTransaction<TxOrdering>) -> Self {
+        Self {
+            id,
+            order: EvictionOrderKey::new(tx.priority.clone(), tx.submission_id),
+        }
+    }
+
+    fn priority(&self) -> &Priority<u64> {
+        &self.order.priority
+    }
+
+    fn submission_id(&self) -> u64 {
+        self.order.submission_id
+    }
+}
+
+impl PartialEq for IndependentTransactionKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.submission_id() == other.submission_id()
+    }
+}
+
+impl Eq for IndependentTransactionKey {}
+
+impl Ord for IndependentTransactionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
+}
+
+impl PartialOrd for IndependentTransactionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
@@ -1981,7 +2041,7 @@ pub(crate) struct BestAA2dTransactions {
     ///
     /// Expiring nonce transactions are not included here because they are keyed
     /// by expiring nonce hash, not `AA2dTransactionId`.
-    independent: BTreeSet<PendingTransaction<TxOrdering>>,
+    independent: BTreeSet<IndependentTransactionKey>,
     /// Regular 2D nonce pending transactions grouped by their unique identifier.
     ///
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
@@ -2005,13 +2065,12 @@ pub(crate) struct BestAA2dTransactions {
 impl BestAA2dTransactions {
     /// Removes the best regular transaction from the set.
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
-        let tx = self.independent.pop_last()?;
-        let id = tx
-            .transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("Transaction in AA2D pool must be an AA transaction with valid nonce key");
-        self.by_id.remove(&id);
+        let key = self.independent.pop_last()?;
+        let id = key.id;
+        let tx = self
+            .by_id
+            .remove(&id)?
+            .into_pending_with_priority(key.order.priority);
         Some((id, tx))
     }
 
@@ -2026,9 +2085,9 @@ impl BestAA2dTransactions {
         match (self.independent.last(), self.expiring_nonce_order.last()) {
             (Some(regular), Some(expiring)) => {
                 if regular
-                    .priority
+                    .priority()
                     .cmp(expiring.priority())
-                    .then_with(|| expiring.submission_id().cmp(&regular.submission_id))
+                    .then_with(|| expiring.submission_id().cmp(&regular.submission_id()))
                     .is_ge()
                 {
                     let (id, tx) = self.pop_best_regular()?;
@@ -2099,7 +2158,8 @@ impl BestAA2dTransactions {
                             id.nonce.saturating_sub(1),
                         )) || id.nonce == 0
                         {
-                            self.independent.insert(tx.clone());
+                            self.independent
+                                .insert(IndependentTransactionKey::from_pending(id, &tx));
                         }
                     }
                     self.by_id.insert(
@@ -2135,9 +2195,14 @@ impl BestAA2dTransactions {
                         continue;
                     }
                     // Advance transaction that just got unlocked, if any.
-                    if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
+                    let unlocked_id = id.unlocks();
+                    if let Some(unlocked) = self.by_id.get(&unlocked_id) {
                         self.independent
-                            .insert(unlocked.clone_into_pending(self.base_fee));
+                            .insert(IndependentTransactionKey::from_stored(
+                                unlocked_id,
+                                unlocked,
+                                self.base_fee,
+                            ));
                     }
                     best
                 }
