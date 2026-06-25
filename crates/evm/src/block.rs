@@ -517,6 +517,7 @@ where
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
+        let mut beneficiary_overridden = false;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
         if let Some(validator) = recovered.tx().subblock_proposer() {
             let fee_recipient = *self
@@ -525,12 +526,15 @@ where
                 .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+            beneficiary_overridden = true;
         }
         let result = self
             .inner
             .execute_transaction_without_commit((tx_env, &recovered));
 
-        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+        if beneficiary_overridden {
+            self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+        }
 
         let inner = result?;
 
