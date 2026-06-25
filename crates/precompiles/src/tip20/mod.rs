@@ -1383,7 +1383,7 @@ pub(crate) struct Recipient {
 
 impl Recipient {
     /// Creates a [`Recipient`] with no virtual indirection.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn direct(addr: Address) -> Self {
         Self {
             target: addr,
@@ -1410,6 +1410,7 @@ impl Recipient {
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
+    #[inline(always)]
     pub(crate) fn validate(&self) -> Result<()> {
         if self.target.is_zero() || self.target.is_tip20() {
             return Err(TIP20Error::invalid_recipient().into());
@@ -1421,12 +1422,14 @@ impl Recipient {
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
+    #[inline(always)]
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
+    #[inline(always)]
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr
             .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
