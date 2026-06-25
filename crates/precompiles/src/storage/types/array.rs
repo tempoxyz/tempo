@@ -83,7 +83,8 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     ///
     /// Single-slot arrays pack all fields into this slot.
     /// Multi-slot arrays use consecutive slots starting from this base.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     pub fn base_slot(&self) -> ::alloy::primitives::U256 {
         self.base_slot
     }
