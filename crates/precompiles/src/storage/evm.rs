@@ -106,11 +106,15 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn take_actions(&self) -> Option<Vec<StorageAction>> {
         self.actions.take()
     }
 
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
+    #[cold]
+    #[inline(never)]
     pub fn replace_actions(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         self.actions.replace(actions)
     }
