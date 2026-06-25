@@ -94,12 +94,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Sets the storage actions for this provider.
+    #[inline(always)]
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
         self
     }
 
     /// Sets the transaction-local non-creditable clear-slot context for this provider.
+    #[inline(always)]
     pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
         self.non_creditable_slots = slots;
         self
