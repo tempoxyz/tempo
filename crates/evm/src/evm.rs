@@ -891,14 +891,18 @@ mod tests {
             assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
 
             let snapshot = IndexMap::from([
+                // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "first_transfer",
                     run_transfer(&mut evm, 0, U256::ZERO, fee_token),
                 ),
+                // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
+                // and fee balances are no longer zero.
                 (
                     "second_transfer",
                     run_transfer(&mut evm, 1, U256::ZERO, fee_token),
                 ),
+                // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "2d_nonce_transfer",
                     run_transfer(&mut evm, 0, nonce_key, fee_token),
