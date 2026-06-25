@@ -336,6 +336,8 @@ impl NonceManager {
 
 impl AccountKeychain {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("AccountKeychain", env: env, |input| { Self::new() })
     }
