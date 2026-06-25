@@ -18,6 +18,7 @@ const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
+const TIP20_BLOAT_ACCOUNT_BALANCE = 1000000000000
 
 # ============================================================================
 # Helper functions
@@ -141,7 +142,13 @@ def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    run-tempo-xtask $profile $skip_build [
+        "generate-state-bloat"
+        "--size" $"($bloat_size)"
+        "--out" $bloat_file
+        "--balance" $"($TIP20_BLOAT_ACCOUNT_BALANCE)"
+        ...$token_args
+    ]
 }
 
 # Load the bloat file into a single node's database
