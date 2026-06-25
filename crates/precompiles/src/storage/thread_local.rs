@@ -142,6 +142,8 @@ impl StorageCtx {
     }
 
     /// Returns the epoch containing `height`.
+    #[cold]
+    #[inline(never)]
     pub fn epoch(&self, height: u64) -> u64 {
         self.with_block_env(|block_env| block_env.epoch(height))
     }
