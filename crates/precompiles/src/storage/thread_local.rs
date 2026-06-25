@@ -123,7 +123,7 @@ impl StorageCtx {
 
     /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
-        self.with_block_env(|block_env| block_env.timestamp)
+        Self::with_storage(|s| s.block_env().timestamp)
     }
 
     /// Returns the current block beneficiary (coinbase).
