@@ -99,6 +99,7 @@ impl alloy_consensus::InMemorySize for TempoTxType {
 
 impl TempoTxEnvelope {
     /// Returns the fee token preference if this is a fee token transaction
+    #[inline]
     pub fn fee_token(&self) -> Option<Address> {
         match self {
             Self::AA(tx) => tx.tx().fee_token,
