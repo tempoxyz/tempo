@@ -95,6 +95,8 @@ mod codec {
     }
 
     impl reth_codecs::Compact for TempoHeader {
+        #[cold]
+        #[inline(never)]
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
@@ -116,6 +118,8 @@ mod codec {
             header.to_compact(buf)
         }
 
+        #[cold]
+        #[inline(never)]
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
             let (header_compat, buf) = TempoHeaderCompact::from_compact(buf, len);
             let header = Self {
@@ -133,12 +137,16 @@ mod codec {
     impl reth_db_api::table::Compress for TempoHeader {
         type Compressed = alloc::vec::Vec<u8>;
 
+        #[cold]
+        #[inline(never)]
         fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
             let _ = reth_codecs::Compact::to_compact(self, buf);
         }
     }
 
     impl reth_db_api::table::Decompress for TempoHeader {
+        #[cold]
+        #[inline(never)]
         fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
             let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
             Ok(obj)
