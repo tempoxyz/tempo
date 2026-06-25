@@ -19,7 +19,7 @@ workspace = true
 [dependencies]
 tempo-contracts.workspace = true
 tempo-chainspec = { workspace = true, features = ["evm"] }
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["evm"] }
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }

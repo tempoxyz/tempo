@@ -27,6 +27,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -45,14 +46,8 @@ pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
 
-    /// Returns the current block timestamp.
-    fn timestamp(&self) -> U256;
-
-    /// Returns the current block beneficiary (coinbase).
-    fn beneficiary(&self) -> Address;
-
-    /// Returns the current block number.
-    fn block_number(&self) -> u64;
+    /// Returns the full Tempo block environment.
+    fn block_env(&self) -> &TempoBlockEnv;
 
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;

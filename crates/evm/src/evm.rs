@@ -23,12 +23,13 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
-    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
-    handler::TempoEvmHandler,
+    ProtocolFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    evm::TempoContext, handler::TempoEvmHandler,
 };
 
 use crate::TempoBlockEnv;
 
+/// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory;
@@ -144,6 +145,17 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         }
     }
 
+    /// Updates the protocol fee manager used by the EVM.
+    pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
+    where
+        F: ProtocolFeeManager<DB> + 'static,
+    {
+        Self {
+            inner: self.inner.with_fee_manager(fee_manager),
+            inspect: self.inspect,
+        }
+    }
+
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
@@ -152,7 +164,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         tx: impl IntoTxEnv<TempoTxEnv>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.inner.inner.ctx.tx = tx.into_tx_env();
-        let mut handler = TempoEvmHandler::new();
+        let mut handler = TempoEvmHandler::<DB, I>::new();
         handler.validate_transaction(&mut self.inner)
     }
 

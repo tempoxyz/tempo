@@ -225,6 +225,28 @@ jobs:
       - name: Run CLI tests
         run: ./scripts/test-cli.sh
 
+  tempoup:
+    name: tempoup installer tests
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+      - name: Run tempoup tests
+        run: |
+          bash -n tempoup/tempoup tempoup/install tempoup/test-tempoup.sh
+          shellcheck tempoup/tempoup tempoup/install tempoup/test-tempoup.sh
+          ./tempoup/test-tempoup.sh
+
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4

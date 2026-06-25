@@ -79,7 +79,7 @@ jobs:
           fi
 
           # Release PRs may also add/delete consumed changelog fragments.
-          allowed='^(Cargo\.lock|\.changelog/[^/]+\.md|crates/(alloy|chainspec|contracts|primitives)/(Cargo\.toml|CHANGELOG\.md))$'
+          allowed='^(Cargo\.lock|\.changelog/[^/]+\.md|crates/(alloy|chainspec|contracts|primitives|hardfork)/(Cargo\.toml|CHANGELOG\.md))$'
           if printf '%s\n' "$changed_files" | grep -Ev "$allowed" >/dev/null; then
             echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
             echo "Found non-release-only SDK crate changes."

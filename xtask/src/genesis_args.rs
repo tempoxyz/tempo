@@ -89,6 +89,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
 
+    /// Override the general (non-payment) gas limit
+    #[arg(long)]
+    general_gas_limit: Option<u64>,
+
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
@@ -569,6 +573,11 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
+        if let Some(general_gas_limit) = self.general_gas_limit {
+            chain_config
+                .extra_fields
+                .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
+        }
         chain_config
             .extra_fields
             .insert_value("t0Time".to_string(), self.t0_time)?;

@@ -335,6 +335,7 @@ fn bench_env(
                 ..Default::default()
             },
             timestamp_millis_part: 0,
+            ..Default::default()
         },
     }
 }

@@ -1273,6 +1273,13 @@ impl AccountKeychain {
             return Ok((remaining, 0));
         }
 
+        let remaining =
+            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+                U256::ZERO
+            } else {
+                remaining
+            };
+
         let period_end = self.spending_limits[limit_key][token].period_end.read()?;
         if current_timestamp < period_end {
             return Ok((remaining, period_end));
@@ -4613,6 +4620,22 @@ mod tests {
                 U256::from(100),
                 U256::ZERO,
             )]);
+            assert_eq!(
+                keychain.effective_remaining_limit(account, key_id, token, 1_000)?,
+                U256::ZERO,
+                "effective remaining limit must decode the T7 zero sentinel"
+            );
+            assert_eq!(
+                keychain
+                    .get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                        account,
+                        keyId: key_id,
+                        token,
+                    })?
+                    .remaining,
+                U256::ZERO,
+                "public period getter must decode the T7 zero sentinel"
+            );
 
             keychain.set_transaction_key(key_id)?;
             keychain.refund_spending_limit(account, token, U256::from(40))?;
