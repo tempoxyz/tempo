@@ -96,22 +96,21 @@ impl TempoGenesisInfo {
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
     pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
-        match fork {
-            TempoHardfork::Genesis => Some(0),
-            TempoHardfork::T0 => self.t0_time,
-            TempoHardfork::T1 => self.t1_time,
-            TempoHardfork::T1A => self.t1a_time,
-            TempoHardfork::T1B => self.t1b_time,
-            TempoHardfork::T1C => self.t1c_time,
-            TempoHardfork::T2 => self.t2_time,
-            TempoHardfork::T3 => self.t3_time,
-            TempoHardfork::T4 => self.t4_time,
-            TempoHardfork::T5 => self.t5_time,
-            TempoHardfork::T6 => self.t6_time,
-            TempoHardfork::T7 => self.t7_time,
-            TempoHardfork::T8 => self.t8_time,
-            _ => None,
+        macro_rules! fork_time_match {
+            ($($variant:ident),* $(,)?) => {
+                paste::paste! {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => self.[<$variant:lower _time>],)*
+                        // Required because `TempoHardfork` is non-exhaustive across crates.
+                        // Missing `TempoGenesisInfo` fields fail via generated `self.<fork>_time`.
+                        _ => None,
+                    }
+                }
+            };
         }
+
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
     }
 }
 

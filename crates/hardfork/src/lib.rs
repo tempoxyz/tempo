@@ -14,8 +14,8 @@
 //! * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
 //! * adds tests for the generated hardfork helpers
 //!
-//! Then update this crate's activation schedule methods/constants as needed, and update
-//! `tempo-chainspec` genesis parsing (`TempoGenesisInfo`) if the fork is configurable in genesis.
+//! Then update this crate's activation schedule methods/constants as needed. If the fork is
+//! configurable in genesis, update `tempo-chainspec`'s `TempoGenesisInfo` fields;.
 
 pub mod constants;
 
