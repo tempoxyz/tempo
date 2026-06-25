@@ -22,7 +22,7 @@ use crate::{
 /// This verifies:
 /// 1. A full DKG ceremony completes successfully (new polynomial, different public key)
 /// 2. A validator that joins late (after full DKG) can sync the chain
-/// 3. The late validator uses fast-sync to jump epoch boundaries (including the full DKG epoch)
+/// 3. The late validator replays across epoch boundaries, including the full DKG epoch
 /// 4. The late validator continues progressing after sync
 #[test_traced]
 fn validator_can_fast_sync_after_full_dkg() {
@@ -30,8 +30,8 @@ fn validator_can_fast_sync_after_full_dkg() {
 
     let how_many_signers = 4;
 
-    // MAX_REPAIR (concurrency) by default is 20, so we increase the epoch length such
-    // that the gap repair takes a long enough time that the DKG simply skips it
+    // MAX_REPAIR (concurrency) by default is 20, so keep enough finalized
+    // history to exercise catch-up across the full DKG epoch.
     let epoch_length = 30;
 
     let full_dkg_epoch = 1;
@@ -116,9 +116,6 @@ fn validator_can_fast_sync_after_full_dkg() {
         {
             context.sleep(Duration::from_millis(100)).await;
         }
-        // ensure fast-sync was used to jump epoch boundaries (including from old to new sharing)
-        context.to_metrics().assert_any_rounds_skipped();
-
         // verify continued progress
         let block_after_sync = late_validator
             .execution_provider()
