@@ -1,6 +1,9 @@
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+    storage::{
+        PrecompileStorageProvider, StorageActions,
+        actions::{StorageAction, apply_fee_amm_swap_to_pool_slot},
+    },
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
@@ -432,6 +435,27 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn fee_amm_swap(
+        &mut self,
+        address: Address,
+        key: U256,
+        amount_in: U256,
+        amount_out: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let current = self.sload_inner(address, key, false)?;
+        let value = apply_fee_amm_swap_to_pool_slot(current, amount_in, amount_out)?;
+
+        // Before T4, generic packed struct writes loaded the previous slot before storing.
+        // The FeeAMM pool fills the full word, but keep the metering behavior unchanged.
+        if !self.spec.is_t4() {
+            let _ = self.sload_inner(address, key, false)?;
+        }
+
+        let action = StorageAction::FeeAmmSwap(address, key, amount_in, amount_out);
+        self.sstore_inner(address, key, value, action)
+    }
+
+    #[inline]
     fn tstore(
         &mut self,
         address: Address,
@@ -734,6 +758,39 @@ mod tests {
                 StorageAction::Sdec(addr, k2, U256::from(5)),
             ])
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fee_amm_swap_action_recording() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let addr = Address::random();
+        let key = U256::from(1);
+        let amount_in = U256::from(3);
+        let amount_out = U256::from(2);
+        let initial_pool = U256::from(10) | (U256::from(20) << 128);
+        let expected_pool = U256::from(13) | (U256::from(18) << 128);
+
+        let mut provider = evm
+            .provider_max_gas()
+            .with_actions(StorageActions::enabled());
+
+        provider.sstore(addr, key, initial_pool)?;
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![StorageAction::Sstore(addr, key, initial_pool)])
+        );
+
+        provider.fee_amm_swap(addr, key, amount_in, amount_out)?;
+
+        assert_eq!(
+            provider.take_actions(),
+            Some(vec![StorageAction::FeeAmmSwap(
+                addr, key, amount_in, amount_out
+            )])
+        );
+        assert_eq!(provider.sload(addr, key)?, expected_pool);
 
         Ok(())
     }

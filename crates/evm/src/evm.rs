@@ -327,16 +327,14 @@ mod tests {
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-        storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
+        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        TIP403_REGISTRY_ADDRESS,
+        storage::{
+            StorageAction, StorageActions, StorageCtx, StorageKey, apply_fee_amm_swap_to_pool_slot,
+        },
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
-        tip_fee_manager::{
-            IFeeManager, TipFeeManager,
-            amm::{Pool, PoolKey, compute_amount_out},
-            slots as fee_manager_slots,
-        },
+        tip_fee_manager::{IFeeManager, TipFeeManager, amm::PoolKey, slots as fee_manager_slots},
         tip20::{
             ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
@@ -501,101 +499,106 @@ mod tests {
         assert!(result.result.is_success());
     }
 
-    #[derive(Default)]
-    struct StorageState {
-        reconstructed: BTreeMap<(Address, U256), U256>,
-        original_values: BTreeMap<(Address, U256), U256>,
-        first_loads: BTreeMap<(Address, U256), U256>,
-    }
-
-    impl StorageState {
-        fn get_or_init_storage(&mut self, key: (Address, U256)) -> U256 {
-            match self.reconstructed.get(&key) {
-                Some(current) => *current,
-                None => {
-                    let (address, slot) = key;
-
-                    let original = *self
-                        .original_values
-                        .get(&key)
-                        .unwrap_or_else(|| panic!("No prior SLOAD for {address:?}:{slot:?}",));
-
-                    self.first_loads.insert(key, original);
-                    self.reconstructed.insert(key, original);
-
-                    original
-                }
-            }
-        }
-    }
-
     fn assert_storage_actions_reconstruct_evm_state(
         actions: &[StorageAction],
         state: &EvmState,
         hardfork: TempoHardfork,
     ) {
-        let mut storage_state = StorageState::default();
+        let mut original_values = BTreeMap::<(Address, U256), U256>::new();
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
-                storage_state
-                    .original_values
-                    .insert((*address, *slot), storage_slot.original_value());
+                original_values.insert((*address, *slot), storage_slot.original_value());
             }
         }
+
+        let mut first_loads = BTreeMap::<(Address, U256), U256>::new();
+        let mut reconstructed = BTreeMap::<(Address, U256), U256>::new();
 
         for action in actions {
             match *action {
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
-                    match storage_state.reconstructed.get(&key) {
+                    match reconstructed.get(&key) {
                         Some(previous) => assert_eq!(
                             *previous, value,
                             "SLOAD must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
                         ),
                         None => {
-                            storage_state.first_loads.insert(key, value);
-                            storage_state.reconstructed.insert(key, value);
+                            first_loads.insert(key, value);
+                            reconstructed.insert(key, value);
                         }
                     }
                 }
                 StorageAction::Sstore(address, slot, value) => {
                     let key = (address, slot);
                     assert!(
-                        storage_state.reconstructed.contains_key(&key),
+                        reconstructed.contains_key(&key),
                         "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
                     );
-                    storage_state.reconstructed.insert(key, value);
+                    reconstructed.insert(key, value);
                 }
                 StorageAction::Sinc(address, slot, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SINC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
                     let value = current.checked_add(delta).unwrap_or_else(|| {
                         panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
-                    storage_state.reconstructed.insert(key, value);
+                    reconstructed.insert(key, value);
                 }
                 StorageAction::Sdec(address, slot, delta) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SDEC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
                     let value = current.checked_sub(delta).unwrap_or_else(|| {
                         panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
-                    storage_state.reconstructed.insert(key, value);
+                    reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
                     let key = (address, slot);
-                    let current = storage_state.get_or_init_storage(key);
-                    let mut pool = Pool::decode_from_slot(current);
-                    pool.apply_swap(
-                        amount_in,
-                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
-                    )
-                    .unwrap_or_else(|err| {
-                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
-                    });
-                    storage_state
-                        .reconstructed
-                        .insert(key, pool.encode_to_slot().unwrap());
+                    let current = match reconstructed.get(&key) {
+                        Some(current) => *current,
+                        None => {
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "FeeAmmSwap without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
+                            first_loads.insert(key, original);
+                            reconstructed.insert(key, original);
+                            original
+                        }
+                    };
+                    let value = apply_fee_amm_swap_to_pool_slot(current, amount_in, amount_out)
+                        .unwrap_or_else(|err| {
+                            panic!(
+                                "FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}"
+                            )
+                        });
+                    reconstructed.insert(key, value);
                 }
             }
         }
@@ -603,7 +606,7 @@ mod tests {
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
                 let key = (*address, *slot);
-                let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
+                let original_value = first_loads.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
                     )
@@ -614,7 +617,7 @@ mod tests {
                     "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
 
-                let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
+                let reconstructed_value = reconstructed.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
                     )
@@ -668,11 +671,11 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
                     format!(
-                        "FeeAmmSwap({}, {}, {amount_in})",
+                        "FeeAmmSwap({}, {}, {amount_in}, {amount_out})",
                         labels.address(address),
-                        labels.slot(address, slot),
+                        labels.slot(address, slot)
                     )
                 }
             })

@@ -176,6 +176,17 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sdec(address, key, delta))
     }
 
+    /// Applies a checked FeeAMM fee swap to a packed pool slot.
+    pub fn fee_amm_swap(
+        &mut self,
+        address: Address,
+        key: U256,
+        amount_in: U256,
+        amount_out: U256,
+    ) -> Result<()> {
+        Self::try_with_storage(|s| s.fee_amm_swap(address, key, amount_in, amount_out))
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))

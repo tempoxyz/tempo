@@ -2,6 +2,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, U256};
 
+use crate::error::{Result, TempoPrecompileError};
+use tempo_contracts::precompiles::TIPFeeAMMError;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StorageAction {
     /// Records an SLOAD opcode.
@@ -20,33 +23,59 @@ pub enum StorageAction {
     Sdec(Address, U256, U256),
     /// Records a FeeAMM pool fee swap over a packed pool slot.
     ///
-    /// `address` - FeeAMM contract address.
-    /// `key` - Storage slot key.
-    /// `amount_in` - Amount of tokens to swap in.
-    ///
-    /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
-    FeeAmmSwap(Address, U256, U256),
+    /// Replay checks `amount_out <= reserve_validator_token`, increments
+    /// `reserve_user_token` by `amount_in`, and decrements `reserve_validator_token`
+    /// by `amount_out`.
+    FeeAmmSwap(Address, U256, U256, U256),
+}
+
+/// Applies a FeeAMM swap to a packed `Pool` storage word.
+///
+/// FeeAMM packs `reserve_user_token` into the low 128 bits and
+/// `reserve_validator_token` into the high 128 bits.
+pub fn apply_fee_amm_swap_to_pool_slot(
+    slot_value: U256,
+    amount_in: U256,
+    amount_out: U256,
+) -> Result<U256> {
+    let mask = U256::from(u128::MAX);
+    let reserve_user_token = slot_value & mask;
+    let reserve_validator_token: U256 = slot_value >> 128usize;
+
+    // Check if there's enough validatorToken available
+    if amount_out > reserve_validator_token {
+        return Err(TIPFeeAMMError::insufficient_liquidity().into());
+    }
+
+    let amount_in: u128 = amount_in
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+    let amount_out: u128 = amount_out
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+    let reserve_user_token: u128 = reserve_user_token
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+    let reserve_validator_token: u128 = reserve_validator_token
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+    // Update reserves
+    let reserve_user_token = reserve_user_token
+        .checked_add(amount_in)
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+    let reserve_validator_token = reserve_validator_token
+        .checked_sub(amount_out)
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+    Ok(U256::from(reserve_user_token) | (U256::from(reserve_validator_token) << 128))
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub enum StorageActions {
     Disabled,
-    Enabled(Rc<RefCell<StorageActionsState>>),
-}
-
-/// Shared mutable state for [`StorageActions`] clones.
-#[derive(Debug, Default)]
-pub struct StorageActionsState {
-    actions: Vec<StorageAction>,
-    /// The depth of the current unrecorded actions scope.
-    ///
-    /// Incremented on each [`StorageActions::unrecorded`] call,
-    /// and decremented on exit from it.
-    ///
-    /// Allows for nesting multiple unrecorded scopes, making sure that
-    /// only when all scopes are exited, [`StorageActions::record`] records actions again.
-    unrecorded_depth: usize,
+    Enabled(Rc<RefCell<Vec<StorageAction>>>),
 }
 
 impl StorageActions {
@@ -64,9 +93,7 @@ impl StorageActions {
     pub fn enable(&mut self) {
         match self {
             Self::Disabled => *self = Self::enabled(),
-            Self::Enabled(state) => {
-                state.borrow_mut().actions.clear();
-            }
+            Self::Enabled(actions) => actions.borrow_mut().clear(),
         }
     }
 
@@ -84,94 +111,16 @@ impl StorageActions {
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(state) => {
-                Some(std::mem::replace(&mut state.borrow_mut().actions, actions))
+            Self::Enabled(recorded) => {
+                Some(std::mem::replace(&mut *recorded.borrow_mut(), actions))
             }
         }
     }
 
-    /// Runs a closure where [`Self::record`] calls are suppressed.
-    pub fn unrecorded<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _guard = self.unrecorded_guard();
-        f()
-    }
-
-    /// Enters a scope where [`Self::record`] calls are suppressed.
-    fn unrecorded_guard(&self) -> Option<UnrecordedStorageActionsGuard> {
-        if let Self::Enabled(state) = self {
-            state.borrow_mut().unrecorded_depth += 1;
-            Some(UnrecordedStorageActionsGuard(self.clone()))
-        } else {
-            None
-        }
-    }
-
-    /// Records an action if recording is enabled and the current scope is recorded.
+    /// Records an action if recording is enabled.
     pub fn record(&self, action: StorageAction) {
-        if let Self::Enabled(state) = self {
-            let mut state = state.borrow_mut();
-            if state.unrecorded_depth == 0 {
-                state.actions.push(action);
-            }
+        if let Self::Enabled(actions) = self {
+            actions.borrow_mut().push(action);
         }
-    }
-
-    /// Records an action if recording is enabled, even inside an unrecorded scope.
-    pub fn record_always(&self, action: StorageAction) {
-        if let Self::Enabled(state) = self {
-            state.borrow_mut().actions.push(action);
-        }
-    }
-}
-
-/// Unrecorded storage-actions scope guard.
-#[derive(Debug)]
-struct UnrecordedStorageActionsGuard(StorageActions);
-
-impl Drop for UnrecordedStorageActionsGuard {
-    fn drop(&mut self) {
-        if let StorageActions::Enabled(state) = &self.0 {
-            let mut state = state.borrow_mut();
-            state.unrecorded_depth = state
-                .unrecorded_depth
-                .checked_sub(1)
-                .expect("unrecorded storage action scope underflow");
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_unrecorded_record_always() {
-        let actions = StorageActions::enabled();
-        let address = Address::repeat_byte(0x42);
-        let key = U256::from(7);
-
-        actions.record(StorageAction::Sload(address, key, U256::from(1)));
-
-        actions.unrecorded(|| {
-            actions.record(StorageAction::Sstore(address, key, U256::from(2)));
-
-            actions.unrecorded(|| {
-                actions.record(StorageAction::Sinc(address, key, U256::from(3)));
-                actions.record_always(StorageAction::FeeAmmSwap(address, key, U256::from(4)));
-            });
-
-            actions.record(StorageAction::Sdec(address, key, U256::from(6)));
-        });
-
-        actions.record(StorageAction::Sstore(address, key, U256::from(8)));
-
-        assert_eq!(
-            actions.take(),
-            Some(vec![
-                StorageAction::Sload(address, key, U256::from(1)),
-                StorageAction::FeeAmmSwap(address, key, U256::from(4)),
-                StorageAction::Sstore(address, key, U256::from(8)),
-            ])
-        );
     }
 }
