@@ -746,7 +746,7 @@ where
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        debug!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
