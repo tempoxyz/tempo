@@ -13575,6 +13575,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "dashmap",
+ "derive_more",
  "futures",
  "itertools 0.14.0",
  "metrics",
