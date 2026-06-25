@@ -50,6 +50,7 @@ pub trait TempoTx {
 }
 
 impl TempoTx for TempoTxEnv {
+    #[inline(always)]
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
     }
@@ -72,6 +73,7 @@ impl TempoTx for TempoTxEnv {
 }
 
 impl TempoTx for Recovered<TempoTxEnvelope> {
+    #[inline(always)]
     fn fee_token(&self) -> Option<Address> {
         self.inner().fee_token()
     }
