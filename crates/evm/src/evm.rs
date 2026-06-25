@@ -237,6 +237,7 @@ where
         self.cfg.chain_id
     }
 
+    #[inline(always)]
     fn transact_raw(
         &mut self,
         tx: Self::Tx,
