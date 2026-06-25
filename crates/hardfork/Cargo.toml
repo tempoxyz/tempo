@@ -32,6 +32,7 @@ std = [
     "alloy-eips/std",
     "alloy-evm?/std",
     "serde?/std",
+    "serde_json/std",
 ]
 serde = ["dep:serde", "alloy-eips/serde", "alloy-hardforks/serde"]
 evm = ["dep:alloy-evm"]

@@ -332,7 +332,7 @@ if $SEMVER_CHECK; then
         # the local workspace version when run inside a workspace.
         published_ver=$(curl -sL "https://crates.io/api/v1/crates/$crate_name" \
             -H "User-Agent: tempo-publish-script" | \
-            python3 -c "import sys,json; d=json.load(sys.stdin); print(d['crate']['max_stable_version'] or d['crate']['max_version'])" 2>/dev/null)
+            python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('crate') or {}; print(c.get('max_stable_version') or c.get('max_version') or '')" 2>/dev/null || true)
         if [ -z "$published_ver" ] || [ "$published_ver" = "null" ]; then
             log "$crate_name not yet published, skipping"
             continue
