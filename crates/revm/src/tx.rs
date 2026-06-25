@@ -312,6 +312,30 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 alloy_primitives::Bytes::new(),
             )
         };
+        let authorization_list = if tempo_authorization_list.is_empty() {
+            Vec::new()
+        } else {
+            tempo_authorization_list
+                .iter()
+                .map(|auth| {
+                    let authority = auth
+                        .recover_authority()
+                        .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
+                    Either::Right(RecoveredAuthorization::new_unchecked(
+                        auth.inner().clone(),
+                        authority,
+                    ))
+                })
+                .collect()
+        };
+        let recovered_tempo_authorization_list = if tempo_authorization_list.is_empty() {
+            Vec::new()
+        } else {
+            tempo_authorization_list
+                .iter()
+                .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
+                .collect()
+        };
 
         Self {
             inner: TxEnv {
@@ -326,19 +350,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
-                // Convert Tempo authorization list to RecoveredAuthorization upfront
-                authorization_list: tempo_authorization_list
-                    .iter()
-                    .map(|auth| {
-                        let authority = auth
-                            .recover_authority()
-                            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
-                        Either::Right(RecoveredAuthorization::new_unchecked(
-                            auth.inner().clone(),
-                            authority,
-                        ))
-                    })
-                    .collect(),
+                authorization_list,
                 ..Default::default()
             },
             fee_token: *fee_token,
@@ -353,11 +365,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
-                // Recover authorizations upfront to avoid recovery during execution
-                tempo_authorization_list: tempo_authorization_list
-                    .iter()
-                    .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
-                    .collect(),
+                tempo_authorization_list: recovered_tempo_authorization_list,
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
