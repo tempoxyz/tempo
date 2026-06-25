@@ -516,7 +516,11 @@ mod tests {
 
         for action in actions {
             match *action {
-                StorageAction::Sload(address, slot, value) => {
+                StorageAction::Sload {
+                    address,
+                    key: slot,
+                    value,
+                } => {
                     let key = (address, slot);
                     match reconstructed.get(&key) {
                         Some(previous) => assert_eq!(
@@ -529,7 +533,11 @@ mod tests {
                         }
                     }
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore {
+                    address,
+                    key: slot,
+                    value,
+                } => {
                     let key = (address, slot);
                     assert!(
                         reconstructed.contains_key(&key),
@@ -537,7 +545,11 @@ mod tests {
                     );
                     reconstructed.insert(key, value);
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc {
+                    address,
+                    key: slot,
+                    delta,
+                } => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -557,7 +569,11 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec {
+                    address,
+                    key: slot,
+                    delta,
+                } => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -577,7 +593,12 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
+                StorageAction::FeeAmmSwap {
+                    address,
+                    key: slot,
+                    amount_in,
+                    amount_out,
+                } => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -643,35 +664,56 @@ mod tests {
         actions
             .iter()
             .map(|action| match *action {
-                StorageAction::Sload(address, slot, value) => {
+                StorageAction::Sload {
+                    address,
+                    key: slot,
+                    value,
+                } => {
                     format!(
                         "Sload({}, {}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sstore(address, slot, value) => {
+                StorageAction::Sstore {
+                    address,
+                    key: slot,
+                    value,
+                } => {
                     format!(
                         "Sstore({}, {}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sinc(address, slot, delta) => {
+                StorageAction::Sinc {
+                    address,
+                    key: slot,
+                    delta,
+                } => {
                     format!(
                         "Sinc({}, {}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sdec(address, slot, delta) => {
+                StorageAction::Sdec {
+                    address,
+                    key: slot,
+                    delta,
+                } => {
                     format!(
                         "Sdec({}, {}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in, amount_out) => {
+                StorageAction::FeeAmmSwap {
+                    address,
+                    key: slot,
+                    amount_in,
+                    amount_out,
+                } => {
                     format!(
                         "FeeAmmSwap({}, {}, {amount_in}, {amount_out})",
                         labels.address(address),

@@ -8,25 +8,46 @@ use tempo_contracts::precompiles::TIPFeeAMMError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum StorageAction {
     /// Records an SLOAD opcode.
-    Sload(Address, U256, U256),
+    Sload {
+        address: Address,
+        key: U256,
+        value: U256,
+    },
     /// Records an SSTORE opcode.
-    Sstore(Address, U256, U256),
+    Sstore {
+        address: Address,
+        key: U256,
+        value: U256,
+    },
     /// Records an increment of a storage slot by delta.
     ///
     /// If the slot **was** zero before incrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
-    Sinc(Address, U256, U256),
+    Sinc {
+        address: Address,
+        key: U256,
+        delta: U256,
+    },
     /// Records a decrement of a storage slot by delta.
     ///
     /// If the slot **became** zero as a result of decrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
-    Sdec(Address, U256, U256),
+    Sdec {
+        address: Address,
+        key: U256,
+        delta: U256,
+    },
     /// Records a FeeAMM pool fee swap over a packed pool slot.
     ///
-    /// Replay checks `amount_out <= reserve_validator_token`, increments
-    /// `reserve_user_token` by `amount_in`, and decrements `reserve_validator_token`
-    /// by `amount_out`.
-    FeeAmmSwap(Address, U256, U256, U256),
+    /// Decodes the packed pool slot value under `key` into `reserve_user_token` and `reserve_validator_token`,
+    /// checks `amount_out <= reserve_validator_token`, increments `reserve_user_token` by `amount_in`,
+    /// and decrements `reserve_validator_token` by `amount_out`.
+    FeeAmmSwap {
+        address: Address,
+        key: U256,
+        amount_in: U256,
+        amount_out: U256,
+    },
 }
 
 /// Applies a FeeAMM swap to a packed `Pool` storage word.

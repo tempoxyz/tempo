@@ -174,8 +174,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
         let result = self.sload_journal(address, key, skip_cold_load)?;
         if record {
-            self.actions
-                .record(StorageAction::Sload(address, key, result.data));
+            self.actions.record(StorageAction::Sload {
+                address,
+                key,
+                value: result.data,
+            });
         }
 
         if !self.spec.is_t4() {
@@ -257,8 +260,11 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
         let val = self.sload_journal(address, key, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sload(address, key, val.data));
+        self.actions.record(StorageAction::Sload {
+            address,
+            key,
+            value: val.data,
+        });
         Ok(val)
     }
 
@@ -271,8 +277,11 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
-        self.actions
-            .record(StorageAction::Sstore(address, key, value));
+        self.actions.record(StorageAction::Sstore {
+            address,
+            key,
+            value,
+        });
         Ok(val)
     }
 
@@ -380,7 +389,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let action = StorageAction::Sstore(address, key, value);
+        let action = StorageAction::Sstore {
+            address,
+            key,
+            value,
+        };
         self.sstore_inner(address, key, value, action)
     }
 
@@ -399,11 +412,22 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
         let sstore_action = if current == U256::ZERO && value != U256::ZERO {
-            self.actions
-                .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, delta)
+            self.actions.record(StorageAction::Sload {
+                address,
+                key,
+                value: current,
+            });
+            StorageAction::Sstore {
+                address,
+                key,
+                value,
+            }
         } else {
-            StorageAction::Sinc(address, key, delta)
+            StorageAction::Sinc {
+                address,
+                key,
+                delta,
+            }
         };
 
         self.sstore_inner(address, key, value, sstore_action)
@@ -424,11 +448,22 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
         let sstore_action = if current != U256::ZERO && value == U256::ZERO {
-            self.actions
-                .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, value)
+            self.actions.record(StorageAction::Sload {
+                address,
+                key,
+                value: current,
+            });
+            StorageAction::Sstore {
+                address,
+                key,
+                value,
+            }
         } else {
-            StorageAction::Sdec(address, key, delta)
+            StorageAction::Sdec {
+                address,
+                key,
+                delta,
+            }
         };
 
         self.sstore_inner(address, key, value, sstore_action)
@@ -451,7 +486,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             let _ = self.sload_inner(address, key, false)?;
         }
 
-        let action = StorageAction::FeeAmmSwap(address, key, amount_in, amount_out);
+        let action = StorageAction::FeeAmmSwap {
+            address,
+            key,
+            amount_in,
+            amount_out,
+        };
         self.sstore_inner(address, key, value, action)
     }
 
@@ -744,13 +784,41 @@ mod tests {
         assert_eq!(
             provider.take_actions(),
             Some(vec![
-                StorageAction::Sstore(addr, k1, v1),
-                StorageAction::Sstore(addr, k2, v2),
-                StorageAction::Sload(addr, k1, v1),
-                StorageAction::Sstore(addr, k1, v1_new),
-                StorageAction::Sload(addr, k2, v2),
-                StorageAction::Sinc(addr, k1, U256::from(4)),
-                StorageAction::Sdec(addr, k2, U256::from(5)),
+                StorageAction::Sstore {
+                    address: addr,
+                    key: k1,
+                    value: v1,
+                },
+                StorageAction::Sstore {
+                    address: addr,
+                    key: k2,
+                    value: v2,
+                },
+                StorageAction::Sload {
+                    address: addr,
+                    key: k1,
+                    value: v1,
+                },
+                StorageAction::Sstore {
+                    address: addr,
+                    key: k1,
+                    value: v1_new,
+                },
+                StorageAction::Sload {
+                    address: addr,
+                    key: k2,
+                    value: v2,
+                },
+                StorageAction::Sinc {
+                    address: addr,
+                    key: k1,
+                    delta: U256::from(4),
+                },
+                StorageAction::Sdec {
+                    address: addr,
+                    key: k2,
+                    delta: U256::from(5),
+                },
             ])
         );
 
@@ -774,16 +842,23 @@ mod tests {
         provider.sstore(addr, key, initial_pool)?;
         assert_eq!(
             provider.take_actions(),
-            Some(vec![StorageAction::Sstore(addr, key, initial_pool)])
+            Some(vec![StorageAction::Sstore {
+                address: addr,
+                key,
+                value: initial_pool,
+            }])
         );
 
         provider.fee_amm_swap(addr, key, amount_in, amount_out)?;
 
         assert_eq!(
             provider.take_actions(),
-            Some(vec![StorageAction::FeeAmmSwap(
-                addr, key, amount_in, amount_out
-            )])
+            Some(vec![StorageAction::FeeAmmSwap {
+                address: addr,
+                key,
+                amount_in,
+                amount_out,
+            }])
         );
         assert_eq!(provider.sload(addr, key)?, expected_pool);
 

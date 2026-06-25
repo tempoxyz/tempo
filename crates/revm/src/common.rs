@@ -419,7 +419,11 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
 
         if let Some(actions) = &self.actions {
-            actions.record(StorageAction::Sload(address, key, value));
+            actions.record(StorageAction::Sload {
+                address,
+                key,
+                value,
+            });
         }
 
         Ok(value)
