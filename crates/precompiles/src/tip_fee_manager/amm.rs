@@ -79,6 +79,10 @@ impl Pool {
 }
 
 /// Applies a fee swap to a packed FeeAMM pool slot.
+///
+/// Decodes the packed pool slot value into `reserve_user_token` and `reserve_validator_token`,
+/// checks `amount_out <= reserve_validator_token`, increments `reserve_user_token` by `amount_in`,
+/// and decrements `reserve_validator_token` by `amount_out`.
 pub fn apply_fee_amm_swap_to_pool_slot(
     slot_value: U256,
     amount_in: U256,
