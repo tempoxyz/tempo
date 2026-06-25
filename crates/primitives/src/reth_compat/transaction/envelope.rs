@@ -40,6 +40,8 @@ mod codec {
     impl reth_codecs::alloy::transaction::FromTxCompact for TempoTxEnvelope {
         type TxType = TempoTxType;
 
+        #[cold]
+        #[inline(never)]
         fn from_tx_compact(
             buf: &[u8],
             tx_type: Self::TxType,
@@ -86,6 +88,8 @@ mod codec {
     }
 
     impl reth_codecs::alloy::transaction::ToTxCompact for TempoTxEnvelope {
+        #[cold]
+        #[inline(never)]
         fn to_tx_compact(&self, buf: &mut (impl BufMut + AsMut<[u8]>)) {
             match self {
                 Self::Legacy(tx) => tx.tx().to_compact(buf),
@@ -102,6 +106,8 @@ mod codec {
     }
 
     impl Envelope for TempoTxEnvelope {
+        #[cold]
+        #[inline(never)]
         fn signature(&self) -> &Signature {
             match self {
                 Self::Legacy(tx) => tx.signature(),
@@ -121,12 +127,16 @@ mod codec {
             }
         }
 
+        #[cold]
+        #[inline(never)]
         fn tx_type(&self) -> Self::TxType {
             Self::tx_type(self)
         }
     }
 
     impl Compact for TempoTxType {
+        #[cold]
+        #[inline(never)]
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: BufMut + AsMut<[u8]>,
@@ -146,6 +156,8 @@ mod codec {
             }
         }
 
+        #[cold]
+        #[inline(never)]
         fn from_compact(mut buf: &[u8], identifier: usize) -> (Self, &[u8]) {
             use bytes::Buf;
             (
@@ -169,6 +181,8 @@ mod codec {
     }
 
     impl Compact for TempoTxEnvelope {
+        #[cold]
+        #[inline(never)]
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: BufMut + AsMut<[u8]>,
@@ -176,6 +190,8 @@ mod codec {
             CompactEnvelope::to_compact(self, buf)
         }
 
+        #[cold]
+        #[inline(never)]
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
             CompactEnvelope::from_compact(buf, len)
         }
@@ -184,12 +200,16 @@ mod codec {
     impl reth_db_api::table::Compress for TempoTxEnvelope {
         type Compressed = alloc::vec::Vec<u8>;
 
+        #[cold]
+        #[inline(never)]
         fn compress_to_buf<B: alloy_primitives::bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
             let _ = Compact::to_compact(self, buf);
         }
     }
 
     impl reth_db_api::table::Decompress for TempoTxEnvelope {
+        #[cold]
+        #[inline(never)]
         fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
             let (obj, _) = Compact::from_compact(value, value.len());
             Ok(obj)
