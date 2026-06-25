@@ -18,12 +18,12 @@ impl<K, H> Default for LinearCache<K, H> {
 }
 
 impl<K: Eq + Clone, H> LinearCache<K, H> {
-    #[inline]
+    #[inline(always)]
     fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[inline]
+    #[inline(always)]
     fn find(&self, key: &K) -> Option<*const H> {
         self.entries
             .iter()
@@ -31,7 +31,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .map(|(_, boxed)| boxed.as_ref() as *const H)
     }
 
-    #[inline]
+    #[inline(always)]
     fn find_mut(&mut self, key: &K) -> Option<*mut H> {
         self.entries
             .iter_mut()
