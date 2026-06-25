@@ -35,10 +35,6 @@ pub enum StorageAction {
         delta: U256,
     },
     /// Records a FeeAMM pool fee swap over a packed pool slot.
-    ///
-    /// Decodes the packed pool slot value under `key` into `reserve_user_token` and `reserve_validator_token`,
-    /// checks `amount_out <= reserve_validator_token`, increments `reserve_user_token` by `amount_in`,
-    /// and decrements `reserve_validator_token` by `amount_out`.
     FeeAmmSwap {
         address: Address,
         key: U256,
