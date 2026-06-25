@@ -43,7 +43,7 @@ use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
-        SelectorRule as PrecompileSelectorRule, TokenLimit,
+        KeychainTxCacheCtx, SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
     nonce::{
@@ -429,29 +429,32 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let keychain_cache = evm.keychain_cache.clone();
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
-        StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            StorageActions::disabled(),
-            || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+        KeychainTxCacheCtx::enter(&keychain_cache, || {
+            StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                StorageActions::disabled(),
+                || {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.set_tx_origin(ctx.tx.caller())?;
 
-                if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
-                }
+                    if let Some(channel_open_context_hash) = channel_open_context_hash {
+                        let mut channel_reserve = TIP20ChannelReserve::new();
+                        channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+                    }
 
-                Ok::<(), TempoPrecompileError>(())
-            },
-        )
+                    Ok::<(), TempoPrecompileError>(())
+                },
+            )
+        })
         .map_err(|e| EVMError::Custom(e.to_string()))
     }
 }
@@ -508,24 +511,27 @@ where
 
         // It's fine to set reservoir to 0 because this won't create any state.
         let actions = evm.actions.clone();
-        let (validation, gas_used) = StorageCtx::enter_ctx_with_gas_limit(
-            evm.ctx_mut(),
-            *remaining_gas,
-            reservoir,
-            actions,
-            || {
-                let keychain = AccountKeychain::default();
-                for call in calls {
-                    keychain.validate_call_scope_for_transaction(
-                        user_address,
-                        access_key_addr,
-                        &call.to,
-                        call.input.as_ref(),
-                    )?;
-                }
-                Ok::<(), TempoPrecompileError>(())
-            },
-        );
+        let keychain_cache = evm.keychain_cache.clone();
+        let (validation, gas_used) = KeychainTxCacheCtx::enter(&keychain_cache, || {
+            StorageCtx::enter_ctx_with_gas_limit(
+                evm.ctx_mut(),
+                *remaining_gas,
+                reservoir,
+                actions,
+                || {
+                    let keychain = AccountKeychain::default();
+                    for call in calls {
+                        keychain.validate_call_scope_for_transaction(
+                            user_address,
+                            access_key_addr,
+                            &call.to,
+                            call.input.as_ref(),
+                        )?;
+                    }
+                    Ok::<(), TempoPrecompileError>(())
+                },
+            )
+        });
 
         match validation {
             Ok(()) => {
@@ -969,6 +975,7 @@ where
 
         let actions = evm.actions.clone();
         let fee_manager = evm.fee_manager.clone();
+        let keychain_cache = evm.keychain_cache.clone();
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -1285,53 +1292,57 @@ where
                 // - ordinary keychain txs must validate the acting access key before fees are paid
                 // - T6 delegated key authorizations also validate the acting key here, then reuse
                 //   the loaded admin/signature-type facts below when the sidecar signer is the same key
-                let loaded_key = StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    actions.clone(),
-                    |mut keychain: AccountKeychain| {
-                        // Extract the signature type from the inner signature to validate it matches
-                        // the key_type stored in the keychain. This prevents using a signature of one
-                        // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
-                        // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig.signature.signature_type().into();
-                        let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
+                let loaded_key = KeychainTxCacheCtx::enter(&keychain_cache, || {
+                    StorageCtx::enter_precompile(
+                        journal,
+                        block,
+                        cfg,
+                        tx,
+                        actions.clone(),
+                        |mut keychain: AccountKeychain| {
+                            // Extract the signature type from the inner signature to validate it matches
+                            // the key_type stored in the keychain. This prevents using a signature of one
+                            // type to authenticate as a key registered with a different type.
+                            // Only validate signature type on T1+ to maintain backward compatibility
+                            // with historical blocks during re-execution.
+                            let tx_sig_type = keychain_sig.signature.signature_type().into();
+                            let sig_type =
+                                (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
-                        let key = keychain
-                            .validate_keychain_authorization(
-                                *user_address,
-                                access_key_addr,
-                                block.timestamp().to::<u64>(),
-                                sig_type,
-                            )
-                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: format!("{e:?}"),
-                            })?;
+                            let key = keychain
+                                .validate_keychain_authorization(
+                                    *user_address,
+                                    access_key_addr,
+                                    block.timestamp().to::<u64>(),
+                                    sig_type,
+                                )
+                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                    reason: format!("{e:?}"),
+                                })?;
 
-                        // T6 adds admin delegation: a keychain signer may authorize a different
-                        // child key only if the acting transaction key is itself an active admin key.
-                        if key_auth.is_some() && !key.is_admin {
-                            return Err(
-                                TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
-                            );
-                        }
+                            // T6 adds admin delegation: a keychain signer may authorize a different
+                            // child key only if the acting transaction key is itself an active admin key.
+                            if key_auth.is_some() && !key.is_admin {
+                                return Err(
+                                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
+                                        .into(),
+                                );
+                            }
 
-                        // Set the transaction key in the keychain precompile.
-                        // The TIP20 precompile will read this during fee collection and
-                        // execution to enforce spending limits for existing keys.
-                        keychain
-                            .set_transaction_key(access_key_addr)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+                            // Set the transaction key in the keychain precompile.
+                            // The TIP20 precompile will read this during fee collection and
+                            // execution to enforce spending limits for existing keys.
+                            keychain
+                                .set_transaction_key(access_key_addr)
+                                .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
-                            key_id: access_key_addr,
-                            key,
-                        })
-                    },
-                )?;
+                            Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
+                                key_id: access_key_addr,
+                                key,
+                            })
+                        },
+                    )
+                })?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
                 keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
@@ -1383,22 +1394,24 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result = StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
-                    fee_manager.collect_fee_pre_tx(
-                        fee_payer,
-                        fee_token,
-                        gas_balance_spending,
-                        block.beneficiary(),
-                        skip_liquidity_check,
-                    )
-                },
-            );
+            let result = KeychainTxCacheCtx::enter(&keychain_cache, || {
+                StorageCtx::enter_evm_without_tip1060_accounting(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    actions.clone(),
+                    || {
+                        fee_manager.collect_fee_pre_tx(
+                            fee_payer,
+                            fee_token,
+                            gas_balance_spending,
+                            block.beneficiary(),
+                            skip_liquidity_check,
+                        )
+                    },
+                )
+            });
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1510,80 +1523,82 @@ where
             provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
-            let out_of_gas = StorageCtx::enter(&mut provider, || {
-                let mut keychain = AccountKeychain::default();
-                let access_key_addr = key_auth.key_id;
+            let out_of_gas = KeychainTxCacheCtx::enter(&keychain_cache, || {
+                StorageCtx::enter(&mut provider, || {
+                    let mut keychain = AccountKeychain::default();
+                    let access_key_addr = key_auth.key_id;
 
-                // Convert signature type to precompile SignatureType enum
-                // Use the key_type field which specifies the type of key being authorized
-                let signature_type = match key_auth.key_type {
-                    SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
-                    SignatureType::P256 => PrecompileSignatureType::P256,
-                    SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
-                };
+                    // Convert signature type to precompile SignatureType enum
+                    // Use the key_type field which specifies the type of key being authorized
+                    let signature_type = match key_auth.key_type {
+                        SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
+                        SignatureType::P256 => PrecompileSignatureType::P256,
+                        SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    };
 
-                // Handle expiry: None means never expires (store as u64::MAX)
-                let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
+                    // Handle expiry: None means never expires (store as u64::MAX)
+                    let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
 
-                // Handle limits: None means unlimited spending (enforce_limits=false)
-                // Some([]) means no spending allowed (enforce_limits=true)
-                // Some([...]) means specific limits (enforce_limits=true)
-                let enforce_limits = key_auth.limits.is_some();
-                let precompile_limits: Vec<TokenLimit> = key_auth
-                    .limits
-                    .as_ref()
-                    .map(|limits| {
-                        limits
-                            .iter()
-                            .map(|limit| TokenLimit {
-                                token: limit.token,
-                                amount: limit.limit,
-                                period: limit.period,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                    // Handle limits: None means unlimited spending (enforce_limits=false)
+                    // Some([]) means no spending allowed (enforce_limits=true)
+                    // Some([...]) means specific limits (enforce_limits=true)
+                    let enforce_limits = key_auth.limits.is_some();
+                    let precompile_limits: Vec<TokenLimit> = key_auth
+                        .limits
+                        .as_ref()
+                        .map(|limits| {
+                            limits
+                                .iter()
+                                .map(|limit| TokenLimit {
+                                    token: limit.token,
+                                    amount: limit.limit,
+                                    period: limit.period,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
 
-                let allow_any_calls = key_auth.allowed_calls.is_none();
-                let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
+                    let allow_any_calls = key_auth.allowed_calls.is_none();
+                    let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
 
-                let config = KeyRestrictions {
-                    expiry,
-                    enforceLimits: enforce_limits,
-                    limits: precompile_limits,
-                    allowAnyCalls: allow_any_calls,
-                    allowedCalls: precompile_allowed_calls,
-                };
+                    let config = KeyRestrictions {
+                        expiry,
+                        enforceLimits: enforce_limits,
+                        limits: precompile_limits,
+                        allowAnyCalls: allow_any_calls,
+                        allowedCalls: precompile_allowed_calls,
+                    };
 
-                // Call precompile to authorize the key (same phase as nonce increment).
-                let result = if key_auth.is_admin() {
-                    keychain.authorize_admin_key(
-                        tx.caller,
-                        access_key_addr,
-                        signature_type,
-                        key_auth.witness(),
-                    )
-                } else {
-                    keychain.authorize_key(
-                        tx.caller,
-                        access_key_addr,
-                        signature_type,
-                        config,
-                        key_auth.witness(),
-                    )
-                };
+                    // Call precompile to authorize the key (same phase as nonce increment).
+                    let result = if key_auth.is_admin() {
+                        keychain.authorize_admin_key(
+                            tx.caller,
+                            access_key_addr,
+                            signature_type,
+                            key_auth.witness(),
+                        )
+                    } else {
+                        keychain.authorize_key(
+                            tx.caller,
+                            access_key_addr,
+                            signature_type,
+                            config,
+                            key_auth.witness(),
+                        )
+                    };
 
-                match result {
-                    // all is good, we can do execution.
-                    Ok(_) => Ok(false),
-                    // on out of gas we are skipping execution but not invalidating the transaction.
-                    Err(TempoPrecompileError::OutOfGas) => Ok(true),
-                    Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-                    Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
-                        reason: err.to_string(),
+                    match result {
+                        // all is good, we can do execution.
+                        Ok(_) => Ok(false),
+                        // on out of gas we are skipping execution but not invalidating the transaction.
+                        Err(TempoPrecompileError::OutOfGas) => Ok(true),
+                        Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
+                        Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
+                            reason: err.to_string(),
+                        }
+                        .into()),
                     }
-                    .into()),
-                }
+                })
             })?;
 
             let gas_used = provider.gas_used();
@@ -1614,30 +1629,32 @@ where
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
             if same_tx_key_authorization_use {
-                StorageCtx::enter_evm_without_tip1060_accounting(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    actions,
-                    || {
-                        let mut keychain = AccountKeychain::new();
-                        keychain
-                            .set_transaction_key(key_auth.key_id)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+                KeychainTxCacheCtx::enter(&keychain_cache, || {
+                    StorageCtx::enter_evm_without_tip1060_accounting(
+                        journal,
+                        block,
+                        cfg,
+                        tx,
+                        actions,
+                        || {
+                            let mut keychain = AccountKeychain::new();
+                            keychain
+                                .set_transaction_key(key_auth.key_id)
+                                .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        if evm.collected_fee.is_zero() {
-                            return Ok(());
-                        }
+                            if evm.collected_fee.is_zero() {
+                                return Ok(());
+                            }
 
-                        keychain
-                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
-                            .map_err(|err| match err {
-                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                err => FeePaymentError::Other(err.to_string()).into(),
-                            })
-                    },
-                )?;
+                            keychain
+                                .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                                .map_err(|err| match err {
+                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                    err => FeePaymentError::Other(err.to_string()).into(),
+                                })
+                        },
+                    )
+                })?;
             }
         }
 
@@ -1651,6 +1668,7 @@ where
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
         let fee_manager = evm.fee_manager.clone();
+        let keychain_cache = evm.keychain_cache.clone();
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
@@ -1682,32 +1700,34 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm_without_tip1060_accounting(
-            &mut *journal,
-            block,
-            &context.cfg,
-            tx,
-            actions,
-            || {
-                if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                    let fee_token = evm
-                        .fee_token
-                        .expect("set in `validate_against_state_and_deduct_caller`");
-                    fee_manager
-                        .collect_fee_post_tx(
-                            fee_payer,
-                            actual_spending,
-                            refund_amount,
-                            fee_token,
-                            beneficiary,
-                        )
-                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
-                } else {
-                    Ok(U256::ZERO)
-                }
-            },
-        )?;
+        let credited = KeychainTxCacheCtx::enter(&keychain_cache, || {
+            StorageCtx::enter_evm_without_tip1060_accounting(
+                &mut *journal,
+                block,
+                &context.cfg,
+                tx,
+                actions,
+                || {
+                    if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                        let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                        let fee_token = evm
+                            .fee_token
+                            .expect("set in `validate_against_state_and_deduct_caller`");
+                        fee_manager
+                            .collect_fee_post_tx(
+                                fee_payer,
+                                actual_spending,
+                                refund_amount,
+                                fee_token,
+                                beneficiary,
+                            )
+                            .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                    } else {
+                        Ok(U256::ZERO)
+                    }
+                },
+            )
+        })?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
@@ -1737,6 +1757,7 @@ where
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
         evm.non_creditable_slots.borrow_mut().clear();
+        evm.keychain_cache.borrow_mut().clear();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;

@@ -12,7 +12,9 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
+use tempo_precompiles::{
+    account_keychain::KeychainTxCache, storage::StorageActions, storage_credits::NonCreditableSlots,
+};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -57,6 +59,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Transaction-local decoded keychain facts used by TIP-20 access-key checks.
+    pub(crate) keychain_cache: Rc<RefCell<KeychainTxCache>>,
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
 }
@@ -65,11 +69,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
+        let keychain_cache = Rc::new(RefCell::new(KeychainTxCache::default()));
         let actions = StorageActions::disabled();
         let precompiles = tempo_precompiles::tempo_precompiles(
             &ctx.cfg,
             actions.clone(),
             non_creditable_slots.clone(),
+            keychain_cache.clone(),
         );
 
         Self::new_inner(
@@ -82,6 +88,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             },
             actions,
             non_creditable_slots,
+            keychain_cache,
             Arc::new(TempoFeeManager::new()),
         )
     }
@@ -108,6 +115,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
+            keychain_cache,
             ..
         } = self;
 
@@ -121,6 +129,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
+            keychain_cache,
             fee_manager,
         }
     }
@@ -138,6 +147,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        keychain_cache: Rc<RefCell<KeychainTxCache>>,
         fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
     ) -> Self {
         Self {
@@ -150,6 +160,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check: false,
             actions,
             non_creditable_slots,
+            keychain_cache,
             fee_manager,
         }
     }
@@ -178,6 +189,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             actions,
             non_creditable_slots,
+            keychain_cache,
             fee_manager,
             ..
         } = self;
@@ -185,6 +197,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner.with_inspector(inspector),
             actions,
             non_creditable_slots,
+            keychain_cache,
             fee_manager,
         )
     }
@@ -195,6 +208,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             &self.inner.ctx.cfg,
             actions.clone(),
             self.non_creditable_slots.clone(),
+            self.keychain_cache.clone(),
         );
         self.actions = actions;
         self
@@ -221,6 +235,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.fee_token = None;
         self.key_expiry = None;
         self.non_creditable_slots.borrow_mut().clear();
+        self.keychain_cache.borrow_mut().clear();
     }
 }
 

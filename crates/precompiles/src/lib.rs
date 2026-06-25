@@ -113,6 +113,7 @@ pub struct PrecompileEnv {
     cfg: CfgEnv<TempoHardfork>,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    keychain_cache: Rc<RefCell<account_keychain::KeychainTxCache>>,
 }
 
 impl PrecompileEnv {
@@ -120,11 +121,13 @@ impl PrecompileEnv {
         cfg: &CfgEnv<TempoHardfork>,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+        keychain_cache: Rc<RefCell<account_keychain::KeychainTxCache>>,
     ) -> Self {
         Self {
             cfg: cfg.clone(),
             actions,
             non_creditable_slots,
+            keychain_cache,
         }
     }
 }
@@ -146,6 +149,7 @@ pub fn tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    keychain_cache: Rc<RefCell<account_keychain::KeychainTxCache>>,
 ) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
@@ -153,7 +157,13 @@ pub fn tempo_precompiles(
         SpecId::PRAGUE
     };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
-    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
+    extend_tempo_precompiles(
+        &mut precompiles,
+        cfg,
+        actions,
+        non_creditable_slots,
+        keychain_cache,
+    );
     precompiles
 }
 
@@ -169,8 +179,9 @@ pub fn extend_tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    keychain_cache: Rc<RefCell<account_keychain::KeychainTxCache>>,
 ) {
-    let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
+    let env = PrecompileEnv::new(cfg, actions, non_creditable_slots, keychain_cache);
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
@@ -221,6 +232,7 @@ macro_rules! tempo_precompile {
             $cfg,
             StorageActions::disabled(),
             Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            Rc::new(RefCell::new(account_keychain::KeychainTxCache::default())),
         );
         tempo_precompile!($id, env: &env, |$input| $impl)
     }};
@@ -231,6 +243,7 @@ macro_rules! tempo_precompile {
         let gas_params = env.cfg.gas_params.clone();
         let actions = env.actions.clone();
         let non_creditable_slots = env.non_creditable_slots.clone();
+        let keychain_cache = env.keychain_cache.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::revert(
@@ -250,8 +263,10 @@ macro_rules! tempo_precompile {
             )
             .with_actions(actions.clone())
             .with_non_creditable_slots(non_creditable_slots.clone());
-            crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
+            crate::account_keychain::KeychainTxCacheCtx::enter(&keychain_cache, || {
+                crate::storage::StorageCtx::enter(&mut storage, || {
+                    $impl.call($input.data, $input.caller)
+                })
             })
         })
     }};
@@ -602,6 +617,7 @@ mod tests {
             cfg_env,
             StorageActions::disabled(),
             Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            Rc::new(RefCell::new(account_keychain::KeychainTxCache::default())),
         )
     }
 

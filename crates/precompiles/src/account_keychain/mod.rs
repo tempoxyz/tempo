@@ -6,7 +6,10 @@
 //!
 //! [Account keychain]: <https://docs.tempo.xyz/protocol/transactions/AccountKeychain>
 
+mod cache;
 pub mod dispatch;
+
+pub use cache::{KeychainTxCache, KeychainTxCacheCtx};
 
 use std::collections::HashSet;
 
@@ -33,6 +36,8 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
+
+use self::cache::{CachedTxKeyContext, LoadedAccessKeyContext};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
 const TIP20_TRANSFER_SELECTOR: [u8; 4] = ITIP20::transferCall::SELECTOR;
@@ -214,6 +219,168 @@ impl AccountKeychain {
         keccak256(data)
     }
 
+    fn invalidate_cached_account_key(&self, account: Address, key_id: Address) {
+        let key_hash = Self::spending_limit_key(account, key_id);
+        KeychainTxCacheCtx::with(|cache| cache.invalidate_account_key(account, key_id, key_hash));
+    }
+
+    fn invalidate_cached_scope(&self, key_hash: B256) {
+        KeychainTxCacheCtx::with(|cache| cache.invalidate_scope(key_hash));
+    }
+
+    fn cached_tx_key_context(&self) -> Result<CachedTxKeyContext> {
+        if let Some(tx_key) = KeychainTxCacheCtx::with(|cache| cache.tx_key()).flatten() {
+            return Ok(tx_key);
+        }
+
+        let tx_key = CachedTxKeyContext {
+            transaction_key: self.transaction_key.t_read()?,
+            tx_origin: self.tx_origin.t_read()?,
+        };
+        KeychainTxCacheCtx::with(|cache| cache.set_tx_key(tx_key));
+        Ok(tx_key)
+    }
+
+    fn cache_loaded_access_key(&self, access_key: LoadedAccessKeyContext) {
+        KeychainTxCacheCtx::with(|cache| cache.set_access_key(access_key));
+    }
+
+    fn load_active_key_cached(
+        &self,
+        account: Address,
+        key_id: Address,
+        current_timestamp: u64,
+    ) -> Result<AuthorizedKey> {
+        if let Some(access_key) =
+            KeychainTxCacheCtx::with(|cache| cache.access_key(account, key_id)).flatten()
+        {
+            if access_key.key.is_revoked {
+                return Err(AccountKeychainError::key_already_revoked().into());
+            }
+            if access_key.key.expiry == 0 {
+                return Err(AccountKeychainError::key_not_found().into());
+            }
+            if current_timestamp >= access_key.key.expiry {
+                return Err(AccountKeychainError::key_expired().into());
+            }
+            return Ok(access_key.key);
+        }
+
+        self.load_active_key(account, key_id, current_timestamp)
+    }
+
+    fn current_access_key_context(
+        &self,
+        account: Address,
+    ) -> Result<Option<LoadedAccessKeyContext>> {
+        let tx_key = self.cached_tx_key_context()?;
+        if tx_key.transaction_key == Address::ZERO || account != tx_key.tx_origin {
+            return Ok(None);
+        }
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if let Some(access_key) =
+            KeychainTxCacheCtx::with(|cache| cache.access_key(account, tx_key.transaction_key))
+                .flatten()
+        {
+            if current_timestamp >= access_key.key.expiry {
+                return Err(AccountKeychainError::key_expired().into());
+            }
+            return Ok(Some(access_key));
+        }
+
+        let key = self.load_active_key(account, tx_key.transaction_key, current_timestamp)?;
+        let access_key = LoadedAccessKeyContext {
+            account,
+            tx_origin: tx_key.tx_origin,
+            transaction_key: tx_key.transaction_key,
+            key_hash: Self::spending_limit_key(account, tx_key.transaction_key),
+            key,
+        };
+        self.cache_loaded_access_key(access_key.clone());
+        Ok(Some(access_key))
+    }
+
+    fn cached_is_scoped(&self, key_hash: B256) -> Result<bool> {
+        if let Some(is_scoped) =
+            KeychainTxCacheCtx::with(|cache| cache.scoped_key(key_hash)).flatten()
+        {
+            return Ok(is_scoped);
+        }
+
+        let is_scoped = self.key_scopes[key_hash].is_scoped.read()?;
+        KeychainTxCacheCtx::with(|cache| cache.set_scoped_key(key_hash, is_scoped));
+        Ok(is_scoped)
+    }
+
+    fn cached_target_scope(&self, key_hash: B256, target: Address) -> Result<(bool, bool)> {
+        if let Some(scope) =
+            KeychainTxCacheCtx::with(|cache| cache.target_scope(key_hash, target)).flatten()
+        {
+            return Ok(scope);
+        }
+
+        let allowed = self.key_scopes[key_hash].targets.contains(&target)?;
+        let unconstrained = allowed
+            && self.key_scopes[key_hash].target_scopes[target]
+                .selectors
+                .is_empty()?;
+        KeychainTxCacheCtx::with(|cache| {
+            cache.set_target_scope(key_hash, target, allowed, unconstrained)
+        });
+        Ok((allowed, unconstrained))
+    }
+
+    fn cached_selector_scope(
+        &self,
+        key_hash: B256,
+        target: Address,
+        selector: FixedBytes<4>,
+    ) -> Result<(bool, bool)> {
+        if let Some(scope) =
+            KeychainTxCacheCtx::with(|cache| cache.selector_scope(key_hash, target, selector))
+                .flatten()
+        {
+            return Ok(scope);
+        }
+
+        let allowed = self.key_scopes[key_hash].target_scopes[target]
+            .selectors
+            .contains(&selector)?;
+        let unconstrained = allowed
+            && self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
+                .recipients
+                .is_empty()?;
+        KeychainTxCacheCtx::with(|cache| {
+            cache.set_selector_scope(key_hash, target, selector, allowed, unconstrained)
+        });
+        Ok((allowed, unconstrained))
+    }
+
+    fn cached_recipient_scope(
+        &self,
+        key_hash: B256,
+        target: Address,
+        selector: FixedBytes<4>,
+        recipient: Address,
+    ) -> Result<bool> {
+        if let Some(allowed) = KeychainTxCacheCtx::with(|cache| {
+            cache.recipient_scope(key_hash, target, selector, recipient)
+        })
+        .flatten()
+        {
+            return Ok(allowed);
+        }
+
+        let allowed = self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
+            .recipients
+            .contains(&recipient)?;
+        KeychainTxCacheCtx::with(|cache| {
+            cache.set_recipient_scope(key_hash, target, selector, recipient, allowed)
+        });
+        Ok(allowed)
+    }
+
     #[inline]
     fn t3_spending_limit_cap(limit: U256) -> Result<u128> {
         if limit > U256::from(u128::MAX) {
@@ -340,6 +507,7 @@ impl AccountKeychain {
         };
 
         self.keys[msg_sender][key_id].write(new_key)?;
+        self.invalidate_cached_account_key(msg_sender, key_id);
 
         if !is_admin {
             let limits = config
@@ -439,6 +607,7 @@ impl AccountKeychain {
             ..Default::default()
         };
         self.keys[msg_sender][call.keyId].write(revoked_key)?;
+        self.invalidate_cached_account_key(msg_sender, call.keyId);
 
         // Note: We don't clear spending limits here - they become inaccessible
 
@@ -473,6 +642,7 @@ impl AccountKeychain {
         if !key.enforce_limits {
             key.enforce_limits = true;
             self.keys[msg_sender][call.keyId].write(key)?;
+            self.invalidate_cached_account_key(msg_sender, call.keyId);
         }
 
         // Update the spending limit
@@ -581,6 +751,7 @@ impl AccountKeychain {
 
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
         let scopes = call.scopes;
+        self.invalidate_cached_scope(key_hash);
 
         if scopes.is_empty() {
             return Err(AccountKeychainError::invalid_call_scope().into());
@@ -610,6 +781,7 @@ impl AccountKeychain {
         }
 
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
+        self.invalidate_cached_scope(key_hash);
         let current_mode = self.key_scopes[key_hash].is_scoped.read()?;
         if !current_mode {
             return Ok(());
@@ -725,7 +897,9 @@ impl AccountKeychain {
     /// transactions.
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
-        self.transaction_key.t_write(key_id)
+        self.transaction_key.t_write(key_id)?;
+        KeychainTxCacheCtx::with(|cache| cache.set_transaction_key(key_id));
+        Ok(())
     }
 
     /// Sets the transaction origin (tx.origin) for the current transaction.
@@ -733,7 +907,9 @@ impl AccountKeychain {
     /// Called by the handler before transaction execution.
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
-        self.tx_origin.t_write(origin)
+        self.tx_origin.t_write(origin)?;
+        KeychainTxCacheCtx::with(|cache| cache.set_tx_origin(origin));
+        Ok(())
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -808,19 +984,18 @@ impl AccountKeychain {
         let key_hash = Self::spending_limit_key(account, key_id);
 
         // Key-level scoped flag decides whether this CALL must match the stored scope tree.
-        if !self.key_scopes[key_hash].is_scoped.read()? {
+        if !self.cached_is_scoped(key_hash)? {
             return Ok(());
         }
 
-        if !self.key_scopes[key_hash].targets.contains(&target)? {
+        let (target_allowed, target_is_unconstrained) =
+            self.cached_target_scope(key_hash, target)?;
+        if !target_allowed {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         // Empty child sets mean "no further restriction" once the parent target was explicitly
         // allowed, so a present target with `selectors = []` allows any selector.
-        let target_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .is_empty()?;
         if target_is_unconstrained {
             return Ok(());
         }
@@ -833,18 +1008,13 @@ impl AccountKeychain {
         let selector = FixedBytes::<4>::from(
             <[u8; 4]>::try_from(&input[..4]).expect("input len checked above"),
         );
-        if !self.key_scopes[key_hash].target_scopes[target]
-            .selectors
-            .contains(&selector)?
-        {
+        let (selector_allowed, selector_is_unconstrained) =
+            self.cached_selector_scope(key_hash, target, selector)?;
+        if !selector_allowed {
             return Err(AccountKeychainError::call_not_allowed().into());
         }
 
         // Likewise, a present selector with `recipients = []` means any recipient is allowed.
-        let selector_is_unconstrained = self.key_scopes[key_hash].target_scopes[target]
-            .selector_scopes[selector]
-            .recipients
-            .is_empty()?;
         if selector_is_unconstrained {
             return Ok(());
         }
@@ -860,10 +1030,7 @@ impl AccountKeychain {
         }
 
         let recipient = Address::from_slice(&recipient_word[12..]);
-        if self.key_scopes[key_hash].target_scopes[target].selector_scopes[selector]
-            .recipients
-            .contains(&recipient)?
-        {
+        if self.cached_recipient_scope(key_hash, target, selector, recipient)? {
             Ok(())
         } else {
             Err(AccountKeychainError::call_not_allowed().into())
@@ -881,6 +1048,8 @@ impl AccountKeychain {
         account_key: B256,
         allowed_calls: Option<&[CallScope]>,
     ) -> Result<()> {
+        self.invalidate_cached_scope(account_key);
+
         // Fresh authorizations should not have any pre-existing call-scope rows because
         // `authorize_key` rejects both existing and previously revoked keys before reaching this
         // path. We still clear the scope tree first as a defense-in-depth measure against stale or
@@ -1113,7 +1282,7 @@ impl AccountKeychain {
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = match self.load_active_key(account, key_id, current_timestamp) {
+        let key = match self.load_active_key_cached(account, key_id, current_timestamp) {
             Ok(key) => key,
             Err(err) if err.is_system_error() => return Err(err),
             Err(_) => return Ok(false),
@@ -1125,7 +1294,7 @@ impl AccountKeychain {
     /// Internal predicate for active key status.
     pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match self.load_active_key(account, key_id, current_timestamp) {
+        match self.load_active_key_cached(account, key_id, current_timestamp) {
             Ok(_) => Ok(true),
             Err(err) if err.is_system_error() => Err(err),
             Err(_) => Ok(false),
@@ -1207,7 +1376,7 @@ impl AccountKeychain {
         current_timestamp: u64,
         expected_sig_type: Option<u8>,
     ) -> Result<AuthorizedKey> {
-        let key = self.load_active_key(account, key_id, current_timestamp)?;
+        let key = self.load_active_key_cached(account, key_id, current_timestamp)?;
 
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
@@ -1220,6 +1389,15 @@ impl AccountKeychain {
             )
             .into());
         }
+
+        let access_key = LoadedAccessKeyContext {
+            account,
+            tx_origin: account,
+            transaction_key: key_id,
+            key_hash: Self::spending_limit_key(account, key_id),
+            key: key.clone(),
+        };
+        self.cache_loaded_access_key(access_key);
 
         Ok(key)
     }
@@ -1315,15 +1493,35 @@ impl AccountKeychain {
 
         // Check key is valid (exists and not revoked)
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.load_active_key(account, key_id, current_timestamp)?;
+        let key = self.load_active_key_cached(account, key_id, current_timestamp)?;
 
+        self.verify_and_update_spending_for_key(
+            account,
+            key_id,
+            Self::spending_limit_key(account, key_id),
+            &key,
+            token,
+            amount,
+            current_timestamp,
+        )
+    }
+
+    fn verify_and_update_spending_for_key(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        limit_key: B256,
+        key: &AuthorizedKey,
+        token: Address,
+        amount: U256,
+        current_timestamp: u64,
+    ) -> Result<()> {
         // If enforce_limits is false, this key has unlimited spending
         if !key.enforce_limits {
             return Ok(());
         }
 
         // Check and update spending limit
-        let limit_key = Self::spending_limit_key(account, key_id);
         if !self.storage.spec().is_t3() {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
             if amount > remaining {
@@ -1397,21 +1595,21 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
+        let tx_key = self.cached_tx_key_context()?;
+        let transaction_key = tx_key.transaction_key;
 
         if transaction_key == Address::ZERO {
             return Ok(());
         }
 
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
+        if account != tx_key.tx_origin {
             return Ok(());
         }
 
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = match self.load_active_key(account, transaction_key, current_timestamp) {
+        let key = match self.load_active_key_cached(account, transaction_key, current_timestamp) {
             Ok(key) => key,
             Err(err) if err.is_system_error() => return Err(err),
             Err(_) => return Ok(()),
@@ -1469,22 +1667,18 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        let Some(access_key) = self.current_access_key_context(account)? else {
             return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
-        // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        };
+        self.verify_and_update_spending_for_key(
+            access_key.account,
+            access_key.transaction_key,
+            access_key.key_hash,
+            &access_key.key,
+            token,
+            amount,
+            self.storage.timestamp().saturating_to::<u64>(),
+        )
     }
 
     /// Authorize a token approval with access key spending limits.
@@ -1504,19 +1698,9 @@ impl AccountKeychain {
         old_approval: U256,
         new_approval: U256,
     ) -> Result<()> {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        let Some(access_key) = self.current_access_key_context(account)? else {
             return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
+        };
 
         // Calculate the increase in approval (only deduct if increasing)
         // If old approval is 100 and new approval is 120, deduct 20 from spending limit
@@ -1529,7 +1713,15 @@ impl AccountKeychain {
         }
 
         // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+        self.verify_and_update_spending_for_key(
+            access_key.account,
+            access_key.transaction_key,
+            access_key.key_hash,
+            &access_key.key,
+            token,
+            approval_increase,
+            self.storage.timestamp().saturating_to::<u64>(),
+        )
     }
 }
 
