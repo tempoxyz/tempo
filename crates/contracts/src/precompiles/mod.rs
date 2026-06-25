@@ -16,7 +16,6 @@ pub mod validator_config_v2;
 
 pub use account_keychain::*;
 pub use address_registry::*;
-use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
@@ -30,6 +29,9 @@ pub use tip20_factory::*;
 pub use tip403_registry::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
+
+use alloy_primitives::{Address, address};
+use tempo_hardfork::TempoHardfork;
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
@@ -52,3 +54,20 @@ pub const SIGNATURE_VERIFIER_ADDRESS: Address =
 pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
     address!("0xB10C000000000000000000000000000000000000");
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
+
+/// Fixed system precompile addresses and corresponding activation hardfork
+pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
+    (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
+    (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
+    (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
+    (NONCE_PRECOMPILE_ADDRESS, TempoHardfork::Genesis),
+    (ACCOUNT_KEYCHAIN_ADDRESS, TempoHardfork::Genesis),
+    (VALIDATOR_CONFIG_ADDRESS, TempoHardfork::Genesis),
+    (VALIDATOR_CONFIG_V2_ADDRESS, TempoHardfork::Genesis),
+    (TIP20_FACTORY_ADDRESS, TempoHardfork::Genesis),
+    (ADDRESS_REGISTRY_ADDRESS, TempoHardfork::T3),
+    (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
+    (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
+    (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
+    (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
+];
