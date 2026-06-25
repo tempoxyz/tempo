@@ -1402,6 +1402,23 @@ impl AA2dPool {
             self.by_eviction_order.len()
         );
 
+        // The cached base fee used to build the independent eviction order must match
+        // the pool base fee, otherwise `order` may hold stale priorities.
+        assert_eq!(
+            self.independent_transactions.base_fee, self.base_fee,
+            "independent_transactions base_fee ({}) != pool base_fee ({})",
+            self.independent_transactions.base_fee, self.base_fee
+        );
+
+        // The independent eviction order must have exactly one entry per independent tx.
+        assert_eq!(
+            self.independent_transactions.order.len(),
+            self.independent_transactions.transactions.len(),
+            "independent order.len() ({}) != transactions.len() ({})",
+            self.independent_transactions.order.len(),
+            self.independent_transactions.transactions.len()
+        );
+
         // All independent transactions must exist in by_id
         for (seq_id, independent_tx) in &self.independent_transactions.transactions {
             let tx_id = independent_tx
@@ -1409,6 +1426,17 @@ impl AA2dPool {
                 .transaction
                 .aa_transaction_id()
                 .expect("Independent transaction must have AA transaction ID");
+
+            // Each independent tx must be present in the eviction order under its
+            // current eviction key and mapped back to its own id.
+            let expected_key = independent_tx.eviction_key(self.base_fee);
+            let Some(order_id) = self.independent_transactions.order.get(&expected_key) else {
+                panic!("Independent transaction {tx_id:?} not in independent order map");
+            };
+            assert_eq!(
+                order_id, &tx_id,
+                "Independent order entry for {expected_key:?} maps to {order_id:?}, expected {tx_id:?}"
+            );
             assert!(
                 self.by_id.contains_key(&tx_id),
                 "Independent transaction {tx_id:?} not in by_id"
@@ -1430,6 +1458,28 @@ impl AA2dPool {
                 independent_tx.transaction.hash(),
                 tx_in_pool.inner.transaction.hash(),
                 "Independent transaction hash mismatch for {tx_id:?}"
+            );
+        }
+
+        // Every entry in the independent eviction order must resolve to its tx with a
+        // non-stale eviction key.
+        for (key, id) in &self.independent_transactions.order {
+            let Some(tx) = self.independent_transactions.transactions.get(&id.seq_id) else {
+                panic!("Independent order key {id:?} not in independent transactions");
+            };
+            let tx_id = tx
+                .transaction
+                .transaction
+                .aa_transaction_id()
+                .expect("Independent transaction must have AA transaction ID");
+            assert_eq!(
+                &tx_id, id,
+                "Independent order entry maps to {id:?} but stored tx has id {tx_id:?}"
+            );
+            assert_eq!(
+                &tx.eviction_key(self.base_fee),
+                key,
+                "Independent order entry for {id:?} has stale eviction key"
             );
         }
 
@@ -1656,8 +1706,12 @@ impl IndependentTransactions {
             .transaction
             .aa_transaction_id()
             .expect("is AA transaction");
-        self.order.insert(tx.eviction_key(self.base_fee), id);
-        self.transactions.insert(id.seq_id, tx);
+
+        let key = tx.eviction_key(self.base_fee);
+        if let Some(old) = self.transactions.insert(id.seq_id, tx) {
+            self.order.remove(&old.eviction_key(self.base_fee));
+        }
+        self.order.insert(key, id);
     }
 
     fn remove(
