@@ -13,9 +13,6 @@ use url::Url;
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
 
-/// Default OTLP logs filter level for telemetry.
-const DEFAULT_LOGS_OTLP_FILTER: &str = "debug";
-
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct TelemetryArgs {
@@ -80,7 +77,6 @@ impl TelemetryArgs {
 
         Ok(Some(TelemetryConfig {
             logs_otlp_url,
-            logs_otlp_filter: DEFAULT_LOGS_OTLP_FILTER.to_string(),
             metrics_prometheus_url,
             metrics_prometheus_interval: self.telemetry_metrics_interval,
             metrics_auth_header: Some(auth_header),
@@ -137,8 +133,6 @@ impl From<UrlWithAuth> for Url {
 pub(crate) struct TelemetryConfig {
     /// OTLP logs endpoint (without credentials).
     pub(crate) logs_otlp_url: Url,
-    /// OTLP logs filter level.
-    pub(crate) logs_otlp_filter: String,
     /// Prometheus metrics push endpoint (without credentials).
     /// Used for both consensus and execution metrics.
     pub(crate) metrics_prometheus_url: Url,
@@ -221,6 +215,7 @@ fn init_trace_defaults() {
     DefaultTraceValues::default()
         .with_service_name("tempo")
         .with_service_version(env!("CARGO_PKG_VERSION"))
+        .with_logs_otlp_filter("debug")
         .try_init()
         .expect("failed to initialize trace defaults");
 }
