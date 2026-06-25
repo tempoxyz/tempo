@@ -169,42 +169,58 @@ impl TempoPoolUpdates {
             // Key revocations and spending limit changes
             else if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 match AccountKeychainPoolEvent::decode(log) {
-                    Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
-                        updates.revoked_keys.insert(event.account, event.publicKey);
+                    Some(AccountKeychainPoolEvent::KeyRevoked {
+                        account,
+                        public_key,
+                    }) => {
+                        updates.revoked_keys.insert(account, public_key);
                         updates
                             .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
+                            .insert(account, public_key);
                     }
-                    Some(AccountKeychainPoolEvent::KeyAuthorized(event)) => {
+                    Some(AccountKeychainPoolEvent::KeyAuthorized {
+                        account,
+                        public_key,
+                    }) => {
                         updates
                             .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
+                            .insert(account, public_key);
                     }
-                    Some(AccountKeychainPoolEvent::AdminKeyAuthorized(event)) => {
+                    Some(AccountKeychainPoolEvent::AdminKeyAuthorized {
+                        account,
+                        public_key,
+                    }) => {
                         updates
                             .key_authorization_target_changes
-                            .insert(event.account, event.publicKey);
+                            .insert(account, public_key);
                     }
-                    Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
-                        updates.spending_limit_changes.insert(
-                            event.account,
-                            event.publicKey,
-                            Some(event.token),
-                        );
+                    Some(AccountKeychainPoolEvent::SpendingLimitUpdated {
+                        account,
+                        public_key,
+                        token,
+                    }) => {
+                        updates
+                            .spending_limit_changes
+                            .insert(account, public_key, Some(token));
                     }
-                    Some(AccountKeychainPoolEvent::AccessKeySpend(event)) => {
-                        updates.spending_limit_spends.insert(
-                            event.account,
-                            event.publicKey,
-                            Some(event.token),
-                        );
+                    Some(AccountKeychainPoolEvent::AccessKeySpend {
+                        account,
+                        public_key,
+                        token,
+                    }) => {
+                        updates
+                            .spending_limit_spends
+                            .insert(account, public_key, Some(token));
                     }
-                    Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
+                    Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned {
+                        account,
+                        witness,
+                    }) => {
                         updates
                             .key_authorization_witness_burns
-                            .entry(event.account)
+                            .entry(account)
                             .or_default()
-                            .insert(event.witness);
+                            .insert(witness);
                     }
                     None => {}
                 }
@@ -267,38 +283,71 @@ impl TempoPoolUpdates {
 /// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
 enum AccountKeychainPoolEvent {
     /// [`IAccountKeychain::KeyAuthorized`] log.
-    KeyAuthorized(IAccountKeychain::KeyAuthorized),
+    KeyAuthorized {
+        account: Address,
+        public_key: Address,
+    },
     /// [`IAccountKeychain::AdminKeyAuthorized`] log.
-    AdminKeyAuthorized(IAccountKeychain::AdminKeyAuthorized),
+    AdminKeyAuthorized {
+        account: Address,
+        public_key: Address,
+    },
     /// [`IAccountKeychain::KeyRevoked`] log.
-    KeyRevoked(IAccountKeychain::KeyRevoked),
+    KeyRevoked {
+        account: Address,
+        public_key: Address,
+    },
     /// [`IAccountKeychain::SpendingLimitUpdated`] log.
-    SpendingLimitUpdated(IAccountKeychain::SpendingLimitUpdated),
+    SpendingLimitUpdated {
+        account: Address,
+        public_key: Address,
+        token: Address,
+    },
     /// [`IAccountKeychain::AccessKeySpend`] log.
-    AccessKeySpend(IAccountKeychain::AccessKeySpend),
+    AccessKeySpend {
+        account: Address,
+        public_key: Address,
+        token: Address,
+    },
     /// [`IAccountKeychain::KeyAuthorizationWitnessBurned`] log.
-    KeyAuthorizationWitnessBurned(IAccountKeychain::KeyAuthorizationWitnessBurned),
+    KeyAuthorizationWitnessBurned { account: Address, witness: B256 },
 }
 
 impl AccountKeychainPoolEvent {
     /// Decodes only account-keychain events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
-            IAccountKeychain::KeyAuthorized::SIGNATURE_HASH => {
-                decode_event(log).map(Self::KeyAuthorized)
-            }
+            IAccountKeychain::KeyAuthorized::SIGNATURE_HASH => Some(Self::KeyAuthorized {
+                account: topic_address(log, 1)?,
+                public_key: topic_address(log, 2)?,
+            }),
             IAccountKeychain::AdminKeyAuthorized::SIGNATURE_HASH => {
-                decode_event(log).map(Self::AdminKeyAuthorized)
+                Some(Self::AdminKeyAuthorized {
+                    account: topic_address(log, 1)?,
+                    public_key: topic_address(log, 2)?,
+                })
             }
-            IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
+            IAccountKeychain::KeyRevoked::SIGNATURE_HASH => Some(Self::KeyRevoked {
+                account: topic_address(log, 1)?,
+                public_key: topic_address(log, 2)?,
+            }),
             IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
-                decode_event(log).map(Self::SpendingLimitUpdated)
+                Some(Self::SpendingLimitUpdated {
+                    account: topic_address(log, 1)?,
+                    public_key: topic_address(log, 2)?,
+                    token: topic_address(log, 3)?,
+                })
             }
-            IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => {
-                decode_event(log).map(Self::AccessKeySpend)
-            }
+            IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => Some(Self::AccessKeySpend {
+                account: topic_address(log, 1)?,
+                public_key: topic_address(log, 2)?,
+                token: topic_address(log, 3)?,
+            }),
             IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
-                decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+                Some(Self::KeyAuthorizationWitnessBurned {
+                    account: topic_address(log, 1)?,
+                    witness: topic_b256(log, 2)?,
+                })
             }
             _ => None,
         }
@@ -388,6 +437,14 @@ impl Tip20PoolEvent {
 
 fn first_topic(log: &Log) -> Option<B256> {
     log.topics().first().copied()
+}
+
+fn topic_address(log: &Log, index: usize) -> Option<Address> {
+    log.topics().get(index).copied().map(Address::from_word)
+}
+
+fn topic_b256(log: &Log, index: usize) -> Option<B256> {
+    log.topics().get(index).copied()
 }
 
 /// Decodes after the caller has matched `topic0`, avoiding the allocating
@@ -1199,6 +1256,18 @@ mod tests {
             }};
         }
 
+        macro_rules! assert_decodes_keychain_fields {
+            ($variant:ident, $event_ty:ty, $log:expr, { $($field:ident: $expected_field:ident),+ $(,)? }) => {{
+                let expected = generated_decode::<$event_ty>(&$log);
+                match AccountKeychainPoolEvent::decode(&$log) {
+                    Some(AccountKeychainPoolEvent::$variant { $($field),+ }) => {
+                        $(assert_eq!($field, expected.$expected_field);)+
+                    }
+                    _ => panic!("unexpected decoded event"),
+                }
+            }};
+        }
+
         fn event_log<T>(address: Address, event: T) -> Log
         where
             T: SolEvent,
@@ -1224,11 +1293,11 @@ mod tests {
                     expiry: u64::MAX,
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 KeyAuthorized,
                 IAccountKeychain::KeyAuthorized,
-                log
+                log,
+                { account: account, public_key: publicKey }
             );
 
             let log = event_log(
@@ -1238,11 +1307,11 @@ mod tests {
                     publicKey: Address::random(),
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 AdminKeyAuthorized,
                 IAccountKeychain::AdminKeyAuthorized,
-                log
+                log,
+                { account: account, public_key: publicKey }
             );
 
             let log = event_log(
@@ -1252,11 +1321,11 @@ mod tests {
                     publicKey: Address::random(),
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 KeyRevoked,
                 IAccountKeychain::KeyRevoked,
-                log
+                log,
+                { account: account, public_key: publicKey }
             );
 
             let log = event_log(
@@ -1268,11 +1337,11 @@ mod tests {
                     newLimit: U256::from(12_345),
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 SpendingLimitUpdated,
                 IAccountKeychain::SpendingLimitUpdated,
-                log
+                log,
+                { account: account, public_key: publicKey, token: token }
             );
 
             let log = event_log(
@@ -1285,11 +1354,11 @@ mod tests {
                     remainingLimit: U256::from(75),
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 AccessKeySpend,
                 IAccountKeychain::AccessKeySpend,
-                log
+                log,
+                { account: account, public_key: publicKey, token: token }
             );
 
             let log = event_log(
@@ -1299,11 +1368,11 @@ mod tests {
                     witness: B256::random(),
                 },
             );
-            assert_decodes_like_generated!(
-                AccountKeychainPoolEvent,
+            assert_decodes_keychain_fields!(
                 KeyAuthorizationWitnessBurned,
                 IAccountKeychain::KeyAuthorizationWitnessBurned,
-                log
+                log,
+                { account: account, witness: witness }
             );
         }
 
