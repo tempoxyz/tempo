@@ -404,7 +404,6 @@ def txgen-run-preset-pipeline [
     let bench_base_cmd = [
         ...$bench_send_base_cmd
         ...$metrics_url_args
-        "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
