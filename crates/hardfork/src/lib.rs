@@ -386,6 +386,7 @@ impl TempoHardfork {
 
 #[cfg(feature = "evm")]
 impl From<TempoHardfork> for SpecId {
+    #[inline(always)]
     fn from(_value: TempoHardfork) -> Self {
         Self::OSAKA
     }
@@ -393,6 +394,7 @@ impl From<TempoHardfork> for SpecId {
 
 #[cfg(feature = "evm")]
 impl From<&TempoHardfork> for SpecId {
+    #[inline(always)]
     fn from(value: &TempoHardfork) -> Self {
         Self::from(*value)
     }
@@ -400,6 +402,7 @@ impl From<&TempoHardfork> for SpecId {
 
 #[cfg(feature = "evm")]
 impl From<SpecId> for TempoHardfork {
+    #[inline(always)]
     fn from(_spec: SpecId) -> Self {
         // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.
         // Default to the default hardfork when converting from SpecId.
