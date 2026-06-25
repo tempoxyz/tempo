@@ -312,6 +312,11 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 alloy_primitives::Bytes::new(),
             )
         };
+        let access_list = if access_list.is_empty() {
+            AccessList::default()
+        } else {
+            access_list.clone()
+        };
 
         Self {
             inner: TxEnv {
@@ -325,7 +330,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 nonce: *nonce, // AA: nonce maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
-                access_list: access_list.clone(),
+                access_list,
                 // Convert Tempo authorization list to RecoveredAuthorization upfront
                 authorization_list: tempo_authorization_list
                     .iter()
