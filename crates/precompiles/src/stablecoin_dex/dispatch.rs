@@ -1,11 +1,8 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IStablecoinDEX::{self, IStablecoinDEXCalls};
+use tempo_contracts::precompiles::IStablecoinDEX;
 
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate, mutate_void, preserve_storage_credits,
@@ -107,6 +104,7 @@ mod tests {
         primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -463,9 +461,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut exchange,
-                SELECTORS,
+                IStablecoinDEXCalls::SELECTORS,
                 "IStablecoinDEX",
-                name_by_selector,
+                IStablecoinDEXCalls::name_by_selector,
             );
 
             // All selectors should be supported

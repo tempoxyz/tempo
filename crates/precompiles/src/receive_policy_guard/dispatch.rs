@@ -4,10 +4,9 @@ use crate::{
     Precompile, charge_input_cost, dispatch, mutate_void, receive_policy_guard::ReceivePolicyGuard,
     view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IReceivePolicyGuard::{self, IReceivePolicyGuardCalls};
-
+use tempo_contracts::precompiles::IReceivePolicyGuard;
 impl Precompile for ReceivePolicyGuard {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {

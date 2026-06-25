@@ -3,9 +3,9 @@
 use crate::{
     Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IStorageCredits::{self, IStorageCreditsCalls};
+use tempo_contracts::precompiles::IStorageCredits;
 
 impl Precompile for StorageCredits {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -39,8 +39,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::{IStorageCredits, StorageCreditsError};
+    use alloy::sol_types::{SolCall, SolInterface};
+    use tempo_contracts::precompiles::{
+        IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
+    };
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
@@ -50,9 +52,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut storage_credits_precompile,
-                SELECTORS,
+                IStorageCreditsCalls::SELECTORS,
                 "IStorageCredits",
-                name_by_selector,
+                IStorageCreditsCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

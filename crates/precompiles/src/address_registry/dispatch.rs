@@ -1,12 +1,9 @@
 use crate::{
     Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IAddressRegistry::{self, IAddressRegistryCalls};
+use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 impl Precompile for AddressRegistry {
@@ -59,6 +56,8 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::sol_types::{SolCall, SolError, SolValue};
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
@@ -68,9 +67,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut registry,
-                SELECTORS,
+                IAddressRegistryCalls::SELECTORS,
                 "IAddressRegistry",
-                name_by_selector,
+                IAddressRegistryCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

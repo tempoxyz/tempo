@@ -4,12 +4,9 @@ use super::ValidatorConfig;
 use crate::{
     Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
+use tempo_contracts::precompiles::IValidatorConfig;
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -62,10 +59,10 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
 
-    use tempo_contracts::precompiles::{
-        IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
-    };
+    use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -207,9 +204,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut validator_config,
-                SELECTORS,
+                IValidatorConfigCalls::SELECTORS,
                 "IValidatorConfig",
-                name_by_selector,
+                IValidatorConfigCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

@@ -9,12 +9,9 @@ use crate::{
     },
     view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::{
-    IFeeManager, IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
-};
-
+use tempo_contracts::precompiles::IFeeManager;
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {

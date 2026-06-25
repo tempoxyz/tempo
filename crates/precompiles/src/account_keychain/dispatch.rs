@@ -2,10 +2,7 @@
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 #[cfg(test)]
 use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;

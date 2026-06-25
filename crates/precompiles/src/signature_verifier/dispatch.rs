@@ -1,14 +1,8 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::{
-    ISignatureVerifier::{self, ISignatureVerifierCalls as ISVCalls},
-    SignatureVerifierError,
-};
+use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
@@ -63,11 +57,15 @@ mod tests {
     };
     use alloy::{
         primitives::B256,
-        sol_types::{SolCall, SolError},
+        sol_types::{SolCall, SolError, SolInterface},
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use tempo_contracts::precompiles::{ISignatureVerifier, UnknownFunctionSelector};
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{
+        ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
+        UnknownFunctionSelector,
+    };
     use tempo_primitives::transaction::tt_signature::{
         KeychainSignature, PrimitiveSignature, TempoSignature,
     };

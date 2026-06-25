@@ -6,10 +6,7 @@ use crate::{
     tip20::{ITIP20, TIP20Token},
     view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IRolesAuth, TIP20Error};
 
@@ -42,6 +39,7 @@ impl Precompile for TIP20Token {
                     supplyCap(_) => metadata::<ITIP20::supplyCapCall>(|| self.supply_cap()),
                     transferPolicyId(_) => metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id()),
                     paused(_) => metadata::<ITIP20::pausedCall>(|| self.paused()),
+                    #[schedule(since = T5)]
                     logoURI(_) => metadata::<ITIP20::logoURICall>(|| self.logo_uri()),
 
                     // View functions
@@ -126,6 +124,7 @@ mod tests {
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,

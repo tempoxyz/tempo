@@ -5,12 +5,9 @@ use crate::{
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
+use tempo_contracts::precompiles::ITIP403Registry;
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -82,6 +79,7 @@ mod tests {
         tip403_registry::ITIP403Registry,
     };
     use alloy::sol_types::{SolCall, SolError, SolValue};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
     };
@@ -536,9 +534,9 @@ mod tests {
 
             let unsupported = check_selector_coverage(
                 &mut registry,
-                SELECTORS,
+                ITIP403RegistryCalls::SELECTORS,
                 "ITIP403Registry",
-                name_by_selector,
+                ITIP403RegistryCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);

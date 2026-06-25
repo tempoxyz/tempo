@@ -500,60 +500,61 @@ pub(crate) fn dispatch_call<T>(
 }
 
 macro_rules! dispatch {
+    // Public dispatcher syntax: group match arms by ABI interface.
     ($calldata:expr, |$call:ident| match $match_call:ident {
         $iface_1:ident::$calls_1:ident { $($(#[$($attr_1:tt)*])* $variant_1:ident($binding_1:pat) => $body_1:expr),* $(,)? }
         $($iface_n:ident::$calls_n:ident { $($(#[$($attr_n:tt)*])* $variant_n:ident($binding_n:pat) => $body_n:expr),* $(,)? })*
     } $(,)?) => {
         paste::paste! {{
+            // Run hardfork gates before decoding, so malformed gated calls are still unknown.
             if let Some(selector) = crate::selector_from_calldata($calldata) {
                 $($(crate::dispatch!(@pre_gate $calldata, selector, $iface_1::[<$variant_1 Call>]::SELECTOR; #[$($attr_1)*]);)*)*
                 $($($(crate::dispatch!(@pre_gate $calldata, selector, $iface_n::[<$variant_n Call>]::SELECTOR; #[$($attr_n)*]);)*)*)*
 
+                // Decode with the ABI whose selector set contains the calldata selector.
                 crate::dispatch!(@decode $calldata, selector, $call, $match_call,
                     $iface_1::$calls_1 { $($variant_1($binding_1) => $body_1),* }
                     $($iface_n::$calls_n { $($variant_n($binding_n) => $body_n),* })*
                     else $iface_1::$calls_1
                 )
             } else {
+                // Let dispatch_call apply the chain-specific missing-selector behavior.
                 crate::dispatch_call($calldata, <$iface_1::$calls_1 as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
             }
         }}
     };
+    // Try one interface; recurse until a matching selector set is found.
     (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident,
-        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* }
-        $($rest:tt)*
-    ) => {
-        if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector($selector) {
-            crate::dispatch_call($calldata, <$iface::$calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
-                $($iface::$calls::$variant($binding) => $body,)*
+        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* } $($rest:tt)*
+    ) => {{
+        type Calls = $iface::$calls;
+        if <Calls as alloy::sol_types::SolInterface>::valid_selector($selector) {
+            crate::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
+                $(Calls::$variant($binding) => $body,)*
             })
         } else {
             crate::dispatch!(@decode $calldata, $selector, $call, $match_call, $($rest)*)
         }
-    };
-    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident, else $iface:ident::$calls:ident) => {
-        crate::dispatch_call($calldata, <$iface::$calls as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
-    };
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $hf:ident)]) => {
-        if $selector == $call_selector
-            && crate::storage::StorageCtx::default().spec() < tempo_chainspec::hardfork::TempoHardfork::$hf
-        {
-            return crate::unknown_selector_result($calldata);
-        }
-    };
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $hf:ident)]) => {
-        if $selector == $call_selector
-            && crate::storage::StorageCtx::default().spec() >= tempo_chainspec::hardfork::TempoHardfork::$hf
-        {
-            return crate::unknown_selector_result($calldata);
-        }
-    };
+    }};
+    // Fallback preserves dispatch_call's unknown-selector decoding path.
+    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident, else $iface:ident::$calls:ident) => {{
+        type Calls = $iface::$calls;
+        crate::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
+    }};
+    // Schedule gates: since rejects pre-fork, until rejects from that fork onward.
     (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $since:ident, until = $until:ident)]) => {
         crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(since = $since)]);
         crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(until = $until)]);
     };
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $until:ident, since = $since:ident)]) => {
-        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(since = $since, until = $until)]);
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $hf:ident)]) => {
+        if $selector == $call_selector && crate::storage::StorageCtx.spec() < tempo_chainspec::hardfork::TempoHardfork::$hf {
+            return crate::unknown_selector_result($calldata);
+        }
+    };
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $hf:ident)]) => {
+        if $selector == $call_selector && crate::storage::StorageCtx.spec() >= tempo_chainspec::hardfork::TempoHardfork::$hf {
+            return crate::unknown_selector_result($calldata);
+        }
     };
 }
 

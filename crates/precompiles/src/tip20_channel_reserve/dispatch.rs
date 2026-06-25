@@ -5,15 +5,9 @@ use crate::{
     Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
     preserve_storage_credits, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::{
-    ITIP20ChannelReserve, ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
-};
-
+use tempo_contracts::precompiles::ITIP20ChannelReserve;
 impl Precompile for TIP20ChannelReserve {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {

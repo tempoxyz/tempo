@@ -1,10 +1,7 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
 use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP20Factory, view};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory;
 #[cfg(test)]

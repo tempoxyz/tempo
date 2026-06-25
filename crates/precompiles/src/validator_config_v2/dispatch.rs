@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IValidatorConfigV2::{self, IValidatorConfigV2Calls};
+use tempo_contracts::precompiles::IValidatorConfigV2;
 
 impl Precompile for ValidatorConfigV2 {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -253,8 +253,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
 
-            let unsupported =
-                check_selector_coverage(&mut vc, SELECTORS, "IValidatorConfigV2", name_by_selector);
+            let unsupported = check_selector_coverage(
+                &mut vc,
+                IValidatorConfigV2Calls::SELECTORS,
+                "IValidatorConfigV2",
+                IValidatorConfigV2Calls::name_by_selector,
+            );
 
             assert_full_coverage([unsupported]);
 
