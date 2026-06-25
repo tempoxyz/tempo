@@ -10,7 +10,7 @@ use alloy_transport::{
     Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
 };
 use std::str::FromStr;
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     IAccountKeychain::{IAccountKeychainInstance, KeyInfo},
