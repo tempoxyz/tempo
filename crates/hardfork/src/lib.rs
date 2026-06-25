@@ -30,6 +30,7 @@ use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
+use core::option::Option::{None, Some};
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -73,6 +74,17 @@ macro_rules! tempo_hardfork {
                     }
                 )*
             }
+        }
+
+        /// Invokes the given macro with all post-Genesis Tempo hardfork variants.
+        ///
+        /// This lets downstream crates generate per-hardfork APIs from the same variant list as
+        /// [`TempoHardfork`] without depending on Tempo's chainspec implementation.
+        #[macro_export]
+        macro_rules! tempo_post_genesis_hardforks {
+            ($callback:ident) => {
+                $callback!($($variant),*);
+            };
         }
 
         #[cfg(test)]
