@@ -1132,6 +1132,8 @@ impl AccountKeychain {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn ensure_key_authorization_witness_not_burned(
         &self,
         account: Address,
