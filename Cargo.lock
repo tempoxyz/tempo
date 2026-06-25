@@ -13207,6 +13207,7 @@ dependencies = [
  "commonware-codec",
  "commonware-cryptography",
  "derive_more",
+ "indexmap 2.14.0",
  "insta",
  "rayon",
  "reth-chainspec",
