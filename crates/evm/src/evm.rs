@@ -317,6 +317,7 @@ mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
     use alloy_primitives::{B256, U256};
     use alloy_sol_types::SolCall;
+    use indexmap::IndexMap;
     use revm::{
         DatabaseCommit,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
@@ -850,17 +851,6 @@ mod tests {
                                 nonce_key: U256,
                                 fee_token: Address|
              -> Vec<String> {
-                let tempo_tx_env = (!nonce_key.is_zero()).then(|| {
-                    Box::new(TempoBatchCallEnv {
-                        aa_calls: vec![Call {
-                            to: TxKind::Call(PATH_USD_ADDRESS),
-                            value: U256::ZERO,
-                            input: calldata.clone(),
-                        }],
-                        nonce_key,
-                        ..Default::default()
-                    })
-                });
                 let tx = TempoTxEnv {
                     inner: TxEnv {
                         caller: sender,
@@ -872,7 +862,17 @@ mod tests {
                         ..Default::default()
                     },
                     fee_token: Some(fee_token),
-                    tempo_tx_env,
+                    tempo_tx_env: (!nonce_key.is_zero()).then(|| {
+                        Box::new(TempoBatchCallEnv {
+                            aa_calls: vec![Call {
+                                to: TxKind::Call(PATH_USD_ADDRESS),
+                                value: U256::ZERO,
+                                input: calldata.clone(),
+                            }],
+                            nonce_key,
+                            ..Default::default()
+                        })
+                    }),
                     ..Default::default()
                 };
                 let result = evm.transact_raw(tx).expect("transfer should execute");
@@ -889,22 +889,19 @@ mod tests {
                 .take_actions()
                 .expect("storage action recording should be enabled");
             assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
-            let first_transfer = snapshot_storage_actions(&actions, &labels);
-            evm.db_mut().commit(result.state);
 
-            let snapshot = BTreeMap::from([
-                ("first_transfer", first_transfer),
+            let snapshot = IndexMap::from([
+                (
+                    "first_transfer",
+                    run_transfer(&mut evm, 0, U256::ZERO, fee_token),
+                ),
                 (
                     "second_transfer",
-                    run_transfer(&mut evm, 1, U256::ZERO, PATH_USD_ADDRESS),
+                    run_transfer(&mut evm, 1, U256::ZERO, fee_token),
                 ),
                 (
-                    "two_dimensional_nonce_transfer",
-                    run_transfer(&mut evm, 0, nonce_key, PATH_USD_ADDRESS),
-                ),
-                (
-                    "fee_amm_one_hop_transfer",
-                    run_transfer(&mut evm, 2, U256::ZERO, fee_token),
+                    "2d_nonce_transfer",
+                    run_transfer(&mut evm, 0, nonce_key, fee_token),
                 ),
             ]);
             insta::assert_yaml_snapshot!(

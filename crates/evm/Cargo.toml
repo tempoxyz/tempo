@@ -52,15 +52,16 @@ tracing.workspace = true
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-global"] }
-alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 criterion.workspace = true
+indexmap.workspace = true
 insta.workspace = true
-revm.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
+revm.workspace = true
 serde_json.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
