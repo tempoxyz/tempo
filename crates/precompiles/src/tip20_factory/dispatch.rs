@@ -4,8 +4,6 @@ use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP2
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory;
-#[cfg(test)]
-use tempo_contracts::precompiles::createTokenWithLogoCall;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -41,7 +39,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector,
+        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector, createTokenWithLogoCall,
     };
 
     #[test]

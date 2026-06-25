@@ -4,8 +4,6 @@ use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
-#[cfg(test)]
-use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;
 use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
 
 impl Precompile for AccountKeychain {
@@ -111,7 +109,9 @@ mod tests {
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{UnknownFunctionSelector, legacyAuthorizeKeyCall};
+    use tempo_contracts::precompiles::{
+        IAccountKeychain::IAccountKeychainCalls, UnknownFunctionSelector, legacyAuthorizeKeyCall,
+    };
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
