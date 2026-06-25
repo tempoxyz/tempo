@@ -37,8 +37,7 @@ first_transfer:
   - "Sdec(FEE_TOKEN, balances[FeeManager], 905)"
   - "Sinc(FEE_TOKEN, balances[sender], 905)"
   - "Sload(TIP_FEE_MANAGER, validatorTokens[beneficiary], 0)"
-  - "Sload(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170141183460469231731687303715884105728000000)"
-  - "Sstore(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170109196917978663516121746502785519516123231)"
+  - "FeeAmmSwap(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 95, 94)"
   - "Sload(TIP_FEE_MANAGER, collectedFees[beneficiary][PATH_USD], 0)"
   - "Sstore(TIP_FEE_MANAGER, collectedFees[beneficiary][PATH_USD], 94)"
 second_transfer:
@@ -74,8 +73,7 @@ second_transfer:
   - "Sdec(FEE_TOKEN, balances[FeeManager], 947)"
   - "Sinc(FEE_TOKEN, balances[sender], 947)"
   - "Sload(TIP_FEE_MANAGER, validatorTokens[beneficiary], 0)"
-  - "Sload(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170109196917978663516121746502785519516123231)"
-  - "Sstore(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170091502234898774716021651023199067569127572)"
+  - "FeeAmmSwap(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 53, 52)"
   - "Sinc(TIP_FEE_MANAGER, collectedFees[beneficiary][PATH_USD], 52)"
 2d_nonce_transfer:
   - "Sload(FEE_TOKEN, currency, 38593709754705830669425512872126203978950497434864252488535995306481912119302)"
@@ -113,6 +111,5 @@ second_transfer:
   - "Sdec(FEE_TOKEN, balances[FeeManager], 922)"
   - "Sinc(FEE_TOKEN, balances[sender], 922)"
   - "Sload(TIP_FEE_MANAGER, validatorTokens[beneficiary], 0)"
-  - "Sload(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170091502234898774716021651023199067569127572)"
-  - "Sstore(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 170065300492645862454334971178426821416845538)"
+  - "FeeAmmSwap(TIP_FEE_MANAGER, pools[FEE_TOKEN][PATH_USD], 78, 77)"
   - "Sinc(TIP_FEE_MANAGER, collectedFees[beneficiary][PATH_USD], 77)"
