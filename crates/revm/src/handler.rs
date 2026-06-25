@@ -2150,9 +2150,10 @@ where
                 gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
             })
         } else {
-            MainnetHandler::default()
-                .catch_error(evm, error)
-                .map(|result| result.map_haltreason(Into::into))
+            match MainnetHandler::default().catch_error(evm, error) {
+                Ok(result) => Ok(result.map_haltreason(Into::into)),
+                Err(err) => Err(err),
+            }
         }
     }
 }
