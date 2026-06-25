@@ -230,11 +230,12 @@ pub trait StorageOps {
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
 
-    /// Overrides packed struct store initialization for storage backends with known semantics.
+    /// Returns whether packed struct writes should start from a zeroed word.
     ///
-    /// In-memory packed words always zero-init; live EVM storage falls back to the active hardfork.
-    fn zero_init_packed_store(&self) -> Option<bool> {
-        None
+    /// Live EVM storage falls back to the active hardfork. In-memory packed words override this
+    /// to always zero-init.
+    fn zero_init_packed_store(&self) -> bool {
+        StorageCtx.zero_init_packed_store()
     }
 
     /// Increments a value at the provided slot by `delta`.
