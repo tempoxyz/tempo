@@ -2,7 +2,6 @@ pub use tempo_hardfork::constants::gas::*;
 
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
-    hardfork::{TempoHardfork, TempoHardforks},
     network_identity::NetworkIdentity,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -22,6 +21,7 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+use tempo_hardfork::TempoHardfork;
 use tempo_primitives::TempoHeader;
 
 // End-of-block system transactions
@@ -416,6 +416,50 @@ impl EthExecutorSpec for TempoChainSpec {
     }
 }
 
+/// Generates the Tempo hardfork query trait for all post-Genesis hardforks.
+macro_rules! tempo_hardforks_trait {
+    ($($variant:ident),* $(,)?) => {
+        /// Trait for querying Tempo-specific hardfork activations.
+        pub trait TempoHardforks: EthereumHardforks {
+            /// Retrieves activation condition for a Tempo-specific hardfork.
+            fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
+
+            /// Retrieves the Tempo hardfork active at a given timestamp.
+            fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+                for &fork in TempoHardfork::VARIANTS.iter().rev() {
+                    if self
+                        .tempo_fork_activation(fork)
+                        .active_at_timestamp(timestamp)
+                    {
+                        return fork;
+                    }
+                }
+                TempoHardfork::Genesis
+            }
+
+            paste::paste! {
+                $(
+                    #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
+                    fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
+                        self.tempo_fork_activation(TempoHardfork::$variant)
+                            .active_at_timestamp(timestamp)
+                    }
+                )*
+            }
+
+            /// Returns the shared gas limit for the given timestamp and block.
+            /// - T4+: 0 gas
+            /// - Pre-T4: block_gas_limit / 10
+            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+                self.tempo_hardfork_at(timestamp)
+                    .shared_gas_limit(gas_limit)
+            }
+        }
+    };
+}
+
+tempo_hardfork::tempo_post_genesis_hardforks!(tempo_hardforks_trait);
+
 impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
         self.fork(fork)
@@ -425,8 +469,8 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::{
-        hardfork::{TempoHardfork, TempoHardforks},
-        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
+        TempoHardfork,
+        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
