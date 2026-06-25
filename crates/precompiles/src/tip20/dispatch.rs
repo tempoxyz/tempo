@@ -38,7 +38,10 @@ impl TIP20Call {
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
         if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
+            match IRolesAuthCalls::abi_decode(calldata) {
+                Ok(call) => Ok(Self::RolesAuth(call)),
+                Err(err) => Err(err),
+            }
         } else {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
         }
