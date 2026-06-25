@@ -416,7 +416,7 @@ where
             .unwrap_or(0)
             + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
-        let mut payment_transactions = 0u64;
+        let mut non_payment_transactions = 0u64;
         let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
@@ -690,10 +690,6 @@ where
             }
 
             check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
-
             let tx_rlp_length = pool_tx.transaction.encoded_length();
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
@@ -766,6 +762,9 @@ where
             }
 
             pool_transactions_included += 1;
+            if !is_payment {
+                non_payment_transactions += 1;
+            }
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
             if !receipt.success {
@@ -784,6 +783,7 @@ where
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
+        let payment_transactions = pool_transactions_included - non_payment_transactions;
         self.metrics
             .total_normal_transaction_fill_duration_seconds
             .record(normal_transaction_fill_elapsed);
