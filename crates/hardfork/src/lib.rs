@@ -1,27 +1,21 @@
-//! Tempo-specific hardfork definitions and activation schedules.
+//! Tempo-specific hardfork definitions, activation schedules, and protocol constants.
 //!
-//! This module provides the infrastructure for managing hardfork transitions in Tempo.
+//! This crate is the lightweight source of truth for Tempo hardfork identifiers. It intentionally
+//! does not depend on `tempo-chainspec` or Reth, so SDK crates can use [`TempoHardfork`] without
+//! pulling in chain-spec/node integration.
 //!
 //! ## Adding a New Hardfork
 //!
-//! When a new hardfork is needed (e.g., `Vivace`):
+//! When a new hardfork is needed, append a variant to `tempo_hardfork!`. This automatically:
 //!
-//! ### In `hardfork.rs`:
-//! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
-//!    * defines the enum variant via [`hardfork!`]
-//!    * implements trait `TempoHardforks` by adding `is_vivace()`, `is_vivace_active_at_timestamp()`,
-//!      and updating `tempo_hardfork_at()`
-//!    * adds tests for each of the `TempoHardfork` methods
-//! 2. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum `SpecId`
+//! * defines the enum variant via [`hardfork!`]
+//! * adds the variant to [`TempoHardfork::VARIANTS`]
+//! * generates the `is_<fork>()` inherent helper
+//! * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
+//! * adds tests for the generated hardfork helpers
 //!
-//! ### In chainspec `spec.rs`:
-//! 3. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
-//! 4. Add `TempoHardfork::Vivace => self.vivace_time` arm to `TempoGenesisInfo::fork_time()`
-//!
-//! ### In genesis files and generator:
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
+//! Then update this crate's activation schedule methods/constants as needed, and update
+//! `tempo-chainspec` genesis parsing (`TempoGenesisInfo`) if the fork is configurable in genesis.
 
 pub mod constants;
 
@@ -159,34 +153,46 @@ tempo_hardfork! (
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// Genesis hardfork
+        /// Genesis hardfork.
         Genesis,
         #[default]
-        /// T0 hardfork (default until T1 activates on mainnet)
+        /// T0 hardfork.
         T0,
-        /// T1 hardfork - adds expiring nonce transactions
+        /// T1 hardfork.
         T1,
-        /// T1.A hardfork - removes EIP-7825 per-transaction gas limit
+        /// T1.A hardfork.
         T1A,
-        /// T1.B hardfork
+        /// T1.B hardfork.
         T1B,
-        /// T1.C hardfork
+        /// T1.C hardfork.
         T1C,
-        /// T2 hardfork - adds compound transfer policies ([TIP-1015])
+        /// T2 hardfork.
         ///
-        /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t2>.
         T2,
-        /// T3 hardfork
+        /// T3 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t3>.
         T3,
-        /// T4 hardfork
+        /// T4 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t4>.
         T4,
-        /// T5 hardfork
+        /// T5 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t5>.
         T5,
-        /// T6 hardfork
+        /// T6 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t6>.
         T6,
-        /// T7 hardfork
+        /// T7 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t7>.
         T7,
-        /// T8 hardfork
+        /// T8 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t8>.
         T8,
     }
 );
