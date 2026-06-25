@@ -39,7 +39,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .map(|(_, boxed)| boxed.as_mut() as *mut H)
     }
 
-    #[inline]
+    #[inline(always)]
     fn insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
         self.entries.push((key.clone(), Box::new(f())));
         self.entries
@@ -49,7 +49,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .as_ref() as *const H
     }
 
-    #[inline]
+    #[inline(always)]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
         self.entries.push((key.clone(), Box::new(f())));
         self.entries
