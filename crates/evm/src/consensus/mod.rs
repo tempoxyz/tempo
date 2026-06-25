@@ -56,6 +56,8 @@ impl TempoConsensus {
     }
 
     /// Validates the given header against common consensus rules and the given millisecond timestamp.
+    #[cold]
+    #[inline(never)]
     fn validate_header_with_timestamp_millis(
         &self,
         header: &SealedHeader<TempoHeader>,
@@ -110,6 +112,8 @@ impl TempoConsensus {
 }
 
 impl HeaderValidator<TempoHeader> for TempoConsensus {
+    #[cold]
+    #[inline(never)]
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         let current_timestamp_millis = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -118,6 +122,8 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         self.validate_header_with_timestamp_millis(header, current_timestamp_millis)
     }
 
+    #[cold]
+    #[inline(never)]
     fn validate_header_against_parent(
         &self,
         header: &SealedHeader<TempoHeader>,
@@ -153,6 +159,8 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
 }
 
 impl Consensus<Block> for TempoConsensus {
+    #[cold]
+    #[inline(never)]
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
@@ -161,6 +169,8 @@ impl Consensus<Block> for TempoConsensus {
         Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
     }
 
+    #[cold]
+    #[inline(never)]
     fn validate_block_pre_execution(
         &self,
         block: &SealedBlock<Block>,
@@ -220,6 +230,8 @@ impl Consensus<Block> for TempoConsensus {
         self.inner.validate_block_pre_execution(block)
     }
 
+    #[cold]
+    #[inline(never)]
     fn is_transient_error(&self, error: &ConsensusError) -> bool {
         // Future timestamps can happen briefly when clocks drift between nodes.
         Consensus::<Block>::is_transient_error(&self.inner, error)
@@ -228,6 +240,8 @@ impl Consensus<Block> for TempoConsensus {
 }
 
 impl FullConsensus<TempoPrimitives> for TempoConsensus {
+    #[cold]
+    #[inline(never)]
     fn validate_block_post_execution(
         &self,
         block: &RecoveredBlock<Block>,
