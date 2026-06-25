@@ -142,6 +142,8 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the authorization list if present (for EIP-7702 transactions)
+    #[cold]
+    #[inline(never)]
     pub fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
         match self {
             Self::Eip7702(tx) => Some(&tx.tx().authorization_list),
@@ -150,6 +152,8 @@ impl TempoTxEnvelope {
     }
 
     /// Returns the Tempo authorization list if present (for Tempo transactions)
+    #[cold]
+    #[inline(never)]
     pub fn tempo_authorization_list(
         &self,
     ) -> Option<&[crate::transaction::TempoSignedAuthorization]> {
