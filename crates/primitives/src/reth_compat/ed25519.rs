@@ -15,6 +15,8 @@ mod codec {
     use reth_codecs::Compact;
 
     impl Compact for PublicKey {
+        #[cold]
+        #[inline(never)]
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
@@ -22,6 +24,8 @@ mod codec {
             B256::from(self).to_compact(buf)
         }
 
+        #[cold]
+        #[inline(never)]
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
             let (bytes, buf) = B256::from_compact(buf, len);
             (
