@@ -231,6 +231,8 @@ pub trait Storable: StorableType + Sized {
     /// Default implementation handles both full-slot and packed contexts:
     /// - `LayoutCtx::FULL`: Writes zero to all `Self::SLOTS` consecutive slots
     /// - `LayoutCtx::packed(offset)`: Clears only the bytes at the offset (read-modify-write)
+    #[cold]
+    #[inline(never)]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         match ctx.packed_offset() {
             None => {
