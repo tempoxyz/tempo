@@ -67,6 +67,48 @@ impl Pool {
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode Pool from slot")
     }
+
+    /// Encodes a [`Pool`] into the raw EVM storage slot value.
+    pub fn encode_to_slot(&self) -> Result<U256> {
+        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
+
+        let mut slot = PackedSlot(U256::ZERO);
+        <Self as Storable>::store(self, &mut slot, U256::ZERO, LayoutCtx::FULL)?;
+        Ok(slot.0)
+    }
+}
+
+/// Applies a fee swap to a packed FeeAMM pool slot.
+pub fn apply_fee_amm_swap_to_pool_slot(
+    slot_value: U256,
+    amount_in: U256,
+    amount_out: U256,
+) -> Result<U256> {
+    let mut pool = Pool::decode_from_slot(slot_value);
+
+    // Check if there's enough validatorToken available
+    if amount_out > U256::from(pool.reserve_validator_token) {
+        return Err(TIPFeeAMMError::insufficient_liquidity().into());
+    }
+
+    let amount_in: u128 = amount_in
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+    let amount_out: u128 = amount_out
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+    // Update reserves
+    pool.reserve_user_token = pool
+        .reserve_user_token
+        .checked_add(amount_in)
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+    pool.reserve_validator_token = pool
+        .reserve_validator_token
+        .checked_sub(amount_out)
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+    pool.encode_to_slot()
 }
 
 impl PoolKey {

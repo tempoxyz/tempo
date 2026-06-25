@@ -4,7 +4,7 @@
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
 pub mod actions;
-pub use actions::{StorageAction, StorageActions, apply_fee_amm_swap_to_pool_slot};
+pub use actions::{StorageAction, StorageActions};
 
 pub mod evm;
 pub mod hashmap;
@@ -103,8 +103,11 @@ pub trait PrecompileStorageProvider {
         amount_in: U256,
         amount_out: U256,
     ) -> Result<()> {
-        let value =
-            apply_fee_amm_swap_to_pool_slot(self.sload(address, key)?, amount_in, amount_out)?;
+        let value = crate::tip_fee_manager::amm::apply_fee_amm_swap_to_pool_slot(
+            self.sload(address, key)?,
+            amount_in,
+            amount_out,
+        )?;
         self.sstore(address, key, value)
     }
 
@@ -221,6 +224,13 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+
+    /// Overrides packed struct store initialization for storage backends with known semantics.
+    ///
+    /// In-memory packed words always zero-init; live EVM storage falls back to the active hardfork.
+    fn zero_init_packed_store(&self) -> Option<bool> {
+        None
+    }
 
     /// Increments a value at the provided slot by `delta`.
     ///

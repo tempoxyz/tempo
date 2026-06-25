@@ -1,10 +1,8 @@
 use crate::{
     error::TempoPrecompileError,
-    storage::{
-        PrecompileStorageProvider, StorageActions,
-        actions::{StorageAction, apply_fee_amm_swap_to_pool_slot},
-    },
+    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
     storage_credits::{NonCreditableSlots, sstore_storage_credits},
+    tip_fee_manager::amm::apply_fee_amm_swap_to_pool_slot,
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -662,6 +660,7 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tip_fee_manager::amm::Pool;
     use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
@@ -832,8 +831,16 @@ mod tests {
         let key = U256::from(1);
         let amount_in = U256::from(3);
         let amount_out = U256::from(2);
-        let initial_pool = U256::from(10) | (U256::from(20) << 128);
-        let expected_pool = U256::from(13) | (U256::from(18) << 128);
+        let initial_pool = Pool {
+            reserve_user_token: 10,
+            reserve_validator_token: 20,
+        }
+        .encode_to_slot()?;
+        let expected_pool = Pool {
+            reserve_user_token: 13,
+            reserve_validator_token: 18,
+        }
+        .encode_to_slot()?;
 
         let mut provider = evm
             .provider_max_gas()

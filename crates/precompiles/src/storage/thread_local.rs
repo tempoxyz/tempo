@@ -232,6 +232,18 @@ impl StorageCtx {
         Self::with_storage(|s| s.spec())
     }
 
+    /// Returns whether packed struct writes should start from a zeroed word.
+    ///
+    /// When no storage context is active, callers are using the packing code as a pure in-memory
+    /// encoder, so zero-init is the only meaningful behavior.
+    pub fn zero_init_packed_store(&self) -> bool {
+        if !STORAGE.is_set() {
+            return true;
+        }
+
+        Self::with_storage(|s| s.spec().is_t4())
+    }
+
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
     /// regular/state gas split independently of the active hardfork.
     pub fn amsterdam_eip8037_enabled(&self) -> bool {
