@@ -1428,8 +1428,10 @@ impl Recipient {
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
-        self.virtual_addr
-            .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
+        match self.virtual_addr {
+            Some(virtual_addr) => Some(TIP20Event::transfer(virtual_addr, self.target, amount)),
+            None => None,
+        }
     }
 }
 
