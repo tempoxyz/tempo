@@ -299,6 +299,8 @@ impl AddressRegistry {
 
 impl TIP403Registry {
     /// Creates the EVM precompile for this type.
+    #[cold]
+    #[inline(never)]
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("TIP403Registry", env: env, |input| { Self::new() })
     }
