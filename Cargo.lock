@@ -13018,7 +13018,6 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-genesis",
- "alloy-hardforks",
  "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
@@ -13031,6 +13030,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-dkg-onchain-artifacts",
+ "tempo-hardfork",
  "tempo-primitives",
 ]
 
@@ -13121,6 +13121,7 @@ dependencies = [
  "alloy-provider",
  "alloy-sol-types",
  "serde",
+ "tempo-hardfork",
  "tokio",
 ]
 
@@ -13272,6 +13273,18 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-hardfork"
+version = "1.8.2"
+dependencies = [
+ "alloy-eips",
+ "alloy-evm",
+ "alloy-hardforks",
+ "paste",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

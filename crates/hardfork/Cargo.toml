@@ -1,0 +1,38 @@
+[package]
+name = "tempo-hardfork"
+description = "Tempo hardfork identifiers and activation schedules"
+
+version = "1.8.2"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-eips.workspace = true
+alloy-evm = { workspace = true, optional = true }
+alloy-hardforks.workspace = true
+paste.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[features]
+default = ["std", "serde"]
+std = [
+    "alloy-eips/std",
+    "alloy-evm?/std",
+    "serde?/std",
+    "serde_json/std",
+]
+serde = ["dep:serde", "alloy-eips/serde", "alloy-hardforks/serde"]
+evm = ["dep:alloy-evm"]
