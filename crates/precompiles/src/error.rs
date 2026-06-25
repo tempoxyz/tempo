@@ -382,6 +382,8 @@ impl StorageCreditsErr for TempoPrecompileError {
         Self::OutOfGas
     }
 
+    #[cold]
+    #[inline(never)]
     fn fatal_external() -> Self {
         Self::Fatal("invalid storage credits state".to_string())
     }
