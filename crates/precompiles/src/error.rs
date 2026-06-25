@@ -378,6 +378,8 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
 }
 
 impl StorageCreditsErr for TempoPrecompileError {
+    #[cold]
+    #[inline(never)]
     fn out_of_gas() -> Self {
         Self::OutOfGas
     }
