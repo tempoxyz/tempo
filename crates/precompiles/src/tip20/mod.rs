@@ -784,7 +784,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
+        self._transfer_validated_recipient(msg_sender, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -817,7 +817,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(call.from, &to, call.amount)?;
+        self._transfer_validated_recipient(call.from, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
@@ -837,7 +837,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(call.from, &to, call.amount)?;
+        self._transfer_validated_recipient(call.from, &to, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             call.from,
             call.to,
@@ -885,7 +885,7 @@ impl TIP20Token {
             return Ok(true);
         };
 
-        self._transfer(from, &to, amount)?;
+        self._transfer_validated_recipient(from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -920,7 +920,7 @@ impl TIP20Token {
             return Ok(());
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
+        self._transfer_validated_recipient(msg_sender, &to, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             msg_sender,
             call.to,
@@ -1165,6 +1165,10 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+        if to.target != Address::ZERO {
+            return self._transfer_to_nonzero_recipient(from, to, amount);
+        }
+
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
             if amount > from_balance {
@@ -1195,10 +1199,51 @@ impl TIP20Token {
             self.decrement_balance(from, amount)?;
         }
 
-        if to.target != Address::ZERO {
-            self.increment_balance(to.target, amount)?;
+        self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    #[inline]
+    fn _transfer_validated_recipient(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<()> {
+        debug_assert_ne!(to.target, Address::ZERO);
+        self._transfer_to_nonzero_recipient(from, to, amount)
+    }
+
+    fn _transfer_to_nonzero_recipient(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<()> {
+        let from_balance = if !self.storage.spec().is_t8() {
+            let from_balance = self.get_balance(from)?;
+            if amount > from_balance {
+                return Err(
+                    TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
+                );
+            }
+            Some(from_balance)
+        } else {
+            None
+        };
+
+        self.handle_rewards_on_transfer(from, to.target, amount)?;
+
+        if let Some(from_balance) = from_balance {
+            let new_from_balance = from_balance
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            self.set_balance(from, new_from_balance)?;
+        } else {
+            self.decrement_balance(from, amount)?;
         }
 
+        self.increment_balance(to.target, amount)?;
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
