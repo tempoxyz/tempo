@@ -9,7 +9,7 @@ pub(crate) struct LinearCache<K, H> {
 }
 
 impl<K, H> Default for LinearCache<K, H> {
-    #[inline]
+    #[inline(always)]
     fn default() -> Self {
         Self {
             entries: Vec::new(),
@@ -140,7 +140,7 @@ pub(crate) struct HandlerCache<K, H, const THRESHOLD: usize = CACHE_THRESHOLD> {
 
 impl<K, H, const THRESHOLD: usize> HandlerCache<K, H, THRESHOLD> {
     /// Creates a new empty handler cache.
-    #[inline]
+    #[inline(always)]
     pub(super) fn new() -> Self {
         Self {
             inner: RefCell::new(HandlerCacheState::Linear(LinearCache::default())),
@@ -213,6 +213,7 @@ where
 
 impl<K, H, const THRESHOLD: usize> Clone for HandlerCache<K, H, THRESHOLD> {
     /// Creates a new empty cache (cached handlers are not cloned).
+    #[inline(always)]
     fn clone(&self) -> Self {
         Self::new()
     }
