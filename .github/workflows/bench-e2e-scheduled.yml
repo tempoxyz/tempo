@@ -72,6 +72,10 @@ jobs:
           for preset in "${presets[@]}"; do
             out="$(mktemp)"
             GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$preset"
+            token_count="4"
+            if [ "$preset" = "tip20" ]; then
+              token_count="1"
+            fi
 
             baseline_ref="$(get_output "$out" baseline-ref)"
             baseline_name="$(get_output "$out" baseline-name)"
@@ -97,7 +101,8 @@ jobs:
                 --arg feature_name "$feature_name" \
                 --arg run_type "$run_type" \
                 --arg state_file "$state_file" \
-                '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file}')"
+                --arg token_count "$token_count" \
+                '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file, token_count:$token_count}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -154,7 +159,7 @@ jobs:
       baseline-name: ${{ matrix.baseline_name }}
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
-      token-count: "1"
+      token-count: ${{ matrix.token_count }}
       duration: "600"
       tps: "50000"
       run-type: ${{ matrix.run_type }}
