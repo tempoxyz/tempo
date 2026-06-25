@@ -23,6 +23,8 @@ impl TempoBlockAssembler {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
@@ -88,6 +90,8 @@ impl TempoBlockAssembler {
 impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
     type Block = tempo_primitives::Block;
 
+    #[cold]
+    #[inline(never)]
     fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
