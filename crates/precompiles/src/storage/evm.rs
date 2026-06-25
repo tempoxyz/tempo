@@ -6,13 +6,14 @@ use crate::{
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
-    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
+    context::{CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -300,16 +301,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.chain_id()
     }
 
-    fn timestamp(&self) -> U256 {
-        self.internals.block_timestamp()
-    }
-
-    fn beneficiary(&self) -> Address {
-        self.internals.block_env().beneficiary()
-    }
-
-    fn block_number(&self) -> u64 {
-        self.internals.block_env().number().to::<u64>()
+    fn block_env(&self) -> &TempoBlockEnv {
+        self.internals
+            .block_env_downcast_ref::<TempoBlockEnv>()
+            .expect("EvmPrecompileStorageProvider requires TempoBlockEnv")
     }
 
     #[inline]

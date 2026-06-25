@@ -4,7 +4,7 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces"]
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces" "tip20_protocol_nonces"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-tip20-token-address [token_id: int] {
