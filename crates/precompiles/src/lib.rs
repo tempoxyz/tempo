@@ -313,6 +313,7 @@ impl TIP20Factory {
 
 impl TIP20Token {
     /// Creates the EVM precompile for this type.
+    #[inline(never)]
     pub fn create_precompile(address: Address, env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("TIP20Token", env: env, |input| {
             Self::from_address(address).expect("TIP20 prefix already verified")
