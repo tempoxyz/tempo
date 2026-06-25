@@ -146,6 +146,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Updates the protocol fee manager used by the EVM.
+    #[cold]
+    #[inline(never)]
     pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
     where
         F: ProtocolFeeManager<DB> + 'static,
