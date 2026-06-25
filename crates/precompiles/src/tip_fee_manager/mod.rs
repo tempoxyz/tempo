@@ -64,6 +64,7 @@ impl TipFeeManager {
     }
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
+    #[inline(always)]
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens[beneficiary].read()?;
 
