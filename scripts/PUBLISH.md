@@ -1,6 +1,6 @@
 # Publishing Crates
 
-Publishes `tempo-contracts`, `tempo-primitives`, and `tempo-alloy` to crates.io with all reth-specific code and dependencies removed.
+Publishes `tempo-hardfork`, `tempo-contracts`, `tempo-primitives`, `tempo-chainspec`, and `tempo-alloy` to crates.io with all reth-specific code and dependencies removed.
 
 ## Usage
 
@@ -27,9 +27,9 @@ In `tempo-alloy`, reth-specific code lives in `rpc/reth_compat.rs`, gated behind
 7. sanitize_toml.py resolve_deps ── replace workspace refs with versions
 8. post-resolve validation ── no workspace/path/git refs remain
 9. final cargo check + cargo check --all-features (on resolved manifests)
-10. cargo publish --dry-run (preflight all 3 crates)
+10. cargo publish --dry-run (preflight all published crates)
 11. cargo-semver-checks against last published version (`--semver-check` only)
-12. cargo publish (contracts → primitives → alloy, with retry; `--publish` only)
+12. cargo publish (hardfork → contracts → primitives → chainspec → alloy, with retry; `--publish` only)
 
 NOTE: the working tree is never modified — all mutations happen on temp copies.
 
@@ -37,7 +37,7 @@ NOTE: the working tree is never modified — all mutations happen on temp copies
 
 ### `publish-crates.sh`
 
-Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pipeline, verifies compilation, validates invariants, and publishes in dependency order.
+Orchestrator. Copies the published crates to a temp directory, runs the sanitization pipeline, verifies compilation, validates invariants, and publishes in dependency order.
 
 **Pre-resolve validation** (while workspace/path markers still visible):
 - No `reth-*` dependencies in any published manifest
@@ -50,8 +50,8 @@ Orchestrator. Copies the 3 crates to a temp directory, runs the sanitization pip
 - No `workspace = true`, `path =`, or `git =` in any published `Cargo.toml`
 
 **Publish behavior:**
-- Preflight: runs `cargo publish --dry-run` for all 3 crates before any real publish
-- Publishes in dependency order (contracts → primitives → alloy)
+- Preflight: runs `cargo publish --dry-run` for all published crates before any real publish
+- Publishes in dependency order (hardfork → contracts → primitives → chainspec → alloy)
 - Skips already-published crates (detects "already exists" from crates.io)
 - Retry: 10 attempts × 15s backoff to handle crates.io indexing delays
 
@@ -84,7 +84,7 @@ Transforms `Cargo.toml` files. Uses depth-aware brace/bracket tracking for robus
 - Auto-strips orphaned feature entries (`"dep?/feature"`, `"dep/feature"`, `"dep:dep"`) referencing any removed dependency — no manual regex needed when adding new reth-gated deps
 
 **`sanitize_alloy <toml> <ws_toml>`** — Removes reth/internal content from `tempo-alloy` manifest:
-- Dependencies: `reth-*`, all internal path-only workspace crates (dynamically discovered from workspace root, except `tempo-contracts`/`tempo-primitives`/`tempo-alloy`)
+- Dependencies: `reth-*`, all internal path-only workspace crates (dynamically discovered from workspace root, except published SDK crates)
 - Strips `"rpc"` from `tempo-primitives` features (the `rpc` feature is stripped from primitives during publish)
 
 **`resolve_deps <toml> <ws_toml>`** — Replaces `workspace = true` references with concrete versions parsed from the workspace root. Preserves `default-features = false` (from both workspace and local specs), `features`, `optional`, and `package` flags. Uses depth-aware multi-line collection. Fails immediately if a dep has no version (git-only or missing).

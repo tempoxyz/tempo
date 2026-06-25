@@ -17,6 +17,7 @@ publish = true
 workspace = true
 
 [dependencies]
+tempo-hardfork.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
@@ -29,8 +30,6 @@ alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-hardforks.workspace = true
-
 eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -43,6 +42,7 @@ commonware-cryptography = { workspace = true, optional = true }
 [features]
 default = ["std", "serde", "reth", "cli"]
 std = [
+    "tempo-hardfork/std",
     "alloy-eips/std",
     "alloy-evm?/std",
     "alloy-genesis/std",
@@ -55,12 +55,12 @@ std = [
     "tempo-primitives/std",
 ]
 serde = [
+    "tempo-hardfork/serde",
     "alloy-eips/serde",
-    "alloy-hardforks/serde",
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
-evm = ["dep:alloy-evm", "tempo-primitives/evm"]
+evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]
 reth = [
     "std",
     "evm",

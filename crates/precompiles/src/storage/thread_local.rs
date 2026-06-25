@@ -141,6 +141,11 @@ impl StorageCtx {
         Self::with_storage(|s| f(s.block_env()))
     }
 
+    /// Returns the epoch containing `height`.
+    pub fn epoch(&self, height: u64) -> u64 {
+        self.with_block_env(|block_env| block_env.epoch(height))
+    }
+
     /// Sets the bytecode at the given address.
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
         Self::try_with_storage(|s| s.set_code(address, code))
