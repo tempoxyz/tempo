@@ -1055,6 +1055,22 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
     ) -> Result<Option<Recipient>> {
+        // Normal transfers attribute the inbound to the debited account itself.
+        self.validate_transfer_as(spender, from, from, to, amount, memo)
+    }
+
+    /// Like [`Self::validate_transfer`], but attributes a blocked inbound to `originator` while
+    /// debiting `from`. They differ only for TIP-1034 channel-reserve payouts (see
+    /// [`Self::validate_inbound_or_block_from`]).
+    fn validate_transfer_as(
+        &mut self,
+        spender: Option<Address>,
+        from: Address,
+        originator: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+    ) -> Result<Option<Recipient>> {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
@@ -1066,11 +1082,38 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block_from(from, originator, &to, amount, None, memo)? {
             return Ok(None);
         }
 
         Ok(Some(to))
+    }
+
+    /// Transfers `call.amount` out of the TIP-1034 channel `reserve` to settle or refund a channel,
+    /// attributing the payment to the channel `payer`.
+    ///
+    /// Identical to a reserve-sent [`Self::transfer`] except that, if the recipient's receive
+    /// policy blocks the funds, the held receipt records the payer as originator. For an
+    /// originator-sentinel (`address(0)`) recovery policy this lets the payer recover the funds;
+    /// the reserve precompile could never satisfy `ReceivePolicyGuard.claim()`.
+    pub(crate) fn transfer_from_channel_reserve(
+        &mut self,
+        reserve: Address,
+        payer: Address,
+        call: ITIP20::transferCall,
+    ) -> Result<bool> {
+        let Some(to) =
+            self.validate_transfer_as(None, reserve, payer, call.to, call.amount, B256::ZERO)?
+        else {
+            return Ok(true);
+        };
+
+        self._transfer(reserve, &to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
+
+        Ok(true)
     }
 
     /// Resolves `to`, checks the issuer role, and ensures TIP-403 mint-recipient authorization.
@@ -1213,6 +1256,32 @@ impl TIP20Token {
         mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
+        // Normal transfers/mints debit the originator itself.
+        self.validate_inbound_or_block_from(
+            originator,
+            originator,
+            to,
+            amount,
+            mint_total_supply,
+            memo,
+        )
+    }
+
+    /// Like [`Self::validate_inbound_or_block`], but debits `debit` while attributing the inbound
+    /// to `originator` for the receive-policy check and the stored claim receipt.
+    ///
+    /// These differ only for TIP-1034 channel-reserve payouts: the funds are custodied by the
+    /// reserve precompile (`debit`), but the economic sender is the channel payer (`originator`),
+    /// so a blocked payout is recoverable by the payer instead of the unsignable reserve address.
+    pub(crate) fn validate_inbound_or_block_from(
+        &mut self,
+        debit: Address,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        mint_total_supply: Option<U256>,
+        memo: B256,
+    ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
             return Ok(false);
         }
@@ -1233,7 +1302,7 @@ impl TIP20Token {
             self.emit_event(TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
-            self._transfer(originator, &guard, amount)?;
+            self._transfer(debit, &guard, amount)?;
             InboundKind::TRANSFER
         };
         ReceivePolicyGuard::new()

@@ -192,6 +192,28 @@ impl TIP20ChannelReserve {
         Ok(channel_id)
     }
 
+    /// Pays `amount` of `token` from the reserve to `to` on behalf of channel `payer`.
+    ///
+    /// From T8, a payout blocked by the recipient's receive policy is attributed to the payer, so
+    /// an originator-sentinel (`address(0)`) recovery policy lets the payer recover it via
+    /// `ReceivePolicyGuard.claim()`. Before T8 it is a plain reserve transfer, which if blocked is
+    /// recorded against the reserve and cannot be recovered.
+    fn pay_from_reserve(
+        &self,
+        token: &mut TIP20Token,
+        payer: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let call = ITIP20::transferCall { to, amount };
+        if self.storage.spec().is_t8() {
+            token.transfer_from_channel_reserve(self.address, payer, call)?;
+        } else {
+            token.transfer(self.address, call)?;
+        }
+        Ok(())
+    }
+
     /// Settles an increasing cumulative voucher, paying only the unsettled delta to the payee.
     ///
     /// The payee can call directly. If an operator was set when the channel was opened, that
@@ -231,12 +253,11 @@ impl TIP20ChannelReserve {
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
 
-        token.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to: call.descriptor.payee,
-                amount: U256::from(delta),
-            },
+        self.pay_from_reserve(
+            &mut token,
+            call.descriptor.payer,
+            call.descriptor.payee,
+            U256::from(delta),
         )?;
 
         self.emit_event(TIP20ChannelReserveEvent::Settled(
@@ -402,21 +423,19 @@ impl TIP20ChannelReserve {
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
             token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
-            token.transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to: call.descriptor.payee,
-                    amount: U256::from(delta),
-                },
+            self.pay_from_reserve(
+                &mut token,
+                call.descriptor.payer,
+                call.descriptor.payee,
+                U256::from(delta),
             )?;
         }
         if !refund.is_zero() {
-            token.transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to: call.descriptor.payer,
-                    amount: U256::from(refund),
-                },
+            self.pay_from_reserve(
+                &mut token,
+                call.descriptor.payer,
+                call.descriptor.payer,
+                U256::from(refund),
             )?;
         }
 
@@ -460,12 +479,12 @@ impl TIP20ChannelReserve {
 
         self.delete_channel_state_and_credit_payer(channel_id, call.descriptor.payer)?;
         if !refund.is_zero() {
-            TIP20Token::from_address(call.descriptor.token)?.transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to: call.descriptor.payer,
-                    amount: U256::from(refund),
-                },
+            let mut token = TIP20Token::from_address(call.descriptor.token)?;
+            self.pay_from_reserve(
+                &mut token,
+                call.descriptor.payer,
+                call.descriptor.payer,
+                U256::from(refund),
             )?;
         }
         self.emit_event(TIP20ChannelReserveEvent::ChannelClosed(
@@ -770,22 +789,28 @@ mod tests {
     use crate::{
         Precompile,
         address_registry::AddressRegistry,
+        receive_policy_guard::{RECOVERY_ORIGINATOR, ReceivePolicyGuard},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
             TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
             register_virtual_master,
         },
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
     use alloy::{
         primitives::{Bytes, Signature},
-        sol_types::SolCall,
+        sol_types::{SolCall, SolValue},
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
+        IReceivePolicyGuard::{ClaimReceiptV1, InboundKind},
+        ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
+        ITIP403Registry::BlockedReason,
+        ReceivePolicyGuardError, TIP20Error,
     };
 
     fn descriptor(
@@ -1288,6 +1313,139 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    /// A settle payout blocked by the payee's receive policy must be recoverable by the channel
+    /// payer. From T8 the held receipt records the payer as originator, so the payer (authorized
+    /// via the `address(0)` originator sentinel) can claim it; before T8 it was recorded against
+    /// the reserve precompile, which can never satisfy `ReceivePolicyGuard.claim()`.
+    #[test]
+    fn test_blocked_settle_payout_recoverable_by_payer_from_t8() -> eyre::Result<()> {
+        const BLOCKED_AT: u64 = 1_728_000;
+
+        for is_t8 in [false, true] {
+            let spec = if is_t8 {
+                TempoHardfork::T8
+            } else {
+                TempoHardfork::T7
+            };
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let payer_signer = PrivateKeySigner::random();
+            let payer = payer_signer.address();
+            let payee = Address::random();
+            let salt = B256::random();
+
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let token = TIP20Setup::path_usd(payer)
+                    .with_issuer(payer)
+                    .with_mint(payer, U256::from(1_000u128))
+                    .apply()?;
+
+                let mut reserve = TIP20ChannelReserve::new();
+                reserve.initialize()?;
+                let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+
+                let channel_id = reserve.open(
+                    payer,
+                    open_call(
+                        payee,
+                        Address::ZERO,
+                        token.address(),
+                        300,
+                        salt,
+                        Address::ZERO,
+                    ),
+                )?;
+
+                // Payee rejects every inbound sender and authorizes the originator (address(0)) to
+                // recover blocked funds.
+                TIP403Registry::new().set_receive_policy(
+                    payee,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAuthority: RECOVERY_ORIGINATOR,
+                    },
+                )?;
+
+                let digest =
+                    reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                        channelId: channel_id,
+                        cumulativeAmount: U96::from(120),
+                    })?;
+                let signature =
+                    Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+                let channel_descriptor = descriptor(
+                    payer,
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    salt,
+                    Address::ZERO,
+                    expiring_nonce_hash,
+                );
+                reserve.settle(
+                    payee,
+                    ITIP20ChannelReserve::settleCall {
+                        descriptor: channel_descriptor,
+                        cumulativeAmount: U96::from(120),
+                        signature,
+                    },
+                )?;
+
+                // The blocked delta is held by the guard, debited from the reserve either way.
+                let delta = U256::from(120u64);
+                let token = TIP20Token::from_address(token.address())?;
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: TIP20_CHANNEL_RESERVE_ADDRESS,
+                    })?,
+                    U256::from(180u64),
+                );
+
+                // Originator is the payer from T8, the reserve before it.
+                let originator = if is_t8 {
+                    payer
+                } else {
+                    TIP20_CHANNEL_RESERVE_ADDRESS
+                };
+                let receipt = ClaimReceiptV1::new(
+                    token.address(),
+                    RECOVERY_ORIGINATOR,
+                    originator,
+                    payee,
+                    BLOCKED_AT,
+                    1,
+                    BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                let mut guard = ReceivePolicyGuard::new();
+                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, delta);
+
+                if is_t8 {
+                    // The payer is the recorded originator and can recover the funds.
+                    guard.claim(payer, payer, receipt.abi_encode().into())?;
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                        U256::from(820u64),
+                    );
+                } else {
+                    // The reserve is the recorded originator, so the payer cannot recover.
+                    assert_eq!(
+                        guard
+                            .claim(payer, payer, receipt.abi_encode().into())
+                            .unwrap_err(),
+                        ReceivePolicyGuardError::unauthorized_claimer().into(),
+                    );
+                }
+
+                Ok(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
