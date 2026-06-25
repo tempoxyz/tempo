@@ -496,7 +496,7 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
 }
 
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
-#[inline]
+#[inline(always)]
 fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
