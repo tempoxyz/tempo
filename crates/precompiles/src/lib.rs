@@ -398,7 +398,7 @@ fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> Precompi
 /// Dispatches a state-mutating call that returns ABI-encoded data.
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
+#[inline(never)]
 fn mutate<T: SolCall>(
     call: T,
     sender: Address,
@@ -417,7 +417,7 @@ fn mutate<T: SolCall>(
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
+#[inline(never)]
 fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
