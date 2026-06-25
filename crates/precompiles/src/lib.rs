@@ -468,8 +468,12 @@ pub(crate) fn charge_input_cost(
 /// blocks were executed without refund propagation, so we cannot change their gas
 /// accounting.
 #[inline]
-fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
+fn fill_state_gas(
+    output: &mut PrecompileOutput,
+    storage: &StorageCtx,
+    active_hardfork: TempoHardfork,
+) {
+    if active_hardfork.is_t4() && output.is_success() {
         output.gas_refunded = storage.gas_refunded();
     }
 
@@ -549,9 +553,10 @@ pub(crate) fn dispatch_call<T>(
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
     let storage = StorageCtx::default();
+    let active_hardfork = storage.spec();
 
     if calldata.len() < 4 {
-        if storage.spec().is_t1() {
+        if active_hardfork.is_t1() {
             return Ok(storage.revert_output(Bytes::new()));
         } else {
             return Ok(storage.halt_output(PrecompileHalt::Other(
@@ -563,7 +568,7 @@ pub(crate) fn dispatch_call<T>(
     let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
     if hardforks
         .iter()
-        .any(|schedule| schedule.rejects(selector, storage.spec()))
+        .any(|schedule| schedule.rejects(selector, active_hardfork))
     {
         return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
             selector,
@@ -576,7 +581,7 @@ pub(crate) fn dispatch_call<T>(
         Ok(call) => f(call).map(|mut res| {
             // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
             res.gas_used = storage.gas_used();
-            fill_state_gas(&mut res, &storage);
+            fill_state_gas(&mut res, &storage, active_hardfork);
             res
         }),
         Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
