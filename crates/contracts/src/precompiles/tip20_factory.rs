@@ -15,6 +15,8 @@ crate::sol! {
 
         event TokenCreated(address indexed token, string name, string symbol, string currency, address quoteToken, address admin, bytes32 salt);
 
+        #[overload(0)]
+        #[since(TempoHardfork::T5)]
         function createToken(
             string memory name,
             string memory symbol,
@@ -29,6 +31,8 @@ crate::sol! {
         ///      Reverts with `LogoURITooLong` if `bytes(logoURI).length > 256`, or
         ///      with `InvalidLogoURI` if `logoURI` is non-empty and either has no
         ///      parseable scheme or its scheme is not in the allow-list.
+        #[overload(1)]
+        #[since(TempoHardfork::T5)]
         function createToken(
             string memory name,
             string memory symbol,
@@ -43,13 +47,4 @@ crate::sol! {
 
         function getTokenAddress(address sender, bytes32 salt) public pure returns (address);
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for ITIP20Factory::ITIP20FactoryCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
-        &[SelectorSchedule::new(TempoHardfork::T5)
-            .with_added(&[ITIP20Factory::createToken_1Call::SELECTOR])];
 }

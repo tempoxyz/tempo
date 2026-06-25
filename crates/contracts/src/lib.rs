@@ -1,6 +1,7 @@
 //! Tempo predeployed contracts and bindings.
 
 #![no_std]
+#![recursion_limit = "512"]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // auto-generated sol! builders for events/errors with many fields trigger this
@@ -28,7 +29,10 @@ pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
 
 /// Helper macro to allow feature-gating rpc and serde implementations.
 macro_rules! sol {
-    ($($input:tt)*) => {
+    ($(#[$attr:meta])* $vis:vis interface $iface:ident { $($body:tt)* }) => {
+        crate::schedule!(@sol [$(#[$attr])* $vis interface $iface] $($body)*);
+    };
+    (@emit $($input:tt)*) => {
         #[cfg(all(feature = "rpc", feature = "serde"))]
         alloy_sol_types::sol! {
             #[sol(rpc)]
@@ -50,6 +54,7 @@ macro_rules! sol {
             $($input)*
         }
     };
+    ($($input:tt)*) => { crate::sol!(@emit $($input)*); };
 }
 
 pub(crate) use sol;

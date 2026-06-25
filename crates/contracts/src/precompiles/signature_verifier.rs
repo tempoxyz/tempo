@@ -24,6 +24,7 @@ crate::sol! {
         /// @param signature The encoded keychain signature
         /// @dev Does not compare the inner signature type against the stored key type.
         /// @return True if the keychain access key is active on account.
+        #[since(TempoHardfork::T6)]
         function verifyKeychain(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         /// @notice Verifies whether a keychain signature was produced by a root or active admin key.
@@ -32,20 +33,10 @@ crate::sol! {
         /// @param signature The encoded keychain signature
         /// @dev Does not compare the inner signature type against the stored key type.
         /// @return True if the recovered key is account or an active admin key on account.
+        #[since(TempoHardfork::T6)]
         function verifyKeychainAdmin(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         error InvalidFormat();
         error InvalidSignature();
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for ISignatureVerifier::ISignatureVerifierCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
-        &[SelectorSchedule::new(TempoHardfork::T6).with_added(&[
-            ISignatureVerifier::verifyKeychainCall::SELECTOR,
-            ISignatureVerifier::verifyKeychainAdminCall::SELECTOR,
-        ])];
 }

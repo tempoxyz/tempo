@@ -20,6 +20,7 @@ workspace = true
 alloy-contract = { workspace = true, optional = true }
 alloy-primitives.workspace = true
 alloy-sol-types = { workspace = true, features = ["json"] }
+paste.workspace = true
 serde = { workspace = true, optional = true }
 tempo-hardfork.workspace = true
 

@@ -24,11 +24,17 @@ crate::sol! {
         function policyExists(uint64 policyId) external view returns (bool);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
+        #[since(TempoHardfork::T2)]
         function isAuthorizedSender(uint64 policyId, address user) external view returns (bool);
+        #[since(TempoHardfork::T2)]
         function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
+        #[since(TempoHardfork::T2)]
         function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
+        #[since(TempoHardfork::T2)]
         function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
+        #[since(TempoHardfork::T6)]
         function receivePolicy(address account) external view returns (bool hasReceivePolicy, uint64 senderPolicyId, PolicyType senderPolicyType, uint64 tokenFilterId, PolicyType tokenFilterType, address recoveryAuthority);
+        #[since(TempoHardfork::T6)]
         function validateReceivePolicy(address token, address sender, address receiver) external view returns (bool authorized, BlockedReason blockedReason);
 
         // State-Changing Functions
@@ -37,7 +43,9 @@ crate::sol! {
         function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
+        #[since(TempoHardfork::T2)]
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
+        #[since(TempoHardfork::T6)]
         function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
 
         // Events
@@ -75,24 +83,4 @@ impl ITIP403Registry::PolicyType {
     pub const fn is_compound(&self) -> bool {
         matches!(self, Self::COMPOUND)
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for ITIP403Registry::ITIP403RegistryCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
-        SelectorSchedule::new(TempoHardfork::T2).with_added(&[
-            ITIP403Registry::isAuthorizedSenderCall::SELECTOR,
-            ITIP403Registry::isAuthorizedRecipientCall::SELECTOR,
-            ITIP403Registry::isAuthorizedMintRecipientCall::SELECTOR,
-            ITIP403Registry::compoundPolicyDataCall::SELECTOR,
-            ITIP403Registry::createCompoundPolicyCall::SELECTOR,
-        ]),
-        SelectorSchedule::new(TempoHardfork::T6).with_added(&[
-            ITIP403Registry::receivePolicyCall::SELECTOR,
-            ITIP403Registry::validateReceivePolicyCall::SELECTOR,
-            ITIP403Registry::setReceivePolicyCall::SELECTOR,
-        ]),
-    ];
 }

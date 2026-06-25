@@ -115,6 +115,8 @@ crate::sol! {
         /// @param keyId The key identifier (address derived from public key)
         /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
         /// @param config Access-key expiry and optional limits / call restrictions
+        #[overload(1)]
+        #[since(TempoHardfork::T3)]
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
@@ -123,6 +125,8 @@ crate::sol! {
 
         /// Authorize a new key with a TIP-1053 witness.
         /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
+        #[overload(2)]
+        #[since(TempoHardfork::T5)]
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
@@ -132,6 +136,7 @@ crate::sol! {
 
         /// Authorize a new admin key for the caller's account.
         /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
+        #[since(TempoHardfork::T6)]
         function authorizeAdminKey(
             address keyId,
             SignatureType signatureType,
@@ -140,6 +145,7 @@ crate::sol! {
 
         /// Burn a TIP-1053 key-authorization witness without authorizing a key.
         /// @dev Callable only by the account admin key.
+        #[since(TempoHardfork::T5)]
         function burnKeyAuthorizationWitness(bytes32 witness) external;
 
         /// Revoke an authorized key
@@ -161,12 +167,14 @@ crate::sol! {
         /// @dev `scope.selectorRules = []` does NOT block the target; it allows any selector on that target.
         /// @dev To block the target entirely, call `removeAllowedCalls`. To block one selector,
         ///      omit that selector rule from `scope.selectorRules`.
+        #[since(TempoHardfork::T3)]
         function setAllowedCalls(
             address keyId,
             CallScope[] calldata scopes
         ) external;
 
         /// Remove any configured call scope for a key+target pair.
+        #[since(TempoHardfork::T3)]
         function removeAllowedCalls(address keyId, address target) external;
 
         /// Get key information
@@ -179,6 +187,7 @@ crate::sol! {
         /// @param account The account address
         /// @param publicKey The public key
         /// @param token The token address
+        #[until(TempoHardfork::T3)]
         function getRemainingLimit(
             address account,
             address keyId,
@@ -191,6 +200,7 @@ crate::sol! {
         /// @param token The token address
         /// @return remaining Remaining spending amount
         /// @return periodEnd Period end timestamp for periodic limits (0 for one-time)
+        #[since(TempoHardfork::T3)]
         function getRemainingLimitWithPeriod(
             address account,
             address keyId,
@@ -202,15 +212,18 @@ crate::sol! {
         ///      means scoped deny-all.
         /// @dev Missing, revoked, or expired access keys also return scoped deny-all so callers do
         ///      not observe stale persisted scope state.
+        #[since(TempoHardfork::T3)]
         function getAllowedCalls(
             address account,
             address keyId
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
         /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+        #[since(TempoHardfork::T5)]
         function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
 
         /// Returns true if `keyId` is the root key or an active admin key for `account`.
+        #[since(TempoHardfork::T6)]
         function isAdminKey(address account, address keyId) external view returns (bool);
 
         /// Get the key used in the current transaction
@@ -236,30 +249,4 @@ crate::sol! {
         error KeyAuthorizationWitnessAlreadyBurned();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for IAccountKeychain::IAccountKeychainCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
-        SelectorSchedule::new(TempoHardfork::T3)
-            .with_added(&[
-                IAccountKeychain::authorizeKey_1Call::SELECTOR,
-                IAccountKeychain::setAllowedCallsCall::SELECTOR,
-                IAccountKeychain::removeAllowedCallsCall::SELECTOR,
-                IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
-                IAccountKeychain::getAllowedCallsCall::SELECTOR,
-            ])
-            .with_dropped(&[IAccountKeychain::getRemainingLimitCall::SELECTOR]),
-        SelectorSchedule::new(TempoHardfork::T5).with_added(&[
-            IAccountKeychain::authorizeKey_2Call::SELECTOR,
-            IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
-            IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
-        ]),
-        SelectorSchedule::new(TempoHardfork::T6).with_added(&[
-            IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
-            IAccountKeychain::isAdminKeyCall::SELECTOR,
-        ]),
-    ];
 }

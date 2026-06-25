@@ -13120,6 +13120,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-sol-types",
+ "paste",
  "serde",
  "tempo-hardfork",
  "tokio",

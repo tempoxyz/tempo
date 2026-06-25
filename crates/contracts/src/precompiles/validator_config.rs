@@ -51,6 +51,7 @@ crate::sol! {
         /// @param index The validator index in the validators array
         /// @param active Whether the validator should be active
         /// @dev Added in T1 to prevent front-running attacks where a validator changes its address
+        #[since(TempoHardfork::T1)]
         function changeValidatorStatusByIndex(uint64 index, bool active) external;
 
         /// Get the owner of the precompile
@@ -94,13 +95,4 @@ crate::sol! {
         error NotHostPort(string field, string input, string backtrace);
         error NotIpPort(string field, string input, string backtrace);
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for IValidatorConfig::IValidatorConfigCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
-        &[SelectorSchedule::new(TempoHardfork::T1)
-            .with_added(&[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR])];
 }

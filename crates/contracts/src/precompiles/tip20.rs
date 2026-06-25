@@ -3,8 +3,6 @@ pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-
 /// Decimal precision for all TIP-20 tokens.
 pub const DECIMALS: u8 = 6;
 
@@ -87,7 +85,9 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        #[since(TempoHardfork::T5)]
         function logoURI() external view returns (string memory);
+        #[since(TempoHardfork::T5)]
         function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
@@ -120,8 +120,11 @@ crate::sol! {
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
         // EIP-2612 Permit Functions
+        #[since(TempoHardfork::T2)]
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+        #[since(TempoHardfork::T2)]
         function nonces(address owner) external view returns (uint256);
+        #[since(TempoHardfork::T2)]
         function DOMAIN_SEPARATOR() external view returns (bytes32);
 
         struct UserRewardInfo {
@@ -178,20 +181,6 @@ crate::sol! {
         error LogoURITooLong();
         error InvalidLogoURI();
     }
-}
-
-impl SolCallWithSchedule for ITIP20::ITIP20Calls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
-        SelectorSchedule::new(TempoHardfork::T2).with_added(&[
-            ITIP20::permitCall::SELECTOR,
-            ITIP20::noncesCall::SELECTOR,
-            ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
-        ]),
-        SelectorSchedule::new(TempoHardfork::T5).with_added(&[
-            ITIP20::logoURICall::SELECTOR,
-            ITIP20::setLogoURICall::SELECTOR,
-        ]),
-    ];
 }
 
 impl ITIP20::ITIP20Calls {

@@ -24,6 +24,7 @@ crate::sol! {
         // Pure functions
         function isVirtualAddress(address addr) external pure returns (bool);
         function decodeVirtualAddress(address addr) external pure returns (bool isVirtual, bytes4 masterId, bytes6 userTag);
+        #[since(TempoHardfork::T5)]
         function isImplicitlyApproved(address addr) external view returns (bool);
 
         // Events
@@ -35,13 +36,4 @@ crate::sol! {
         error ProofOfWorkFailed();
         error VirtualAddressUnregistered();
     }
-}
-
-use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
-use alloy_sol_types::SolCall;
-
-impl SolCallWithSchedule for IAddressRegistry::IAddressRegistryCalls {
-    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
-        &[SelectorSchedule::new(TempoHardfork::T5)
-            .with_added(&[IAddressRegistry::isImplicitlyApprovedCall::SELECTOR])];
 }
