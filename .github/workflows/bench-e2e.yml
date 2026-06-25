@@ -596,17 +596,46 @@ jobs:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          mkdir -p "$CARGO_BIN_DIR"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$CARGO_BIN_DIR:$PATH"
 
           TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
-          install_args=(--git "$TXGEN_GIT_URL" --locked)
-          if [ -n "$BENCH_TXGEN_REF" ]; then
-            TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
-            install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
+          TXGEN_REF="${BENCH_TXGEN_REF:-main}"
+          TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$TXGEN_REF" "refs/heads/$TXGEN_REF" "refs/tags/$TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
+          if [ -z "$TXGEN_REV" ]; then
+            if [[ "$TXGEN_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              TXGEN_REV="$TXGEN_REF"
+            fi
+          fi
+          if [ -z "$TXGEN_REV" ]; then
+            echo "::error::Failed to resolve tempoxyz/txgen ref '$TXGEN_REF'"
+            exit 1
           fi
 
-          cargo install "${install_args[@]}" txgen-tempo bench-cli
+          TXGEN_CACHE_OBJECT="tempo-bench/txgen-binaries/linux-x64/${TXGEN_REV}.tar.gz"
+          TXGEN_ARCHIVE="$(mktemp -t txgen-binaries.XXXXXX.tar.gz)"
+          if [ "$BENCH_NO_CACHE" != "true" ] && mc stat "$TXGEN_CACHE_OBJECT" >/dev/null 2>&1; then
+            echo "Restoring txgen binaries from $TXGEN_CACHE_OBJECT"
+            mc cp "$TXGEN_CACHE_OBJECT" "$TXGEN_ARCHIVE"
+            tar -xzf "$TXGEN_ARCHIVE" -C "$CARGO_BIN_DIR"
+            chmod +x "$CARGO_BIN_DIR/txgen-tempo" "$CARGO_BIN_DIR/bench"
+          else
+            if [ "$BENCH_NO_CACHE" = "true" ]; then
+              echo "Binary cache disabled; building txgen binaries for $TXGEN_REV"
+            else
+              echo "No cached txgen binaries found for $TXGEN_REV; building"
+            fi
+
+            install_args=(--git "$TXGEN_GIT_URL" --locked --rev "$TXGEN_REV")
+            cargo install "${install_args[@]}" txgen-tempo bench-cli
+
+            if [ "$BENCH_NO_CACHE" != "true" ]; then
+              tar -czf "$TXGEN_ARCHIVE" -C "$CARGO_BIN_DIR" txgen-tempo bench
+              mc cp "$TXGEN_ARCHIVE" "$TXGEN_CACHE_OBJECT"
+            fi
+          fi
+
           echo "TXGEN_TEMPO_BIN=$CARGO_BIN_DIR/txgen-tempo" >> "$GITHUB_ENV"
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
