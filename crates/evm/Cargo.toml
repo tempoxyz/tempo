@@ -64,7 +64,7 @@ reth-trie.workspace = true
 serde_json.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
-tikv-jemallocator = "0.6.1"
+tikv-jemallocator = { version = "0.6.1", features = ["background_threads"] }
 
 [features]
 default = ["rpc", "engine"]
