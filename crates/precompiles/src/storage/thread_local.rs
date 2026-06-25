@@ -419,6 +419,8 @@ impl<'evm> StorageCtx {
 
     /// Like [`enter_ctx`](Self::enter_ctx), but meters storage access under `gas_limit`
     /// and returns both the closure result and gas consumed.
+    #[cold]
+    #[inline(never)]
     pub fn enter_ctx_with_gas_limit<C, R>(
         ctx: &mut C,
         gas_limit: u64,
