@@ -237,12 +237,14 @@ impl Transaction for TempoTxEnv {
         self.inner.max_priority_fee_per_gas()
     }
 
+    #[inline(always)]
     fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
         calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas())
             .checked_add(self.value())
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 
+    #[inline(always)]
     fn effective_balance_spending(
         &self,
         base_fee: u128,
