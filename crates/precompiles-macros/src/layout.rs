@@ -148,7 +148,7 @@ pub(crate) fn gen_constructor(
         impl #name {
             #new_fn
 
-            #[inline(always)]
+            #[inline]
             fn __new(address: ::alloy::primitives::Address) -> Self {
                 // Run collision detection checks in debug builds
                 #[cfg(debug_assertions)]
