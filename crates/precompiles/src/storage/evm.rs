@@ -545,7 +545,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.checkpoint_revert(checkpoint)
     }
 
-    #[inline]
+    #[inline(always)]
     fn set_tip1060_storage_credits(&mut self, enabled: bool) {
         self.tip1060_storage_credits_enabled = enabled && self.spec.is_t7();
     }
