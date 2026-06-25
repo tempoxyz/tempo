@@ -73,7 +73,7 @@ impl Pool {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
         let mut slot = PackedSlot(U256::ZERO);
-        <Self as Storable>::store(self, &mut slot, U256::ZERO, LayoutCtx::FULL)?;
+        self.store(&mut slot, U256::ZERO, LayoutCtx::FULL)?;
         Ok(slot.0)
     }
 }
