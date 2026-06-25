@@ -710,10 +710,6 @@ where
                 continue;
             }
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
             let execution_result = executor.execute_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
@@ -738,6 +734,9 @@ where
                 }) = &err
                 {
                     invalid_pool_transaction_execution_attempts += 1;
+                    let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                        .then(|| format!("{:?}", pool_tx.transaction))
+                        .unwrap_or_default();
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
