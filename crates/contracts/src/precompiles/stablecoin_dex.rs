@@ -117,3 +117,12 @@ crate::sol! {
         error OrderNotStale();
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for IStablecoinDEX::IStablecoinDEXCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T7)
+            .with_added(&[IStablecoinDEX::storageCreditsCall::SELECTOR])];
+}

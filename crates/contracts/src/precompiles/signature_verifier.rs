@@ -38,3 +38,14 @@ crate::sol! {
         error InvalidSignature();
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for ISignatureVerifier::ISignatureVerifierCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T6).with_added(&[
+            ISignatureVerifier::verifyKeychainCall::SELECTOR,
+            ISignatureVerifier::verifyKeychainAdminCall::SELECTOR,
+        ])];
+}

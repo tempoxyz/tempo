@@ -1,30 +1,17 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
-
-const T2_ADDED: &[[u8; 4]] = &[
-    ITIP20::permitCall::SELECTOR,
-    ITIP20::noncesCall::SELECTOR,
-    ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
-];
-
-/// Selectors added at T5: TIP-1026 Token Logo URI.
-const T5_ADDED: &[[u8; 4]] = &[
-    ITIP20::logoURICall::SELECTOR,
-    ITIP20::setLogoURICall::SELECTOR,
-];
+use tempo_contracts::{
+    SolCallWithSchedule,
+    precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error},
+};
 
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
@@ -63,10 +50,7 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[
-                SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
-                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
-            ],
+            ITIP20Calls::SELECTOR_SCHEDULE,
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)

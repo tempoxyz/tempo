@@ -76,3 +76,23 @@ impl ITIP403Registry::PolicyType {
         matches!(self, Self::COMPOUND)
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for ITIP403Registry::ITIP403RegistryCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
+        SelectorSchedule::new(TempoHardfork::T2).with_added(&[
+            ITIP403Registry::isAuthorizedSenderCall::SELECTOR,
+            ITIP403Registry::isAuthorizedRecipientCall::SELECTOR,
+            ITIP403Registry::isAuthorizedMintRecipientCall::SELECTOR,
+            ITIP403Registry::compoundPolicyDataCall::SELECTOR,
+            ITIP403Registry::createCompoundPolicyCall::SELECTOR,
+        ]),
+        SelectorSchedule::new(TempoHardfork::T6).with_added(&[
+            ITIP403Registry::receivePolicyCall::SELECTOR,
+            ITIP403Registry::validateReceivePolicyCall::SELECTOR,
+            ITIP403Registry::setReceivePolicyCall::SELECTOR,
+        ]),
+    ];
+}

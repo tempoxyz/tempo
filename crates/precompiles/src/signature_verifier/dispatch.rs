@@ -1,14 +1,9 @@
 use super::SignatureVerifier;
-use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, view};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use crate::{Precompile, charge_input_cost, dispatch_call, view};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    ISignatureVerifier::{self, ISignatureVerifierCalls as ISVCalls},
-    SignatureVerifierError,
+    ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
 };
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
@@ -17,11 +12,6 @@ use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 /// dynamic portion: selector(4) + args(4×32) + padded_sig_bytes.
 const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
-
-const T6_ADDED: &[[u8; 4]] = &[
-    ISignatureVerifier::verifyKeychainCall::SELECTOR,
-    ISignatureVerifier::verifyKeychainAdminCall::SELECTOR,
-];
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -37,7 +27,7 @@ impl Precompile for SignatureVerifier {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED)],
+            <ISVCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             ISVCalls::abi_decode,
             |call| match call {
                 ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),

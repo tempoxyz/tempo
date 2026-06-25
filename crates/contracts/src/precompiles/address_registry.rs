@@ -36,3 +36,12 @@ crate::sol! {
         error VirtualAddressUnregistered();
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for IAddressRegistry::IAddressRegistryCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T5)
+            .with_added(&[IAddressRegistry::isImplicitlyApprovedCall::SELECTOR])];
+}

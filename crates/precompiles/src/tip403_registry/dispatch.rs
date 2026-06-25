@@ -1,31 +1,13 @@
 //! ABI dispatch for the [`TIP403Registry`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, mutate, mutate_void,
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP403Registry::{self, ITIP403RegistryCalls};
-
-const T2_ADDED: &[[u8; 4]] = &[
-    ITIP403Registry::isAuthorizedSenderCall::SELECTOR,
-    ITIP403Registry::isAuthorizedRecipientCall::SELECTOR,
-    ITIP403Registry::isAuthorizedMintRecipientCall::SELECTOR,
-    ITIP403Registry::compoundPolicyDataCall::SELECTOR,
-    ITIP403Registry::createCompoundPolicyCall::SELECTOR,
-];
-
-const T6_ADDED: &[[u8; 4]] = &[
-    ITIP403Registry::receivePolicyCall::SELECTOR,
-    ITIP403Registry::validateReceivePolicyCall::SELECTOR,
-    ITIP403Registry::setReceivePolicyCall::SELECTOR,
-];
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -35,10 +17,7 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
-            &[
-                SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
-                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
-            ],
+            <ITIP403RegistryCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {

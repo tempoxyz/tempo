@@ -1,20 +1,13 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate,
-    tip20_factory::TIP20Factory, view,
+    Precompile, charge_input_cost, dispatch_call, mutate, tip20_factory::TIP20Factory, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{ITIP20Factory::ITIP20FactoryCalls, createTokenWithLogoCall};
+use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
 
 /// Selectors added at T5: TIP-1026 Token Logo URI factory overload.
-const T5_ADDED: &[[u8; 4]] = &[createTokenWithLogoCall::SELECTOR];
-
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
@@ -23,7 +16,7 @@ impl Precompile for TIP20Factory {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED)],
+            <ITIP20FactoryCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             ITIP20FactoryCalls::abi_decode,
             |call| match call {
                 ITIP20FactoryCalls::createToken_0(call) => {
@@ -54,7 +47,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector,
+        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector, createTokenWithLogoCall,
     };
 
     #[test]

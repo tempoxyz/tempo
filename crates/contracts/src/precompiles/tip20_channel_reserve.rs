@@ -5,6 +5,8 @@ pub use ITIP20ChannelReserve::{
 use alloy_primitives::{Address, address};
 use alloy_sol_types::{SolCall, SolType};
 
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+
 /// Native TIP-1034 channel reserve precompile address.
 pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
     address!("0x4D50500000000000000000000000000000000000");
@@ -270,6 +272,12 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
             || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input)
             || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input)
     }
+}
+
+impl SolCallWithSchedule for ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T7)
+            .with_added(&[ITIP20ChannelReserve::storageCreditsCall::SELECTOR])];
 }
 
 #[cfg(test)]

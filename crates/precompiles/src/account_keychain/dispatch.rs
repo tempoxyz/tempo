@@ -1,35 +1,13 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch_call, mutate_void, view};
 use alloy::{
     primitives::Address,
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    AccountKeychainError,
-    IAccountKeychain::{self, IAccountKeychainCalls},
-};
-
-const T3_ADDED: &[[u8; 4]] = &[
-    authorizeKeyCall::SELECTOR,
-    IAccountKeychain::setAllowedCallsCall::SELECTOR,
-    IAccountKeychain::removeAllowedCallsCall::SELECTOR,
-    IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
-    IAccountKeychain::getAllowedCallsCall::SELECTOR,
-];
-const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECTOR];
-const T5_ADDED: &[[u8; 4]] = &[
-    IAccountKeychain::authorizeKey_2Call::SELECTOR,
-    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
-    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
-];
-const T6_ADDED: &[[u8; 4]] = &[
-    IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
-    IAccountKeychain::isAdminKeyCall::SELECTOR,
-];
+use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain::IAccountKeychainCalls};
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -39,13 +17,7 @@ impl Precompile for AccountKeychain {
 
         dispatch_call(
             calldata,
-            &[
-                SelectorSchedule::new(TempoHardfork::T3)
-                    .with_added(T3_ADDED)
-                    .with_dropped(T3_DROPPED),
-                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
-                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
-            ],
+            <IAccountKeychainCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
@@ -163,7 +135,9 @@ mod tests {
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{UnknownFunctionSelector, legacyAuthorizeKeyCall};
+    use tempo_contracts::precompiles::{
+        IAccountKeychain, UnknownFunctionSelector, legacyAuthorizeKeyCall,
+    };
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {

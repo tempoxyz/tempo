@@ -2,18 +2,11 @@
 
 use super::ValidatorConfig;
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, error::TempoPrecompileError,
-    mutate_void, view,
+    Precompile, charge_input_cost, dispatch_call, error::TempoPrecompileError, mutate_void, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls};
-
-const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
+use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -23,7 +16,7 @@ impl Precompile for ValidatorConfig {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T1).with_added(T1_ADDED)],
+            <IValidatorConfigCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             IValidatorConfigCalls::abi_decode,
             |call| match call {
                 // View functions
@@ -84,7 +77,6 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
-
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,

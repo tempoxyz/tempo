@@ -44,3 +44,12 @@ crate::sol! {
         function getTokenAddress(address sender, bytes32 salt) public pure returns (address);
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for ITIP20Factory::ITIP20FactoryCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T5)
+            .with_added(&[ITIP20Factory::createToken_1Call::SELECTOR])];
+}

@@ -2,20 +2,14 @@
 
 use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
+    Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
     preserve_storage_credits, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
 };
-
-const T7_ADDED: &[[u8; 4]] = &[ITIP20ChannelReserve::storageCreditsCall::SELECTOR];
 
 impl Precompile for TIP20ChannelReserve {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -25,7 +19,7 @@ impl Precompile for TIP20ChannelReserve {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T7).with_added(T7_ADDED)],
+            <ITIP20ChannelReserveCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             ITIP20ChannelReserveCalls::abi_decode,
             |call| match call {
                 ITIP20ChannelReserveCalls::CLOSE_GRACE_PERIOD(_) => {

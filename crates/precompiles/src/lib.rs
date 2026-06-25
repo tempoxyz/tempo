@@ -46,6 +46,7 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::SelectorSchedule;
 use tempo_primitives::TempoAddressExt;
 
 #[cfg(test)]
@@ -461,55 +462,6 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 }
 
-/// A selector schedule at a given hardfork boundary.
-///
-/// Before the hardfork activates, selectors in `added` are treated as unknown.
-/// After it activates, selectors in `dropped` are treated as unknown.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SelectorSchedule<'a> {
-    hardfork: TempoHardfork,
-    added: &'a [[u8; 4]],
-    dropped: &'a [[u8; 4]],
-}
-
-impl<'a> SelectorSchedule<'a> {
-    /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
-    pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
-        Self {
-            hardfork,
-            added: &[],
-            dropped: &[],
-        }
-    }
-
-    /// Registers selectors that are introduced at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown BEFORE `hardfork` activates.
-    pub(crate) const fn with_added(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.added = selectors;
-        self
-    }
-
-    /// Registers selectors that are removed at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown ONCE `hardfork` activates.
-    pub(crate) const fn with_dropped(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.dropped = selectors;
-        self
-    }
-
-    /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
-    #[inline]
-    fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
-        if self.hardfork <= active {
-            self.dropped
-        } else {
-            self.added
-        }
-        .contains(&selector)
-    }
-}
-
 /// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
@@ -518,7 +470,7 @@ impl<'a> SelectorSchedule<'a> {
 #[inline]
 pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
-    hardforks: &[SelectorSchedule<'_>],
+    hardforks: &[SelectorSchedule],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
@@ -1099,7 +1051,7 @@ mod tests {
             }
         }
 
-        const SELECTOR_SCHEDULE: &[SelectorSchedule<'static>] = &[
+        const SELECTOR_SCHEDULE: &[SelectorSchedule] = &[
             SelectorSchedule::new(TempoHardfork::T2)
                 .with_added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
             SelectorSchedule::new(TempoHardfork::T3)

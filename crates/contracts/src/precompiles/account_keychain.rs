@@ -237,3 +237,29 @@ crate::sol! {
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for IAccountKeychain::IAccountKeychainCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
+        SelectorSchedule::new(TempoHardfork::T3)
+            .with_added(&[
+                IAccountKeychain::authorizeKey_1Call::SELECTOR,
+                IAccountKeychain::setAllowedCallsCall::SELECTOR,
+                IAccountKeychain::removeAllowedCallsCall::SELECTOR,
+                IAccountKeychain::getRemainingLimitWithPeriodCall::SELECTOR,
+                IAccountKeychain::getAllowedCallsCall::SELECTOR,
+            ])
+            .with_dropped(&[IAccountKeychain::getRemainingLimitCall::SELECTOR]),
+        SelectorSchedule::new(TempoHardfork::T5).with_added(&[
+            IAccountKeychain::authorizeKey_2Call::SELECTOR,
+            IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
+            IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
+        ]),
+        SelectorSchedule::new(TempoHardfork::T6).with_added(&[
+            IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
+            IAccountKeychain::isAdminKeyCall::SELECTOR,
+        ]),
+    ];
+}

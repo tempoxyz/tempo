@@ -1,19 +1,12 @@
 use crate::{
-    Precompile, SelectorSchedule, address_registry::AddressRegistry, charge_input_cost,
-    dispatch_call, mutate, view,
+    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch_call, mutate, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IAddressRegistry::{self, IAddressRegistryCalls};
+use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 /// Selectors introduced at T5 (TIP-1035).
-const T5_ADDED: &[[u8; 4]] = &[IAddressRegistry::isImplicitlyApprovedCall::SELECTOR];
-
 impl Precompile for AddressRegistry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
@@ -22,7 +15,7 @@ impl Precompile for AddressRegistry {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED)],
+            <IAddressRegistryCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             IAddressRegistryCalls::abi_decode,
             |call| match call {
                 // Registration

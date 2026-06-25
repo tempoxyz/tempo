@@ -95,3 +95,12 @@ crate::sol! {
         error NotIpPort(string field, string input, string backtrace);
     }
 }
+
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+use alloy_sol_types::SolCall;
+
+impl SolCallWithSchedule for IValidatorConfig::IValidatorConfigCalls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] =
+        &[SelectorSchedule::new(TempoHardfork::T1)
+            .with_added(&[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR])];
+}

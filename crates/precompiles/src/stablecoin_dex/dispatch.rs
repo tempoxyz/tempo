@@ -1,21 +1,14 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IStablecoinDEX::{self, IStablecoinDEXCalls};
+use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate, mutate_void,
-    preserve_storage_credits,
+    Precompile, charge_input_cost, dispatch_call, mutate, mutate_void, preserve_storage_credits,
     stablecoin_dex::{StablecoinDEX, orderbook::compute_book_key},
     view,
 };
-
-const T7_ADDED: &[[u8; 4]] = &[IStablecoinDEX::storageCreditsCall::SELECTOR];
 
 impl Precompile for StablecoinDEX {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -25,7 +18,7 @@ impl Precompile for StablecoinDEX {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T7).with_added(T7_ADDED)],
+            <IStablecoinDEXCalls as tempo_contracts::SolCallWithSchedule>::SELECTOR_SCHEDULE,
             IStablecoinDEXCalls::abi_decode,
             |call| match call {
                 IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {

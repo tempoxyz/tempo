@@ -11,6 +11,9 @@ extern crate alloc;
 
 pub use tempo_hardfork::TempoHardfork;
 
+mod schedule;
+pub use schedule::{SelectorSchedule, SolCallWithSchedule};
+
 use alloy_primitives::{Address, B256, address, b256};
 
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>

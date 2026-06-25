@@ -3,6 +3,8 @@ pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
+use crate::{SelectorSchedule, SolCallWithSchedule, TempoHardfork};
+
 /// Decimal precision for all TIP-20 tokens.
 pub const DECIMALS: u8 = 6;
 
@@ -176,6 +178,20 @@ crate::sol! {
         error LogoURITooLong();
         error InvalidLogoURI();
     }
+}
+
+impl SolCallWithSchedule for ITIP20::ITIP20Calls {
+    const SELECTOR_SCHEDULE: &'static [SelectorSchedule] = &[
+        SelectorSchedule::new(TempoHardfork::T2).with_added(&[
+            ITIP20::permitCall::SELECTOR,
+            ITIP20::noncesCall::SELECTOR,
+            ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
+        ]),
+        SelectorSchedule::new(TempoHardfork::T5).with_added(&[
+            ITIP20::logoURICall::SELECTOR,
+            ITIP20::setLogoURICall::SELECTOR,
+        ]),
+    ];
 }
 
 impl ITIP20::ITIP20Calls {
