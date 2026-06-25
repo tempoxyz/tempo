@@ -197,7 +197,7 @@ where
     roots_tx: &'a Sender<BuilderTx>,
     is_cancelled: &'a dyn Fn() -> bool,
     started_at: Instant,
-    build_once_with_shared_trie: bool,
+    wait_for_pool_transactions: bool,
     payload_build_budget: Option<Duration>,
     payload_validation_budget: Option<Duration>,
     build_time_multiplier: u64,
@@ -228,7 +228,7 @@ where
             roots_tx,
             is_cancelled,
             started_at,
-            build_once_with_shared_trie,
+            wait_for_pool_transactions,
             payload_build_budget,
             payload_validation_budget,
             build_time_multiplier,
@@ -333,13 +333,15 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                    continue;
+                if wait_for_pool_transactions && cumulative_gas_used < non_shared_gas_limit {
+                    if let Some(build_budget) = payload_build_budget {
+                        if started_at.elapsed() < build_budget {
+                            std::thread::sleep(Duration::from_millis(1));
+                            normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                            continue;
+                        }
+                        break BlockBuildStopReason::BuildBudget;
+                    }
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
                     BlockBuildStopReason::GasLimit
@@ -882,7 +884,8 @@ where
             roots_tx: &roots_tx,
             is_cancelled: &is_cancelled,
             started_at: start,
-            build_once_with_shared_trie,
+            wait_for_pool_transactions: build_once_with_shared_trie
+                || mode == PayloadBuildMode::Optimistic,
             payload_build_budget,
             payload_validation_budget,
             build_time_multiplier: self.build_time_multiplier(),
