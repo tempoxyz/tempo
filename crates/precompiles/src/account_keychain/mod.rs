@@ -214,7 +214,8 @@ impl AccountKeychain {
         keccak256(data)
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn t3_spending_limit_cap(limit: U256) -> Result<u128> {
         if limit > U256::from(u128::MAX) {
             return Err(AccountKeychainError::invalid_spending_limit().into());
