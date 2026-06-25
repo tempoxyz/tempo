@@ -15,7 +15,11 @@
 //! * adds tests for the generated hardfork helpers
 //!
 //! Then update this crate's activation schedule methods/constants as needed. If the fork is
-//! configurable in genesis, update `tempo-chainspec`'s `TempoGenesisInfo` fields;.
+//! configurable in genesis, update `tempo-chainspec`'s `TempoGenesisInfo` fields; chainspec uses
+//! [`tempo_post_genesis_hardforks!`] to generate fork-time matching, so missing fields for new
+//! hardfork variants fail at compile time.
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod constants;
 
@@ -24,10 +28,6 @@ use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
-use core::{
-    option::Option::{self, None, Some},
-    result::Result::{self, Err, Ok},
-};
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
