@@ -37,8 +37,6 @@ impl Precompile for StablecoinDEX {
                     }),
                     pairKey(call) => view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB))),
                     books(call) => view(call, |c| self.books(c.pairKey).map(Into::into)),
-                    #[schedule(since = T7)]
-                    storageCredits(call) => view(call, |c| self.storage_credits(c.user)),
                     nextOrderId(call) => view(call, |_| self.next_order_id()),
                     createPair(call) => mutate(call, msg_sender, |_, c| {
                         preserve_storage_credits(self.address)?;
@@ -78,7 +76,10 @@ impl Precompile for StablecoinDEX {
                     MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
                     MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
                     tickToPrice(call) => view(call, |c| self.tick_to_price(c.tick)),
-                    priceToTick(call) => view(call, |c| self.price_to_tick(c.price))
+                    priceToTick(call) => view(call, |c| self.price_to_tick(c.price)),
+
+                    #[schedule(since = T7)]
+                    storageCredits(call) => view(call, |c| self.storage_credits(c.user))
                 }
             }
         )
