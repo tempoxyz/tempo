@@ -230,10 +230,10 @@ impl TempoTxEnvelope {
                 !tx.calls.is_empty()
                     && tx.access_list.is_empty()
                     && tx.tempo_authorization_list.is_empty()
-                    && tx
-                        .key_authorization
-                        .as_ref()
-                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                    && match tx.key_authorization.as_ref() {
+                        Some(auth) => auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN,
+                        None => true,
+                    }
                     && tx
                         .calls
                         .iter()
