@@ -26,4 +26,4 @@ pub use tempo_primitives as primitives;
 pub use tempo_contracts as contracts;
 
 #[doc(inline)]
-pub use tempo_hardfork as hardfork;
+pub use tempo_chainspec as chainspec;
