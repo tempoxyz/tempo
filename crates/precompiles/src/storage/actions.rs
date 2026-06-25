@@ -29,7 +29,8 @@ pub enum StorageActions {
 
 impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording disabled.
-    pub fn disabled() -> Self {
+    #[inline(always)]
+    pub const fn disabled() -> Self {
         Self::Disabled
     }
 
