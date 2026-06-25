@@ -55,42 +55,42 @@ impl TempoBlockEnv {
 impl Block for TempoBlockEnv {
     #[inline]
     fn number(&self) -> U256 {
-        self.inner.number()
+        self.inner.number
     }
 
     #[inline]
     fn beneficiary(&self) -> Address {
-        self.inner.beneficiary()
+        self.inner.beneficiary
     }
 
     #[inline]
     fn timestamp(&self) -> U256 {
-        self.inner.timestamp()
+        self.inner.timestamp
     }
 
     #[inline]
     fn gas_limit(&self) -> u64 {
-        self.inner.gas_limit()
+        self.inner.gas_limit
     }
 
     #[inline]
     fn basefee(&self) -> u64 {
-        self.inner.basefee()
+        self.inner.basefee
     }
 
     #[inline]
     fn difficulty(&self) -> U256 {
-        self.inner.difficulty()
+        self.inner.difficulty
     }
 
     #[inline]
     fn prevrandao(&self) -> Option<B256> {
-        self.inner.prevrandao()
+        self.inner.prevrandao
     }
 
     #[inline]
     fn blob_excess_gas_and_price(&self) -> Option<BlobExcessGasAndPrice> {
-        self.inner.blob_excess_gas_and_price()
+        self.inner.blob_excess_gas_and_price
     }
 }
 
