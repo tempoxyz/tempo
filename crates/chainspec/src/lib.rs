@@ -18,5 +18,5 @@ pub use network_identity::NetworkIdentity;
 #[cfg(feature = "reth")]
 pub use spec::TempoChainSpec;
 
-pub mod constants;
+pub use tempo_hardfork::constants;
 pub mod hardfork;

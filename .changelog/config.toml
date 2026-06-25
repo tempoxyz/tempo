@@ -35,4 +35,4 @@ format = "per-crate"
 
 # The published SDK crates release together and share one version.
 [[fixed]]
-members = ["tempo-contracts", "tempo-primitives", "tempo-alloy", "tempo-chainspec"]
+members = ["tempo-contracts", "tempo-primitives", "tempo-alloy", "tempo-chainspec", "tempo-hardfork"]

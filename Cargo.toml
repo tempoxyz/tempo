@@ -23,6 +23,7 @@ members = [
   "crates/eyre",
   "crates/ext",
   "crates/evm",
+  "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
   "crates/node",
@@ -132,6 +133,7 @@ tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
+tempo-hardfork = { path = "crates/hardfork", default-features = false }
 tempo-ext = { path = "crates/ext" }
 tempo-revm = { path = "crates/revm", default-features = false }
 tempo-payload-builder = { path = "crates/payload/builder", default-features = false }

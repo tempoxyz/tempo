@@ -1,4 +1,4 @@
-pub use crate::constants::gas::*;
+pub use tempo_hardfork::constants::gas::*;
 
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
@@ -110,6 +110,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T6 => self.t6_time,
             TempoHardfork::T7 => self.t7_time,
             TempoHardfork::T8 => self.t8_time,
+            _ => None,
         }
     }
 }

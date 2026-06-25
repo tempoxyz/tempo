@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           import re
 
-          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts"}
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts", "tempo-hardfork"}
 
           for path in Path(".changelog").glob("*.md"):
               text = path.read_text(encoding="utf-8")

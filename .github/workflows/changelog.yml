@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize]
     paths:
+      - crates/hardfork/**
       - crates/contracts/**
       - crates/primitives/**
       - crates/chainspec/**
