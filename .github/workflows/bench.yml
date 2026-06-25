@@ -129,18 +129,7 @@ jobs:
               content: 'eyes',
             });
 
-            const markers = [
-              '🚀 Benchmark queued!',
-              '🚀 Benchmark started!',
-              '🚀 Replay benchmark started!',
-              '✅ Benchmark complete',
-              '✅ Replay benchmark complete',
-              '❌ Benchmark failed.',
-              '❌ Replay benchmark failed.',
-              '⚠️ Benchmark cancelled.',
-              '⚠️ Replay benchmark cancelled.',
-              '❌ **Invalid bench command**',
-            ];
+            const derekCommentAuthors = new Set(['decofe']);
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -151,7 +140,7 @@ jobs:
             let deleted = 0;
             for (const comment of comments) {
               if (comment.id === triggerCommentId) continue;
-              if (!markers.some(marker => comment.body.includes(marker))) continue;
+              if (!derekCommentAuthors.has(comment.user.login)) continue;
 
               await github.rest.issues.deleteComment({
                 owner: context.repo.owner,
