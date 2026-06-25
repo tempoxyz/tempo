@@ -461,64 +461,13 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     }
 }
 
-/// A selector schedule at a given hardfork boundary.
+/// Decodes calldata via `decode`, then dispatches to `f`.
 ///
-/// Before the hardfork activates, selectors in `added` are treated as unknown.
-/// After it activates, selectors in `dropped` are treated as unknown.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SelectorSchedule<'a> {
-    hardfork: TempoHardfork,
-    added: &'a [[u8; 4]],
-    dropped: &'a [[u8; 4]],
-}
-
-impl<'a> SelectorSchedule<'a> {
-    /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
-    pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
-        Self {
-            hardfork,
-            added: &[],
-            dropped: &[],
-        }
-    }
-
-    /// Registers selectors that are introduced at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown BEFORE `hardfork` activates.
-    pub(crate) const fn with_added(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.added = selectors;
-        self
-    }
-
-    /// Registers selectors that are removed at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown ONCE `hardfork` activates.
-    pub(crate) const fn with_dropped(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.dropped = selectors;
-        self
-    }
-
-    /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
-    #[inline]
-    fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
-        if self.hardfork <= active {
-            self.dropped
-        } else {
-            self.added
-        }
-        .contains(&selector)
-    }
-}
-
-/// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
-///
-/// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
-/// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
-/// revert).
+/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
+/// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
 #[inline]
 pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
-    hardforks: &[SelectorSchedule<'_>],
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
@@ -532,16 +481,6 @@ pub(crate) fn dispatch_call<T>(
                 "Invalid input: missing function selector".into(),
             )));
         }
-    }
-
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-    if hardforks
-        .iter()
-        .any(|schedule| schedule.rejects(selector, storage.spec()))
-    {
-        return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
-            selector,
-        ));
     }
 
     let result = decode(calldata);
@@ -558,6 +497,81 @@ pub(crate) fn dispatch_call<T>(
         ),
         Err(_) => Ok(storage.revert_output(Bytes::new())),
     }
+}
+
+macro_rules! dispatch {
+    ($calldata:expr, |$call:ident| match $match_call:ident {
+        $iface_1:ident::$calls_1:ident { $($(#[$($attr_1:tt)*])* $variant_1:ident($binding_1:pat) => $body_1:expr),* $(,)? }
+        $($iface_n:ident::$calls_n:ident { $($(#[$($attr_n:tt)*])* $variant_n:ident($binding_n:pat) => $body_n:expr),* $(,)? })*
+    } $(,)?) => {
+        paste::paste! {{
+            if let Some(selector) = crate::selector_from_calldata($calldata) {
+                $($(crate::dispatch!(@pre_gate $calldata, selector, $iface_1::[<$variant_1 Call>]::SELECTOR; #[$($attr_1)*]);)*)*
+                $($($(crate::dispatch!(@pre_gate $calldata, selector, $iface_n::[<$variant_n Call>]::SELECTOR; #[$($attr_n)*]);)*)*)*
+
+                crate::dispatch!(@decode $calldata, selector, $call, $match_call,
+                    $iface_1::$calls_1 { $($variant_1($binding_1) => $body_1),* }
+                    $($iface_n::$calls_n { $($variant_n($binding_n) => $body_n),* })*
+                    else $iface_1::$calls_1
+                )
+            } else {
+                crate::dispatch_call($calldata, <$iface_1::$calls_1 as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
+            }
+        }}
+    };
+    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident,
+        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* }
+        $($rest:tt)*
+    ) => {
+        if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector($selector) {
+            crate::dispatch_call($calldata, <$iface::$calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
+                $($iface::$calls::$variant($binding) => $body,)*
+            })
+        } else {
+            crate::dispatch!(@decode $calldata, $selector, $call, $match_call, $($rest)*)
+        }
+    };
+    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident, else $iface:ident::$calls:ident) => {
+        crate::dispatch_call($calldata, <$iface::$calls as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
+    };
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $hf:ident)]) => {
+        if $selector == $call_selector
+            && crate::storage::StorageCtx::default().spec() < tempo_chainspec::hardfork::TempoHardfork::$hf
+        {
+            return crate::unknown_selector_result($calldata);
+        }
+    };
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $hf:ident)]) => {
+        if $selector == $call_selector
+            && crate::storage::StorageCtx::default().spec() >= tempo_chainspec::hardfork::TempoHardfork::$hf
+        {
+            return crate::unknown_selector_result($calldata);
+        }
+    };
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $since:ident, until = $until:ident)]) => {
+        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(since = $since)]);
+        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(until = $until)]);
+    };
+    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $until:ident, since = $since:ident)]) => {
+        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(since = $since, until = $until)]);
+    };
+}
+
+pub(crate) use dispatch;
+
+fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
+    calldata.get(..4).map(|selector| {
+        selector
+            .try_into()
+            .expect("selector slice has exactly 4 bytes")
+    })
+}
+
+fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
+    let selector = selector_from_calldata(calldata).expect("calldata len >= 4 after decode");
+    StorageCtx::default().error_result(error::TempoPrecompileError::UnknownFunctionSelector(
+        selector,
+    ))
 }
 
 /// Asserts that `result` is a reverted output whose bytes decode to `expected_error`.
@@ -1090,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_call_applies_hardfork_selector_gates() -> eyre::Result<()> {
+    fn test_dispatch_macro_applies_hardfork_selector_gates() -> eyre::Result<()> {
         alloy::sol! {
             interface ISelectorGatedTest {
                 function stable() external;
@@ -1099,31 +1113,32 @@ mod tests {
             }
         }
 
-        const SELECTOR_SCHEDULE: &[SelectorSchedule<'static>] = &[
-            SelectorSchedule::new(TempoHardfork::T2)
-                .with_added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
-            SelectorSchedule::new(TempoHardfork::T3)
-                .with_dropped(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
-        ];
-
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                dispatch_call(
+                dispatch!(
                     calldata,
-                    SELECTOR_SCHEDULE,
-                    ISelectorGatedTest::ISelectorGatedTestCalls::abi_decode,
                     |call| match call {
-                        ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0))
+                        ISelectorGatedTest::ISelectorGatedTestCalls {
+                        stable(_) => Ok(PrecompileOutput::new(
+                            0,
+                            Bytes::from_static(b"stable"),
+                            0,
+                        )),
+                        #[schedule(since = T2)]
+                        t2Added(_) => Ok(PrecompileOutput::new(
+                            0,
+                            Bytes::from_static(b"added"),
+                            0,
+                        )),
+                        #[schedule(until = T3)]
+                        t3Removed(_) => Ok(PrecompileOutput::new(
+                            0,
+                            Bytes::from_static(b"removed"),
+                            0,
+                        )),
                         }
-                        ISelectorGatedTest::ISelectorGatedTestCalls::t2Added(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0))
-                        }
-                        ISelectorGatedTest::ISelectorGatedTestCalls::t3Removed(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0))
-                        }
-                    },
+                    }
                 )
             })
         };

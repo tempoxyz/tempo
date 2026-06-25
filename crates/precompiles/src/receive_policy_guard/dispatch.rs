@@ -1,12 +1,12 @@
 //! ABI dispatch for the [`ReceivePolicyGuard`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, mutate_void,
-    receive_policy_guard::ReceivePolicyGuard, view,
+    Precompile, charge_input_cost, dispatch, mutate_void, receive_policy_guard::ReceivePolicyGuard,
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IReceivePolicyGuard::IReceivePolicyGuardCalls;
+use tempo_contracts::precompiles::IReceivePolicyGuard::{self, IReceivePolicyGuardCalls};
 
 impl Precompile for ReceivePolicyGuard {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -14,23 +14,17 @@ impl Precompile for ReceivePolicyGuard {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[],
-            IReceivePolicyGuardCalls::abi_decode,
             |call| match call {
-                IReceivePolicyGuardCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c.receipt))
-                }
-                IReceivePolicyGuardCalls::claim(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.receipt))
-                }
-                IReceivePolicyGuardCalls::burnBlockedReceipt(call) => {
-                    mutate_void(call, msg_sender, |s, c| {
+                IReceivePolicyGuard::IReceivePolicyGuardCalls {
+                    balanceOf(call) => view(call, |c| self.balance_of(c.receipt)),
+                    claim(call) => mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.receipt)),
+                    burnBlockedReceipt(call) => mutate_void(call, msg_sender, |s, c| {
                         self.burn_blocked_receipt(s, c.receipt)
                     })
                 }
-            },
+            }
         )
     }
 }
