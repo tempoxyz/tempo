@@ -214,7 +214,7 @@ revm = { version = "41.0.0", features = ["optional_fee_charge"], default-feature
 alloy = { version = "2.1.0", default-features = false }
 alloy-consensus = { version = "2.1.0", default-features = false }
 alloy-contract = { version = "2.1.0", default-features = false }
-alloy-eip7928 = { version = "0.4.3", default-features = false }
+alloy-eip7928 = { version = "0.4.5", default-features = false }
 alloy-eips = { version = "2.1.0", default-features = false }
 alloy-evm = { version = "0.37.1", default-features = false }
 revm-inspectors = "0.41.1"
