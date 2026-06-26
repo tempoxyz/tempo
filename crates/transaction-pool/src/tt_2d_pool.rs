@@ -765,16 +765,35 @@ impl AA2dPool {
         &mut self,
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.remove_transaction_by_id_inner(id, true, false)
+            .map(|(tx, _)| tx)
+    }
+
+    /// Removes the transaction with the given id and optionally cleans up the nonce-slot index.
+    fn remove_transaction_by_id_inner(
+        &mut self,
+        id: &AA2dTransactionId,
+        cleanup_nonce_slot: bool,
+        capture_nonce_slot: bool,
+    ) -> Option<(
+        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        Option<U256>,
+    )> {
         let tx = self.by_id.remove(id)?;
 
         // Remove from eviction set
         self.remove_eviction_key(&tx);
 
+        let mut nonce_slot = None;
+
         // Clean up cached nonce key slots if this was the last transaction of the sequence
-        if self.by_id.range(id.seq_id.range()).next().is_none()
-            && let Some(slot) = tx.inner.transaction.transaction.nonce_key_slot()
-        {
-            self.slot_to_seq_id.remove(&slot);
+        if cleanup_nonce_slot && self.by_id.range(id.seq_id.range()).next().is_none() {
+            nonce_slot = tx.inner.transaction.transaction.nonce_key_slot();
+            if let Some(slot) = nonce_slot {
+                self.slot_to_seq_id.remove(&slot);
+            }
+        } else if capture_nonce_slot {
+            nonce_slot = tx.inner.transaction.transaction.nonce_key_slot();
         }
 
         self.independent_transactions
@@ -786,7 +805,7 @@ impl AA2dPool {
         // Decrement sender count
         self.decrement_sender_count(removed_tx.sender());
 
-        Some(removed_tx)
+        Some((removed_tx, nonce_slot))
     }
 
     /// Decrements the transaction count for a sender, removing the entry if it reaches zero.
@@ -1078,9 +1097,28 @@ impl AA2dPool {
 
         // actually remove mined transactions
         let mut mined = Vec::with_capacity(mined_ids.len());
+        let mut mined_seq_slots: HashMap<AASequenceId, Option<U256>> = HashMap::default();
         for id in mined_ids {
-            if let Some(removed) = self.remove_transaction_by_id(&id) {
+            let capture_nonce_slot = !mined_seq_slots.contains_key(&id.seq_id);
+            if let Some((removed, nonce_slot)) =
+                self.remove_transaction_by_id_inner(&id, false, capture_nonce_slot)
+            {
+                mined_seq_slots
+                    .entry(id.seq_id)
+                    .and_modify(|slot| {
+                        if slot.is_none() {
+                            *slot = nonce_slot;
+                        }
+                    })
+                    .or_insert(nonce_slot);
                 mined.push(removed);
+            }
+        }
+        for (seq_id, nonce_slot) in mined_seq_slots {
+            if let Some(slot) = nonce_slot
+                && self.by_id.range(seq_id.range()).next().is_none()
+            {
+                self.slot_to_seq_id.remove(&slot);
             }
         }
 
