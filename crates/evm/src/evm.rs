@@ -713,6 +713,7 @@ mod tests {
                         .with_salt(B256::ZERO)
                         .with_issuer(sender)
                         .with_mint(sender, starting_balance)
+                        .with_mint(recipient, starting_balance)
                         .apply()?;
 
                     let mut fee_manager = TipFeeManager::new();
@@ -831,6 +832,7 @@ mod tests {
                         nonce,
                         ..Default::default()
                     },
+                    fee_token: Some(fee_token),
                     tempo_tx_env: (!nonce_key.is_zero()).then(|| {
                         Box::new(TempoBatchCallEnv {
                             aa_calls: vec![Call {
