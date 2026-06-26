@@ -71,6 +71,7 @@ impl BestTransactionsPrewarming {
                     commands_tx,
                     prewarm,
                     next_expiring_nonce_offset: 0,
+                    source_exhausted: false,
                 },
             );
         });
@@ -96,8 +97,17 @@ impl BestTransactionsPrewarming {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
+                           notify_exhausted| {
+                if ctx.source_exhausted {
+                    if notify_exhausted {
+                        let _ = ctx.transactions_tx.send(None);
+                    }
+                    return;
+                }
+
                 let Some(tx) = ctx.best_txs.next() else {
+                    ctx.source_exhausted = true;
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
@@ -122,13 +132,13 @@ impl BestTransactionsPrewarming {
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
             for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+                advance(&mut ctx, false);
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        advance(&mut ctx, true);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -226,8 +236,10 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        match self.transactions_rx.try_recv() {
+            Ok(tx) => return tx,
+            Err(mpsc::TryRecvError::Disconnected) => return None,
+            Err(mpsc::TryRecvError::Empty) => {}
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
@@ -269,6 +281,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
+    source_exhausted: bool,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -614,19 +627,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_after_exhaustion() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        assert_eq!(log.lock().unwrap().empty_polls, 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        assert_eq!(log.lock().unwrap().empty_polls, 1);
     }
 
     #[test]
