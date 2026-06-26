@@ -332,11 +332,7 @@ mod tests {
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
-        tip_fee_manager::{
-            IFeeManager, TipFeeManager,
-            amm::{Pool, PoolKey, compute_amount_out},
-            slots as fee_manager_slots,
-        },
+        tip_fee_manager::{IFeeManager, TipFeeManager, amm::PoolKey, slots as fee_manager_slots},
         tip20::{
             ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
@@ -579,31 +575,6 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
-                    let key = (address, slot);
-                    let current = match reconstructed.get(&key) {
-                        Some(current) => *current,
-                        None => {
-                            let original = *original_values.get(&key).unwrap_or_else(|| {
-                                panic!(
-                                    "FeeAmmSwap without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
-                                )
-                            });
-                            first_loads.insert(key, original);
-                            reconstructed.insert(key, original);
-                            original
-                        }
-                    };
-                    let mut pool = Pool::decode_from_slot(current);
-                    pool.apply_swap(
-                        amount_in,
-                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
-                    )
-                    .unwrap_or_else(|err| {
-                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
-                    });
-                    reconstructed.insert(key, pool.encode_to_slot().unwrap());
-                }
             }
         }
 
@@ -671,15 +642,6 @@ mod tests {
                 StorageAction::Sdec(address, slot, delta) => {
                     format!(
                         "Sdec({}, {}, {delta})",
-                        labels.address(address),
-                        labels.slot(address, slot)
-                    )
-                }
-                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
-                    let amount_out =
-                        compute_amount_out(amount_in).expect("compute_amount_out failed");
-                    format!(
-                        "FeeAmmSwap({}, {}, {amount_in}, {amount_out})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
