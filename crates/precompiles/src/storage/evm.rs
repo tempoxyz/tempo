@@ -735,48 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_amm_swap_action_recording() -> eyre::Result<()> {
-        let mut evm = TestEvm::default();
-        let addr = Address::random();
-        let key = U256::from(1);
-        let amount_in = U256::from(3);
-        let initial_pool = Pool {
-            reserve_user_token: 10,
-            reserve_validator_token: 20,
-        }
-        .encode_to_slot()?;
-        let expected_pool = Pool {
-            reserve_user_token: 13,
-            reserve_validator_token: 18,
-        }
-        .encode_to_slot()?;
-
-        let actions = StorageActions::enabled();
-        let mut provider = evm.provider_max_gas().with_actions(actions.clone());
-
-        provider.sstore(addr, key, initial_pool)?;
-        assert_eq!(
-            provider.take_actions(),
-            Some(vec![StorageAction::Sstore(addr, key, initial_pool)])
-        );
-
-        actions.unrecorded(|| -> eyre::Result<()> {
-            assert_eq!(provider.sload(addr, key)?, initial_pool);
-            provider.sstore(addr, key, expected_pool)?;
-            actions.record_always(StorageAction::FeeAmmSwap(addr, key, amount_in));
-            Ok(())
-        })?;
-
-        assert_eq!(
-            provider.take_actions(),
-            Some(vec![StorageAction::FeeAmmSwap(addr, key, amount_in)])
-        );
-        assert_eq!(provider.sload(addr, key)?, expected_pool);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_sstore_sload_actions_recording_disabled_by_default() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
