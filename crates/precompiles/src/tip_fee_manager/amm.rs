@@ -75,14 +75,14 @@ impl Pool {
         let slot = insert_into_word(
             U256::ZERO,
             &self.reserve_user_token,
-            __packing_pool::RESERVE_USER_TOKEN_OFFSET,
-            __packing_pool::RESERVE_USER_TOKEN_BYTES,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.size,
         )?;
         let slot = insert_into_word(
             slot,
             &self.reserve_validator_token,
-            __packing_pool::RESERVE_VALIDATOR_TOKEN_OFFSET,
-            __packing_pool::RESERVE_VALIDATOR_TOKEN_BYTES,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.size,
         )?;
         Ok(slot)
     }
