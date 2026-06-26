@@ -77,7 +77,7 @@ impl Pool {
         Ok(slot)
     }
 
-    /// Applies a fee swap to a FeeAMM pool.
+    /// Applies a fee swap to the pool.
     ///
     /// Checks `amount_out <= self.reserve_validator_token`, increments `self.reserve_user_token` by `amount_in`,
     /// and decrements `self.reserve_validator_token` by `amount_out`.
