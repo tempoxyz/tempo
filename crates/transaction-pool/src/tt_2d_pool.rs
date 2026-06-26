@@ -1989,8 +1989,8 @@ impl PartialOrd for EvictionKey {
 /// Maximum number of new transactions to drain from the channel per `next()` call.
 const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
-/// Determines how a newly received transaction should be handled based on its priority
-/// relative to transactions already yielded by the iterator.
+/// Determines how a newly received regular nonce-chain transaction should be handled based on
+/// its priority relative to transactions already yielded by the iterator.
 enum IncomingAA2dTransaction {
     /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
     Process(PendingTransaction<TxOrdering>),
@@ -2086,6 +2086,7 @@ impl BestAA2dTransactions {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
                     self.metrics.inc_best_live_update_received();
+                    let is_expiring_nonce = tx.transaction.transaction.is_expiring_nonce();
                     let priority = TempoTipOrdering::default()
                         .priority(&tx.transaction.transaction, self.base_fee);
                     let tx = PendingTransaction {
@@ -2093,12 +2094,14 @@ impl BestAA2dTransactions {
                         transaction: tx.transaction,
                         priority,
                     };
-                    if let Some(last_priority) = &self.last_priority
-                        && &tx.priority > last_priority
-                    {
-                        // Higher priority than what we already yielded — stash in `by_id`
-                        // only (not `independent`) to preserve nonce chain lookups.
-                        return Some(IncomingAA2dTransaction::Stash(tx));
+                    if !is_expiring_nonce {
+                        if let Some(last_priority) = &self.last_priority
+                            && &tx.priority > last_priority
+                        {
+                            // Higher priority than what we already yielded — stash in `by_id`
+                            // only (not `independent`) to preserve nonce chain lookups.
+                            return Some(IncomingAA2dTransaction::Stash(tx));
+                        }
                     }
                     return Some(IncomingAA2dTransaction::Process(tx));
                 }
@@ -7311,6 +7314,52 @@ mod tests {
         let first = best.next();
         assert!(first.is_some(), "should yield the expiring nonce tx");
         assert_eq!(*first.unwrap().hash(), tx_hash);
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn best_transactions_live_expiring_nonce_ignores_last_priority() {
+        let mut pool = AA2dPool::default();
+
+        let sender_low = Address::random();
+        let sender_expiring = Address::random();
+
+        let tx_low = TxBuilder::aa(sender_low)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_low, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        assert!(
+            best.next().is_some(),
+            "should yield the lower-priority snapshot tx first"
+        );
+
+        let tx_expiring = TxBuilder::aa(sender_expiring)
+            .nonce_key(U256::MAX)
+            .nonce(0)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_expiring_hash = *tx_expiring.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_expiring, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let next = best
+            .next()
+            .expect("higher-priority expiring nonce tx should not be stashed");
+        assert_eq!(*next.hash(), tx_expiring_hash);
         assert!(best.next().is_none());
     }
 }
