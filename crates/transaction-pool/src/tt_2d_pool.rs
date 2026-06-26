@@ -654,13 +654,35 @@ impl AA2dPool {
 
         BestAA2dTransactions {
             independent: self.independent_transactions.eviction_order_for(base_fee),
-            by_id: self.by_id.clone(),
+            by_id: self.executable_chain_snapshot(),
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
             base_fee,
         }
+    }
+
+    fn executable_chain_snapshot(
+        &self,
+    ) -> BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>> {
+        let mut by_id = BTreeMap::new();
+
+        for tx in self.independent_transactions.transactions.values() {
+            let Some(start_id) = tx.transaction.transaction.aa_transaction_id() else {
+                continue;
+            };
+
+            for (id, tx) in self
+                .by_id
+                .range(start_id..)
+                .take_while(|(id, _)| id.seq_id == start_id.seq_id)
+            {
+                by_id.insert(*id, Arc::clone(tx));
+            }
+        }
+
+        by_id
     }
 
     /// Returns the transaction by hash.
@@ -4343,6 +4365,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(best.size_hint(), (0, Some(1)));
+    }
+
+    #[test]
+    fn test_best_transactions_snapshot_excludes_gapped_sequences() {
+        let mut pool = AA2dPool::default();
+        let executable_sender = Address::random();
+        let gapped_sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        for nonce in 0..2 {
+            let tx = TxBuilder::aa(executable_sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let gapped = TxBuilder::aa(gapped_sender)
+            .nonce_key(nonce_key)
+            .nonce(2)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(gapped, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        assert_eq!(best.size_hint(), (0, Some(2)));
+        assert_eq!(best.next().map(|tx| tx.transaction.nonce()), Some(0));
+        assert_eq!(best.next().map(|tx| tx.transaction.nonce()), Some(1));
+        assert!(best.next().is_none());
     }
 
     #[test]
