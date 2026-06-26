@@ -392,6 +392,7 @@ mod tests {
     use crate::{
         stablecoin_dex::{IStablecoinDEX, StablecoinDEX},
         storage::{ContractStorage, Handler, StorageCtx, hashmap::HashMapStorageProvider},
+        storage_credits::StorageCredits,
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
@@ -744,8 +745,19 @@ mod tests {
             let legacy_flip = exchange.orders[flip_id].read()?;
             store_legacy_order(&exchange.orders[flip_id], legacy_flip)?;
             assert_eq!(exchange.orders[flip_id].version()?, OrderVersion::Legacy);
+            assert_eq!(exchange.storage_credits(alice)?, 0);
+            let pooled_credits_before = StorageCredits::new().balance_of(exchange.address())?;
 
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            assert!(
+                exchange.storage_credits(alice)? > 0,
+                "maker must receive TIP-1064 DEX storage credits for slots cleared by legacy -> V1 flip rewrite"
+            );
+            assert!(
+                StorageCredits::new().balance_of(exchange.address())? > pooled_credits_before,
+                "legacy -> V1 flip rewrite must still mint DEX TIP-1060 credits for cleared physical slots"
+            );
 
             let flipped = exchange.get_order(flip_id)?;
             assert!(!flipped.is_bid());
@@ -774,6 +786,76 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_flip_rewrite_does_not_spend_maker_storage_credits() -> eyre::Result<()> {
+        for (placement_fork, rewrite_fork) in [
+            (TempoHardfork::T7, TempoHardfork::T7),
+            (TempoHardfork::T7, TempoHardfork::T8),
+            (TempoHardfork::T8, TempoHardfork::T8),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, placement_fork);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let alice = Address::random();
+                let bob = Address::random();
+                let carol = Address::random();
+                let admin = Address::random();
+                let amount = crate::stablecoin_dex::MIN_ORDER_AMOUNT;
+                let tick = 100i16;
+                let flip_tick = 200i16;
+                let bid_price = crate::stablecoin_dex::orderbook::tick_to_price(tick);
+                let bid_escrow =
+                    amount * u128::from(bid_price) / u128::from(crate::stablecoin_dex::PRICE_SCALE);
+
+                let base = TIP20Setup::create("BASE", "BASE", admin)
+                    .with_issuer(admin)
+                    .with_mint(bob, U256::from(amount * 2))
+                    .with_mint(carol, U256::from(amount))
+                    .with_approval(bob, exchange.address, U256::MAX)
+                    .with_approval(carol, exchange.address, U256::MAX)
+                    .apply()?;
+                let base_token = base.address();
+                let quote_token = base.quote_token()?;
+                TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(alice, U256::from(bid_escrow * 3))
+                    .with_approval(alice, exchange.address, U256::MAX)
+                    .apply()?;
+
+                exchange.create_pair(base_token)?;
+
+                let flip_id =
+                    exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
+                let credit_order_id = exchange.place(alice, base_token, amount, true, tick)?;
+                exchange.cancel(alice, credit_order_id)?;
+                let credits_before = exchange.storage_credits(alice)?;
+                assert!(
+                    credits_before > 0,
+                    "{placement_fork:?}->{rewrite_fork:?} setup must give maker credits"
+                );
+
+                StorageCtx.set_spec(rewrite_fork);
+
+                let destination_tail =
+                    exchange.place(carol, base_token, amount, false, flip_tick)?;
+                exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+                let flipped = exchange.get_order(flip_id)?;
+                assert!(!flipped.is_bid());
+                assert_eq!(flipped.prev(), destination_tail);
+                assert!(
+                    exchange.storage_credits(alice)? >= credits_before,
+                    "{placement_fork:?}->{rewrite_fork:?} flip rewrite spent maker credits"
+                );
+
+                Ok::<(), TempoPrecompileError>(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]

@@ -126,6 +126,13 @@ impl StablecoinDEX {
             .map(|(_, credits)| credits)
     }
 
+    /// Rewrites an order and returns the number of DEX TIP-1060 credits minted.
+    fn rewrite_order(&mut self, order: Order) -> Result<u64> {
+        StorageCredits::new()
+            .track_minted_credits(self.address, || self.orders[order.order_id()].write(order))
+            .map(|(_, credits)| credits)
+    }
+
     /// Updates an unlinked neighbor order-record and credits its maker for any minted credits.
     fn unlink_neighbor_and_credit_maker(
         &mut self,
@@ -708,10 +715,16 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        if charge_credits && self.storage.spec().is_t7() {
-            self.write_order_spending_dex_storage_credits(order)
-        } else {
-            self.orders[order.order_id()].write(order)
+        match (charge_credits, self.storage.spec()) {
+            // User placements: T7+ can spend maker credits for new reusable order storage.
+            (true, spec) if spec.is_t7() => self.write_order_spending_dex_storage_credits(order),
+            // T8+ flip rewrites credit deleted order slots without spending maker credits.
+            (false, spec) if spec.is_t8() => {
+                let (maker, credits) = (order.maker(), self.rewrite_order(order)?);
+                self.credit_dex_storage_slots(maker, credits)
+            }
+            // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
+            _ => self.orders[order.order_id()].write(order),
         }
     }
 
