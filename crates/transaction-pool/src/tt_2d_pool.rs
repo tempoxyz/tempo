@@ -659,6 +659,7 @@ impl AA2dPool {
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
+            strict_priority_ordering: true,
             base_fee,
         }
     }
@@ -2044,12 +2045,14 @@ impl PartialOrd for EvictionKey {
 /// Maximum number of new transactions to drain from the channel per `next()` call.
 const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
-/// Determines how a newly received transaction should be handled based on its priority
-/// relative to transactions already yielded by the iterator.
+/// Determines how a newly received transaction should be handled based on its priority relative to
+/// transactions already yielded by the iterator when strict priority ordering is enabled.
 enum IncomingAA2dTransaction {
-    /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
+    /// Strict priority ordering is disabled, or priority <= last yielded.
     Process(PendingTransaction<TxOrdering>),
-    /// Priority > last yielded — add only to `by_id` for nonce chain lookups, not `independent`.
+    /// Strict priority ordering is enabled and priority > last yielded.
+    ///
+    /// Add only to `by_id` for nonce chain lookups, not `independent`.
     Stash(PendingTransaction<TxOrdering>),
 }
 
@@ -2080,13 +2083,30 @@ pub(crate) struct BestAA2dTransactions {
     invalid: HashSet<AASequenceId>,
     /// Live feed of new pending transactions arriving after this iterator was created.
     new_transaction_receiver: Option<broadcast::Receiver<AA2dStoredTransaction>>,
-    /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
+    /// Priority of the most recently yielded transaction, used to maintain strict priority
+    /// ordering.
     last_priority: Option<Priority<u64>>,
+    /// Whether live transaction updates should preserve strict priority ordering.
+    ///
+    /// When disabled, newly received transactions with a higher priority than transactions that
+    /// were already yielded can be yielded later in the iterator.
+    strict_priority_ordering: bool,
     /// Base fee used to filter and prioritize this block-building snapshot.
     base_fee: u64,
 }
 
 impl BestAA2dTransactions {
+    /// Controls whether live transaction updates preserve strict priority ordering.
+    ///
+    /// Enabled by default. If disabled, newly received transactions with a higher priority than
+    /// transactions that were already yielded can be yielded later in the iterator.
+    pub(crate) fn set_strict_priority_ordering(&mut self, strict: bool) {
+        self.strict_priority_ordering = strict;
+        if !strict {
+            self.last_priority.take();
+        }
+    }
+
     /// Removes the best regular transaction from the set.
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let (key, id) = self.independent.pop_last()?;
@@ -2149,10 +2169,11 @@ impl BestAA2dTransactions {
                         transaction: tx.transaction,
                         priority,
                     };
-                    if let Some(last_priority) = &self.last_priority
+                    if self.strict_priority_ordering
+                        && let Some(last_priority) = &self.last_priority
                         && &tx.priority > last_priority
                     {
-                        // Higher priority than what we already yielded — stash in `by_id`
+                        // Higher priority than what we already yielded: stash in `by_id`
                         // only (not `independent`) to preserve nonce chain lookups.
                         return Some(IncomingAA2dTransaction::Stash(tx));
                     }
@@ -2240,7 +2261,7 @@ impl BestAA2dTransactions {
                     best
                 }
             };
-            if self.new_transaction_receiver.is_some() {
+            if self.new_transaction_receiver.is_some() && self.strict_priority_ordering {
                 self.last_priority = Some(best.priority.clone());
             }
             return Some((best.transaction, best.priority));
@@ -7312,6 +7333,68 @@ mod tests {
         assert!(
             !remaining.contains(&tx_n1_hash),
             "gapped tx must not be promoted when gap-filler is stashed"
+        );
+    }
+
+    #[test]
+    fn best_transactions_without_strict_priority_ordering_yields_higher_fee_update() {
+        let mut pool = AA2dPool::default();
+
+        let sender_low = Address::random();
+        let sender_gapped = Address::random();
+
+        let tx_low = TxBuilder::aa(sender_low)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_low, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let tx_n1 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(1)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n1_hash = *tx_n1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        best.set_strict_priority_ordering(false);
+        assert!(best.next().is_some(), "should yield the low-priority tx");
+
+        let tx_n0 = TxBuilder::aa(sender_gapped)
+            .nonce_key(U256::ZERO)
+            .nonce(0)
+            .max_priority_fee(2_000_000_000)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_n0_hash = *tx_n0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_n0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let remaining: Vec<_> = best.map(|tx| *tx.hash()).collect();
+        assert!(
+            remaining.contains(&tx_n0_hash),
+            "higher fee gap-filler should be yielded when strict ordering is disabled"
+        );
+        assert!(
+            remaining.contains(&tx_n1_hash),
+            "gapped tx should be promoted after gap-filler is yielded"
         );
     }
 

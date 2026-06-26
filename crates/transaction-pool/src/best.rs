@@ -43,6 +43,14 @@ impl MergeBestTransactions {
             base_fee,
         }
     }
+
+    /// Controls whether live AA 2D transaction updates preserve strict priority ordering.
+    ///
+    /// This is enabled by default. If disabled, a newly received AA 2D transaction can be yielded
+    /// even if it has a higher priority than transactions that were already yielded.
+    pub fn set_aa_2d_strict_priority_ordering(&mut self, strict: bool) {
+        self.aa_2d_pool.set_strict_priority_ordering(strict);
+    }
 }
 
 impl MergeBestTransactions {
