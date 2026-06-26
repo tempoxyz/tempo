@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, U256};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StorageAction {
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
