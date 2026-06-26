@@ -8,8 +8,9 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, KeccakKeyHasher, KeyHasher,
+    MultiProof, MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -210,13 +211,43 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let result = self.inner.hashed_post_state(bundle_state);
+        let result = hashed_post_state_skip_empty_storage(bundle_state);
         drop(_span);
         self.metrics
             .hashed_post_state_duration_seconds
             .record(start.elapsed());
         result
     }
+}
+
+fn hashed_post_state_skip_empty_storage(
+    bundle_state: &reth_revm::db::BundleState,
+) -> HashedPostState {
+    let state = bundle_state.state();
+    let mut hashed_state = HashedPostState::with_capacity(state.len());
+
+    for (address, account) in state {
+        let hashed_address = KeccakKeyHasher::hash_key(address);
+        hashed_state
+            .accounts
+            .insert(hashed_address, account.info.as_ref().map(Into::into));
+
+        if account.status.was_destroyed() || !account.storage.is_empty() {
+            let hashed_storage = HashedStorage::from_plain_storage(
+                account.status,
+                account
+                    .storage
+                    .iter()
+                    .map(|(slot, value)| (slot, &value.present_value)),
+            );
+
+            if !hashed_storage.is_empty() {
+                hashed_state.storages.insert(hashed_address, hashed_storage);
+            }
+        }
+    }
+
+    hashed_state
 }
 
 impl StateRootProvider for InstrumentedFinishProvider<'_> {
