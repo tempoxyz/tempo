@@ -405,6 +405,27 @@ mod tests {
     const TEST_BOOK_KEY: B256 =
         b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
     #[test]
+    fn test_v1_order_layout_matches_tip_1062() {
+        assert_eq!(__packing_v1_order::MAKER_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::IS_BID_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::IS_FLIP_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::FLIP_TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::VERSION_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::BOOK_KEY_LOC.offset_bytes, 0);
+        assert_eq!(__packing_v1_order::BOOK_KEY_LOC.size, 32);
+        assert_eq!(
+            __packing_v1_order::AMOUNT_LOC.offset_slots,
+            __packing_v1_order::REMAINING_LOC.offset_slots
+        );
+        assert_eq!(
+            __packing_v1_order::PREV_LOC.offset_slots,
+            __packing_v1_order::NEXT_LOC.offset_slots
+        );
+        assert!(V1Order::SLOTS < LegacyOrder::SLOTS);
+    }
+
+    #[test]
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
