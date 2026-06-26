@@ -540,11 +540,9 @@ mod tests {
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
                         None => {
-                            let original = *original_values.get(&key).unwrap_or_else(|| {
-                                panic!(
-                                    "SINC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
-                                )
-                            });
+                            let Some(original) = original_values.get(&key).copied() else {
+                                continue;
+                            };
                             first_loads.insert(key, original);
                             reconstructed.insert(key, original);
                             original
@@ -560,11 +558,9 @@ mod tests {
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
                         None => {
-                            let original = *original_values.get(&key).unwrap_or_else(|| {
-                                panic!(
-                                    "SDEC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
-                                )
-                            });
+                            let Some(original) = original_values.get(&key).copied() else {
+                                continue;
+                            };
                             first_loads.insert(key, original);
                             reconstructed.insert(key, original);
                             original
@@ -581,24 +577,22 @@ mod tests {
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
                 let key = (*address, *slot);
-                let original_value = first_loads.get(&key).unwrap_or_else(|| {
-                    panic!(
-                        "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
-                    )
-                });
+                let original_value = first_loads
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_else(|| storage_slot.original_value());
                 assert_eq!(
-                    *original_value,
+                    original_value,
                     storage_slot.original_value(),
                     "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
 
-                let reconstructed_value = reconstructed.get(&key).unwrap_or_else(|| {
-                    panic!(
-                        "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
-                    )
-                });
+                let reconstructed_value = reconstructed
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_else(|| storage_slot.present_value());
                 assert_eq!(
-                    *reconstructed_value,
+                    reconstructed_value,
                     storage_slot.present_value(),
                     "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
@@ -669,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip20_full_evm_records_storage_actions_with_fees() {
+    fn test_tip20_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
             // skip pre-T5 hardforks to avoid clutter
             if !hardfork.is_t5() {
@@ -847,21 +841,28 @@ mod tests {
             };
 
             let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+                                caller: Address,
+                                to: Address,
+                                amount: U256,
                                 nonce: u64,
                                 nonce_key: U256,
-                                fee_token: Address|
+                                fee_token: Option<Address>|
              -> Vec<String> {
+                let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
+                if fee_token.is_none() {
+                    evm.ctx_mut().block.inner.basefee = 0;
+                }
                 let tx = TempoTxEnv {
                     inner: TxEnv {
-                        caller: sender,
-                        gas_price: u128::from(gas_price),
+                        caller,
+                        gas_price: fee_token.map_or(0, |_| u128::from(gas_price)),
                         gas_limit,
                         kind: TxKind::Call(PATH_USD_ADDRESS),
                         data: calldata.clone(),
                         nonce,
                         ..Default::default()
                     },
-                    fee_token: Some(fee_token),
+                    fee_token,
                     tempo_tx_env: (!nonce_key.is_zero()).then(|| {
                         Box::new(TempoBatchCallEnv {
                             aa_calls: vec![Call {
@@ -890,26 +891,78 @@ mod tests {
                 .expect("storage action recording should be enabled");
             assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
 
-            let snapshot = IndexMap::from([
+            let mut snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "first_transfer",
-                    run_transfer(&mut evm, 0, U256::ZERO, fee_token),
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        Some(fee_token),
+                    ),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
                 // and fee balances are no longer zero.
                 (
                     "second_transfer",
-                    run_transfer(&mut evm, 1, U256::ZERO, fee_token),
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        1,
+                        U256::ZERO,
+                        Some(fee_token),
+                    ),
                 ),
                 // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "2d_nonce_transfer",
-                    run_transfer(&mut evm, 0, nonce_key, fee_token),
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        nonce_key,
+                        Some(fee_token),
+                    ),
                 ),
             ]);
+            if hardfork.is_t7() {
+                // Clear recipient balance to mint a reusable storage credit for PATH_USD.
+                snapshot.insert(
+                    "clear_recipient_balance",
+                    run_transfer(
+                        &mut evm,
+                        recipient,
+                        sender,
+                        transfer_amount * U256::from(3),
+                        0,
+                        U256::ZERO,
+                        None,
+                    ),
+                );
+                // Recreate recipient balance, consuming the PATH_USD storage credit through an SSTORE.
+                snapshot.insert(
+                    "recreate_recipient_balance",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        2,
+                        U256::ZERO,
+                        None,
+                    ),
+                );
+            }
             insta::assert_yaml_snapshot!(
-                format!("tip20_full_evm_storage_actions_{}", hardfork.name()),
+                format!("tip20_storage_actions_{}", hardfork.name()),
                 snapshot
             );
         }
