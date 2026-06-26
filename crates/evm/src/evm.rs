@@ -852,24 +852,26 @@ mod tests {
                                 amount: U256,
                                 nonce: u64,
                                 nonce_key: U256,
-                                fee_token: Option<Address>,
-                                check_reconstruction: bool|
+                                fee_token: Address|
              -> Vec<String> {
                 let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
-                if fee_token.is_none() {
+                let gas_price = if fee_token == PATH_USD_ADDRESS {
                     evm.ctx_mut().block.inner.basefee = 0;
-                }
+                    0
+                } else {
+                    gas_price
+                };
                 let tx = TempoTxEnv {
                     inner: TxEnv {
                         caller,
-                        gas_price: fee_token.map_or(0, |_| u128::from(gas_price)),
+                        gas_price: u128::from(gas_price),
                         gas_limit,
                         kind: TxKind::Call(PATH_USD_ADDRESS),
                         data: calldata.clone(),
                         nonce,
                         ..Default::default()
                     },
-                    fee_token,
+                    fee_token: Some(fee_token),
                     tempo_tx_env: (!nonce_key.is_zero()).then(|| {
                         Box::new(TempoBatchCallEnv {
                             aa_calls: vec![Call {
@@ -888,13 +890,7 @@ mod tests {
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
-                if check_reconstruction {
-                    assert_storage_actions_reconstruct_evm_state(
-                        &actions,
-                        &result.state,
-                        *hardfork,
-                    );
-                }
+                assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
                 evm.db_mut().commit(result.state);
                 snapshot_storage_actions(&actions, &labels)
             };
@@ -915,8 +911,7 @@ mod tests {
                         transfer_amount,
                         0,
                         U256::ZERO,
-                        Some(fee_token),
-                        true,
+                        fee_token,
                     ),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
@@ -930,8 +925,7 @@ mod tests {
                         transfer_amount,
                         1,
                         U256::ZERO,
-                        Some(fee_token),
-                        true,
+                        fee_token,
                     ),
                 ),
                 // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
@@ -944,8 +938,7 @@ mod tests {
                         transfer_amount,
                         0,
                         nonce_key,
-                        Some(fee_token),
-                        true,
+                        fee_token,
                     ),
                 ),
             ]);
@@ -960,8 +953,7 @@ mod tests {
                         transfer_amount * U256::from(3),
                         0,
                         U256::ZERO,
-                        None,
-                        false,
+                        PATH_USD_ADDRESS,
                     ),
                 );
                 // Recreate recipient balance, consuming the PATH_USD storage credit through an SSTORE.
@@ -974,8 +966,7 @@ mod tests {
                         transfer_amount,
                         2,
                         U256::ZERO,
-                        None,
-                        false,
+                        PATH_USD_ADDRESS,
                     ),
                 );
             }
