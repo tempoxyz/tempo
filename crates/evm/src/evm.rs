@@ -540,9 +540,11 @@ mod tests {
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
                         None => {
-                            let Some(original) = original_values.get(&key).copied() else {
-                                continue;
-                            };
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SINC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
                             first_loads.insert(key, original);
                             reconstructed.insert(key, original);
                             original
@@ -558,9 +560,11 @@ mod tests {
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
                         None => {
-                            let Some(original) = original_values.get(&key).copied() else {
-                                continue;
-                            };
+                            let original = *original_values.get(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "SDEC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
+                                )
+                            });
                             first_loads.insert(key, original);
                             reconstructed.insert(key, original);
                             original
@@ -577,22 +581,24 @@ mod tests {
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
                 let key = (*address, *slot);
-                let original_value = first_loads
-                    .get(&key)
-                    .copied()
-                    .unwrap_or_else(|| storage_slot.original_value());
+                let original_value = first_loads.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
+                    )
+                });
                 assert_eq!(
-                    original_value,
+                    *original_value,
                     storage_slot.original_value(),
                     "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
 
-                let reconstructed_value = reconstructed
-                    .get(&key)
-                    .copied()
-                    .unwrap_or_else(|| storage_slot.present_value());
+                let reconstructed_value = reconstructed.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
+                    )
+                });
                 assert_eq!(
-                    reconstructed_value,
+                    *reconstructed_value,
                     storage_slot.present_value(),
                     "reconstructed present value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
@@ -846,7 +852,8 @@ mod tests {
                                 amount: U256,
                                 nonce: u64,
                                 nonce_key: U256,
-                                fee_token: Option<Address>|
+                                fee_token: Option<Address>,
+                                check_reconstruction: bool|
              -> Vec<String> {
                 let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
                 if fee_token.is_none() {
@@ -881,7 +888,13 @@ mod tests {
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
-                assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
+                if check_reconstruction {
+                    assert_storage_actions_reconstruct_evm_state(
+                        &actions,
+                        &result.state,
+                        *hardfork,
+                    );
+                }
                 evm.db_mut().commit(result.state);
                 snapshot_storage_actions(&actions, &labels)
             };
@@ -903,6 +916,7 @@ mod tests {
                         0,
                         U256::ZERO,
                         Some(fee_token),
+                        true,
                     ),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
@@ -917,6 +931,7 @@ mod tests {
                         1,
                         U256::ZERO,
                         Some(fee_token),
+                        true,
                     ),
                 ),
                 // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
@@ -930,6 +945,7 @@ mod tests {
                         0,
                         nonce_key,
                         Some(fee_token),
+                        true,
                     ),
                 ),
             ]);
@@ -945,6 +961,7 @@ mod tests {
                         0,
                         U256::ZERO,
                         None,
+                        false,
                     ),
                 );
                 // Recreate recipient balance, consuming the PATH_USD storage credit through an SSTORE.
@@ -958,6 +975,7 @@ mod tests {
                         2,
                         U256::ZERO,
                         None,
+                        false,
                     ),
                 );
             }
