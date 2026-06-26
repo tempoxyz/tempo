@@ -135,8 +135,8 @@ impl PrecompileEnv {
 /// precompiles are then registered via [`extend_tempo_precompiles`].
 ///
 /// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
-/// `SDEC`) for node/validator/builder integrations that use the trace for performance; tooling can
-/// pass [`StorageActions::disabled`].
+/// `SDEC`, and domain-specific actions such as `FeeAmmSwap`) for node/validator/builder
+/// integrations that use the trace for performance; tooling can pass [`StorageActions::disabled`].
 ///
 /// [`NonCreditableSlots`] identifies transaction-local protocol slots whose clears must not mint
 /// TIP-1060 storage credits: the fee payer's fee-token balance and, when applicable, the keychain
