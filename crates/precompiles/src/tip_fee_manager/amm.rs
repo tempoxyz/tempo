@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, StorageAction, StorageCtx, StorageKey},
+    storage::{Handler, StorageCtx},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -66,55 +66,6 @@ impl Pool {
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode Pool from slot")
-    }
-
-    /// Encodes a [`Pool`] into the raw EVM storage slot value.
-    pub fn encode_to_slot(&self) -> Result<U256> {
-        use crate::storage::packing::insert_into_word;
-
-        let slot = insert_into_word(
-            U256::ZERO,
-            &self.reserve_user_token,
-            __packing_pool::RESERVE_USER_TOKEN_OFFSET,
-            __packing_pool::RESERVE_USER_TOKEN_BYTES,
-        )?;
-        let slot = insert_into_word(
-            slot,
-            &self.reserve_validator_token,
-            __packing_pool::RESERVE_VALIDATOR_TOKEN_OFFSET,
-            __packing_pool::RESERVE_VALIDATOR_TOKEN_BYTES,
-        )?;
-        Ok(slot)
-    }
-
-    /// Applies a fee swap to the pool.
-    ///
-    /// Checks `amount_out <= self.reserve_validator_token`, increments `self.reserve_user_token` by `amount_in`,
-    /// and decrements `self.reserve_validator_token` by `amount_out`.
-    pub fn apply_swap(&mut self, amount_in: U256, amount_out: U256) -> Result<()> {
-        // Check if there's enough validatorToken available
-        if amount_out > U256::from(self.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
-        let amount_in: u128 = amount_in
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let amount_out: u128 = amount_out
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-
-        // Update reserves
-        self.reserve_user_token = self
-            .reserve_user_token
-            .checked_add(amount_in)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.reserve_validator_token = self
-            .reserve_validator_token
-            .checked_sub(amount_out)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-
-        Ok(())
     }
 }
 
@@ -615,25 +566,37 @@ impl TipFeeManager {
         validator_token: Address,
         amount_in: U256,
     ) -> Result<U256> {
-        let actions = self.storage.actions();
-        // We suppress the actions recording to instead emit a single `FeeAmmSwap` action
-        actions.unrecorded(|| {
-            // Calculate output at fixed price m = 0.9970
-            let amount_out = compute_amount_out(amount_in)?;
+        let pool_id = self.pool_id(user_token, validator_token);
+        let mut pool = self.pools[pool_id].read()?;
 
-            let pool_id = self.pool_id(user_token, validator_token);
-            let mut pool = self.pools[pool_id].read()?;
-            pool.apply_swap(amount_in, amount_out)?;
-            self.pools[pool_id].write(pool)?;
+        // Calculate output at fixed price m = 0.9970
+        let amount_out = compute_amount_out(amount_in)?;
 
-            actions.record_always(StorageAction::FeeAmmSwap(
-                self.address,
-                pool_id.mapping_slot(self.pools.slot()),
-                amount_in,
-            ));
+        // Check if there's enough validatorToken available
+        if amount_out > U256::from(pool.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
 
-            Ok(amount_out)
-        })
+        // Update reserves
+        let amount_in_u128: u128 = amount_in
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount_out_u128: u128 = amount_out
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(amount_in_u128)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_sub(amount_out_u128)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        self.pools[pool_id].write(pool)?;
+
+        Ok(amount_out)
     }
 
     /// Returns the total supply of LP tokens for the given pool.
