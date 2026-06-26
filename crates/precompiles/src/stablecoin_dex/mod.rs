@@ -690,9 +690,8 @@ impl StablecoinDEX {
                     .write(order.tick())?;
             }
         } else {
-            if self.storage.spec().is_t7() {
-                // Update previous tail's next pointer. The previous order may use a different
-                // storage version than the new order.
+            // Update previous tail's next pointer.
+            if self.storage.spec().is_t8() {
                 self.orders[prev_tail].next()?.write(order.order_id())?;
             } else {
                 let mut prev_order = self.orders[prev_tail].read()?;
@@ -957,8 +956,7 @@ impl StablecoinDEX {
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
-        self.orders
-            .at(order.order_id())
+        self.orders[order.order_id()]
             .remaining()?
             .write(new_remaining)?;
         order.remaining = new_remaining;
