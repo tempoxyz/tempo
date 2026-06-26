@@ -7,10 +7,7 @@ use std::sync::{
 use alloy_primitives::{Address, TxKind};
 use alloy_sol_types::SolInterface;
 use reth_evm::RecoveredTx;
-use reth_revm::{
-    ExecuteEvm,
-    context::{ContextTr, Transaction as _},
-};
+use reth_revm::{ExecuteEvm, context::Transaction as _};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
@@ -235,7 +232,7 @@ where
                 tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
             }
 
-            let result = match evm.inner_mut().transact_one(tx_env) {
+            let result = match evm.inner_mut().transact(tx_env) {
                 Ok(result) => result,
                 Err(err) => {
                     evm.clear_actions();
@@ -247,8 +244,8 @@ where
                     );
                     return None;
                 }
-            };
-            evm.journal_mut().discard_tx();
+            }
+            .result;
 
             if !result.is_success() {
                 evm.clear_actions();
