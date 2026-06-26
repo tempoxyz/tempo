@@ -181,7 +181,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
         with:
-          version: nightly
+          version: nightly-b2e7a6af8c6426a479057e0745614bfd13e7c02f
 
       - name: Run Forge build
         working-directory: tips/verify
@@ -209,7 +209,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
         with:
-          version: nightly
+          version: nightly-b2e7a6af8c6426a479057e0745614bfd13e7c02f
 
       - name: Build tempo-std interfaces
         working-directory: tips/verify/lib/tempo-std
@@ -234,7 +234,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1.7.0
         with:
-          version: nightly
+          version: nightly-b2e7a6af8c6426a479057e0745614bfd13e7c02f
 
       - name: Run Forge fmt check
         working-directory: tips/verify
