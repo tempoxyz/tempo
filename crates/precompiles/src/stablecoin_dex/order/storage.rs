@@ -422,7 +422,8 @@ mod tests {
             __packing_v1_order::PREV_LOC.offset_slots,
             __packing_v1_order::NEXT_LOC.offset_slots
         );
-        assert!(V1Order::SLOTS < LegacyOrder::SLOTS);
+        assert_eq!(V1Order::SLOTS, 4);
+        assert_eq!(LegacyOrder::SLOTS, 6);
     }
 
     #[test]

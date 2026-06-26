@@ -41,10 +41,9 @@ const ORDER_VERSION_V1: u8 = 1;
 /// Orders are stored onchain in doubly linked lists organized by tick. Each tick maintains a FIFO
 /// queue of orders using `prev` and `next` pointers.
 ///
-/// The physical storage layout is versioned in [`storage`]:
+/// The physical storage layout is versioned by the DEX order storage handlers:
 /// - [`LegacyOrder`] records use the original `Order` layout.
-/// - T8+ records are written as compact `V1Order` values and converted back into `Order`
-///   when read.
+/// - T8+ records are written as compact `V1Order` values and converted back into `Order` when read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub struct Order {
     /// Unique identifier for this order
