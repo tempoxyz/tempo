@@ -21,6 +21,12 @@ const T2_ADDED: &[[u8; 4]] = &[
     ITIP403Registry::createCompoundPolicyCall::SELECTOR,
 ];
 
+const T6_ADDED: &[[u8; 4]] = &[
+    ITIP403Registry::receivePolicyCall::SELECTOR,
+    ITIP403Registry::validateReceivePolicyCall::SELECTOR,
+    ITIP403Registry::setReceivePolicyCall::SELECTOR,
+];
+
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
@@ -29,7 +35,10 @@ impl Precompile for TIP403Registry {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
+            &[
+                SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
+                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
+            ],
             ITIP403RegistryCalls::abi_decode,
             |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {
@@ -52,6 +61,21 @@ impl Precompile for TIP403Registry {
                 }),
                 ITIP403RegistryCalls::compoundPolicyData(call) => {
                     view(call, |c| self.compound_policy_data(c))
+                }
+                ITIP403RegistryCalls::receivePolicy(call) => {
+                    view(call, |c| self.receive_policy(c.account))
+                }
+                ITIP403RegistryCalls::validateReceivePolicy(call) => view(call, |c| {
+                    let blocked_reason = self
+                        .validate_receive_policy(c.token, c.sender, c.receiver)?
+                        .unwrap_or(ITIP403Registry::BlockedReason::NONE);
+                    Ok(ITIP403Registry::validateReceivePolicyReturn {
+                        authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
+                        blockedReason: blocked_reason,
+                    })
+                }),
+                ITIP403RegistryCalls::setReceivePolicy(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_receive_policy(s, c))
                 }
                 ITIP403RegistryCalls::createPolicy(call) => {
                     mutate(call, msg_sender, |s, c| self.create_policy(s, c))
@@ -87,9 +111,11 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
+    use tempo_contracts::precompiles::{
+        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
+    };
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -533,8 +559,9 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T2 to test all selectors including TIP-1015 compound policy functions
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        // Use T6 to test all selectors including TIP-1015 compound policy functions and
+        // TIP-1028 receive-policy functions added in T6.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -547,6 +574,57 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_receive_policy_selectors_are_t6_gated() -> eyre::Result<()> {
+        let account = Address::random();
+        let receive_policy = ITIP403Registry::receivePolicyCall { account }.abi_encode();
+        let validate_receive_policy = ITIP403Registry::validateReceivePolicyCall {
+            token: Address::random(),
+            sender: Address::random(),
+            receiver: account,
+        }
+        .abi_encode();
+        let set_receive_policy = ITIP403Registry::setReceivePolicyCall {
+            senderPolicyId: 1,
+            tokenFilterId: 1,
+            recoveryAuthority: Address::ZERO,
+        }
+        .abi_encode();
+
+        for calldata in [
+            receive_policy.as_slice(),
+            validate_receive_policy.as_slice(),
+            set_receive_policy.as_slice(),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut registry = TIP403Registry::new();
+                let result = registry
+                    .call(calldata, account)
+                    .map_err(|err| eyre::eyre!("{err:?}"))?;
+                assert!(result.is_revert());
+                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                Ok(())
+            })?;
+        }
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut registry = TIP403Registry::new();
+            for calldata in [
+                receive_policy.as_slice(),
+                validate_receive_policy.as_slice(),
+                set_receive_policy.as_slice(),
+            ] {
+                let result = registry
+                    .call(calldata, account)
+                    .map_err(|err| eyre::eyre!("{err:?}"))?;
+                assert!(!result.is_revert());
+            }
             Ok(())
         })
     }

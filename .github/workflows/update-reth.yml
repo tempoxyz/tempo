@@ -97,7 +97,7 @@ jobs:
       # ── toolchain (matches test.yml) ───────────────────────────
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
           tool: nextest@0.9.124
@@ -114,17 +114,35 @@ jobs:
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
-          OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          set +e
+          OUTPUT=$(amp "$@" --stream-json 2>&1)
+          AMP_EXIT=$?
+          set -e
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
-            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
+            echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}" >&2
           fi
-          # Print the final result text
+          # Print only the final result to stdout so callers can safely capture it.
           echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          if [ "$AMP_EXIT" -ne 0 ]; then
+            echo "::warning::Amp exited with status $AMP_EXIT" >&2
+            echo "::group::Amp errors" >&2
+            echo "$OUTPUT" | jq -r 'select(.type=="error") | .message // empty' 2>/dev/null >&2 || true
+            echo "$OUTPUT" | jq -r 'select(.type=="result" and .is_error == true) | .result // empty' 2>/dev/null >&2 || true
+            printf '%s\n' "$OUTPUT" | awk 'substr($0,1,1)!="{" { print }' >&2
+            echo "::endgroup::" >&2
+          fi
           # Propagate error if amp failed
           IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
-          if [ "$IS_ERROR" = "true" ]; then
+          if [ "$IS_ERROR" = "true" ] && [ "$AMP_EXIT" -eq 0 ]; then
+            echo "::group::Amp errors" >&2
+            echo "$OUTPUT" | jq -r 'select(.type=="error") | .message // empty' 2>/dev/null >&2 || true
+            echo "$OUTPUT" | jq -r 'select(.type=="result" and .is_error == true) | .result // empty' 2>/dev/null >&2 || true
+            printf '%s\n' "$OUTPUT" | awk 'substr($0,1,1)!="{" { print }' >&2
+            echo "::endgroup::" >&2
+          fi
+          if [ "$AMP_EXIT" -ne 0 ] || [ "$IS_ERROR" = "true" ]; then
             exit 1
           fi
           WRAPPER
@@ -212,7 +230,13 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::Amp attempt $attempt exited with status $amp_exit; verifying current tree before retrying"
+            fi
             echo "::endgroup::"
 
             echo "::group::Verify cargo clippy"
@@ -276,7 +300,13 @@ jobs:
             fi
 
             echo "::group::Amp attempt $attempt"
+            set +e
             amp-run --dangerously-allow-all -x "$AMP_PROMPT"
+            amp_exit=$?
+            set -e
+            if [ "$amp_exit" -ne 0 ]; then
+              echo "::warning::Amp attempt $attempt exited with status $amp_exit; verifying current tree before retrying"
+            fi
             echo "::endgroup::"
 
             echo "::group::Verify test compilation"
@@ -357,12 +387,21 @@ jobs:
               RETH_LOG=$(gh api "repos/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}" \
                 --jq '[.commits[] | "- " + (.commit.message | split("\n")[0])] | join("\n")' 2>/dev/null || true)
               if [ -n "$RETH_LOG" ]; then
+                set +e
                 RETH_SUMMARY=$(echo "$RETH_LOG" | amp-run -x "Summarize these upstream reth commit messages into a concise markdown bullet list \
                   grouped by area (e.g. Engine, RPC, Trie, DB, Perf, Bench, Testing). Use bold **Area** headers. \
                   Merge related commits into single bullets. Skip CI/doc-only changes unless significant. \
                   When referencing PRs, use full GitHub markdown links like [#1234](https://github.com/paradigmxyz/reth/pull/1234) — never bare #1234. \
-                  Do NOT include any preamble or explanation, just the grouped bullet list.")
-                echo "$RETH_SUMMARY"
+                  Do NOT include any preamble or explanation, just the grouped bullet list." 2>&1)
+                RETH_SUMMARY_EXIT=$?
+                set -e
+                if [ "$RETH_SUMMARY_EXIT" -eq 0 ]; then
+                  echo "$RETH_SUMMARY"
+                else
+                  echo "::warning::Failed to summarize upstream reth commits with Amp (exit $RETH_SUMMARY_EXIT)"
+                  echo "$RETH_SUMMARY"
+                  echo "$RETH_LOG"
+                fi
                 echo ""
               fi
             fi
@@ -372,10 +411,19 @@ jobs:
             if [ -n "$SOURCE_DIFF" ]; then
               echo "## Migrations"
               echo ""
+              set +e
               SUMMARY=$(echo "$SOURCE_DIFF" | amp-run -x "Summarize the following code changes as a concise markdown bullet list. \
                 Each bullet should describe what was migrated and why (e.g. API rename, parameter change, removed method). \
-                Do NOT include any preamble or explanation, just the bullet list.")
-              echo "$SUMMARY"
+                Do NOT include any preamble or explanation, just the bullet list." 2>&1)
+              SUMMARY_EXIT=$?
+              set -e
+              if [ "$SUMMARY_EXIT" -eq 0 ]; then
+                echo "$SUMMARY"
+              else
+                echo "::warning::Failed to summarize source migrations with Amp (exit $SUMMARY_EXIT)"
+                echo "$SUMMARY"
+                git diff --stat origin/main -- '*.rs' '*.toml' ':!Cargo.lock' 2>/dev/null || true
+              fi
               echo ""
             fi
 
@@ -392,17 +440,40 @@ jobs:
           # Check for existing PR
           EXISTING_PR="${{ steps.detect.outputs.existing_pr }}"
 
+          echo "PR title: $TITLE"
+          echo "Commits ahead: $COMMITS_AHEAD"
+          echo "Existing PR: ${EXISTING_PR:-none}"
+          echo "::group::Existing PRs for reth-auto-bump"
+          gh pr list --head reth-auto-bump --base main --state all || true
+          echo "::endgroup::"
+
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
-            gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt
+            set +e
+            PR_OUTPUT=$(gh pr edit "$EXISTING_PR" --title "$TITLE" --body-file /tmp/pr-body.txt 2>&1)
+            PR_EXIT=$?
+            set -e
+            echo "$PR_OUTPUT"
+            if [ "$PR_EXIT" -ne 0 ]; then
+              echo "::error::gh pr edit failed with exit code $PR_EXIT"
+              exit "$PR_EXIT"
+            fi
           else
             echo "Creating new PR"
-            gh pr create \
+            set +e
+            PR_OUTPUT=$(gh pr create \
               --base main \
               --head reth-auto-bump \
               --title "$TITLE" \
               --body-file /tmp/pr-body.txt \
-              --label A-dependencies
+              --label A-dependencies 2>&1)
+            PR_EXIT=$?
+            set -e
+            echo "$PR_OUTPUT"
+            if [ "$PR_EXIT" -ne 0 ]; then
+              echo "::error::gh pr create failed with exit code $PR_EXIT"
+              exit "$PR_EXIT"
+            fi
           fi
 
       # ── wait for CI and fix failures ─────────────────────────
@@ -443,7 +514,7 @@ jobs:
               fi
 
               # All done with no failures = success
-              PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | length')
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | length')
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 exit 0
@@ -453,7 +524,7 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS")] | map(.name) | join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
                 HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')

@@ -113,4 +113,7 @@ pub struct TempoPoolMaintenanceMetrics {
 
     /// Number of transactions re-validated due to transfer policy updates.
     pub transfer_policy_revalidated: Counter,
+
+    /// Number of transactions re-validated due to quote token updates.
+    pub quote_token_revalidated: Counter,
 }

@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{Handler, StorageAction, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -67,6 +67,55 @@ impl Pool {
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode Pool from slot")
     }
+
+    /// Encodes a [`Pool`] into the raw EVM storage slot value.
+    pub fn encode_to_slot(&self) -> Result<U256> {
+        use crate::storage::packing::insert_into_word;
+
+        let slot = insert_into_word(
+            U256::ZERO,
+            &self.reserve_user_token,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_USER_TOKEN_LOC.size,
+        )?;
+        let slot = insert_into_word(
+            slot,
+            &self.reserve_validator_token,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.offset_bytes,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_LOC.size,
+        )?;
+        Ok(slot)
+    }
+
+    /// Applies a fee swap to the pool.
+    ///
+    /// Checks `amount_out <= self.reserve_validator_token`, increments `self.reserve_user_token` by `amount_in`,
+    /// and decrements `self.reserve_validator_token` by `amount_out`.
+    pub fn apply_swap(&mut self, amount_in: U256, amount_out: U256) -> Result<()> {
+        // Check if there's enough validatorToken available
+        if amount_out > U256::from(self.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        let amount_in: u128 = amount_in
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount_out: u128 = amount_out
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        // Update reserves
+        self.reserve_user_token = self
+            .reserve_user_token
+            .checked_add(amount_in)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.reserve_validator_token = self
+            .reserve_validator_token
+            .checked_sub(amount_out)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+
+        Ok(())
+    }
 }
 
 impl PoolKey {
@@ -86,6 +135,21 @@ impl PoolKey {
     }
 }
 
+/// AMM path [`TipFeeManager`] will take to swap `user_token` into `validator_token` for fee collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeRoute {
+    /// User and validator share the same fee token; no swap is performed.
+    SameToken,
+    /// Direct pool `(user_token, validator_token)` swap.
+    Direct,
+    /// Two-hop swap (T5+): routes through `intermediate = userToken.quoteToken()`.
+    /// Each hop applies the standard `M = 9970/10000` rate sequentially.
+    TwoHop(Address),
+}
+
+/// Pools read during planning, paired with their observed validator-token reserve.
+pub type PoolData = ((Address, Address), u128);
+
 impl TipFeeManager {
     /// Returns the deterministic pool ID for a directional token pair. Note that the pool id is
     /// order-dependent: `(A, B)` produces a different ID than `(B, A)`.
@@ -97,25 +161,6 @@ impl TipFeeManager {
     pub fn get_pool(&self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
         self.pools[pool_id].read()
-    }
-
-    /// Checks that the pool identified by `pool_id` has enough validator-token reserves for the
-    /// fee swap of `max_amount` and returns the required output amount as `u128`.
-    ///
-    /// # Errors
-    /// - `InsufficientLiquidity` — pool validator-token reserve is below the required output
-    /// - `UnderOverflow` — output amount exceeds `u128`
-    pub fn check_sufficient_liquidity(&mut self, pool_id: B256, max_amount: U256) -> Result<u128> {
-        let amount_out_needed = compute_amount_out(max_amount)?;
-        let pool = self.pools[pool_id].read()?;
-
-        if amount_out_needed > U256::from(pool.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
-        amount_out_needed
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())
     }
 
     /// Reserves pool liquidity in transient storage for a pending fee swap.
@@ -184,11 +229,13 @@ impl TipFeeManager {
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
         TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
             self.address,
+            msg_sender,
             amount_in,
         )?;
 
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
         TIP20Token::from_address(user_token)?.transfer(
             self.address,
             ITIP20::transferCall {
@@ -197,13 +244,13 @@ impl TipFeeManager {
             },
         )?;
 
-        self.emit_event(TIPFeeAMMEvent::RebalanceSwap(ITIPFeeAMM::RebalanceSwap {
-            userToken: user_token,
-            validatorToken: validator_token,
-            swapper: msg_sender,
-            amountIn: amount_in,
-            amountOut: amount_out,
-        }))?;
+        self.emit_event(TIPFeeAMMEvent::rebalance_swap(
+            user_token,
+            validator_token,
+            msg_sender,
+            amount_in,
+            amount_out,
+        ))?;
 
         Ok(amount_in)
     }
@@ -295,8 +342,8 @@ impl TipFeeManager {
 
         // Transfer validator tokens from user
         let _ = TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
             self.address,
+            msg_sender,
             amount_validator_token,
         )?;
 
@@ -330,14 +377,14 @@ impl TipFeeManager {
         )?;
 
         // Emit Mint event
-        self.emit_event(TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
-            sender: msg_sender,
+        self.emit_event(TIPFeeAMMEvent::mint(
+            msg_sender,
             to,
-            userToken: user_token,
-            validatorToken: validator_token,
-            amountValidatorToken: amount_validator_token,
+            user_token,
+            validator_token,
+            amount_validator_token,
             liquidity,
-        }))?;
+        ))?;
 
         Ok(liquidity)
     }
@@ -388,7 +435,7 @@ impl TipFeeManager {
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
 
         // T1C+: Check that burn leaves enough liquidity for pending fee swaps
-        // Reservation is set by reserve_pool_liquidity() via check_sufficient_liquidity()
+        // Reservation is set by reserve_pool_liquidity() in collect_fee_pre_tx
         let validator_amount: u128 = amount_validator_token
             .try_into()
             .map_err(|_| TIPFeeAMMError::invalid_amount())?;
@@ -455,15 +502,15 @@ impl TipFeeManager {
         )?;
 
         // Emit Burn event
-        self.emit_event(TIPFeeAMMEvent::Burn(ITIPFeeAMM::Burn {
-            sender: msg_sender,
-            userToken: user_token,
-            validatorToken: validator_token,
-            amountUserToken: amount_user_token,
-            amountValidatorToken: amount_validator_token,
+        self.emit_event(TIPFeeAMMEvent::burn(
+            msg_sender,
+            user_token,
+            validator_token,
+            amount_user_token,
+            amount_validator_token,
             liquidity,
             to,
-        }))?;
+        ))?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -488,6 +535,74 @@ impl TipFeeManager {
         Ok((amount_user_token, amount_validator_token))
     }
 
+    /// Plans the AMM path needed to swap `max_amount` of `user_token` into `validator_token`
+    /// under the active hardfork. Read-only; does not reserve.
+    ///
+    /// On T5+ falls back to a two-hop path through `userToken.quoteToken()` as per [TIP-1033].
+    /// Returns `(route, queried_intermediate, pools)`:
+    /// - `route` is `None` when no path has sufficient liquidity.
+    /// - `queried_intermediate` is `Some(addr)` whenever `userToken.quoteToken()` was read,
+    ///   regardless of whether the value is usable. Callers can cache it to skip the cold
+    ///   storage read on subsequent admissions.
+    /// - `pools` lists every pool slot read during planning, paired with its observed reserve.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
+    /// - `UnderOverflow` — fee-amount arithmetic overflows
+    ///
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    pub fn plan_fee_route(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<(Option<FeeRoute>, Option<Address>, Vec<PoolData>)> {
+        let mut data = Vec::new();
+
+        if user_token == validator_token {
+            return Ok((Some(FeeRoute::SameToken), None, data));
+        }
+
+        // Direct (single-hop) path — always checked.
+        let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
+        data.push((
+            (user_token, validator_token),
+            direct.reserve_validator_token,
+        ));
+        let amount_out = compute_amount_out(max_amount)?;
+        if amount_out <= U256::from(direct.reserve_validator_token) {
+            return Ok((Some(FeeRoute::Direct), None, data));
+        }
+
+        // T5+: two-hop fallback through `userToken.quoteToken()`.
+        if !self.storage.spec().is_t5() {
+            return Ok((None, None, data));
+        }
+
+        // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
+        let mid_token = TIP20Token::from_address(user_token)?.quote_token()?;
+        if mid_token.is_zero() || mid_token == validator_token {
+            return Ok((None, Some(mid_token), data));
+        }
+
+        // First leg: user_token -> intermediate.
+        let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
+        data.push(((user_token, mid_token), leg1.reserve_validator_token));
+        if amount_out > U256::from(leg1.reserve_validator_token) {
+            return Ok((None, Some(mid_token), data));
+        }
+
+        // Second leg: intermediate -> validator_token.
+        let amount_out2 = compute_amount_out(amount_out)?;
+        let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
+        data.push(((mid_token, validator_token), leg2.reserve_validator_token));
+        if amount_out2 > U256::from(leg2.reserve_validator_token) {
+            return Ok((None, Some(mid_token), data));
+        }
+
+        Ok((Some(FeeRoute::TwoHop(mid_token)), Some(mid_token), data))
+    }
+
     /// Executes a fee swap, converting `user_token` to `validator_token` at a fixed rate m = 0.997
     /// Called internally by [`TipFeeManager::collect_fee_post_tx`] during post-tx fee collection.
     ///
@@ -500,37 +615,25 @@ impl TipFeeManager {
         validator_token: Address,
         amount_in: U256,
     ) -> Result<U256> {
-        let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
+        let actions = self.storage.actions();
+        // We suppress the actions recording to instead emit a single `FeeAmmSwap` action
+        actions.unrecorded(|| {
+            // Calculate output at fixed price m = 0.9970
+            let amount_out = compute_amount_out(amount_in)?;
 
-        // Calculate output at fixed price m = 0.9970
-        let amount_out = compute_amount_out(amount_in)?;
+            let pool_id = self.pool_id(user_token, validator_token);
+            let mut pool = self.pools[pool_id].read()?;
+            pool.apply_swap(amount_in, amount_out)?;
+            self.pools[pool_id].write(pool)?;
 
-        // Check if there's enough validatorToken available
-        if amount_out > U256::from(pool.reserve_validator_token) {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
+            actions.record_always(StorageAction::FeeAmmSwap(
+                self.address,
+                pool_id.mapping_slot(self.pools.slot()),
+                amount_in,
+            ));
 
-        // Update reserves
-        let amount_in_u128: u128 = amount_in
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let amount_out_u128: u128 = amount_out
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?;
-
-        pool.reserve_user_token = pool
-            .reserve_user_token
-            .checked_add(amount_in_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        pool.reserve_validator_token = pool
-            .reserve_validator_token
-            .checked_sub(amount_out_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        self.pools[pool_id].write(pool)?;
-
-        Ok(amount_out)
+            Ok(amount_out)
+        })
     }
 
     /// Returns the total supply of LP tokens for the given pool.
@@ -1033,9 +1136,9 @@ mod tests {
         })
     }
 
-    /// Test check_sufficient_liquidity boundary condition
+    /// Test pool boundary condition
     #[test]
-    fn test_check_sufficient_liquidity_boundary() -> eyre::Result<()> {
+    fn test_pool_liquidity_boundary() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1057,13 +1160,15 @@ mod tests {
                 liquidity,
             )?;
 
+            let reserve = U256::from(amm.pools[pool_id].read()?.reserve_validator_token);
+
             // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
             let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(amm.check_sufficient_liquidity(pool_id, ok_amount).is_ok());
+            assert!(reserve >= compute_amount_out(ok_amount)?);
 
             // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
             let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
-            assert!(amm.check_sufficient_liquidity(pool_id, too_much).is_err());
+            assert!(reserve < compute_amount_out(too_much)?);
 
             Ok(())
         })
@@ -1407,7 +1512,7 @@ mod tests {
             )?;
 
             let max_amount = uint!(10000_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, max_amount)?;
+            let amount_out: u128 = compute_amount_out(max_amount)?.try_into().unwrap();
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
@@ -1447,7 +1552,7 @@ mod tests {
 
             // Reserve most of the validator token liquidity
             let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, reserve_amount)?;
+            let amount_out: u128 = compute_amount_out(reserve_amount)?.try_into().unwrap();
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
@@ -1488,7 +1593,7 @@ mod tests {
 
             let pool_id = amm.pool_id(user_token, validator_token);
             let small_reserve = uint!(1000_U256);
-            let amount_out = amm.check_sufficient_liquidity(pool_id, small_reserve)?;
+            let amount_out: u128 = compute_amount_out(small_reserve)?.try_into().unwrap();
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             let small_burn = liquidity / uint!(10_U256);
@@ -1526,7 +1631,7 @@ mod tests {
             let pool_id =
                 setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
 
-            let amount_out = amm.check_sufficient_liquidity(pool_id, uint!(50000_U256))?;
+            let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
             amm.reserve_pool_liquidity(pool_id, amount_out)?;
 
             amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)?;
@@ -1561,9 +1666,7 @@ mod tests {
                 .address();
 
             let liq = uint!(100000_U256);
-            let pool_id =
-                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
-            amm.check_sufficient_liquidity(pool_id, uint!(90000_U256))?;
+            setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
             assert!(
                 amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
                     .is_ok()
@@ -1596,11 +1699,6 @@ mod tests {
 
             let deposit_amount = uint!(100000_U256);
             let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
-
-            let pool_id = amm.pool_id(user_token, validator_token);
-            let pool = amm.pools[pool_id].read()?;
-            let reserve_amount = U256::from(pool.reserve_validator_token) - uint!(100_U256);
-            amm.check_sufficient_liquidity(pool_id, reserve_amount)?;
 
             let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
             assert!(result.is_ok());

@@ -4,8 +4,8 @@
 <p align="center">
   <a href="https://tempo.xyz">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-dark.svg">
-      <img alt="tempo combomark" src="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-bright.svg" width="auto" height="120">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/tempo-wordmark-white.svg">
+      <img alt="Tempo wordmark" src=".github/assets/tempo-wordmark-black.svg" width="360">
     </picture>
   </a>
 </p>
@@ -14,6 +14,8 @@
 <br>
 
 # Tempo
+
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
 
 The blockchain for payments at scale.
 
@@ -116,6 +118,12 @@ Install the dependencies:
 
 ```bash
 just
+```
+
+Configure Git to run the repository hooks:
+
+```bash
+./scripts/setup-hooks.sh
 ```
 
 Build Tempo:

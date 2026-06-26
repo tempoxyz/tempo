@@ -29,6 +29,10 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions_last: Gauge,
+    /// Number of reverted transactions in the payload.
+    pub(crate) reverted_transactions: Histogram,
+    /// Number of reverted transactions in the last payload.
+    pub(crate) reverted_transactions_last: Gauge,
     /// Number of pool transactions yielded by the best transactions iterator.
     pub(crate) pool_transactions_yielded: Histogram,
     /// Number of pool transactions yielded by the best transactions iterator for the last payload.
@@ -37,6 +41,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) pool_transactions_included: Histogram,
     /// Number of yielded pool transactions included in the last payload.
     pub(crate) pool_transactions_included_last: Gauge,
+    /// Number of pool transaction execution attempts rejected as invalid.
+    pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
     /// Ratio of yielded pool transactions that were included in the payload.
     pub(crate) pool_transactions_inclusion_ratio: Histogram,
     /// Ratio of yielded pool transactions that were included in the last payload.
@@ -73,36 +79,59 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_setup_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
-    /// The time it took to execute one transaction in seconds.
-    pub(crate) transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute normal transactions in seconds.
-    pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
+    /// Total wall-clock time spent filling the block with normal pool transactions.
+    pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
+    /// Time spent waiting for more normal transactions during block fill.
+    pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Total wall-clock time spent in transaction execution phases.
+    pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
     pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
     /// Execution time for a single subblock.
     pub(crate) subblock_execution_duration_seconds: Histogram,
     /// Number of transactions in a single subblock.
     pub(crate) subblock_transaction_count: Histogram,
-    /// The time it took to execute all transactions in seconds.
-    pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute system transactions in seconds.
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
+    /// Wall-clock time spent waiting for the shared sparse trie state root.
+    pub(crate) sparse_trie_state_root_wait_duration_seconds: Histogram,
+    /// Wall-clock time spent in `builder.finish()`.
+    pub(crate) builder_finish_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
     /// Gas per second calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
-    /// RLP-encoded block size in bytes.
+    /// Serialized payload size in bytes, including optional RLP-encoded BAL sidecar bytes.
     pub(crate) rlp_block_size_bytes: Histogram,
-    /// RLP-encoded block size in bytes for the last payload.
+    /// Serialized payload size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+}
+
+/// Reason the payload builder stopped adding pool transactions to the block.
+pub(crate) enum BlockBuildStopReason {
+    GasLimit,
+    RlpBlockSizeLimit,
+    TxPoolEmpty,
+    BuildBudget,
+}
+
+impl BlockBuildStopReason {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::GasLimit => "gas_limit",
+            Self::RlpBlockSizeLimit => "rlp_block_size_limit",
+            Self::TxPoolEmpty => "tx_pool_empty",
+            Self::BuildBudget => "build_budget",
+        }
+    }
 }
 
 impl TempoPayloadBuilderMetrics {
@@ -120,6 +149,13 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_build_failure(&self, reason: &'static str) {
         metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the counter for why the payload builder stopped adding pool transactions.
+    #[inline]
+    pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
+        metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
     }
 

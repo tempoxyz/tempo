@@ -9,8 +9,10 @@
 /// overlays hardfork timestamps from the corresponding network config.
 /// Forks whose activation timestamp is in the future (relative to the current wall-clock time)
 /// are deactivated (`u64::MAX`); forks already active are activated at t=0.
+/// `DevnetAt` schedules activate all Tempo hardforks through the given latest active fork.
 ///
-/// This lets the same test run against different fork schedules via `#[test_case]`:
+/// Tests that use `ForkSchedule::Devnet` can wrap their body in [`run_schedule_cases`] to
+/// dynamically fan out to one devnet run per hardfork ahead of testnet:
 ///
 /// ```ignore
 /// #[test_case(ForkSchedule::Devnet ; "devnet")]
@@ -18,17 +20,23 @@
 /// #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 /// #[tokio::test(flavor = "multi_thread")]
 /// async fn test_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
-///     let setup = TestNodeBuilder::new()
-///         .with_schedule(schedule)
-///         .build_http_only()
-///         .await?;
-///     // ...
+///     run_schedule_cases(schedule, |schedule| async move {
+///         let setup = TestNodeBuilder::new()
+///             .with_schedule(schedule)
+///             .build_http_only()
+///             .await?;
+///         // ...
+///         Ok(())
+///     })
+///     .await
 /// }
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ForkSchedule {
-    /// Preserves test dev genesis hardfork schedule: typically all active at t=0.
+    /// Preserves the latest test dev genesis hardfork schedule.
     Devnet,
+    /// Activates all test dev genesis Tempo hardforks through the given hardfork at t=0.
+    DevnetAt(TempoHardfork),
     /// Fork schedule matching testnet (moderato): only forks active *now* are set to t=0.
     Testnet,
     /// Fork schedule matching mainnet (presto): only forks active *now* are set to t=0.
@@ -36,11 +44,68 @@ pub(crate) enum ForkSchedule {
 }
 
 impl ForkSchedule {
+    const TESTNET_REFERENCE_GENESIS: &'static str =
+        include_str!("../../../chainspec/src/genesis/moderato.json");
+
+    /// Resolves this schedule into the concrete schedules a test should run.
+    ///
+    /// `Devnet` expands to every declared hardfork that is ahead of the hardfork currently active
+    /// on testnet. If testnet has already caught up to the latest hardfork, this still returns one
+    /// latest-devnet schedule so devnet coverage does not disappear.
+    fn cases(self) -> Vec<Self> {
+        match self {
+            Self::Devnet => Self::devnet_cases(),
+            schedule => vec![schedule],
+        }
+    }
+
+    /// Returns one devnet schedule for each hardfork ahead of the hardfork active on testnet.
+    ///
+    /// This fills the coverage gap between testnet and latest-devnet. If testnet is already at the
+    /// latest declared hardfork, returns a single latest-devnet schedule so devnet still runs.
+    fn devnet_cases() -> Vec<Self> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let reference: serde_json::Value = serde_json::from_str(Self::TESTNET_REFERENCE_GENESIS)
+            .expect("reference genesis must parse");
+        let active = TempoHardfork::VARIANTS
+            .iter()
+            .rev()
+            .copied()
+            .find(|fork| {
+                if *fork == TempoHardfork::Genesis {
+                    return true;
+                }
+
+                let key = format!("{}Time", fork.to_string().to_lowercase());
+                matches!(reference["config"][&key].as_u64(), Some(ts) if ts <= now)
+            })
+            .unwrap_or(TempoHardfork::Genesis);
+        let cases: Vec<_> = TempoHardfork::VARIANTS
+            .iter()
+            .copied()
+            .filter(|fork| *fork > active)
+            .map(Self::DevnetAt)
+            .collect();
+
+        if cases.is_empty() {
+            vec![Self::DevnetAt(
+                *TempoHardfork::VARIANTS
+                    .last()
+                    .expect("TempoHardfork must have at least Genesis"),
+            )]
+        } else {
+            cases
+        }
+    }
+
     /// Returns the reference genesis JSON whose fork timestamps should be used.
     fn reference_genesis(&self) -> Option<&'static str> {
         match self {
-            Self::Devnet => None,
-            Self::Testnet => Some(include_str!("../../../chainspec/src/genesis/moderato.json")),
+            Self::Devnet | Self::DevnetAt(_) => None,
+            Self::Testnet => Some(Self::TESTNET_REFERENCE_GENESIS),
             Self::Mainnet => Some(include_str!("../../../chainspec/src/genesis/presto.json")),
         }
     }
@@ -48,11 +113,18 @@ impl ForkSchedule {
     /// Returns whether the given Tempo hardfork is active for this schedule.
     ///
     /// For [`Devnet`](Self::Devnet) all forks from the dev genesis are active.
+    /// For [`DevnetAt`](Self::DevnetAt), only forks through the selected hardfork are active.
     /// For other schedules, a fork is active only if its timestamp in the
     /// reference genesis is in the past.
     pub(crate) fn is_active(&self, fork: TempoHardfork) -> bool {
+        match self {
+            Self::Devnet => return true,
+            Self::DevnetAt(last_active) => return fork <= *last_active,
+            _ => {}
+        }
+
         let Some(reference_json) = self.reference_genesis() else {
-            return true; // devnet: all forks active
+            return true; // unreachable for current variants
         };
         let reference: serde_json::Value =
             serde_json::from_str(reference_json).expect("reference genesis must parse");
@@ -60,8 +132,12 @@ impl ForkSchedule {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let time_key = format!("{}Time", fork.to_string().to_lowercase());
-        matches!(reference["config"][&time_key].as_u64(), Some(ts) if ts <= now)
+        if fork == TempoHardfork::Genesis {
+            return true;
+        }
+
+        let key = format!("{}Time", fork.to_string().to_lowercase());
+        matches!(reference["config"][&key].as_u64(), Some(ts) if ts <= now)
     }
 
     /// Apply this profile's fork timestamps to a test genesis JSON value.
@@ -70,7 +146,28 @@ impl ForkSchedule {
     /// against the reference network genesis. Forks active *now* on the
     /// reference network are set to `0`; forks that are still in the future
     /// or absent from the reference are set to `u64::MAX`.
+    ///
+    /// Devnet schedules are special because the test genesis normally enables every declared
+    /// Tempo hardfork. `DevnetAt` rewrites that genesis so tests can run with only the selected
+    /// hardfork and earlier forks active.
     pub(crate) fn apply(&self, genesis: &mut serde_json::Value) {
+        match self {
+            Self::Devnet => {
+                Self::apply_devnet(
+                    genesis,
+                    *TempoHardfork::VARIANTS
+                        .last()
+                        .expect("TempoHardfork must have at least Genesis"),
+                );
+                return;
+            }
+            Self::DevnetAt(last_active) => {
+                Self::apply_devnet(genesis, *last_active);
+                return;
+            }
+            _ => {}
+        }
+
         let Some(reference_json) = self.reference_genesis() else {
             return; // keep test genesis timestamps unchanged
         };
@@ -95,6 +192,48 @@ impl ForkSchedule {
             *value = serde_json::json!(ts);
         }
     }
+
+    /// Rewrites devnet fork timestamps so only forks through `last_active` are enabled.
+    ///
+    /// The shared test genesis enables all declared Tempo forks; `DevnetAt` needs this clamp to
+    /// exercise intermediate upcoming hardfork states instead of always running latest-devnet.
+    fn apply_devnet(genesis: &mut serde_json::Value, last_active: TempoHardfork) {
+        let config = genesis["config"]
+            .as_object_mut()
+            .expect("genesis must have config");
+
+        for &fork in TempoHardfork::VARIANTS {
+            if fork == TempoHardfork::Genesis {
+                continue;
+            }
+
+            let key = format!("{}Time", fork.to_string().to_lowercase());
+            if let Some(value) = config.get_mut(&key) {
+                *value = serde_json::json!(if fork <= last_active { 0 } else { u64::MAX });
+            }
+        }
+    }
+}
+
+/// Runs a test body once for every concrete schedule represented by `schedule`.
+///
+/// This is mainly used for `ForkSchedule::Devnet`, which expands at runtime to one
+/// `DevnetAt` run per declared hardfork ahead of testnet. Testnet and mainnet run once.
+pub(crate) async fn run_schedule_cases<F, Fut>(
+    schedule: ForkSchedule,
+    mut run: F,
+) -> eyre::Result<()>
+where
+    F: FnMut(ForkSchedule) -> Fut,
+    Fut: std::future::Future<Output = eyre::Result<()>>,
+{
+    for schedule in schedule.cases() {
+        run(schedule)
+            .await
+            .wrap_err_with(|| format!("fork schedule case {schedule:?} failed"))?;
+    }
+
+    Ok(())
 }
 
 /// Build a genesis JSON string from `test-genesis.json` with only forks up to
@@ -140,6 +279,7 @@ use alloy::{
 };
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
+use eyre::WrapErr;
 use reth_e2e_test_utils::setup;
 use reth_ethereum::tasks::Runtime;
 use reth_node_api::FullNodeComponents;
@@ -171,7 +311,7 @@ where
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let salt = B256::random();
     let receipt = factory
-        .createToken(
+        .createToken_0(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
@@ -179,6 +319,7 @@ where
             caller,
             salt,
         )
+        .from(caller)
         .gas(5_000_000)
         .send()
         .await?
@@ -192,6 +333,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
+        .from(caller)
         .gas(1_000_000)
         .send()
         .await?
@@ -493,6 +635,7 @@ fn default_attributes_generator(timestamp: u64) -> TempoPayloadAttributes {
         withdrawals: Some(vec![]),
         parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
         slot_number: None,
+        target_gas_limit: None,
     }
     .into()
 }

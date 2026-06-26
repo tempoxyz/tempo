@@ -406,7 +406,7 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @notice Run all invariant checks in a single unified loop
     /// @dev Combines TEMPO-NON1 (never decrease) and TEMPO-NON2 (ghost consistency) checks
     ///      Caches nonce.getNonce() result to avoid duplicate external calls
-    function invariant_globalInvariants() public view {
+    function invariant_nonceGlobal() public view {
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
             uint256[] storage keys = _accountNonceKeys[actor];

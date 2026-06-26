@@ -12,9 +12,12 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod nonce;
+pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
+pub mod storage_credits;
 pub mod tip20;
+pub mod tip20_channel_reserve;
 pub mod tip20_factory;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
@@ -25,12 +28,23 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
-    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
-    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
+    account_keychain::AccountKeychain,
+    address_registry::AddressRegistry,
+    nonce::NonceManager,
+    receive_policy_guard::ReceivePolicyGuard,
+    signature_verifier::SignatureVerifier,
+    stablecoin_dex::StablecoinDEX,
+    storage::{StorageCtx, actions::StorageActions},
+    storage_credits::{NonCreditableSlots, StorageCredits},
+    tip_fee_manager::TipFeeManager,
+    tip20::TIP20Token,
+    tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
@@ -51,9 +65,10 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -92,18 +107,53 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
-/// Returns the full Tempo precompiles for the given config.
+/// Shared execution environment captured by Tempo precompile wrappers.
+#[derive(Clone)]
+pub struct PrecompileEnv {
+    cfg: CfgEnv<TempoHardfork>,
+    actions: StorageActions,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+}
+
+impl PrecompileEnv {
+    pub fn new(
+        cfg: &CfgEnv<TempoHardfork>,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    ) -> Self {
+        Self {
+            cfg: cfg.clone(),
+            actions,
+            non_creditable_slots,
+        }
+    }
+}
+
+/// Returns the full Tempo precompile set for the given EVM config.
 ///
-/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
-/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
-pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+/// Pre-T1C hardforks use Prague built-in precompiles; T1C+ uses Osaka built-ins. Tempo-specific
+/// precompiles are then registered via [`extend_tempo_precompiles`].
+///
+/// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
+/// `SDEC`, and domain-specific actions such as `FeeAmmSwap`) for node/validator/builder
+/// integrations that use the trace for performance; tooling can pass [`StorageActions::disabled`].
+///
+/// [`NonCreditableSlots`] identifies transaction-local protocol slots whose clears must not mint
+/// TIP-1060 storage credits: the fee payer's fee-token balance and, when applicable, the keychain
+/// fee key's spending limit. They are part of credit/gas accounting, so gas estimation should pass
+/// values derived from the real transaction context rather than mocks.
+pub fn tempo_precompiles(
+    cfg: &CfgEnv<TempoHardfork>,
+    actions: StorageActions,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
     } else {
         SpecId::PRAGUE
     };
     let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
-    extend_tempo_precompiles(&mut precompiles, cfg);
+    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
 }
 
@@ -112,32 +162,45 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
 /// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
-pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
-    let cfg = cfg.clone();
+///
+/// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
+pub fn extend_tempo_precompiles(
+    precompiles: &mut PrecompilesMap,
+    cfg: &CfgEnv<TempoHardfork>,
+    actions: StorageActions,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+) {
+    let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &cfg))
+            Some(TIP20Token::create_precompile(*address, &env))
         } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
-            Some(AddressRegistry::create_precompile(&cfg))
+            Some(TIP20Factory::create_precompile(&env))
+        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && env.cfg.spec.is_t5() {
+            Some(TIP20ChannelReserve::create_precompile(&env))
+        } else if *address == ADDRESS_REGISTRY_ADDRESS && env.cfg.spec.is_t3() {
+            Some(AddressRegistry::create_precompile(&env))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create_precompile(&cfg))
+            Some(TIP403Registry::create_precompile(&env))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManager::create_precompile(&cfg))
+            Some(TipFeeManager::create_precompile(&env))
         } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEX::create_precompile(&cfg))
+            Some(StablecoinDEX::create_precompile(&env))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NonceManager::create_precompile(&cfg))
+            Some(NonceManager::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfig::create_precompile(&cfg))
+            Some(ValidatorConfig::create_precompile(&env))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychain::create_precompile(&cfg))
+            Some(AccountKeychain::create_precompile(&env))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2::create_precompile(&cfg))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
-            Some(SignatureVerifier::create_precompile(&cfg))
+            Some(ValidatorConfigV2::create_precompile(&env))
+        } else if *address == SIGNATURE_VERIFIER_ADDRESS && env.cfg.spec.is_t3() {
+            Some(SignatureVerifier::create_precompile(&env))
+        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && env.cfg.spec.is_t6() {
+            Some(ReceivePolicyGuard::create_precompile(&env))
+        } else if *address == STORAGE_CREDITS_ADDRESS && env.cfg.spec.is_t7() {
+            Some(StorageCredits::create_precompile(&env))
         } else {
             None
         }
@@ -151,9 +214,23 @@ sol! {
 
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
-        let spec = $cfg.spec;
-        let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
-        let gas_params = $cfg.gas_params.clone();
+        #[cfg(not(test))]
+        compile_error!("tempo_precompile! without actions is only available in tests");
+        #[cfg(test)]
+        let env = PrecompileEnv::new(
+            $cfg,
+            StorageActions::disabled(),
+            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+        );
+        tempo_precompile!($id, env: &env, |$input| $impl)
+    }};
+    ($id:expr, env: $env:expr, |$input:ident| $impl:expr) => {{
+        let env = $env.clone();
+        let spec = env.cfg.spec;
+        let amsterdam_eip8037_enabled = env.cfg.enable_amsterdam_eip8037;
+        let gas_params = env.cfg.gas_params.clone();
+        let actions = env.actions.clone();
+        let non_creditable_slots = env.non_creditable_slots.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::revert(
@@ -170,7 +247,9 @@ macro_rules! tempo_precompile {
                 amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
-            );
+            )
+            .with_actions(actions.clone())
+            .with_non_creditable_slots(non_creditable_slots.clone());
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })
@@ -180,36 +259,36 @@ macro_rules! tempo_precompile {
 
 impl TipFeeManager {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TipFeeManager", env: env, |input| { Self::new() })
     }
 }
 
 impl AddressRegistry {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("AddressRegistry", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("AddressRegistry", env: env, |input| { Self::new() })
     }
 }
 
 impl TIP403Registry {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TIP403Registry", env: env, |input| { Self::new() })
     }
 }
 
 impl TIP20Factory {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TIP20Factory", env: env, |input| { Self::new() })
     }
 }
 
 impl TIP20Token {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Token", cfg, |input| {
+    pub fn create_precompile(address: Address, env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TIP20Token", env: env, |input| {
             Self::from_address(address).expect("TIP20 prefix already verified")
         })
     }
@@ -217,43 +296,64 @@ impl TIP20Token {
 
 impl StablecoinDEX {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("StablecoinDEX", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("StablecoinDEX", env: env, |input| { Self::new() })
     }
 }
 
 impl NonceManager {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("NonceManager", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("NonceManager", env: env, |input| { Self::new() })
     }
 }
 
 impl AccountKeychain {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", env: env, |input| { Self::new() })
     }
 }
 
 impl ValidatorConfig {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", env: env, |input| { Self::new() })
     }
 }
 
 impl ValidatorConfigV2 {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfigV2", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfigV2", env: env, |input| { Self::new() })
     }
 }
 
 impl SignatureVerifier {
     /// Creates the EVM precompile for this type.
-    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("SignatureVerifier", cfg, |input| { Self::new() })
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("SignatureVerifier", env: env, |input| { Self::new() })
+    }
+}
+
+impl TIP20ChannelReserve {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("TIP20ChannelReserve", env: env, |input| { Self::new() })
+    }
+}
+
+impl ReceivePolicyGuard {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("ReceivePolicyGuard", env: env, |input| { Self::new() })
+    }
+}
+
+impl StorageCredits {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
     }
 }
 
@@ -305,6 +405,18 @@ fn mutate_void<T: SolCall>(
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+}
+
+/// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
+#[inline]
+fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
+    if StorageCtx.spec().is_t7() {
+        StorageCredits::new().set_mode(
+            credit_owner,
+            tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
+        )?;
+    }
+    Ok(())
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
@@ -484,6 +596,14 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
+
+    fn test_tempo_precompiles(cfg_env: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
+        tempo_precompiles(
+            cfg_env,
+            StorageActions::disabled(),
+            Rc::new(RefCell::new(NonCreditableSlots::empty())),
+        )
+    }
 
     #[test]
     fn test_precompile_delegatecall() {
@@ -1073,7 +1193,7 @@ mod tests {
     fn test_extend_tempo_precompiles_registers_precompiles() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T3);
-        let precompiles = tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(&cfg);
 
         // TIP20Factory should be registered
         let factory_precompile = precompiles.get(&TIP20_FACTORY_ADDRESS);
@@ -1138,6 +1258,13 @@ mod tests {
             "SignatureVerifier should be registered at T3"
         );
 
+        // Channel reserve should be registered at T5
+        let channel_reserve_precompile = precompiles.get(&TIP20_CHANNEL_RESERVE_ADDRESS);
+        assert!(
+            channel_reserve_precompile.is_none(),
+            "TIP20 channel reserve should not be registered before T5"
+        );
+
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
         assert!(
@@ -1157,11 +1284,31 @@ mod tests {
     #[test]
     fn test_signature_verifier_not_registered_pre_t3() {
         let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompiles = tempo_precompiles(&cfg);
+        let precompiles = test_tempo_precompiles(&cfg);
 
         assert!(
             precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
             "SignatureVerifier should NOT be registered before T3"
+        );
+    }
+
+    #[test]
+    fn test_channel_reserve_registered_at_t5_only() {
+        let pre_t5 = CfgEnv::<TempoHardfork>::default();
+        assert!(
+            test_tempo_precompiles(&pre_t5)
+                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
+                .is_none(),
+            "TIP20 channel reserve should NOT be registered before T5"
+        );
+
+        let mut t5 = CfgEnv::<TempoHardfork>::default();
+        t5.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
+        assert!(
+            test_tempo_precompiles(&t5)
+                .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
+                .is_some(),
+            "TIP20 channel reserve should be registered at T5"
         );
     }
 
@@ -1173,7 +1320,7 @@ mod tests {
 
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.set_spec_and_mainnet_gas_params(spec);
-            tempo_precompiles(&cfg).get(&p256_addr).is_some()
+            test_tempo_precompiles(&cfg).get(&p256_addr).is_some()
         };
 
         // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)

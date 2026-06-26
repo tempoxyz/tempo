@@ -453,3 +453,233 @@ pub(crate) fn gen_collision_check_fn(
 
     (check_fn_name, check_fn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::extract_mapping_types;
+    use syn::parse_quote;
+
+    fn field(name: &str, ty: Type, slot: Option<u64>, base_slot: Option<u64>) -> FieldInfo {
+        FieldInfo {
+            name: Ident::new(name, proc_macro2::Span::call_site()),
+            ty,
+            slot: slot.map(U256::from),
+            base_slot: base_slot.map(U256::from),
+        }
+    }
+
+    #[test]
+    fn allocate_slots_edge_cases() {
+        // empty
+        assert!(allocate_slots(&[]).unwrap().is_empty());
+
+        // single auto → base=0
+        let f = [field("a", parse_quote!(U256), None, None)];
+        let r = allocate_slots(&f).unwrap();
+        assert!(
+            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO)
+        );
+
+        // single manual
+        let f = [field("a", parse_quote!(U256), Some(5), None)];
+        let r = allocate_slots(&f).unwrap();
+        assert!(matches!(r[0].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(5)));
+
+        // multiple auto fields share base_slot=0
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(u16), None, None),
+            field("c", parse_quote!(u32), None, None),
+        ];
+        for r in allocate_slots(&fields).unwrap() {
+            assert_eq!(*r.assigned_slot.ref_slot(), U256::ZERO);
+        }
+
+        // manual slot does NOT advance auto chain
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(U256), Some(10), None),
+            field("c", parse_quote!(u8), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert_eq!(*r[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert!(matches!(r[1].assigned_slot, SlotAssignment::Manual(_)));
+        assert_eq!(*r[2].assigned_slot.ref_slot(), U256::ZERO);
+
+        // base_slot resets auto chain
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(u8), None, Some(5)),
+            field("c", parse_quote!(u8), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert_eq!(*r[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert_eq!(*r[1].assigned_slot.ref_slot(), U256::from(5));
+        assert_eq!(*r[2].assigned_slot.ref_slot(), U256::from(5));
+
+        // multiple base_slot resets
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(u8), None, Some(3)),
+            field("c", parse_quote!(u8), None, None),
+            field("d", parse_quote!(u8), None, Some(10)),
+            field("e", parse_quote!(u8), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        let expected = [0u64, 3, 3, 10, 10];
+        for (i, exp) in expected.iter().enumerate() {
+            assert_eq!(*r[i].assigned_slot.ref_slot(), U256::from(*exp));
+        }
+
+        // interleaved manual + base_slot
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(U256), Some(50), None),
+            field("c", parse_quote!(u8), None, Some(20)),
+            field("d", parse_quote!(u8), None, None),
+            field("e", parse_quote!(U256), Some(99), None),
+            field("f", parse_quote!(u8), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert_eq!(*r[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert!(matches!(r[1].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(50)));
+        assert_eq!(*r[2].assigned_slot.ref_slot(), U256::from(20));
+        assert_eq!(*r[3].assigned_slot.ref_slot(), U256::from(20));
+        assert!(matches!(r[4].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(99)));
+        assert_eq!(*r[5].assigned_slot.ref_slot(), U256::from(20));
+
+        // explicit base_slot=0 behaves like default
+        let fields = vec![
+            field("a", parse_quote!(u8), None, Some(0)),
+            field("b", parse_quote!(u8), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert_eq!(*r[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert_eq!(*r[1].assigned_slot.ref_slot(), U256::ZERO);
+
+        // large manual slot
+        let f = [field("x", parse_quote!(U256), Some(u64::MAX), None)];
+        let r = allocate_slots(&f).unwrap();
+        assert_eq!(*r[0].assigned_slot.ref_slot(), U256::from(u64::MAX));
+
+        // preserves field names
+        let fields = vec![
+            field("alpha", parse_quote!(u64), None, None),
+            field("beta", parse_quote!(U256), Some(7), None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert_eq!(r[0].name.to_string(), "alpha");
+        assert_eq!(r[1].name.to_string(), "beta");
+
+        // mixed direct + mapping kinds
+        let fields = vec![
+            field("name", parse_quote!(String), None, None),
+            field("balances", parse_quote!(Mapping<Address, U256>), None, None),
+            field("supply", parse_quote!(U256), None, None),
+        ];
+        let r = allocate_slots(&fields).unwrap();
+        assert!(matches!(r[0].kind, FieldKind::Direct(_)));
+        assert!(matches!(r[1].kind, FieldKind::Mapping { .. }));
+        assert!(matches!(r[2].kind, FieldKind::Direct(_)));
+    }
+
+    #[test]
+    fn classify_field_type_variations() {
+        let assert_direct = |ty: Type| {
+            assert!(matches!(
+                classify_field_type(&ty).unwrap(),
+                FieldKind::Direct(_)
+            ));
+        };
+        let assert_mapping = |ty: Type| {
+            assert!(matches!(
+                classify_field_type(&ty).unwrap(),
+                FieldKind::Mapping { .. }
+            ));
+        };
+
+        // primitive → Direct
+        assert_direct(parse_quote!(u64));
+        assert_direct(parse_quote!(U256));
+        assert_direct(parse_quote!(String));
+
+        // non-mapping generic → Direct
+        assert_direct(parse_quote!(Vec<u8>));
+        assert_direct(parse_quote!(Option<u32>));
+
+        // simple mapping → Mapping
+        assert_mapping(parse_quote!(Mapping<Address, U256>));
+
+        // nested mapping → Mapping with Mapping value
+        if let FieldKind::Mapping { value, .. } =
+            classify_field_type(&parse_quote!(Mapping<Address, Mapping<Address, U256>>)).unwrap()
+        {
+            assert!(extract_mapping_types(value).is_some());
+        } else {
+            panic!("expected nested Mapping");
+        }
+    }
+
+    #[test]
+    fn packing_constants_variations() {
+        let span = proc_macro2::Span::call_site();
+
+        // multi-word snake_case
+        let c = PackingConstants::new(&Ident::new("total_supply", span));
+        assert_eq!(c.location().to_string(), "TOTAL_SUPPLY_LOC");
+        let (slot, offset) = c.into_tuple();
+        assert_eq!(slot.to_string(), "TOTAL_SUPPLY");
+        assert_eq!(offset.to_string(), "TOTAL_SUPPLY_OFFSET");
+
+        // single-char
+        let c = PackingConstants::new(&Ident::new("x", span));
+        assert_eq!(c.slot().to_string(), "X");
+        assert_eq!(c.offset().to_string(), "X_OFFSET");
+        assert_eq!(c.location().to_string(), "X_LOC");
+
+        // single word
+        let c = PackingConstants::new(&Ident::new("balance", span));
+        assert_eq!(c.slot().to_string(), "BALANCE");
+        assert_eq!(c.location().to_string(), "BALANCE_LOC");
+
+        // const_name helper
+        assert_eq!(const_name(&Ident::new("my_field", span)), "MY_FIELD");
+        assert_eq!(const_name(&Ident::new("x", span)), "X");
+    }
+
+    #[test]
+    fn slot_assignment_ref_slot_variations() {
+        let assert_ref_slot = |assignment: SlotAssignment, expected: U256| {
+            assert_eq!(*assignment.ref_slot(), expected);
+        };
+
+        // Manual: typical, zero, large
+        assert_ref_slot(SlotAssignment::Manual(U256::from(42)), U256::from(42));
+        assert_ref_slot(SlotAssignment::Manual(U256::ZERO), U256::ZERO);
+        assert_ref_slot(
+            SlotAssignment::Manual(U256::from(u64::MAX)),
+            U256::from(u64::MAX),
+        );
+
+        // Auto: typical, zero, large
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::from(7),
+            },
+            U256::from(7),
+        );
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::ZERO,
+            },
+            U256::ZERO,
+        );
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::from(u64::MAX),
+            },
+            U256::from(u64::MAX),
+        );
+    }
+}

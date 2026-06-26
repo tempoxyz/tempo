@@ -769,8 +769,9 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
         vm.recordLogs();
         vm.prank(actor);
         try token.setRewardRecipient(virtualAddr) {
-            revert("TEMPO-VA16: setRewardRecipient unexpectedly succeeded");
-        } catch (bytes memory reason) {
+        // T7 accepts this call as a no-op; the state checks below still apply.
+        }
+        catch (bytes memory reason) {
             assertEq(
                 bytes4(reason),
                 ITIP20.InvalidRecipient.selector,
@@ -831,7 +832,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
                            GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_globalInvariants() public view {
+    function invariant_virtualAddressesGlobal() public view {
         for (uint256 i = 0; i < _masters.length; i++) {
             MasterFixture memory fixture = _masters[i];
             bytes32 registrationHash = keccak256(abi.encodePacked(fixture.master, fixture.salt));

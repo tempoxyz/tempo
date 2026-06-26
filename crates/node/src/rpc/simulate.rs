@@ -1,15 +1,18 @@
 use crate::{node::TempoNode, rpc::TempoEthApi};
+use alloy_eips::BlockId;
 use alloy_primitives::{Address, B256, keccak256};
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_ethereum::evm::revm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
+use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;
-use reth_provider::{BlockIdReader, ChainSpecProvider, HeaderProvider};
+use reth_provider::ChainSpecProvider;
 use reth_rpc_eth_api::{
     RpcBlock, RpcNodeCore,
-    helpers::{EthCall, LoadState, SpawnBlocking},
+    helpers::{EthCall, LoadBlock, LoadState, SpawnBlocking},
 };
+use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,7 +21,7 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{error::TempoPrecompileError, tip20::TIP20Token};
+use tempo_precompiles::{error::TempoPrecompileError, storage::StorageActions, tip20::TIP20Token};
 use tempo_primitives::TempoAddressExt;
 
 /// keccak256("Transfer(address,address,uint256)")
@@ -69,11 +72,11 @@ pub trait TempoSimulateApi {
 /// Implementation of `tempo_simulateV1`.
 #[derive(Debug, Clone)]
 pub struct TempoSimulate<N: FullNodeTypes<Types = TempoNode>> {
-    eth_api: TempoEthApi<N>,
+    eth_api: TempoEthApi<NodeAdapter<N>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
-    pub fn new(eth_api: TempoEthApi<N>) -> Self {
+    pub fn new(eth_api: TempoEthApi<NodeAdapter<N>>) -> Self {
         Self { eth_api }
     }
 }
@@ -127,16 +130,22 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
         // metadata resolution concurrently with the simulation.
         let prefetched = extract_tip20_targets(&payload);
 
-        // Run simulation and metadata prefetch concurrently
+        let block = block.unwrap_or_default();
+        let base_block = self
+            .eth_api
+            .recovered_block(block)
+            .await?
+            .ok_or(EthApiError::HeaderNotFound(block))?;
+        let base_block_timestamp = base_block.timestamp();
+        let block = BlockId::hash(base_block.hash());
+
+        // Run simulation and metadata prefetch concurrently against the same block.
         let (sim_result, mut token_metadata) = tokio::join!(
-            self.eth_api.simulate_v1(payload, block),
-            self.resolve_token_metadata(prefetched, block),
+            self.eth_api.simulate_v1(payload, Some(block)),
+            self.resolve_token_metadata(prefetched, block, base_block_timestamp),
         );
 
-        let blocks = sim_result.map_err(|e| {
-            let err: jsonrpsee::types::ErrorObject<'static> = e.into();
-            err
-        })?;
+        let blocks = sim_result?;
 
         // Scan simulation logs for any additional TIP-20 addresses not in the
         // prefetched set (e.g. tokens touched indirectly via contract calls).
@@ -156,7 +165,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulateApiServer for TempoSimula
 
         if !extra.is_empty() {
             let extra_metadata = self
-                .resolve_token_metadata(extra.into_iter().collect(), block)
+                .resolve_token_metadata(extra.into_iter().collect(), block, base_block_timestamp)
                 .await;
             token_metadata.extend(extra_metadata);
         }
@@ -173,7 +182,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
     async fn resolve_token_metadata(
         &self,
         addresses: Vec<Address>,
-        block: Option<alloy_eips::BlockId>,
+        block: BlockId,
+        timestamp: u64,
     ) -> BTreeMap<Address, Tip20TokenMetadata> {
         if addresses.is_empty() {
             return BTreeMap::new();
@@ -182,59 +192,47 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
         let result = self
             .eth_api
             .spawn_blocking_io_fut(async move |this| {
-                let state = this.state_at_block_id_or_latest(block).await?;
-
-                // Derive hardfork spec from the target block's timestamp.
-                let timestamp = block
-                    .and_then(|id| {
-                        this.provider()
-                            .block_number_for_id(id)
-                            .ok()
-                            .flatten()
-                            .and_then(|num| {
-                                this.provider()
-                                    .header_by_number(num)
-                                    .ok()
-                                    .flatten()
-                                    .map(|h| h.timestamp())
-                            })
-                    })
-                    .unwrap_or(u64::MAX);
-
+                let state = this.state_at_block_id(block).await?;
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
                 let mut db = StateProviderDatabase::new(state);
 
-                let mut metadata = BTreeMap::new();
-                for addr in &addresses {
-                    let result = db.with_read_only_storage_ctx(spec, || {
-                        let token = TIP20Token::from_address(*addr)?;
-                        Ok::<_, TempoPrecompileError>((
-                            token.name()?,
-                            token.symbol()?,
-                            token.currency()?,
-                        ))
-                    });
+                let metadata =
+                    db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+                        let mut metadata = BTreeMap::new();
 
-                    match result {
-                        Ok((name, symbol, currency)) => {
-                            metadata.insert(
-                                *addr,
-                                Tip20TokenMetadata {
-                                    name,
-                                    symbol,
-                                    currency,
-                                },
-                            );
+                        for addr in &addresses {
+                            let result = (|| {
+                                let token = TIP20Token::from_address(*addr)?;
+                                Ok::<_, TempoPrecompileError>((
+                                    token.name()?,
+                                    token.symbol()?,
+                                    token.currency()?,
+                                ))
+                            })();
+
+                            match result {
+                                Ok((name, symbol, currency)) => {
+                                    metadata.insert(
+                                        *addr,
+                                        Tip20TokenMetadata {
+                                            name,
+                                            symbol,
+                                            currency,
+                                        },
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        token = %addr,
+                                        error = %e,
+                                        "failed to resolve TIP-20 metadata, skipping"
+                                    );
+                                }
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                token = %addr,
-                                error = %e,
-                                "failed to resolve TIP-20 metadata, skipping"
-                            );
-                        }
-                    }
-                }
+
+                        metadata
+                    });
 
                 Ok(metadata)
             })

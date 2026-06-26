@@ -3,7 +3,12 @@ name = "tempo-e2e"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [dependencies]
@@ -56,7 +61,7 @@ tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-evm.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
-tempo-commonware-node.workspace = true
+tempo-consensus.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 

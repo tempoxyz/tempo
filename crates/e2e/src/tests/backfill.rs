@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock, Metrics, Runner as _,
+    Clock, Runner as _,
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
@@ -10,7 +10,8 @@ use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
 use crate::{
-    Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs, setup_validators,
+    Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
+    metrics::MetricsExt, setup_validators,
 };
 
 #[test_traced]
@@ -32,26 +33,6 @@ fn validator_can_join_later_with_pipeline_sync() {
     }
     .run();
     let _ = tempo_eyre::install();
-}
-
-#[track_caller]
-fn assert_no_new_epoch(context: &impl Metrics, max_epoch: u64) {
-    let metrics = context.encode();
-    for line in metrics.lines() {
-        let mut parts = line.split_whitespace();
-        let metric = parts.next().unwrap();
-        let value = parts.next().unwrap();
-
-        if metric.ends_with("_peers_blocked") {
-            let value = value.parse::<u64>().unwrap();
-            assert_eq!(value, 0);
-        }
-
-        if metric.ends_with("_epoch_manager_latest_epoch") {
-            let value = value.parse::<u64>().unwrap();
-            assert!(value <= max_epoch, "epoch progressed; sync likely failed");
-        }
-    }
 }
 
 struct AssertJoinsLate {
@@ -100,7 +81,12 @@ impl AssertJoinsLate {
             // Assert that last node is able to catch up and progress
             while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
                 context.sleep(Duration::from_millis(100)).await;
-                assert_no_new_epoch(&context, 0);
+                let metrics = context.to_metrics();
+                metrics.assert_no_blocked_peers();
+                assert!(
+                    metrics.consensus_before_epoch(1),
+                    "epoch progressed; sync likely failed"
+                );
             }
             // Verify backfill behavior
             let actual_runs = get_pipeline_runs(metrics_recorder);

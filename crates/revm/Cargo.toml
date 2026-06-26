@@ -3,8 +3,13 @@ name = "tempo-revm"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -12,7 +17,7 @@ workspace = true
 
 [dependencies]
 tempo-precompiles.workspace = true
-tempo-primitives = { workspace = true, features = ["reth"] }
+tempo-primitives = { workspace = true, features = ["reth", "evm"] }
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 
@@ -31,7 +36,6 @@ auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 eyre.workspace = true
@@ -52,7 +56,6 @@ test-case.workspace = true
 reth = ["dep:reth-storage-api"]
 rpc = ["dep:reth-rpc-eth-types"]
 serde = [
-	"dep:serde",
 	"revm/serde",
 	"alloy-consensus/serde",
 	"alloy-eips/serde",

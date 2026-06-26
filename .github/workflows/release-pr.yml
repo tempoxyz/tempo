@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path
           import re
 
-          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts"}
+          targets = {"tempo-alloy", "tempo-primitives", "tempo-chainspec", "tempo-contracts", "tempo-hardfork"}
 
           for path in Path(".changelog").glob("*.md"):
               text = path.read_text(encoding="utf-8")
@@ -70,7 +70,7 @@ jobs:
               path.write_text("---\n" + "".join(kept) + "---\n" + body, encoding="utf-8")
           PY
 
-      - uses: tempoxyz/changelogs@b0179e7300997dfa5a631a6a7a2de248bf63310f # master @ 2026-04-08 (post-v0.6.3)
+      - uses: tempoxyz/changelogs@29ac40b71b3966761305991d99f21c5195d7466b # master @ 2026-06-09 (post-v0.6.3)
         id: changelogs
         with:
           conventional-commit: true

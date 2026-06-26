@@ -1,0 +1,36 @@
+[
+  {
+    "type": "function",
+    "name": "mint",
+    "inputs": [
+      {
+        "name": "userToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "validatorToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amountValidatorToken",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "liquidity",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  }
+]

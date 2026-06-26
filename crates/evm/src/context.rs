@@ -52,9 +52,12 @@ pub struct TempoNextBlockEnvAttributes {
 impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives::TempoHeader>
     for TempoNextBlockEnvAttributes
 {
-    fn build_pending_env(parent: &crate::SealedHeader<tempo_primitives::TempoHeader>) -> Self {
+    fn build_pending_env(
+        parent: &crate::SealedHeader<tempo_primitives::TempoHeader>,
+        block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
+    ) -> Self {
         Self {
-            inner: NextBlockEnvAttributes::build_pending_env(parent),
+            inner: NextBlockEnvAttributes::build_pending_env(parent, block_overrides),
             general_gas_limit: parent.general_gas_limit,
             shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
@@ -91,7 +94,7 @@ mod tests {
             ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
-        let pending_env = TempoNextBlockEnvAttributes::build_pending_env(&parent);
+        let pending_env = TempoNextBlockEnvAttributes::build_pending_env(&parent, None);
 
         // Verify values are copied directly from parent
         assert_eq!(pending_env.general_gas_limit, general_gas_limit);

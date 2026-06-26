@@ -467,7 +467,7 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Run all invariant checks
-    function invariant_globalInvariants() public view {
+    function invariant_validatorConfigGlobal() public view {
         _invariantOwnerConsistency();
         _invariantValidatorCountConsistency();
         _invariantValidatorDataConsistency();

@@ -11,6 +11,7 @@ mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+pub mod consensus;
 #[cfg(feature = "engine")]
 mod engine;
 #[cfg(feature = "engine")]
@@ -18,6 +19,7 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
@@ -40,7 +42,10 @@ use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
-pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
+pub use tempo_revm::{
+    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction,
+    TempoStateAccess,
+};
 
 #[cfg(test)]
 mod test_utils;
@@ -161,6 +166,11 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }
@@ -210,6 +220,11 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }
@@ -252,8 +267,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            shared_gas_limit: block.header().gas_limit()
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
             consensus_context: block.header().consensus_context,
@@ -280,8 +294,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 tx_count_hint: None,
             },
             general_gas_limit: attributes.general_gas_limit,
-            shared_gas_limit: attributes.inner.gas_limit
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,
@@ -566,7 +579,7 @@ mod tests {
             },
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
-            shared_gas_limit: 3_000_000,
+            shared_gas_limit: 0,
             ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
@@ -601,7 +614,7 @@ mod tests {
 
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
-        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert_eq!(context.shared_gas_limit, 4_000_000);
         assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(

@@ -27,7 +27,7 @@ use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_codec::Encode;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
@@ -35,9 +35,10 @@ use futures::future::join_all;
 use itertools::Itertools as _;
 use rand_core::CryptoRngCore;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::{consensus, feed::FeedStateHandle};
+use tempo_consensus::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
+pub mod metrics;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
@@ -134,14 +135,8 @@ pub struct Setup {
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
-    /// The amount of time the node waits for the execution layer to return
-    /// a build a payload.
-    pub new_payload_wait_time: Duration,
-
-    /// The t4 hardfork time.
-    ///
-    /// Default: `None` (not activated).
-    pub t4_time: Option<u64>,
+    /// Local proposal return budget, excluding the network propagation allowance.
+    pub proposal_return_budget: Duration,
 
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
@@ -162,8 +157,7 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            new_payload_wait_time: Duration::from_millis(300),
-            t4_time: None,
+            proposal_return_budget: Duration::from_millis(300),
             with_subblocks: false,
             fee_recipient: Address::ZERO,
         }
@@ -198,9 +192,9 @@ impl Setup {
         }
     }
 
-    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
+    pub fn proposal_return_budget(self, proposal_return_budget: Duration) -> Self {
         Self {
-            new_payload_wait_time,
+            proposal_return_budget,
             ..self
         }
     }
@@ -215,13 +209,6 @@ impl Setup {
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
-            ..self
-        }
-    }
-
-    pub fn t4_time(self, t4_time: u64) -> Self {
-        Self {
-            t4_time: Some(t4_time),
             ..self
         }
     }
@@ -246,8 +233,7 @@ pub async fn setup_validators(
         how_many_signers,
         how_many_verifiers,
         linkage,
-        new_payload_wait_time,
-        t4_time,
+        proposal_return_budget,
         with_subblocks,
         fee_recipient,
         ..
@@ -273,7 +259,6 @@ pub async fn setup_validators(
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_t4_time(t4_time)
         .with_validators(validators.clone())
         .launch()
         .unwrap();
@@ -316,13 +301,15 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            payload_interrupt_time: Duration::from_millis(200),
-            new_payload_wait_time,
+            proposal_return_budget,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state,
             with_subblocks,
+            // Plenty of headroom for any test; the marshal will fall back to
+            // reth past this depth via the hybrid finalized blocks store.
+            finalized_blocks_retention: 1024,
         };
 
         nodes.push(TestingNode::new(
@@ -343,7 +330,7 @@ pub async fn setup_validators(
 }
 
 /// Runs a test configured by [`Setup`].
-pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> String {
+pub fn run(setup: Setup, mut stop_condition: impl FnMut(&metrics::Metrics) -> bool) -> String {
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -352,36 +339,11 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
-        loop {
-            let metrics = context.encode();
-
-            let mut success = false;
-            for line in metrics.lines() {
-                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                    continue;
-                }
-
-                let mut parts = line.split_whitespace();
-                let metric = parts.next().unwrap();
-                let value = parts.next().unwrap();
-
-                if metric.ends_with("_peers_blocked") {
-                    let value = value.parse::<u64>().unwrap();
-                    assert_eq!(value, 0);
-                }
-
-                if stop_condition(metric, value) {
-                    success = true;
-                    break;
-                }
-            }
-
-            if success {
-                break;
-            }
-
-            context.sleep(Duration::from_secs(1)).await;
-        }
+        metrics::wait_for_metrics(&context, |metrics| {
+            metrics.assert_no_blocked_peers();
+            stop_condition(metrics)
+        })
+        .await;
 
         context.auditor().state()
     })

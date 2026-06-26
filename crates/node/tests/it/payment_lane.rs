@@ -1,14 +1,40 @@
-use crate::utils::TestNodeBuilder;
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     network::ReceiptResponse,
-    primitives::U256,
+    primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
+    signers::{
+        SignerSync,
+        local::{MnemonicBuilder, PrivateKeySigner},
+    },
+    sol_types::SolEvent,
 };
+use alloy_eips::BlockNumberOrTag;
+use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IFeeManager, ITIP20};
-use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+use tempo_chainspec::{constants::gas::TEMPO_T7_BASE_FEE_FLOOR, spec::TEMPO_T1_BASE_FEE};
+use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+
+async fn block_base_fee<P, R>(provider: &P, receipt: &R) -> eyre::Result<u128>
+where
+    P: Provider,
+    R: ReceiptResponse,
+{
+    let block_number = receipt
+        .block_number()
+        .expect("mined receipt should have a block number");
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .await?
+        .expect("receipt block should exist");
+    Ok(u128::from(
+        block
+            .header
+            .base_fee_per_gas
+            .expect("tempo blocks should have base fee"),
+    ))
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
@@ -223,7 +249,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                     .from(accounts[j])
                     .to(accounts[j]) // Send to self
                     .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000)
+                    .gas_limit(250_000)
                     .value(U256::ZERO);
 
                 all_futures.push((provider.send_transaction(tx), "non-payment"));
@@ -236,8 +262,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = transfer_tx
                     .into_transaction_request()
                     .from(caller2)
-                    .gas_price(TEMPO_T1_BASE_FEE as u128)
-                    .gas_limit(2_000_000);
+                    .gas_price(TEMPO_T7_BASE_FEE_FLOOR as u128)
+                    .gas_limit(250_000);
 
                 all_futures.push((provider2.send_transaction(tx), "payment"));
             }
@@ -326,15 +352,16 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         payment_receipts.len()
     );
 
-    // Expectation 2: Payment fees should remain low (basefee) as they're not competing with DeFi
+    // Expectation 2: Payment transactions should pay the block base fee.
     for receipt in &payment_receipts {
-        let effective_price = receipt.effective_gas_price();
+        let base_fee = block_base_fee(&provider, receipt).await?;
         assert_eq!(
-            effective_price, TEMPO_T1_BASE_FEE as u128,
-            "Payment tx should pay base fee, not elevated prices"
+            receipt.effective_gas_price(),
+            base_fee,
+            "payment tx should pay the block base fee"
         );
     }
-    println!("Payment transactions paid base fee ({TEMPO_T1_BASE_FEE})");
+    println!("Payment transactions paid the block base fee");
 
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();
@@ -594,6 +621,136 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
             "Payment tx should succeed even with high non-payment gas usage"
         );
         println!("Payment tx {} succeeded, used {} gas", i, receipt.gas_used);
+    }
+
+    Ok(())
+}
+
+/// Channel reserve payment calls (open, topUp, settle) succeed at base fee
+/// even when non-payment gas is under heavy load.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let url = setup.http_url;
+
+    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder_provider = ProviderBuilder::new()
+        .wallet(funder.clone())
+        .connect_http(url.clone());
+
+    let payer = PrivateKeySigner::from_bytes(&B256::with_last_byte(0x21)).unwrap();
+    let payer_provider = ProviderBuilder::new()
+        .wallet(payer.clone())
+        .connect_http(url.clone());
+
+    // Fund payer. Reserve open/topUp use native system movement and must not require allowance.
+    let token = ITIP20::new(PATH_USD_ADDRESS, funder_provider.clone());
+    token
+        .transfer(payer.address(), U256::from(20_000_000u64))
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Apply non-payment gas pressure
+    for _ in 0..3 {
+        let tx = TransactionRequest::default()
+            .from(funder.address())
+            .to(funder.address())
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_limit(2_000_000)
+            .value(U256::ZERO);
+        let r = funder_provider
+            .send_transaction(tx)
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(r.status());
+    }
+
+    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, payer_provider.clone());
+
+    // open (payment) — set operator=payer so payer can call settle
+    let open_r = reserve
+        .open(
+            Address::random(),
+            payer.address(),
+            PATH_USD_ADDRESS,
+            U96::from(1_000u64),
+            B256::random(),
+            Address::ZERO,
+        )
+        .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(open_r.status(), "reserve open should succeed");
+
+    let opened = open_r
+        .inner
+        .logs()
+        .iter()
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
+        .ok_or_else(|| eyre::eyre!("ChannelOpened not found"))?;
+    let desc = ITIP20ChannelReserve::ChannelDescriptor {
+        payer: opened.payer,
+        payee: opened.payee,
+        operator: opened.operator,
+        token: opened.token,
+        salt: opened.salt,
+        authorizedSigner: opened.authorizedSigner,
+        expiringNonceHash: opened.expiringNonceHash,
+    };
+
+    // topUp (payment)
+    let topup_r = reserve
+        .topUp(desc.clone(), U96::from(500u64))
+        .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(topup_r.status(), "reserve topUp should succeed");
+
+    // settle (payment, requires voucher signature)
+    let settle_amount = U96::from(200u64);
+    let digest = reserve
+        .getVoucherDigest(opened.channelId, settle_amount)
+        .call()
+        .await?;
+    let sig = payer.sign_hash_sync(&digest)?;
+    let settle_r = reserve
+        .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
+        .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(settle_r.status(), "reserve settle should succeed");
+
+    // These reserve calls use a high gas limit. With zero priority fee, they should pay the block
+    // base fee.
+    for (name, r) in [
+        ("open", &open_r),
+        ("topUp", &topup_r),
+        ("settle", &settle_r),
+    ] {
+        let base_fee = block_base_fee(&payer_provider, r).await?;
+        assert_eq!(
+            r.effective_gas_price(),
+            base_fee,
+            "{name} should pay the block base fee"
+        );
     }
 
     Ok(())
