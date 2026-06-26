@@ -8,8 +8,9 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, KeccakKeyHasher,
+    MultiProof, MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -210,7 +211,7 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let result = self.inner.hashed_post_state(bundle_state);
+        let result = HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state());
         drop(_span);
         self.metrics
             .hashed_post_state_duration_seconds
