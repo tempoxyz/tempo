@@ -208,6 +208,11 @@ where
             return Some(tx);
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.inner.size_hint();
+        (0, upper)
+    }
 }
 
 impl<I> BestTransactions for StateAwareBestTransactions<I>

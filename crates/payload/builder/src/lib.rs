@@ -90,6 +90,7 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+const ROOTS_TASK_PREALLOC_TX_CAP: usize = 16_384;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -526,8 +527,6 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
-
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
@@ -573,6 +572,13 @@ where
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
+
+        let roots_capacity_hint = best_txs
+            .size_hint()
+            .1
+            .unwrap_or_default()
+            .min(ROOTS_TASK_PREALLOC_TX_CAP);
+        let (roots_tx, roots_rx) = self.spawn_roots_task(roots_capacity_hint);
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
@@ -1221,6 +1227,7 @@ where
 
     fn spawn_roots_task(
         &self,
+        transaction_capacity: usize,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -1230,9 +1237,9 @@ where
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+            .spawn_blocking_named("builder-roots-task", move || {
+                let mut transactions = Vec::with_capacity(transaction_capacity);
+                let mut senders = Vec::with_capacity(transaction_capacity);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();

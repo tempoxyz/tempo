@@ -27,6 +27,7 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    capacity_hint: Option<usize>,
 }
 
 impl BestTransactionsPrewarming {
@@ -54,10 +55,12 @@ impl BestTransactionsPrewarming {
             stop: stop.clone(),
         };
 
+        let capacity_hint = best_txs.size_hint().1;
         let this = Self {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop,
+            capacity_hint,
         };
 
         let prewarm_executor = executor.clone();
@@ -233,6 +236,10 @@ impl Iterator for BestTransactionsPrewarming {
             .send(BestTransactionsCommand::Advance)
             .ok()?;
         self.transactions_rx.recv().ok().flatten()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.capacity_hint)
     }
 }
 
