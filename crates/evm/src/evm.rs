@@ -322,7 +322,7 @@ mod tests {
         DatabaseCommit,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
-        state::{Account, EvmState, EvmStorageSlot, TransactionId},
+        state::EvmState,
     };
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
