@@ -21,9 +21,64 @@ address_pools:
 
 artifacts:
   ERC20: ../erc20.abi.json
+  FeeAMM: ../fee-amm.abi.json
 
 setup:
   steps:
+    - id: mint_alpha_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_beta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000002"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
+    - id: mint_theta_pathusd_liquidity
+      tx:
+        type: tempo
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 1000000
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        call:
+          to: "0xfeec000000000000000000000000000000000000"
+          abi: FeeAMM
+          function: mint
+          args:
+            - "0x20c0000000000000000000000000000000000003"
+            - "0x20c0000000000000000000000000000000000000"
+            - 10000000000
+            - "0xfeec000000000000000000000000000000000000"
     - id: authorize_keychain_users
       keychain_authorize_pool:
         accounts:
