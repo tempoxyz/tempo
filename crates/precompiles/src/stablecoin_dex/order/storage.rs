@@ -296,13 +296,13 @@ impl Handler<Order> for OrderHandler {
     }
 }
 
-/// Storage wrapper for the DEX `orders` mapping.
+/// Specialized `Mapping<u128, Order>` wrapper for DEX `orders`, whose handlers retain the order ID.
 ///
 /// It preserves the original mapping base slot and key type while returning handlers that retain
 /// the `order_id` key. Version 1 order values no longer store `order_id`, so reads synthesize it
 /// from this key.
 #[derive(Debug)]
-pub(crate) struct OrderStorage {
+pub(crate) struct OrderMapping {
     /// Base slot of the `orders` mapping.
     base_slot: U256,
     /// Contract address whose storage contains the mapping.
@@ -311,7 +311,7 @@ pub(crate) struct OrderStorage {
     cache: HandlerCache<u128, OrderHandler>,
 }
 
-impl OrderStorage {
+impl OrderMapping {
     #[inline]
     fn new(base_slot: U256, address: Address) -> Self {
         Self {
@@ -338,7 +338,7 @@ impl OrderStorage {
     }
 }
 
-impl Index<u128> for OrderStorage {
+impl Index<u128> for OrderMapping {
     type Output = OrderHandler;
 
     /// Returns a cached order handler by order ID.
@@ -347,26 +347,26 @@ impl Index<u128> for OrderStorage {
     }
 }
 
-impl IndexMut<u128> for OrderStorage {
+impl IndexMut<u128> for OrderMapping {
     /// Returns a mutable cached order handler by order ID.
     fn index_mut(&mut self, order_id: u128) -> &mut Self::Output {
         self.at_mut(order_id)
     }
 }
 
-impl Clone for OrderStorage {
+impl Clone for OrderMapping {
     fn clone(&self) -> Self {
         Self::new(self.base_slot, self.address)
     }
 }
 
-impl Default for OrderStorage {
+impl Default for OrderMapping {
     fn default() -> Self {
         Self::new(U256::ZERO, Address::ZERO)
     }
 }
 
-impl StorableType for OrderStorage {
+impl StorableType for OrderMapping {
     const LAYOUT: Layout = Layout::Slots(1);
 
     type Handler = Self;
