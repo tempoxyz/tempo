@@ -28,8 +28,12 @@ tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["ws"] }
+alloy-pubsub.workspace = true
+alloy-rpc-client = { workspace = true, features = ["ws"] }
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
+alloy-transport.workspace = true
 
 axum.workspace = true
 bytes.workspace = true
@@ -51,7 +55,6 @@ commonware-utils.workspace = true
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
-jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
 indexmap.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
@@ -69,7 +72,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 
-serde_json.workspace = true
 thiserror.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }

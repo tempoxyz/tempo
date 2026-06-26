@@ -1,5 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
+use alloy_provider::{Provider as _, RootProvider, WsConnect};
+use alloy_rpc_client::{ClientBuilder, NoParams};
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _};
@@ -8,13 +10,7 @@ use futures::{
     future::{BoxFuture, Either},
     stream::{self, Fuse, FusedStream},
 };
-use jsonrpsee::{
-    core::{client, client::Subscription},
-    ws_client::{WsClient, WsClientBuilder},
-};
-use rand_08::Rng as _;
-use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
-use tempo_telemetry_util::display_duration;
+use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -24,11 +20,10 @@ use tracing::{debug, debug_span, instrument, warn, warn_span};
 use crate::utils::OptionFuture;
 
 pub(super) type EventStream =
-    Either<stream::Empty<Result<Event, serde_json::Error>>, Fuse<Subscription<Event>>>;
+    Either<stream::Empty<Event>, Fuse<alloy_pubsub::SubscriptionStream<Event>>>;
 
-const RECONNECT_BACKOFF_FACTOR: u64 = 2;
-const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
-const RECONNECT_JITTER: Duration = Duration::from_secs(1);
+const RECONNECT_MAX_RETRIES: u32 = u32::MAX;
+const RECONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Manages the connection to the upstream node.
 ///
@@ -36,12 +31,13 @@ const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 /// it if necessary.
 pub(crate) struct Actor<TContext> {
     pub(super) context: ContextCell<TContext>,
-    pub(super) connection: Option<Arc<WsClient>>,
+    pub(super) connection: Option<Arc<RootProvider>>,
     pub(super) mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     pub(super) url: &'static str,
-    pub(super) pending_connect: OptionFuture<BoxFuture<'static, (u64, eyre::Result<WsClient>)>>,
-    pub(super) pending_stream:
-        OptionFuture<BoxFuture<'static, Result<Subscription<Event>, client::Error>>>,
+    pub(super) pending_connect: OptionFuture<BoxFuture<'static, eyre::Result<RootProvider>>>,
+    pub(super) pending_stream: OptionFuture<
+        BoxFuture<'static, alloy_transport::TransportResult<alloy_pubsub::Subscription<Event>>>,
+    >,
     pub(super) event_stream: EventStream,
     /// Requests for blocks while the actor is trying to establish a connection.
     pub(super) waiters: Vec<(Height, oneshot::Sender<Option<CertifiedBlock>>)>,
@@ -66,29 +62,18 @@ where
             select!(
                 biased;
 
-                (attempts, client) = &mut self.pending_connect => {
+                client = &mut self.pending_connect => {
                     match client {
                         Ok(client) => {
                             let client = Arc::new(client);
                             self.connection.replace(client);
                         }
                         Err(reason) => {
-                            let reconnect_in = reconnect_delay(attempts);
                             warn_span!("reconnect").in_scope(|| warn!(
                                 %reason,
-                                attempts,
-                                reconnect_in = %display_duration(reconnect_in),
                                 url = self.url,
-                                "connecting to upstream node failed, attempting again",
+                                "connecting to upstream node failed",
                             ));
-                            self.pending_connect.replace({
-                                let context = self.context.clone();
-                                let url = self.url;
-                                async move {
-                                    context.sleep(reconnect_in).await;
-                                    connect(url, attempts.saturating_add(1)).await
-                                }.boxed()
-                            });
                         }
                     }
                 }
@@ -113,18 +98,11 @@ where
 
                 event = self.event_stream.next(), if !self.event_stream.is_terminated() => {
                     match event {
-                        Some(Ok(event)) => {
+                        Some(event) => {
                             debug_span!("consensus_event").in_scope(|| debug!(
                                 ?event, "received consensus event, forwarding to reporter"
                             ));
                             reporter.report(event).await;
-                        }
-                        Some(Err(error)) => {
-                            warn_span!("event").in_scope(|| warn!(
-                                %error,
-                                "event stream encountered an error",
-                            ));
-                            self.event_stream = inactive_event_stream();
                         }
                         None => {
                             warn_span!("event_subscription").in_scope(|| warn!(
@@ -154,7 +132,7 @@ where
         }
 
         let Some(client) = self.connection.clone() else {
-            self.pending_connect.replace(connect(self.url, 1));
+            self.pending_connect.replace(connect(self.url));
             return;
         };
 
@@ -162,33 +140,20 @@ where
             return;
         }
 
-        if client.is_connected() {
-            self.pending_stream.replace(subscribe(client));
-        } else {
-            warn!(url = self.url, "upstream client disconnected, reconnecting");
-            self.connection.take();
-            self.pending_connect.replace(connect(self.url, 1));
-        }
+        self.pending_stream.replace(subscribe(client));
     }
 
     /// Drains the waiters by fetching the finalizations they are waiting for.
     ///
     /// Only executes if a client is present and connected.
     fn drain_waiters(&mut self) {
-        if self.pending_connect.is_some()
-            || self.pending_stream.is_some()
-            || self.event_stream.is_terminated()
-        {
+        if self.pending_connect.is_some() || self.pending_stream.is_some() {
             return;
         }
 
         let Some(client) = &self.connection else {
             return;
         };
-        if !client.is_connected() {
-            return;
-        }
-
         for (height, response) in self.waiters.drain(..) {
             let client = client.clone();
             self.context
@@ -198,79 +163,56 @@ where
     }
 }
 
-fn connect(url: &'static str, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<WsClient>)> {
+fn connect(url: &'static str) -> BoxFuture<'static, eyre::Result<RootProvider>> {
     async move {
-        (
-            attempts,
-            WsClientBuilder::default()
-                .build(&url)
-                .await
-                .map_err(Report::new),
-        )
+        let ws = WsConnect::new(url)
+            .with_max_retries(RECONNECT_MAX_RETRIES)
+            .with_retry_interval(RECONNECT_RETRY_INTERVAL);
+        ClientBuilder::default()
+            .ws(ws)
+            .await
+            .map(RootProvider::new)
+            .map_err(Report::new)
     }
     .boxed()
 }
 
 fn subscribe(
-    client: Arc<WsClient>,
-) -> BoxFuture<'static, Result<Subscription<Event>, client::Error>> {
-    async move { client.subscribe_events().await }.boxed()
+    client: Arc<RootProvider>,
+) -> BoxFuture<'static, alloy_transport::TransportResult<alloy_pubsub::Subscription<Event>>> {
+    async move {
+        let id = client
+            .raw_request(Cow::Borrowed("consensus_subscribe"), NoParams::default())
+            .await?;
+        client.get_subscription(id).await
+    }
+    .boxed()
 }
 
 pub(super) fn inactive_event_stream() -> EventStream {
     Either::Left(stream::empty())
 }
 
-fn active_event_stream(stream: Subscription<Event>) -> EventStream {
-    Either::Right(stream.fuse())
-}
-
-fn reconnect_delay(attempts: u64) -> Duration {
-    reconnect_backoff(attempts) + random_jitter()
-}
-
-fn reconnect_backoff(attempts: u64) -> Duration {
-    let backoff_secs = attempts.saturating_mul(RECONNECT_BACKOFF_FACTOR);
-    let backoff = Duration::from_secs(backoff_secs);
-
-    backoff.min(RECONNECT_MAX_BACKOFF)
-}
-
-fn random_jitter() -> Duration {
-    let max_jitter_millis = RECONNECT_JITTER.as_millis() as u64;
-    Duration::from_millis(rand_08::thread_rng().gen_range(0..=max_jitter_millis))
+fn active_event_stream(stream: alloy_pubsub::Subscription<Event>) -> EventStream {
+    Either::Right(stream.into_stream().fuse())
 }
 
 #[instrument(skip_all, fields(%height), err)]
 async fn get_finalization(
-    client: Arc<WsClient>,
+    client: Arc<RootProvider>,
     height: Height,
     response: oneshot::Sender<Option<CertifiedBlock>>,
 ) -> eyre::Result<()> {
     // TODO: right now, the response channel would just drop and an error
     // emitted here. Should this failure be propagated upstream?
     let finalization = client
-        .get_finalization(Query::Height(height.get()))
+        .raw_request(
+            Cow::Borrowed("consensus_getFinalization"),
+            (Query::Height(height.get()),),
+        )
         .await
         .wrap_err("failed getting finalization")?;
     response
         .send(Some(finalization))
         .map_err(|_| eyre::eyre!("receiver went away"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reconnect_backoff_linearly_increases_and_caps() {
-        assert_eq!(reconnect_backoff(0), Duration::from_secs(0));
-        assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
-        assert_eq!(reconnect_backoff(2), Duration::from_secs(4));
-        assert_eq!(reconnect_backoff(3), Duration::from_secs(6));
-        assert_eq!(reconnect_backoff(4), Duration::from_secs(8));
-        assert_eq!(reconnect_backoff(5), Duration::from_secs(10));
-        assert_eq!(reconnect_backoff(10), RECONNECT_MAX_BACKOFF);
-        assert_eq!(reconnect_backoff(u64::MAX), RECONNECT_MAX_BACKOFF);
-    }
 }
