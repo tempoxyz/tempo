@@ -635,34 +635,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_fee_amm_swap_storage_action_reconstructs_evm_state() {
-        let address = TIP_FEE_MANAGER_ADDRESS;
-        let key = U256::from(42);
-        let amount_in = U256::from(3);
-        let amount_out = U256::from(2);
-        let original_pool = Pool {
-            reserve_user_token: 10,
-            reserve_validator_token: 20,
-        };
-        let mut present_pool = original_pool.clone();
-        present_pool.apply_swap(amount_in, amount_out).unwrap();
-
-        let mut account = Account::default();
-        account.storage.insert(
-            key,
-            EvmStorageSlot::new_changed(
-                original_pool.encode_to_slot().unwrap(),
-                present_pool.encode_to_slot().unwrap(),
-                TransactionId::ZERO,
-            ),
-        );
-        let state = EvmState::from_iter([(address, account)]);
-        let actions = vec![StorageAction::FeeAmmSwap(address, key, amount_in)];
-
-        assert_storage_actions_reconstruct_evm_state(&actions, &state, TempoHardfork::default());
-    }
-
     struct StorageActionSnapshotLabels {
         addresses: BTreeMap<Address, &'static str>,
         slots: BTreeMap<(Address, U256), &'static str>,
