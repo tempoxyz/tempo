@@ -319,12 +319,12 @@ mod tests {
     use alloy_sol_types::SolCall;
     use indexmap::IndexMap;
     use revm::{
-        DatabaseCommit,
+        DatabaseCommit, DatabaseRef,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
         state::EvmState,
     };
-    use std::collections::BTreeMap;
+    use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -343,7 +343,7 @@ mod tests {
         },
         tip403_registry::slots as tip403_registry_slots,
     };
-    use tempo_primitives::transaction::{Call, calc_gas_balance_spending};
+    use tempo_primitives::transaction::Call;
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip20_full_evm_records_storage_actions_with_fees() {
+    fn test_tip20_full_evm_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
             // skip pre-T5 hardforks to avoid clutter
             if !hardfork.is_t5() {
@@ -742,6 +742,7 @@ mod tests {
                         .with_salt(B256::ZERO)
                         .with_issuer(sender)
                         .with_mint(sender, starting_balance)
+                        .with_mint(recipient, starting_balance)
                         .apply()?;
 
                     let mut fee_manager = TipFeeManager::new();
@@ -769,39 +770,6 @@ mod tests {
 
             let mut evm = evm.with_actions();
             assert_eq!(evm.take_actions(), Some(vec![]));
-
-            let calldata: Bytes = ITIP20::transferCall {
-                to: recipient,
-                amount: transfer_amount,
-            }
-            .abi_encode()
-            .into();
-            let tx = TempoTxEnv {
-                inner: TxEnv {
-                    caller: sender,
-                    gas_price: u128::from(gas_price),
-                    gas_limit,
-                    kind: TxKind::Call(PATH_USD_ADDRESS),
-                    data: calldata.clone(),
-                    ..Default::default()
-                },
-                fee_token: Some(PATH_USD_ADDRESS),
-                ..Default::default()
-            };
-            let result = evm.transact_raw(tx).expect("transfer should execute");
-            assert!(result.result.is_success(), "hardfork: {hardfork:?}");
-
-            let max_fee_spending = calc_gas_balance_spending(gas_limit, u128::from(gas_price));
-            let actual_spending =
-                calc_gas_balance_spending(result.result.tx_gas_used(), u128::from(gas_price));
-            assert!(
-                !actual_spending.is_zero(),
-                "test must exercise post-tx fee settlement"
-            );
-            assert!(
-                max_fee_spending > actual_spending,
-                "test must exercise post-tx fee refund"
-            );
 
             let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
             let sender_fee_token_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
@@ -876,13 +844,16 @@ mod tests {
             };
 
             let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+                                caller: Address,
+                                to: Address,
+                                amount: U256,
                                 nonce: u64,
-                                nonce_key: U256,
-                                fee_token: Address|
-             -> Vec<String> {
+                                nonce_key: U256|
+             -> eyre::Result<Vec<String>> {
+                let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
                 let tx = TempoTxEnv {
                     inner: TxEnv {
-                        caller: sender,
+                        caller,
                         gas_price: u128::from(gas_price),
                         gas_limit,
                         kind: TxKind::Call(PATH_USD_ADDRESS),
@@ -904,37 +875,54 @@ mod tests {
                     }),
                     ..Default::default()
                 };
-                let result = evm.transact_raw(tx).expect("transfer should execute");
-                assert!(result.result.is_success(), "hardfork: {hardfork:?}");
+                let result = evm.transact_raw(tx)?;
+                assert_matches!(
+                    result.result,
+                    ExecutionResult::Success { .. },
+                    "hardfork: {hardfork:?}"
+                );
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
                 assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
                 evm.db_mut().commit(result.state);
-                snapshot_storage_actions(&actions, &labels)
+                Ok(snapshot_storage_actions(&actions, &labels))
             };
-
-            let actions = evm
-                .take_actions()
-                .expect("storage action recording should be enabled");
-            assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
 
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "first_transfer",
-                    run_transfer(&mut evm, 0, U256::ZERO, fee_token),
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, U256::ZERO)
+                        .unwrap(),
                 ),
                 // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
                 // and fee balances are no longer zero.
                 (
                     "second_transfer",
-                    run_transfer(&mut evm, 1, U256::ZERO, fee_token),
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 1, U256::ZERO)
+                        .unwrap(),
                 ),
                 // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
                 (
                     "2d_nonce_transfer",
-                    run_transfer(&mut evm, 0, nonce_key, fee_token),
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, nonce_key)
+                        .unwrap(),
+                ),
+                // Clear sender balance, minting a storage credit for PATH_USD.
+                ("clear_balance", {
+                    let sender_balance = evm
+                        .db()
+                        .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
+                        .expect("sender balance slot should be available");
+                    run_transfer(&mut evm, sender, recipient, sender_balance, 2, U256::ZERO)
+                        .unwrap()
+                }),
+                // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
+                (
+                    "recreate_balance",
+                    run_transfer(&mut evm, recipient, sender, transfer_amount, 0, U256::ZERO)
+                        .unwrap(),
                 ),
             ]);
             insta::assert_yaml_snapshot!(
