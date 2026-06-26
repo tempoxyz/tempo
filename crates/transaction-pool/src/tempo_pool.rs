@@ -1286,18 +1286,17 @@ fn effective_remaining_spending_limit(
             StorageActions::disabled(),
             || -> TempoPrecompileResult<Option<U256>> {
                 let keychain = AccountKeychain::new();
-                if !keychain.keys[subject.account][subject.key_id]
-                    .read()?
-                    .enforce_limits
-                {
+                let key = keychain.keys[subject.account][subject.key_id].read()?;
+                if !key.enforce_limits {
                     return Ok(None);
                 }
 
-                let remaining = keychain.effective_remaining_limit(
+                let remaining = keychain.effective_remaining_limit_with_key(
                     subject.account,
                     subject.key_id,
                     subject.fee_token,
                     current_timestamp,
+                    &key,
                 )?;
                 Ok(Some(remaining))
             },
