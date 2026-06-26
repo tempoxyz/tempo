@@ -398,7 +398,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let sstore_action = if current == U256::ZERO && value != U256::ZERO {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
-            StorageAction::Sstore(address, key, value)
+            StorageAction::Sstore(address, key, delta)
         } else {
             StorageAction::Sinc(address, key, delta)
         };

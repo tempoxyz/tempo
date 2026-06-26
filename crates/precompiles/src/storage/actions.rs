@@ -132,7 +132,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unrecorded_suppresses_nested_records_but_record_always_bypasses() {
+    fn test_unrecorded_record_always() {
         let actions = StorageActions::enabled();
         let address = Address::repeat_byte(0x42);
         let key = U256::from(7);
