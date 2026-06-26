@@ -10,7 +10,7 @@ mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
-use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
+use reth_trie_common::{HashedPostState, ordered_root::OrderedTrieRootEncodedBuilder};
 
 use crate::{
     budget::{
@@ -932,7 +932,9 @@ where
         // Drop the BAL task sender to trigger finalization.
         let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if self.config.skip_state_root {
+            HashedPostState::default()
+        } else if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
         {
