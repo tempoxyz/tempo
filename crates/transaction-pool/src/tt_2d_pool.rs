@@ -655,6 +655,7 @@ impl AA2dPool {
         BestAA2dTransactions {
             independent: self.independent_transactions.eviction_order_for(base_fee),
             by_id: self.by_id.clone(),
+            yielded_regular: Default::default(),
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
@@ -2071,6 +2072,8 @@ pub(crate) struct BestAA2dTransactions {
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
     /// separately by `expiring_nonce_order`.
     by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
+    /// Regular transactions already yielded from this snapshot.
+    yielded_regular: HashSet<AA2dTransactionId>,
     /// Expiring nonce pending transactions in eviction order. The best
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
@@ -2094,8 +2097,9 @@ impl BestAA2dTransactions {
         let tx = PendingTransaction {
             submission_id: key.submission_id,
             priority: key.priority,
-            transaction: self.by_id.remove(&id)?.inner.transaction.clone(),
+            transaction: self.by_id.get(&id)?.inner.transaction.clone(),
         };
+        self.yielded_regular.insert(id);
 
         Some((id, tx))
     }
@@ -2182,15 +2186,17 @@ impl BestAA2dTransactions {
                 } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
                     if process {
                         // Only mark as independent if no ancestor is already tracked
-                        if !self.by_id.contains_key(&AA2dTransactionId::new(
-                            id.seq_id,
-                            id.nonce.saturating_sub(1),
-                        )) || id.nonce == 0
+                        let ancestor_id =
+                            AA2dTransactionId::new(id.seq_id, id.nonce.saturating_sub(1));
+                        if id.nonce == 0
+                            || !self.by_id.contains_key(&ancestor_id)
+                            || self.yielded_regular.contains(&ancestor_id)
                         {
                             let key = EvictionOrderKey::new(tx.priority, tx.submission_id);
                             self.independent.insert(key, id);
                         }
                     }
+                    self.yielded_regular.remove(&id);
                     self.by_id.insert(
                         id,
                         Arc::new(AA2dInternalTransaction {
@@ -2264,6 +2270,7 @@ impl Iterator for BestAA2dTransactions {
             0,
             self.by_id
                 .len()
+                .saturating_sub(self.yielded_regular.len())
                 .checked_add(self.expiring_nonce_order.len()),
         )
     }
@@ -7202,6 +7209,37 @@ mod tests {
             !no_updates,
             "new tx should only be yielded when live updates are enabled"
         );
+    }
+
+    #[test]
+    fn best_transactions_live_child_after_parent_yielded() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(0).build();
+        let tx0_hash = *tx0.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        assert_eq!(best.next().as_ref().map(|tx| *tx.hash()), Some(tx0_hash));
+
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx1_hash = *tx1.hash();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(best.next().as_ref().map(|tx| *tx.hash()), Some(tx1_hash));
+        assert!(best.next().is_none());
     }
 
     #[test]
