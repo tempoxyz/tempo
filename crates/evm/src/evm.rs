@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip20_storage_actions() {
+    fn test_tip20_full_evm_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
             // skip pre-T5 hardforks to avoid clutter
             if !hardfork.is_t5() {
@@ -962,7 +962,7 @@ mod tests {
                 );
             }
             insta::assert_yaml_snapshot!(
-                format!("tip20_storage_actions_{}", hardfork.name()),
+                format!("tip20_full_evm_storage_actions_{}", hardfork.name()),
                 snapshot
             );
         }
