@@ -194,6 +194,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 last_marshal_finalized_height,
+                finalized_tip,
             },
         );
 

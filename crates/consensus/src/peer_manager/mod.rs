@@ -35,6 +35,8 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
 use tempo_node::TempoFullNode;
 
+use crate::consensus::Digest;
+
 mod actor;
 mod ingress;
 
@@ -54,6 +56,10 @@ pub(crate) struct Config<TOracle> {
     /// Used during start to determine the correct boundary block, since
     /// the execution layer may be behind.
     pub(crate) last_marshal_finalized_height: Height,
+    /// Highest finalized tip observed from consensus at startup.
+    /// Execution-layer-derived reads must not advance beyond this tip until
+    /// marshal reports a newer finalized tip.
+    pub(crate) finalized_tip: (Height, Digest),
 }
 
 /// Initializes a peer manager actor from a `config` with runtime `context`.
