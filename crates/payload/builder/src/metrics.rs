@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue};
+use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue, keccak256};
 use metrics::Gauge;
 use reth_errors::ProviderResult;
 use reth_metrics::{Metrics, metrics::Histogram};
@@ -8,8 +8,9 @@ use reth_storage_api::{
     StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_trie_common::{
-    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, KeccakKeyHasher, KeyHasher,
+    MultiProof, MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -210,13 +211,42 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let result = self.inner.hashed_post_state(bundle_state);
+        let result = hashed_post_state_direct_storage_slots(bundle_state);
         drop(_span);
         self.metrics
             .hashed_post_state_duration_seconds
             .record(start.elapsed());
         result
     }
+}
+
+fn hashed_post_state_direct_storage_slots(
+    bundle_state: &reth_revm::db::BundleState,
+) -> HashedPostState {
+    let state = bundle_state.state();
+    let mut hashed_state = HashedPostState::with_capacity(state.len());
+
+    for (address, account) in state {
+        let hashed_address = KeccakKeyHasher::hash_key(address);
+        hashed_state
+            .accounts
+            .insert(hashed_address, account.info.as_ref().map(Into::into));
+
+        let mut hashed_storage = HashedStorage::new(account.status.was_destroyed());
+        hashed_storage.storage.reserve(account.storage.len());
+
+        for (slot, value) in &account.storage {
+            hashed_storage
+                .storage
+                .insert(keccak256(B256::from(*slot)), value.present_value);
+        }
+
+        if !hashed_storage.is_empty() {
+            hashed_state.storages.insert(hashed_address, hashed_storage);
+        }
+    }
+
+    hashed_state
 }
 
 impl StateRootProvider for InstrumentedFinishProvider<'_> {
