@@ -84,9 +84,7 @@ impl Precompile for TIP20Token {
                     claimRewards(call) => mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender)),
                     globalRewardPerToken(call) => view(call, |_| self.get_global_reward_per_token()),
                     optedInSupply(call) => view(call, |_| self.get_opted_in_supply()),
-                    userRewardInfo(call) => view(call, |c| {
-                        self.get_user_reward_info(c.account).map(|info| info.into())
-                    }),
+                    userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.account).map(|info| info.into())),
                     getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
 
                     #[schedule(since = T2)]
@@ -125,7 +123,6 @@ mod tests {
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-
     use tempo_contracts::precompiles::{
         IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
     };

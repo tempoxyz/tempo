@@ -905,23 +905,11 @@ mod tests {
                     calldata,
                     |call| match call {
                         ISelectorGatedTest::ISelectorGatedTestCalls {
-                        stable(_) => Ok(PrecompileOutput::new(
-                            0,
-                            Bytes::from_static(b"stable"),
-                            0,
-                        )),
-                        #[schedule(since = T2)]
-                        t2Added(_) => Ok(PrecompileOutput::new(
-                            0,
-                            Bytes::from_static(b"added"),
-                            0,
-                        )),
-                        #[schedule(until = T3)]
-                        t3Removed(_) => Ok(PrecompileOutput::new(
-                            0,
-                            Bytes::from_static(b"removed"),
-                            0,
-                        )),
+                            stable(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0)),
+                            #[schedule(since = T2)]
+                            t2Added(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0)),
+                            #[schedule(until = T3)]
+                            t3Removed(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0)),
                         }
                     }
                 )

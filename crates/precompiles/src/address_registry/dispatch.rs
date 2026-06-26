@@ -20,7 +20,6 @@ impl Precompile for AddressRegistry {
                     registerVirtualMaster(call) => mutate(call, msg_sender, |s, c| {
                         self.register_virtual_master(s, c)
                     }),
-
                     // View functions
                     getMaster(call) => view(call, |c| {
                         Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
@@ -29,6 +28,7 @@ impl Precompile for AddressRegistry {
                     resolveVirtualAddress(call) => view(call, |c| {
                         self.resolve_virtual_address(c.virtualAddr)
                     }),
+                    // Pure functions
                     isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
                     decodeVirtualAddress(call) => view(call, |c| {
                         let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {

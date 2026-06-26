@@ -25,7 +25,6 @@ impl Precompile for TIP403Registry {
                     isAuthorized(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Transfer)
                     }),
-                    // TIP-1015: T2+ only (gated via T2_ADDED_SELECTORS)
                     #[schedule(since = T2)]
                     isAuthorizedSender(call) => view(call, |c| {
                         self.is_authorized_as(c.policyId, c.user, AuthRole::Sender)
@@ -61,7 +60,6 @@ impl Precompile for TIP403Registry {
                     setPolicyAdmin(call) => mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c)),
                     modifyPolicyWhitelist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c)),
                     modifyPolicyBlacklist(call) => mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c)),
-                    // TIP-1015: T2+ only (gated via T2_ADDED_SELECTORS)
                     #[schedule(since = T2)]
                     createCompoundPolicy(call) => mutate(call, msg_sender, |s, c| self.create_compound_policy(s, c))
                 }

@@ -60,9 +60,10 @@ mod tests {
         sol_types::{SolCall, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
-
-    use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
+    use tempo_contracts::precompiles::{
+        IValidatorConfig::{self, IValidatorConfigCalls},
+        ValidatorConfigError,
+    };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {

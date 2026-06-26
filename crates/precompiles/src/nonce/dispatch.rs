@@ -10,14 +10,9 @@ impl Precompile for NonceManager {
             return err;
         }
 
-        dispatch!(
-            calldata,
-            |call| match call {
-                INonce::INonceCalls {
-                    getNonce(call) => view(call, |c| self.get_nonce(c)),
-                }
-            }
-        )
+        dispatch!(calldata, |call| match call {
+            INonce::INonceCalls { getNonce(call) => view(call, |c| self.get_nonce(c)) }
+        })
     }
 }
 

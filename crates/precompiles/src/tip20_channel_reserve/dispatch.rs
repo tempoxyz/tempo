@@ -13,6 +13,7 @@ impl Precompile for TIP20ChannelReserve {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
+
         dispatch!(
             calldata,
             |call| match call {
