@@ -8,9 +8,6 @@ const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
     "tip20_2d_nonces"
     "tip20_protocol_nonces"
     "tip20_keychain_existing_recipients"
-    "tip20_keychain_2d_nonces"
-    "tip20_key_authorization_existing_recipients"
-    "tip20_key_authorization_2d_nonces"
 ]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000

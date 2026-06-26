@@ -41,14 +41,9 @@ on:
           - tip20_random_recipients
           - tip20_existing_recipients
           - tip20_keychain
-          - tip20_keychain_2d_nonces
           - tip20_keychain_random_recipients
           - tip20_keychain_existing_recipients
           - tip20_key_authorization
-          - tip20_key_authorization_2d_nonces
-          - tip20_key_authorization_random_recipients
-          - tip20_key_authorization_existing_recipients
-          - keychain_auth_noop
           - mpp
           - mix
       duration:
@@ -408,7 +403,7 @@ jobs:
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_SKIP_STATE_ROOT: ${{ inputs.skip-state-root == true || inputs.skip-state-root == 'true' }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '5000000000' }}
-      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit != '' && inputs.general-gas-limit || (contains(fromJSON('["tip20_keychain","tip20_keychain_2d_nonces","tip20_keychain_random_recipients","tip20_keychain_existing_recipients"]'), inputs.preset) && (inputs.gas-limit || '5000000000') || '') }}
+      BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit != '' && inputs.general-gas-limit || (contains(fromJSON('["tip20_keychain","tip20_keychain_random_recipients","tip20_keychain_existing_recipients"]'), inputs.preset) && (inputs.gas-limit || '5000000000') || '') }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
