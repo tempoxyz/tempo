@@ -40,7 +40,8 @@ templates:
     gas_limit: ${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000000"
+    fee_token:
+      choice: ${TXGEN_TIP20_TOKENS}
     expiring_nonce: true
     valid_for_secs: 5
     call:
