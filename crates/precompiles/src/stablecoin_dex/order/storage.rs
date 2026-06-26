@@ -151,6 +151,16 @@ impl OrderHandler {
         }
     }
 
+    /// Returns a storage handler for the order's maker address.
+    pub(crate) fn maker(&self) -> StorageResult<Slot<Address>> {
+        let loc = match self.version()? {
+            OrderVersion::Legacy => __packing_legacy_order::MAKER_LOC,
+            OrderVersion::V1 => __packing_v1_order::MAKER_LOC,
+        };
+
+        Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
+    }
+
     /// Returns a storage handler for the order's remaining amount.
     pub(crate) fn remaining(&self) -> StorageResult<Slot<u128>> {
         self.u128_field(

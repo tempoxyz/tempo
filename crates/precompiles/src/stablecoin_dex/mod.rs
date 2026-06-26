@@ -138,7 +138,7 @@ impl StablecoinDEX {
             return Ok(());
         }
 
-        let maker = self.orders[order_id].read()?.maker();
+        let maker = self.orders[order_id].maker()?.read()?;
         self.credit_dex_storage_slots(maker, credits)
     }
 
