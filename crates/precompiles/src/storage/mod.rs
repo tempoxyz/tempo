@@ -92,25 +92,6 @@ pub trait PrecompileStorageProvider {
         self.sstore(address, key, value)
     }
 
-    /// Applies a checked FeeAMM fee swap to a packed pool slot.
-    ///
-    /// This is intentionally domain-specific so FeeAMM fee settlement can be recorded as one
-    /// semantic storage action instead of exposing an arbitrary unrecorded SLOAD and SSTORE.
-    fn fee_amm_swap(
-        &mut self,
-        address: Address,
-        key: U256,
-        amount_in: U256,
-        amount_out: U256,
-    ) -> Result<()> {
-        let value = crate::tip_fee_manager::amm::apply_fee_amm_swap_to_pool_slot(
-            self.sload(address, key)?,
-            amount_in,
-            amount_out,
-        )?;
-        self.sstore(address, key, value)
-    }
-
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
 
@@ -140,6 +121,11 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Returns the shared storage-actions recorder for this provider.
+    fn storage_actions(&self) -> StorageActions {
+        StorageActions::disabled()
+    }
 
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
     /// regular/state gas split independently of the active hardfork.
@@ -224,14 +210,6 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
-
-    /// Returns whether packed struct writes should start from a zeroed word.
-    ///
-    /// Live EVM storage falls back to the active hardfork. In-memory packed words override this
-    /// to always zero-init.
-    fn zero_init_packed_store(&self) -> bool {
-        StorageCtx.zero_init_packed_store()
-    }
 
     /// Increments a value at the provided slot by `delta`.
     ///

@@ -176,17 +176,6 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sdec(address, key, delta))
     }
 
-    /// Applies a checked FeeAMM fee swap to a packed pool slot.
-    pub fn fee_amm_swap(
-        &mut self,
-        address: Address,
-        key: U256,
-        amount_in: U256,
-        amount_out: U256,
-    ) -> Result<()> {
-        Self::try_with_storage(|s| s.fee_amm_swap(address, key, amount_in, amount_out))
-    }
-
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
@@ -232,9 +221,9 @@ impl StorageCtx {
         Self::with_storage(|s| s.spec())
     }
 
-    /// Returns whether packed struct writes should start from a zeroed word.
-    pub fn zero_init_packed_store(&self) -> bool {
-        self.spec().is_t4()
+    /// Returns the shared storage-actions recorder for the current storage context.
+    pub fn actions(&self) -> StorageActions {
+        Self::with_storage(|s| s.storage_actions())
     }
 
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016

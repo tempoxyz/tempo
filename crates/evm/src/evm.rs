@@ -334,7 +334,7 @@ mod tests {
         test_util::TIP20Setup,
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
-            amm::{Pool, PoolKey, apply_fee_amm_swap_to_pool_slot},
+            amm::{Pool, PoolKey, apply_fee_amm_swap_to_pool_slot, compute_amount_out},
             slots as fee_manager_slots,
         },
         tip20::{
@@ -518,11 +518,7 @@ mod tests {
 
         for action in actions {
             match *action {
-                StorageAction::Sload {
-                    address,
-                    key: slot,
-                    value,
-                } => {
+                StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
                     match reconstructed.get(&key) {
                         Some(previous) => assert_eq!(
@@ -535,11 +531,7 @@ mod tests {
                         }
                     }
                 }
-                StorageAction::Sstore {
-                    address,
-                    key: slot,
-                    value,
-                } => {
+                StorageAction::Sstore(address, slot, value) => {
                     let key = (address, slot);
                     assert!(
                         reconstructed.contains_key(&key),
@@ -547,11 +539,7 @@ mod tests {
                     );
                     reconstructed.insert(key, value);
                 }
-                StorageAction::Sinc {
-                    address,
-                    key: slot,
-                    delta,
-                } => {
+                StorageAction::Sinc(address, slot, delta) => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -571,11 +559,7 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
-                StorageAction::Sdec {
-                    address,
-                    key: slot,
-                    delta,
-                } => {
+                StorageAction::Sdec(address, slot, delta) => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -595,12 +579,7 @@ mod tests {
                     });
                     reconstructed.insert(key, value);
                 }
-                StorageAction::FeeAmmSwap {
-                    address,
-                    key: slot,
-                    amount_in,
-                    amount_out,
-                } => {
+                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
                     let key = (address, slot);
                     let current = match reconstructed.get(&key) {
                         Some(current) => *current,
@@ -615,12 +594,14 @@ mod tests {
                             original
                         }
                     };
-                    let value = apply_fee_amm_swap_to_pool_slot(current, amount_in, amount_out)
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}"
-                            )
-                        });
+                    let value = apply_fee_amm_swap_to_pool_slot(
+                        current,
+                        amount_in,
+                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
+                    });
                     reconstructed.insert(key, value);
                 }
             }
@@ -675,12 +656,7 @@ mod tests {
             EvmStorageSlot::new_changed(original_pool, present_pool, TransactionId::ZERO),
         );
         let state = EvmState::from_iter([(address, account)]);
-        let actions = vec![StorageAction::FeeAmmSwap {
-            address,
-            key,
-            amount_in,
-            amount_out,
-        }];
+        let actions = vec![StorageAction::FeeAmmSwap(address, key, amount_in)];
 
         assert_storage_actions_reconstruct_evm_state(&actions, &state, TempoHardfork::default());
     }
@@ -697,56 +673,37 @@ mod tests {
         actions
             .iter()
             .map(|action| match *action {
-                StorageAction::Sload {
-                    address,
-                    key: slot,
-                    value,
-                } => {
+                StorageAction::Sload(address, slot, value) => {
                     format!(
                         "Sload({}, {}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sstore {
-                    address,
-                    key: slot,
-                    value,
-                } => {
+                StorageAction::Sstore(address, slot, value) => {
                     format!(
                         "Sstore({}, {}, {value})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sinc {
-                    address,
-                    key: slot,
-                    delta,
-                } => {
+                StorageAction::Sinc(address, slot, delta) => {
                     format!(
                         "Sinc({}, {}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::Sdec {
-                    address,
-                    key: slot,
-                    delta,
-                } => {
+                StorageAction::Sdec(address, slot, delta) => {
                     format!(
                         "Sdec({}, {}, {delta})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
                 }
-                StorageAction::FeeAmmSwap {
-                    address,
-                    key: slot,
-                    amount_in,
-                    amount_out,
-                } => {
+                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                    let amount_out =
+                        compute_amount_out(amount_in).expect("compute_amount_out failed");
                     format!(
                         "FeeAmmSwap({}, {}, {amount_in}, {amount_out})",
                         labels.address(address),
