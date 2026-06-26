@@ -252,6 +252,10 @@ on:
         type: string
         required: false
         default: "false"
+      skip-state-root:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -393,6 +397,7 @@ jobs:
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
+      BENCH_SKIP_STATE_ROOT: ${{ inputs.skip-state-root == true || inputs.skip-state-root == 'true' }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '5000000000' }}
       BENCH_GENERAL_GAS_LIMIT: ${{ inputs.general-gas-limit }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
@@ -892,13 +897,19 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          effective_baseline_args="$BENCH_BASELINE_ARGS"
+          effective_feature_args="$BENCH_FEATURE_ARGS"
+          if [ "$BENCH_SKIP_STATE_ROOT" = "true" ]; then
+            effective_baseline_args="${effective_baseline_args:+$effective_baseline_args }--debug.skip-state-root"
+            effective_feature_args="${effective_feature_args:+$effective_feature_args }--debug.skip-state-root"
+          fi
           [ -n "$BENCH_GENERAL_GAS_LIMIT" ] && cmd+=(--general-gas-limit "$BENCH_GENERAL_GAS_LIMIT")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
           [ -n "$BENCH_BASELINE_FEATURES" ] && cmd+=(--baseline-features="$BENCH_BASELINE_FEATURES")
           [ -n "$BENCH_FEATURE_FEATURES" ] && cmd+=(--feature-features="$BENCH_FEATURE_FEATURES")
-          [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
-          [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
+          [ -n "$effective_baseline_args" ] && cmd+=(--baseline-args="$effective_baseline_args")
+          [ -n "$effective_feature_args" ] && cmd+=(--feature-args="$effective_feature_args")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
@@ -966,6 +977,7 @@ jobs:
           [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
           [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
+          [ "$BENCH_SKIP_STATE_ROOT" = "true" ] && derek_cmd+=(skip-state-root)
           [ -n "$BENCH_BASELINE_FEATURES" ] && derek_cmd+=(baseline-features="$BENCH_BASELINE_FEATURES")
           [ -n "$BENCH_FEATURE_FEATURES" ] && derek_cmd+=(feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
