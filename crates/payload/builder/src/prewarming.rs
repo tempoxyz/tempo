@@ -4,9 +4,11 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use alloy_consensus::Transaction;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
@@ -135,16 +137,17 @@ impl BestTransactionsPrewarming {
                         old_rx,
                         new_tx,
                     } => {
-                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
                         for tx in old_rx {
                             if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                                && !is_invalidated_buffered_transaction(&invalid, &tx)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
                         }
+
+                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                     }
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
@@ -349,24 +352,39 @@ struct InvalidTransaction {
 
 /// Returns whether the candidate transaction is invalidated by the given invalid transaction.
 fn is_invalidated_buffered_transaction(
-    invalid: &BestTransaction,
+    invalid: &InvalidTransaction,
     candidate: &BestTransaction,
 ) -> bool {
+    let invalid_tx = &invalid.tx;
     // Skip invalidation for expiring nonce transactions - they are independent
     // and should not block other expiring nonce txs from the same sender
-    if invalid.transaction.is_expiring_nonce() {
+    if invalid_tx.transaction.is_expiring_nonce() {
         return false;
     }
 
-    if invalid.transaction.is_aa_2d() {
+    if invalid_tx.transaction.is_aa_2d() {
         candidate
             .transaction
             .aa_transaction_id()
-            .zip(invalid.transaction.aa_transaction_id())
-            .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
+            .zip(invalid_tx.transaction.aa_transaction_id())
+            .is_some_and(|(candidate_id, invalid_id)| {
+                candidate_id.seq_id() == invalid_id.seq_id()
+                    && nonce_too_low_state(&invalid.kind)
+                        .is_none_or(|state| candidate.transaction.nonce() < state)
+            })
     } else {
         !candidate.transaction.is_aa_2d()
-            && candidate.transaction.sender() == invalid.transaction.sender()
+            && candidate.transaction.sender() == invalid_tx.transaction.sender()
+    }
+}
+
+fn nonce_too_low_state(kind: &InvalidPoolTransactionError) -> Option<u64> {
+    match kind {
+        InvalidPoolTransactionError::Consensus(InvalidTransactionError::NonceNotConsistent {
+            tx,
+            state,
+        }) if tx < state => Some(*state),
+        _ => None,
     }
 }
 

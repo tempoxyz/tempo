@@ -49,8 +49,8 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
+    State, context::Block, context_interface::result::InvalidTransaction as RevmInvalidTransaction,
+    database::StateProviderDatabase, db::states::bundle_state::BundleRetention, state::EvmState,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -740,6 +740,22 @@ where
                     invalid_pool_transaction_execution_attempts += 1;
 
                     if error.is_nonce_too_low() {
+                        if pool_tx.transaction.is_aa_2d()
+                            && let Some((tx, state)) =
+                                error.as_invalid_tx_err().and_then(|err| match err {
+                                    RevmInvalidTransaction::NonceTooLow { tx, state } => {
+                                        Some((*tx, *state))
+                                    }
+                                    _ => None,
+                                })
+                        {
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::NonceNotConsistent { tx, state },
+                                ),
+                            );
+                        }
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");

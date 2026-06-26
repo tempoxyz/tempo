@@ -2100,6 +2100,36 @@ impl BestAA2dTransactions {
         Some((id, tx))
     }
 
+    /// Advances a regular 2D sequence past entries that execution reported below state nonce.
+    fn advance_nonce_too_low(&mut self, id: AA2dTransactionId, state_nonce: u64) {
+        if state_nonce <= id.nonce {
+            return;
+        }
+
+        let stale_independent_key = self.independent.iter().find_map(|(key, candidate)| {
+            (candidate.seq_id == id.seq_id && candidate.nonce < state_nonce).then(|| key.clone())
+        });
+        if let Some(key) = stale_independent_key {
+            self.independent.remove(&key);
+        }
+
+        let stale_ids = self
+            .by_id
+            .range(id.seq_id.range())
+            .map(|(candidate, _)| *candidate)
+            .take_while(|candidate| candidate.nonce < state_nonce)
+            .collect::<Vec<_>>();
+        for stale_id in stale_ids {
+            self.by_id.remove(&stale_id);
+        }
+
+        let state_id = AA2dTransactionId::new(id.seq_id, state_nonce);
+        if let Some(unlocked) = self.by_id.get(&state_id) {
+            let key = unlocked.inner.eviction_key(self.base_fee);
+            self.independent.insert(key, state_id);
+        }
+    }
+
     /// Removes the best expiring nonce transaction from the set.
     fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
         let key = self.expiring_nonce_order.pop_last()?;
@@ -2270,7 +2300,7 @@ impl Iterator for BestAA2dTransactions {
 }
 
 impl BestTransactions for BestAA2dTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
         if transaction.transaction.is_expiring_nonce() {
@@ -2278,6 +2308,10 @@ impl BestTransactions for BestAA2dTransactions {
         }
 
         if let Some(id) = transaction.transaction.aa_transaction_id() {
+            if let Some(state_nonce) = nonce_too_low_state(&kind) {
+                self.advance_nonce_too_low(id, state_nonce);
+                return;
+            }
             self.invalid.insert(id.seq_id);
         }
     }
@@ -2288,6 +2322,16 @@ impl BestTransactions for BestAA2dTransactions {
     }
 
     fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+}
+
+fn nonce_too_low_state(kind: &InvalidPoolTransactionError) -> Option<u64> {
+    match kind {
+        InvalidPoolTransactionError::Consensus(InvalidTransactionError::NonceNotConsistent {
+            tx,
+            state,
+        }) if tx < state => Some(*state),
+        _ => None,
+    }
 }
 
 /// Key for identifying a unique sender sequence in 2D nonce system.
@@ -4380,6 +4424,43 @@ mod tests {
 
         // The sequence should be in the invalid set, so next tx from same sender should be skipped
         // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
+    }
+
+    #[test]
+    fn test_best_transactions_nonce_too_low_advances_sequence() {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        for nonce in 0..3 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut best = pool.best_transactions();
+        let first = best.next().unwrap();
+        assert_eq!(first.transaction.nonce(), 0);
+
+        best.mark_invalid(
+            &first,
+            reth_transaction_pool::error::InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::NonceNotConsistent { tx: 0, state: 2 },
+            ),
+        );
+
+        let next = best.next().unwrap();
+        assert_eq!(next.transaction.nonce(), 2);
+        assert!(best.next().is_none());
     }
 
     #[test]
