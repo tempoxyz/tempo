@@ -968,7 +968,7 @@ where
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
+        let fee_manager = &evm.fee_manager;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -1650,7 +1650,7 @@ where
         exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         let actions = evm.actions.clone();
-        let fee_manager = evm.fee_manager.clone();
+        let fee_manager = &evm.fee_manager;
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());

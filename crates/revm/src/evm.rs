@@ -1,4 +1,6 @@
-use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
+use crate::{
+    ProtocolFeeManager, ProtocolFeeManagerHandle, TempoBlockEnv, TempoTxEnv, instructions,
+};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -58,7 +60,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Transaction-local protocol slots whose clears must not mint storage credits.
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
-    pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
+    pub(crate) fee_manager: ProtocolFeeManagerHandle<DB>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -82,7 +84,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             },
             actions,
             non_creditable_slots,
-            Arc::new(TempoFeeManager::new()),
+            ProtocolFeeManagerHandle::default(),
         )
     }
 }
@@ -121,7 +123,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
-            fee_manager,
+            fee_manager: ProtocolFeeManagerHandle::custom(fee_manager),
         }
     }
 
@@ -138,7 +140,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         >,
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
-        fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
+        fee_manager: ProtocolFeeManagerHandle<DB>,
     ) -> Self {
         Self {
             inner,
