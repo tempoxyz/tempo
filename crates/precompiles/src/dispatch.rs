@@ -190,6 +190,8 @@ macro_rules! dispatch {
     ) => {{
         type Calls = $iface::$calls;
         if <Calls as alloy::sol_types::SolInterface>::valid_selector($selector) {
+            // Ensure no selector collision with later interfaces.
+            debug_assert!(!crate::dispatch!(@any_valid_selector $selector, $($rest)*));
             crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
                 $(Calls::$variant($binding) => $body,)*
             })
@@ -201,6 +203,17 @@ macro_rules! dispatch {
     (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident, else $iface:ident::$calls:ident) => {{
         type Calls = $iface::$calls;
         crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
+    }};
+    // Recursively check whether any remaining interface accepts the selector.
+    (@any_valid_selector $selector:expr, else $iface:ident::$calls:ident) => {
+        false
+    };
+    (@any_valid_selector $selector:expr,
+        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* } $($rest:tt)*
+    ) => {{
+        type Calls = $iface::$calls;
+        <Calls as alloy::sol_types::SolInterface>::valid_selector($selector)
+            || crate::dispatch!(@any_valid_selector $selector, $($rest)*)
     }};
     // Schedule gates: since rejects pre-fork, until rejects from that fork onward.
     (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $since:ident, until = $until:ident)]) => {
