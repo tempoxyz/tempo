@@ -393,6 +393,12 @@ where
         self.spec
     }
 
+    fn storage_actions(&self) -> StorageActions {
+        self.actions
+            .clone()
+            .unwrap_or_else(StorageActions::disabled)
+    }
+
     fn amsterdam_eip8037_enabled(&self) -> bool {
         // Read-only context never executes TIP-1016 state gas paths (set_code, fill_state_gas);
         // the flag is not propagated through `with_read_only_storage_ctx`, so default to `false`.
