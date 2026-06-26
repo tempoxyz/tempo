@@ -13041,6 +13041,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-rpc-client",
  "alloy-rpc-types-engine",
  "axum",
  "bytes",
@@ -13092,6 +13093,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber 0.3.23",
+ "url",
 ]
 
 [[package]]
