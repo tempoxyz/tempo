@@ -3,8 +3,11 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    ordering::TempoTipOrdering,
+    transaction::{KeychainSubject, TempoPooledTransaction},
+    tt_2d_pool::AA2dPool,
     validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
@@ -221,6 +224,7 @@ where
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
+        let mut spending_limit_cache: HashMap<KeychainSubject, Option<U256>> = HashMap::default();
 
         for tx in transactions {
             // Avoid recovering key ids unless a keychain invalidation can use them.
@@ -282,13 +286,17 @@ where
                     && subject.matches_spending_limit_update(&updates.spending_limit_spends)
                     && tx.transaction.is_sender_paid_fee()
                     && let Some(ref mut provider) = state_provider
-                    && exceeds_spending_limit(
-                        provider,
-                        subject,
-                        tx.transaction.fee_token_cost(),
-                        tip_timestamp,
-                        spec,
-                    )
+                    && spending_limit_cache
+                        .entry(*subject)
+                        .or_insert_with(|| {
+                            effective_remaining_spending_limit(
+                                provider,
+                                subject,
+                                tip_timestamp,
+                                spec,
+                            )
+                        })
+                        .is_some_and(|remaining| tx.transaction.fee_token_cost() > remaining)
                 {
                     to_remove.push(*tx.hash());
                     spending_limit_spend_count += 1;
@@ -1259,17 +1267,30 @@ pub(crate) fn exceeds_spending_limit(
     current_timestamp: u64,
     spec: TempoHardfork,
 ) -> bool {
+    effective_remaining_spending_limit(provider, subject, current_timestamp, spec)
+        .is_some_and(|remaining| fee_token_cost > remaining)
+}
+
+/// Reads the effective remaining spending limit for a keychain subject.
+///
+/// Returns `None` when the key does not enforce limits or when state cannot be read.
+fn effective_remaining_spending_limit(
+    provider: &mut impl StateProvider,
+    subject: &KeychainSubject,
+    current_timestamp: u64,
+    spec: TempoHardfork,
+) -> Option<U256> {
     provider
         .with_read_only_storage_ctx(
             spec,
             StorageActions::disabled(),
-            || -> TempoPrecompileResult<bool> {
+            || -> TempoPrecompileResult<Option<U256>> {
                 let keychain = AccountKeychain::new();
                 if !keychain.keys[subject.account][subject.key_id]
                     .read()?
                     .enforce_limits
                 {
-                    return Ok(false);
+                    return Ok(None);
                 }
 
                 let remaining = keychain.effective_remaining_limit(
@@ -1278,7 +1299,7 @@ pub(crate) fn exceeds_spending_limit(
                     subject.fee_token,
                     current_timestamp,
                 )?;
-                Ok(fee_token_cost > remaining)
+                Ok(Some(remaining))
             },
         )
         .unwrap_or_default()
