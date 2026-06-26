@@ -683,12 +683,6 @@ mod tests {
         let mut storage = handler.clone();
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)?;
         handler.version.set(Some(OrderVersion::Legacy));
-        for offset in LegacyOrder::SLOTS..V1Order::SLOTS {
-            storage.store(
-                handler.base_slot.wrapping_add(U256::from(offset)),
-                U256::ZERO,
-            )?;
-        }
         Ok(())
     }
 
