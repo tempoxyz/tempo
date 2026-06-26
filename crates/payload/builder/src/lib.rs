@@ -694,21 +694,27 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
+            let tx_rlp_length = if is_osaka {
+                let tx_rlp_length = pool_tx.transaction.encoded_length();
+                let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
-            }
+                if estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    self.metrics.inc_pool_tx_skipped("oversized_block");
+                    skipped_oversized_block = true;
+                    continue;
+                }
+
+                Some(tx_rlp_length)
+            } else {
+                None
+            };
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{:?}", pool_tx.transaction))
@@ -765,6 +771,8 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
+            let tx_rlp_length =
+                tx_rlp_length.unwrap_or_else(|| pool_tx.transaction.encoded_length());
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
