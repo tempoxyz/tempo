@@ -72,8 +72,18 @@ impl Pool {
     pub fn encode_to_slot(&self) -> Result<U256> {
         use crate::storage::packing::insert_into_word;
 
-        let slot = insert_into_word(U256::ZERO, &self.reserve_user_token, 0, 16)?;
-        let slot = insert_into_word(slot, &self.reserve_validator_token, 16, 16)?;
+        let slot = insert_into_word(
+            U256::ZERO,
+            &self.reserve_user_token,
+            __packing_pool::RESERVE_USER_TOKEN_OFFSET,
+            __packing_pool::RESERVE_USER_TOKEN_BYTES,
+        )?;
+        let slot = insert_into_word(
+            slot,
+            &self.reserve_validator_token,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_OFFSET,
+            __packing_pool::RESERVE_VALIDATOR_TOKEN_BYTES,
+        )?;
         Ok(slot)
     }
 
