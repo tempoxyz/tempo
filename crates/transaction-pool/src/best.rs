@@ -23,7 +23,8 @@ type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 pub struct MergeBestTransactions {
     protocol_pool: Box<dyn BestTransactions<Item = BestTransaction>>,
     aa_2d_pool: BestAA2dTransactions,
-    next_protocol_pool: Option<BestTransactionWithPriority>,
+    next_protocol_pool: Option<BestTransaction>,
+    next_protocol_priority: Option<Priority<u64>>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
     base_fee: u64,
 }
@@ -39,6 +40,7 @@ impl MergeBestTransactions {
             protocol_pool,
             aa_2d_pool,
             next_protocol_pool: None,
+            next_protocol_priority: None,
             next_aa_2d_pool: None,
             base_fee,
         }
@@ -47,12 +49,10 @@ impl MergeBestTransactions {
 
 impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
-    fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
+    fn next_best(&mut self) -> Option<BestTransaction> {
         if self.next_protocol_pool.is_none() {
-            self.next_protocol_pool = self.protocol_pool.next().map(|tx| {
-                let priority = TempoTipOrdering::default().priority(&tx.transaction, self.base_fee);
-                (tx, priority)
-            });
+            self.next_protocol_pool = self.protocol_pool.next();
+            self.next_protocol_priority = None;
         }
         if self.next_aa_2d_pool.is_none() {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
@@ -65,23 +65,33 @@ impl MergeBestTransactions {
             }
             // Only the protocol pool has an item - take it
             (Some(_), None) => {
-                let (item, priority) = self.next_protocol_pool.take()?;
-                Some((item, priority))
+                self.next_protocol_priority = None;
+                let item = self.next_protocol_pool.take()?;
+                Some(item)
             }
             // Only the AA2D pool has an item - take it
             (None, Some(_)) => {
-                let (item, priority) = self.next_aa_2d_pool.take()?;
-                Some((item, priority))
+                let (item, _) = self.next_aa_2d_pool.take()?;
+                Some(item)
             }
             // Both pools have items - compare priorities and take the higher one
-            (Some((_, protocol_priority)), Some((_, aa_2d_priority))) => {
+            (Some(_), Some((_, aa_2d_priority))) => {
+                if self.next_protocol_priority.is_none() {
+                    let protocol_tx = self.next_protocol_pool.as_ref()?;
+                    self.next_protocol_priority = Some(
+                        TempoTipOrdering::default()
+                            .priority(&protocol_tx.transaction, self.base_fee),
+                    );
+                }
+                let protocol_priority = self.next_protocol_priority.as_ref()?;
                 // Higher priority value is better
-                if protocol_priority >= aa_2d_priority {
-                    let (item, priority) = self.next_protocol_pool.take()?;
-                    Some((item, priority))
+                if protocol_priority >= &*aa_2d_priority {
+                    self.next_protocol_priority = None;
+                    let item = self.next_protocol_pool.take()?;
+                    Some(item)
                 } else {
-                    let (item, priority) = self.next_aa_2d_pool.take()?;
-                    Some((item, priority))
+                    let (item, _) = self.next_aa_2d_pool.take()?;
+                    Some(item)
                 }
             }
         }
@@ -92,7 +102,7 @@ impl Iterator for MergeBestTransactions {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_best().map(|(tx, _)| tx)
+        self.next_best()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
