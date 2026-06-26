@@ -603,7 +603,6 @@ pub fn deduct_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip_fee_manager::amm::Pool;
     use alloy::primitives::{B256, b256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;

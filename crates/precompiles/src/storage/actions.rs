@@ -19,6 +19,12 @@ pub enum StorageAction {
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
     Sdec(Address, U256, U256),
     /// Records a FeeAMM pool fee swap over a packed pool slot.
+    ///
+    /// `address` - FeeAMM contract address.
+    /// `key` - Storage slot key.
+    /// `amount_in` - Amount of tokens to swap in.
+    ///
+    /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
     FeeAmmSwap(Address, U256, U256),
 }
 
@@ -33,6 +39,13 @@ pub enum StorageActions {
 #[derive(Debug, Default)]
 pub struct StorageActionsState {
     actions: Vec<StorageAction>,
+    /// The depth of the current unrecorded actions scope.
+    ///
+    /// Incremented on each [`StorageActions::unrecorded`] call,
+    /// and decremented on exit from it.
+    ///
+    /// Allows for nesting multiple unrecorded scopes, making sure that
+    /// only when all scopes are exited, [`StorageActions::record`] records actions again.
     unrecorded_depth: usize,
 }
 
