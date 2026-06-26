@@ -334,7 +334,7 @@ mod tests {
         test_util::TIP20Setup,
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
-            amm::{Pool, PoolKey, apply_fee_amm_swap_to_pool_slot, compute_amount_out},
+            amm::{Pool, PoolKey, compute_amount_out},
             slots as fee_manager_slots,
         },
         tip20::{
@@ -594,15 +594,15 @@ mod tests {
                             original
                         }
                     };
-                    let value = apply_fee_amm_swap_to_pool_slot(
-                        current,
+                    let mut pool = Pool::decode_from_slot(current);
+                    pool.apply_swap(
                         amount_in,
                         compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
                     )
                     .unwrap_or_else(|err| {
                         panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
                     });
-                    reconstructed.insert(key, value);
+                    reconstructed.insert(key, pool.encode_to_slot().unwrap());
                 }
             }
         }
@@ -644,16 +644,18 @@ mod tests {
         let original_pool = Pool {
             reserve_user_token: 10,
             reserve_validator_token: 20,
-        }
-        .encode_to_slot()
-        .unwrap();
-        let present_pool =
-            apply_fee_amm_swap_to_pool_slot(original_pool, amount_in, amount_out).unwrap();
+        };
+        let mut present_pool = original_pool.clone();
+        present_pool.apply_swap(amount_in, amount_out).unwrap();
 
         let mut account = Account::default();
         account.storage.insert(
             key,
-            EvmStorageSlot::new_changed(original_pool, present_pool, TransactionId::ZERO),
+            EvmStorageSlot::new_changed(
+                original_pool.encode_to_slot().unwrap(),
+                present_pool.encode_to_slot().unwrap(),
+                TransactionId::ZERO,
+            ),
         );
         let state = EvmState::from_iter([(address, account)]);
         let actions = vec![StorageAction::FeeAmmSwap(address, key, amount_in)];
