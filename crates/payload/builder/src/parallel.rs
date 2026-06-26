@@ -6,8 +6,11 @@ use std::sync::{
 
 use alloy_primitives::{Address, TxKind};
 use alloy_sol_types::SolInterface;
-use reth_evm::{Evm, RecoveredTx};
-use reth_revm::context::Transaction as _;
+use reth_evm::RecoveredTx;
+use reth_revm::{
+    ExecuteEvm,
+    context::{ContextTr, Transaction as _},
+};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
@@ -46,9 +49,10 @@ pub(crate) struct PrewarmingPlanner<Provider> {
     results_rx: Receiver<PlannedTransaction>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    /// Reusable state updates received from the prewarming.
     state_updates_rx: Receiver<StateAwareBestTransactionsUpdate>,
-    state_update_pool: Vec<StateAwareBestTransactionsUpdate>,
-    completed: usize,
+    /// Buffer of reusable [`StateAwareBestTransactionsUpdate`]s.
+    state_updates_buffer: Vec<StateAwareBestTransactionsUpdate>,
 }
 
 impl<Provider> PrewarmingPlanner<Provider>
@@ -91,8 +95,7 @@ where
             stop,
             prewarm,
             state_updates_rx,
-            state_update_pool: Vec::new(),
-            completed: 0,
+            state_updates_buffer: Vec::new(),
         }
     }
 
@@ -110,37 +113,39 @@ where
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx().map(TempoEvm::with_actions));
             });
 
-            let advance = |planner: &mut PlannerContext<
-                StateAwareBestTransactions<Txs>,
-                Provider,
-            >| {
-                if planner.stop.load(Ordering::Relaxed) {
-                    return;
-                }
+            let advance =
+                |planner: &mut PlannerContext<StateAwareBestTransactions<Txs>, Provider>| {
+                    if planner.stop.load(Ordering::Relaxed) {
+                        return;
+                    }
 
-                let Some(tx) = planner.best_txs.next() else {
-                    return;
+                    let Some(tx) = planner.best_txs.next() else {
+                        return;
+                    };
+
+                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                        let offset = planner.next_expiring_nonce_offset;
+                        planner.next_expiring_nonce_offset += 1;
+                        Some(offset)
+                    } else {
+                        None
+                    };
+
+                    let prewarm = planner.prewarm.clone();
+                    let results_tx = planner.results_tx.clone();
+                    let commands_tx = planner.commands_tx.clone();
+                    let action_buffer = planner.action_buffers.pop();
+                    scope.spawn(move |_| {
+                        let planned = Self::plan_transaction_replay(
+                            prewarm,
+                            tx,
+                            action_buffer,
+                            expiring_nonce_offset,
+                        );
+                        let _ = results_tx.send(planned);
+                        let _ = commands_tx.send(PlannerCommand::Advance);
+                    });
                 };
-
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = planner.next_expiring_nonce_offset;
-                    planner.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
-
-                let prewarm = planner.prewarm.clone();
-                let results_tx = planner.results_tx.clone();
-                let commands_tx = planner.commands_tx.clone();
-                let action_buffer = planner.action_buffers.pop();
-                scope.spawn(move |_| {
-                    let planned =
-                        plan_transaction_replay(prewarm, tx, action_buffer, expiring_nonce_offset);
-                    let _ = results_tx.send(planned);
-                    let _ = commands_tx.send(PlannerCommand::Advance);
-                });
-            };
 
             for _ in 0..pool.current_num_threads() * 2 {
                 advance(&mut ctx);
@@ -177,13 +182,118 @@ where
         pool.clear();
     }
 
+    fn plan_transaction_replay(
+        prewarm: PrewarmingExecutionContext<Provider>,
+        tx: BestTransaction,
+        mut action_buffer: Option<Vec<StorageAction>>,
+        expiring_nonce_offset: Option<usize>,
+    ) -> PlannedTransaction {
+        if prewarm.is_stopped() {
+            return PlannedTransaction {
+                tx,
+                replay: None,
+                action_buffer,
+            };
+        }
+
+        let replay = WorkerPool::with_worker_mut(|worker| {
+            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| {
+                prewarm.evm_for_ctx().map(TempoEvm::with_actions)
+            }) else {
+                return None;
+            };
+
+            let tx_hash = *tx.hash();
+
+            if prewarm.is_stopped() {
+                return None;
+            }
+
+            if !is_storage_action_replay_candidate(&tx) {
+                evm.clear_actions();
+                return None;
+            }
+
+            let expiring_nonce = tx
+                .transaction
+                .is_expiring_nonce()
+                .then(|| {
+                    let valid_before = tx
+                        .transaction
+                        .tx_env()
+                        .tempo_tx_env
+                        .as_ref()?
+                        .valid_before?;
+                    Some(ExpiringNonceReplay {
+                        hash: tx.transaction.expiring_nonce_hash()?,
+                        valid_before,
+                    })
+                })
+                .flatten();
+            let mut tx_env = tx.transaction.clone_tx_env();
+            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+            }
+
+            let result = match evm.inner_mut().transact_one(tx_env) {
+                Ok(result) => result,
+                Err(err) => {
+                    evm.clear_actions();
+                    trace!(
+                        target: "payload_builder",
+                        %err,
+                        ?tx_hash,
+                        "Failed to collect prewarm storage actions"
+                    );
+                    return None;
+                }
+            };
+            evm.journal_mut().discard_tx();
+
+            if !result.is_success() {
+                evm.clear_actions();
+                trace!(
+                    target: "payload_builder",
+                    ?tx_hash,
+                    result = ?result,
+                    "Prewarm action collection produced non-success result"
+                );
+                return None;
+            }
+
+            let mut actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
+
+            // Filter out expiring nonce actions, they will be handled separately
+            if expiring_nonce.is_some() {
+                actions.retain(|action| !is_nonce_manager_action(action));
+            }
+
+            if actions.is_empty() && expiring_nonce.is_none() {
+                action_buffer = Some(actions);
+                return None;
+            }
+
+            Some(Box::new(StorageActionReplay {
+                result,
+                actions,
+                validator_fee: evm.validator_fee(),
+                expiring_nonce,
+            }))
+        });
+
+        PlannedTransaction {
+            tx,
+            replay,
+            action_buffer,
+        }
+    }
+
     pub(crate) fn next(&mut self) -> Option<PlannedTransaction> {
         let Ok(planned) = self.results_rx.try_recv() else {
             self.commands_tx.send(PlannerCommand::Advance).ok()?;
             return None;
         };
 
-        self.completed += 1;
         Some(planned)
     }
 
@@ -204,23 +314,24 @@ where
     pub(crate) fn on_state_update(&mut self, result: &TempoTxResult) {
         self.recycle_state_updates();
 
-        let mut update = self.state_update_pool.pop().unwrap_or_default();
+        let mut update = self.state_updates_buffer.pop().unwrap_or_default();
         update.update_from_result(result);
         if update.is_empty() {
-            self.state_update_pool.push(update);
+            self.state_updates_buffer.push(update);
             return;
         }
 
-        if let Err(mpsc::SendError(PlannerCommand::StateUpdate(update))) =
+        if let Err(mpsc::SendError(PlannerCommand::StateUpdate(mut update))) =
             self.commands_tx.send(PlannerCommand::StateUpdate(update))
         {
-            self.state_update_pool.push(update);
+            update.clear();
+            self.state_updates_buffer.push(update);
         }
     }
 
     fn recycle_state_updates(&mut self) {
         while let Ok(update) = self.state_updates_rx.try_recv() {
-            self.state_update_pool.push(update);
+            self.state_updates_buffer.push(update);
         }
     }
 }
@@ -259,98 +370,6 @@ enum PlannerCommand {
     Stop {
         drain_rx: Receiver<PlannedTransaction>,
     },
-}
-
-fn plan_transaction_replay<Provider>(
-    prewarm: PrewarmingExecutionContext<Provider>,
-    tx: BestTransaction,
-    mut action_buffer: Option<Vec<StorageAction>>,
-    expiring_nonce_offset: Option<usize>,
-) -> PlannedTransaction
-where
-    Provider: StateProviderFactory + Clone + 'static,
-{
-    if prewarm.is_stopped() {
-        return PlannedTransaction {
-            tx,
-            replay: None,
-            action_buffer,
-        };
-    }
-
-    let replay = WorkerPool::with_worker_mut(|worker| {
-        let Some(evm) = worker
-            .get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx().map(TempoEvm::with_actions))
-        else {
-            return None;
-        };
-
-        let tx_hash = *tx.hash();
-
-        if prewarm.is_stopped() {
-            return None;
-        }
-
-        if !is_storage_action_replay_candidate(&tx) {
-            evm.clear_actions();
-            return None;
-        }
-
-        let expiring_nonce = expiring_nonce_replay(&tx);
-        let mut tx_env = tx.transaction.clone_tx_env();
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-        }
-
-        let mut result = match evm.transact_raw(tx_env) {
-            Ok(result) => result,
-            Err(err) => {
-                evm.clear_actions();
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    ?tx_hash,
-                    "Failed to collect prewarm storage actions"
-                );
-                return None;
-            }
-        };
-
-        if !result.result.is_success() {
-            evm.clear_actions();
-            trace!(
-                target: "payload_builder",
-                ?tx_hash,
-                result = ?result.result,
-                "Prewarm action collection produced non-success result"
-            );
-            return None;
-        }
-
-        let mut actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
-        if expiring_nonce.is_some() {
-            actions.retain(|action| !is_nonce_manager_action(action));
-        }
-        if actions.is_empty() && expiring_nonce.is_none() {
-            action_buffer = Some(actions);
-            return None;
-        }
-
-        result.state.clear();
-        Some(Box::new(StorageActionReplay {
-            result: result.result,
-            actions,
-            validator_fee: evm.validator_fee(),
-            state: result.state,
-            expiring_nonce,
-        }))
-    });
-
-    PlannedTransaction {
-        tx,
-        replay,
-        action_buffer,
-    }
 }
 
 fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {
@@ -427,23 +446,6 @@ fn is_valid_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 
 fn is_valid_direct_recipient(to: Address) -> bool {
     !to.is_zero() && !to.is_tip20() && !to.is_virtual()
-}
-
-fn expiring_nonce_replay(tx: &BestTransaction) -> Option<ExpiringNonceReplay> {
-    if !tx.transaction.is_expiring_nonce() {
-        return None;
-    }
-
-    let valid_before = tx
-        .transaction
-        .tx_env()
-        .tempo_tx_env
-        .as_ref()?
-        .valid_before?;
-    Some(ExpiringNonceReplay {
-        hash: tx.transaction.expiring_nonce_hash()?,
-        valid_before,
-    })
 }
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {

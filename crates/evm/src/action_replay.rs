@@ -31,8 +31,6 @@ pub struct StorageActionReplay {
     pub expiring_nonce: Option<ExpiringNonceReplay>,
     /// Validator-credited fee amount
     pub validator_fee: U256,
-    /// Empty [`EvmState`] buffer that can be used to return the state after replay.
-    pub state: EvmState,
 }
 
 /// Replay data for expiring nonce transactions.
@@ -301,7 +299,6 @@ where
             mut actions,
             expiring_nonce,
             validator_fee,
-            state,
         } = replay;
         replay_state.reset_tx_changes();
 
@@ -317,7 +314,6 @@ where
                     tx_env.caller(),
                     actions.drain(..),
                     replay_state,
-                    state,
                     commit_reads,
                     expiring_nonce,
                 )
@@ -366,7 +362,6 @@ where
         sender: Address,
         actions: impl IntoIterator<Item = StorageAction>,
         replay_state: &mut StorageActionReplayState,
-        mut state: EvmState,
         commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<EvmState, StorageActionReplayExecutionError> {
@@ -383,11 +378,6 @@ where
         }
 
         for action in actions {
-            // Expiring nonce replay is handled separately
-            if expiring_nonce.is_some() && is_nonce_manager_action(action) {
-                continue;
-            }
-
             match action {
                 StorageAction::Sload(address, key, value) => {
                     if replay_state.has_store(address, key) {
@@ -443,6 +433,8 @@ where
                 }
             }
         }
+
+        let mut state = EvmState::default();
 
         apply_expiring_nonce_state_changes(
             db,
@@ -592,17 +584,6 @@ fn apply_expiring_nonce_state_changes<DB: Database>(
     }
 
     Ok(())
-}
-
-fn is_nonce_manager_action(action: StorageAction) -> bool {
-    let address = match action {
-        StorageAction::Sload(address, ..)
-        | StorageAction::Sstore(address, ..)
-        | StorageAction::Sinc(address, ..)
-        | StorageAction::Sdec(address, ..)
-        | StorageAction::FeeAmmSwap(address, ..) => address,
-    };
-    address == NONCE_PRECOMPILE_ADDRESS
 }
 
 fn state_storage<DB: Database>(

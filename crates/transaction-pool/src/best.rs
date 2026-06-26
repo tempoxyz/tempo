@@ -5,6 +5,7 @@ use crate::{
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
+use derive_more::{Deref, DerefMut};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -145,15 +146,13 @@ pub struct StateAwareBestTransactions<I> {
 }
 
 /// Compact state update used by [`StateAwareBestTransactions`].
-#[derive(Debug, Default)]
-pub struct StateAwareBestTransactionsUpdate {
-    tip20_balances: Vec<StateAwareTip20BalanceUpdate>,
-}
+#[derive(Debug, Default, Deref, DerefMut)]
+pub struct StateAwareBestTransactionsUpdate(Vec<StateAwareTip20BalanceUpdate>);
 
 impl StateAwareBestTransactionsUpdate {
     /// Replaces this update with relevant state changes from an executed transaction result.
     pub fn update_from_result(&mut self, result: &TempoTxResult) {
-        self.tip20_balances.clear();
+        self.clear();
 
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
@@ -161,7 +160,7 @@ impl StateAwareBestTransactionsUpdate {
             }
 
             for (&slot, storage_slot) in &account.storage {
-                self.tip20_balances.push(StateAwareTip20BalanceUpdate {
+                self.push(StateAwareTip20BalanceUpdate {
                     address,
                     slot,
                     original_balance: storage_slot.original_value,
@@ -170,20 +169,10 @@ impl StateAwareBestTransactionsUpdate {
             }
         }
     }
-
-    /// Returns true if this update has no state changes relevant to the iterator.
-    pub fn is_empty(&self) -> bool {
-        self.tip20_balances.is_empty()
-    }
-
-    /// Clears this update without releasing its allocation.
-    pub fn clear(&mut self) {
-        self.tip20_balances.clear();
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StateAwareTip20BalanceUpdate {
+pub struct StateAwareTip20BalanceUpdate {
     address: Address,
     slot: U256,
     original_balance: U256,
@@ -220,9 +209,9 @@ where
         }
     }
 
-    /// Applies a compact state update produced from a transaction execution result.
+    /// Applies a state update produced from a transaction execution result.
     pub fn apply_update(&mut self, update: &StateAwareBestTransactionsUpdate) {
-        for balance in update.tip20_balances.iter().copied() {
+        for balance in update.iter().copied() {
             self.apply_tip20_balance_update(
                 balance.address,
                 balance.slot,
