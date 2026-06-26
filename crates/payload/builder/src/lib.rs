@@ -789,7 +789,7 @@ where
             let replayed_transaction = parallel_replay.is_some();
             if let Some(replay) = parallel_replay {
                 let mut stop_reason = None;
-                let execution_outcome = executor.execute_tranasction_with_actions(
+                let execution_outcome = executor.execute_transaction_with_actions(
                     pool_tx.transaction.executable(),
                     *replay,
                     &mut action_replay_state,

@@ -283,7 +283,7 @@ where
     /// `should_commit` observes the result before state mutation. Returning `false` leaves
     /// executor state unchanged, allowing the payload builder to stop at the exact block gas
     /// boundary.
-    pub fn execute_tranasction_with_actions(
+    pub fn execute_transaction_with_actions(
         &mut self,
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
