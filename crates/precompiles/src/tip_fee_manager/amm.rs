@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, StorageCtx},
+    storage::{Handler, StorageAction, StorageCtx, StorageKey},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -615,6 +615,12 @@ impl TipFeeManager {
             let mut pool = self.pools[pool_id].read()?;
             pool.apply_swap(amount_in, amount_out)?;
             self.pools[pool_id].write(pool)?;
+
+            actions.record_always(StorageAction::FeeAmmSwap(
+                self.address,
+                pool_id.mapping_slot(self.pools.slot()),
+                amount_in,
+            ));
 
             Ok(amount_out)
         })
