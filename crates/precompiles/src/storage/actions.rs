@@ -18,13 +18,35 @@ pub enum StorageAction {
     /// If the slot **became** zero as a result of decrementing,
     /// [`Self::Sload`] and [`Self::Sstore`] are recorded instead.
     Sdec(Address, U256, U256),
+    /// Records a FeeAMM pool fee swap over a packed pool slot.
+    ///
+    /// `address` - FeeAMM contract address.
+    /// `key` - Storage slot key.
+    /// `amount_in` - Amount of tokens to swap in.
+    ///
+    /// `amount_out` can be calculated using [`compute_amount_out`](crate::tip_fee_manager::amm::compute_amount_out).
+    FeeAmmSwap(Address, U256, U256),
 }
 
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub enum StorageActions {
     Disabled,
-    Enabled(Rc<RefCell<Vec<StorageAction>>>),
+    Enabled(Rc<RefCell<StorageActionsState>>),
+}
+
+/// Shared mutable state for [`StorageActions`] clones.
+#[derive(Debug, Default)]
+pub struct StorageActionsState {
+    actions: Vec<StorageAction>,
+    /// The depth of the current unrecorded actions scope.
+    ///
+    /// Incremented on each [`StorageActions::unrecorded`] call,
+    /// and decremented on exit from it.
+    ///
+    /// Allows for nesting multiple unrecorded scopes, making sure that
+    /// only when all scopes are exited, [`StorageActions::record`] records actions again.
+    unrecorded_depth: usize,
 }
 
 impl StorageActions {
@@ -42,7 +64,9 @@ impl StorageActions {
     pub fn enable(&mut self) {
         match self {
             Self::Disabled => *self = Self::enabled(),
-            Self::Enabled(actions) => actions.borrow_mut().clear(),
+            Self::Enabled(state) => {
+                state.borrow_mut().actions.clear();
+            }
         }
     }
 
@@ -55,7 +79,7 @@ impl StorageActions {
     pub fn clear(&self) {
         match self {
             Self::Disabled => {}
-            Self::Enabled(actions) => actions.borrow_mut().clear(),
+            Self::Enabled(actions) => actions.borrow_mut().actions.clear(),
         }
     }
 
@@ -68,16 +92,94 @@ impl StorageActions {
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(recorded) => {
-                Some(std::mem::replace(&mut *recorded.borrow_mut(), actions))
+            Self::Enabled(state) => {
+                Some(std::mem::replace(&mut state.borrow_mut().actions, actions))
             }
         }
     }
 
-    /// Records an action if recording is enabled.
-    pub fn record(&self, action: StorageAction) {
-        if let Self::Enabled(actions) = self {
-            actions.borrow_mut().push(action);
+    /// Runs a closure where [`Self::record`] calls are suppressed.
+    pub fn unrecorded<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.unrecorded_guard();
+        f()
+    }
+
+    /// Enters a scope where [`Self::record`] calls are suppressed.
+    fn unrecorded_guard(&self) -> Option<UnrecordedStorageActionsGuard> {
+        if let Self::Enabled(state) = self {
+            state.borrow_mut().unrecorded_depth += 1;
+            Some(UnrecordedStorageActionsGuard(self.clone()))
+        } else {
+            None
         }
+    }
+
+    /// Records an action if recording is enabled and the current scope is recorded.
+    pub fn record(&self, action: StorageAction) {
+        if let Self::Enabled(state) = self {
+            let mut state = state.borrow_mut();
+            if state.unrecorded_depth == 0 {
+                state.actions.push(action);
+            }
+        }
+    }
+
+    /// Records an action if recording is enabled, even inside an unrecorded scope.
+    pub fn record_always(&self, action: StorageAction) {
+        if let Self::Enabled(state) = self {
+            state.borrow_mut().actions.push(action);
+        }
+    }
+}
+
+/// Unrecorded storage-actions scope guard.
+#[derive(Debug)]
+struct UnrecordedStorageActionsGuard(StorageActions);
+
+impl Drop for UnrecordedStorageActionsGuard {
+    fn drop(&mut self) {
+        if let StorageActions::Enabled(state) = &self.0 {
+            let mut state = state.borrow_mut();
+            state.unrecorded_depth = state
+                .unrecorded_depth
+                .checked_sub(1)
+                .expect("unrecorded storage action scope underflow");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unrecorded_record_always() {
+        let actions = StorageActions::enabled();
+        let address = Address::repeat_byte(0x42);
+        let key = U256::from(7);
+
+        actions.record(StorageAction::Sload(address, key, U256::from(1)));
+
+        actions.unrecorded(|| {
+            actions.record(StorageAction::Sstore(address, key, U256::from(2)));
+
+            actions.unrecorded(|| {
+                actions.record(StorageAction::Sinc(address, key, U256::from(3)));
+                actions.record_always(StorageAction::FeeAmmSwap(address, key, U256::from(4)));
+            });
+
+            actions.record(StorageAction::Sdec(address, key, U256::from(6)));
+        });
+
+        actions.record(StorageAction::Sstore(address, key, U256::from(8)));
+
+        assert_eq!(
+            actions.take(),
+            Some(vec![
+                StorageAction::Sload(address, key, U256::from(1)),
+                StorageAction::FeeAmmSwap(address, key, U256::from(4)),
+                StorageAction::Sstore(address, key, U256::from(8)),
+            ])
+        );
     }
 }

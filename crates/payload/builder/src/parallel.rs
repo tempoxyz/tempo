@@ -448,11 +448,11 @@ fn expiring_nonce_replay(tx: &BestTransaction) -> Option<ExpiringNonceReplay> {
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {
     let address = match *action {
-        StorageAction::Sload { address, .. }
-        | StorageAction::Sstore { address, .. }
-        | StorageAction::Sinc { address, .. }
-        | StorageAction::Sdec { address, .. }
-        | StorageAction::FeeAmmSwap { address, .. } => address,
+        StorageAction::Sload(address, ..)
+        | StorageAction::Sstore(address, ..)
+        | StorageAction::Sinc(address, ..)
+        | StorageAction::Sdec(address, ..)
+        | StorageAction::FeeAmmSwap(address, ..) => address,
     };
     address == NONCE_PRECOMPILE_ADDRESS
 }

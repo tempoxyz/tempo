@@ -16,7 +16,7 @@ use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager},
     storage::StorageAction,
-    tip_fee_manager::amm::apply_fee_amm_swap_to_pool_slot,
+    tip_fee_manager::amm::{Pool, compute_amount_out},
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
@@ -319,11 +319,7 @@ fn action_replay_state<DB: Database>(
         }
 
         match *action {
-            StorageAction::Sload {
-                address,
-                key,
-                value,
-            } => {
+            StorageAction::Sload(address, key, value) => {
                 if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
@@ -335,11 +331,7 @@ fn action_replay_state<DB: Database>(
                     Some(value),
                 )?;
             }
-            StorageAction::Sstore {
-                address,
-                key,
-                value,
-            } => {
+            StorageAction::Sstore(address, key, value) => {
                 if replay_state.has_write(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
@@ -352,11 +344,7 @@ fn action_replay_state<DB: Database>(
                     WriteKind::Store,
                 )?;
             }
-            StorageAction::Sinc {
-                address,
-                key,
-                delta,
-            } => {
+            StorageAction::Sinc(address, key, delta) => {
                 if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
@@ -374,11 +362,7 @@ fn action_replay_state<DB: Database>(
                     WriteKind::Delta,
                 )?;
             }
-            StorageAction::Sdec {
-                address,
-                key,
-                delta,
-            } => {
+            StorageAction::Sdec(address, key, delta) => {
                 if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
@@ -396,22 +380,23 @@ fn action_replay_state<DB: Database>(
                     WriteKind::Delta,
                 )?;
             }
-            StorageAction::FeeAmmSwap {
-                address,
-                key,
-                amount_in,
-                amount_out,
-            } => {
+            StorageAction::FeeAmmSwap(address, key, amount_in) => {
                 if replay_state.has_store(address, key) {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
 
-                let value = apply_fee_amm_swap_to_pool_slot(
-                    action_current_value(db, &mut replay_state.tx_changes, address, key, None)?,
+                let pool_slot =
+                    action_current_value(db, &mut replay_state.tx_changes, address, key, None)?;
+                let mut pool = Pool::decode_from_slot(pool_slot);
+                pool.apply_swap(
                     amount_in,
-                    amount_out,
+                    compute_amount_out(amount_in)
+                        .map_err(|_| StorageActionReplayFallback::ActionConflict)?,
                 )
                 .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+                let value = pool
+                    .encode_to_slot()
+                    .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
                 action_write_value(
                     db,
                     &mut replay_state.tx_changes,
@@ -567,11 +552,11 @@ fn apply_expiring_nonce_state_changes<DB: Database>(
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {
     let address = match *action {
-        StorageAction::Sload { address, .. }
-        | StorageAction::Sstore { address, .. }
-        | StorageAction::Sinc { address, .. }
-        | StorageAction::Sdec { address, .. }
-        | StorageAction::FeeAmmSwap { address, .. } => address,
+        StorageAction::Sload(address, ..)
+        | StorageAction::Sstore(address, ..)
+        | StorageAction::Sinc(address, ..)
+        | StorageAction::Sdec(address, ..)
+        | StorageAction::FeeAmmSwap(address, ..) => address,
     };
     address == NONCE_PRECOMPILE_ADDRESS
 }
@@ -700,23 +685,17 @@ mod tests {
         let original_pool = Pool {
             reserve_user_token: 10,
             reserve_validator_token: 20,
-        }
-        .encode_to_slot()
-        .unwrap();
-        let expected_pool =
-            apply_fee_amm_swap_to_pool_slot(original_pool, amount_in, amount_out).unwrap();
+        };
+        let original_pool_value = original_pool.encode_to_slot().unwrap();
+        let mut expected_pool = original_pool;
+        expected_pool.apply_swap(amount_in, amount_out).unwrap();
 
-        let mut db = state_db_with_storage(address, key, original_pool);
+        let mut db = state_db_with_storage(address, key, original_pool_value);
         let mut replay_state = StorageActionReplayState::default();
         let state = action_replay_state(
             Address::ZERO,
             &mut db,
-            &[StorageAction::FeeAmmSwap {
-                address,
-                key,
-                amount_in,
-                amount_out,
-            }],
+            &[StorageAction::FeeAmmSwap(address, key, amount_in)],
             &mut replay_state,
             EvmState::default(),
             false,
@@ -729,7 +708,11 @@ mod tests {
             .get(&address)
             .and_then(|account| account.storage.get(&key))
             .expect("pool slot changed");
-        assert_storage_slot(slot, original_pool, expected_pool);
+        assert_storage_slot(
+            slot,
+            original_pool_value,
+            expected_pool.encode_to_slot().unwrap(),
+        );
     }
 
     #[test]
@@ -748,12 +731,7 @@ mod tests {
         let err = action_replay_state(
             Address::ZERO,
             &mut db,
-            &[StorageAction::FeeAmmSwap {
-                address,
-                key,
-                amount_in: U256::from(3),
-                amount_out: U256::from(2),
-            }],
+            &[StorageAction::FeeAmmSwap(address, key, U256::from(3))],
             &mut replay_state,
             EvmState::default(),
             false,
