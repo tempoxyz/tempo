@@ -1253,6 +1253,26 @@ impl AccountKeychain {
             .map(|(remaining, _)| remaining)
     }
 
+    /// Computes the effective remaining limit from values the caller already loaded.
+    ///
+    /// This helper performs no storage reads. Precompile getters intentionally continue to use
+    /// the storage-backed helpers above so their SLOAD metering remains unchanged.
+    pub fn effective_remaining_limit_from_loaded_key_and_limit(
+        &self,
+        key_id: Address,
+        current_timestamp: u64,
+        key: &AuthorizedKey,
+        limit_state: &SpendingLimitState,
+    ) -> U256 {
+        self.effective_limit_state_from_loaded_key_and_limit(
+            key_id,
+            current_timestamp,
+            key,
+            limit_state,
+        )
+        .0
+    }
+
     /// Computes the effective remaining limit and period end at `current_timestamp`
     /// without mutating storage.
     fn effective_limit_state(
@@ -1321,6 +1341,51 @@ impl AccountKeychain {
         let max = self.spending_limits[limit_key][token].max.read()?;
 
         Ok((U256::from(max), next_end))
+    }
+
+    fn effective_limit_state_from_loaded_key_and_limit(
+        &self,
+        key_id: Address,
+        current_timestamp: u64,
+        key: &AuthorizedKey,
+        limit_state: &SpendingLimitState,
+    ) -> (U256, u64) {
+        if key_id.is_zero() && self.storage.spec().is_t3() {
+            return (U256::ZERO, 0);
+        }
+
+        if key.is_revoked || key.expiry == 0 {
+            return (U256::ZERO, 0);
+        }
+
+        if current_timestamp >= key.expiry && self.storage.spec().is_t3() {
+            return (U256::ZERO, 0);
+        }
+
+        let remaining = limit_state.remaining;
+        if !self.storage.spec().is_t3() {
+            return (remaining, 0);
+        }
+
+        if limit_state.period == 0 {
+            return (remaining, 0);
+        }
+
+        let remaining =
+            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+                U256::ZERO
+            } else {
+                remaining
+            };
+
+        if current_timestamp < limit_state.period_end {
+            return (remaining, limit_state.period_end);
+        }
+
+        (
+            U256::from(limit_state.max),
+            limit_state.compute_next_period_end(current_timestamp),
+        )
     }
 
     /// Deducts `amount` from the key's remaining spending limit for `token`, failing if exceeded.
@@ -1566,7 +1631,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{Layout, StorableType, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, TxKind, U256};
@@ -4439,6 +4504,8 @@ mod tests {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
+            assert_eq!(SpendingLimitState::LAYOUT, Layout::Slots(2));
+
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             let handler = &mut keychain.spending_limits[limit_key][token];
             let remaining = U256::from(123u64);
@@ -4453,6 +4520,12 @@ mod tests {
                 StorageCtx.sload(ACCOUNT_KEYCHAIN_ADDRESS, handler.as_slot().slot())?,
                 remaining
             );
+
+            let metadata_slot = handler.as_slot().slot() + U256::ONE;
+            assert_eq!(handler.remaining.slot(), handler.as_slot().slot());
+            assert_eq!(handler.max.slot(), metadata_slot);
+            assert_eq!(handler.period.slot(), metadata_slot);
+            assert_eq!(handler.period_end.slot(), metadata_slot);
 
             Ok(())
         })
@@ -4648,6 +4721,74 @@ mod tests {
     }
 
     #[test]
+    fn test_loaded_limit_helper_reuses_packed_limit_slot() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
+        let current_timestamp = 1_000u64;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+
+            keychain.keys[account][key_id].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: true,
+                is_revoked: false,
+                is_admin: false,
+            })?;
+            keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                remaining: U256::from(25u64),
+                max: 100,
+                period: 60,
+                period_end: current_timestamp,
+            })?;
+
+            let key = keychain.keys[account][key_id].read()?;
+
+            StorageCtx.reset_counters();
+            let storage_loaded_remaining = keychain.effective_remaining_limit_with_key(
+                account,
+                key_id,
+                token,
+                current_timestamp,
+                &key,
+            )?;
+            assert_eq!(storage_loaded_remaining, U256::from(100u64));
+            assert_eq!(
+                StorageCtx.counter_sload(),
+                4,
+                "legacy helper keeps the precompile-visible field-by-field reads"
+            );
+
+            StorageCtx.reset_counters();
+            let limit_state = keychain.spending_limits[limit_key][token].read()?;
+            assert_eq!(
+                StorageCtx.counter_sload(),
+                2,
+                "full state read loads remaining once and the packed metadata slot once"
+            );
+
+            let loaded_remaining = keychain.effective_remaining_limit_from_loaded_key_and_limit(
+                key_id,
+                current_timestamp,
+                &key,
+                &limit_state,
+            );
+            assert_eq!(loaded_remaining, storage_loaded_remaining);
+            assert_eq!(
+                StorageCtx.counter_sload(),
+                2,
+                "loaded helper must not perform additional storage reads"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_t7_periodic_exact_depletion_stores_sentinel_but_emits_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         storage.set_timestamp(U256::from(1_000u64));
@@ -4703,6 +4844,18 @@ mod tests {
                 keychain.effective_remaining_limit(account, key_id, token, 1_000)?,
                 U256::ZERO,
                 "effective remaining limit must decode the T7 zero sentinel"
+            );
+            let key = keychain.keys[account][key_id].read()?;
+            let limit_state = keychain.spending_limits[limit_key][token].read()?;
+            assert_eq!(
+                keychain.effective_remaining_limit_from_loaded_key_and_limit(
+                    key_id,
+                    1_000,
+                    &key,
+                    &limit_state,
+                ),
+                U256::ZERO,
+                "loaded helper must decode the T7 zero sentinel"
             );
             assert_eq!(
                 keychain

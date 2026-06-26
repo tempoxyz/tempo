@@ -1270,13 +1270,15 @@ pub(crate) fn exceeds_spending_limit(
                     return Ok(false);
                 }
 
-                let remaining = keychain.effective_remaining_limit_with_key(
-                    subject.account,
+                let limit_key =
+                    AccountKeychain::spending_limit_key(subject.account, subject.key_id);
+                let limit_state = keychain.spending_limits[limit_key][subject.fee_token].read()?;
+                let remaining = keychain.effective_remaining_limit_from_loaded_key_and_limit(
                     subject.key_id,
-                    subject.fee_token,
                     current_timestamp,
                     &key,
-                )?;
+                    &limit_state,
+                );
                 Ok(fee_token_cost > remaining)
             },
         )
