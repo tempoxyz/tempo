@@ -654,7 +654,11 @@ impl AA2dPool {
 
         BestAA2dTransactions {
             independent: self.independent_transactions.eviction_order_for(base_fee),
-            by_id: self.by_id.clone(),
+            by_id: self
+                .by_id
+                .iter()
+                .map(|(id, tx)| (*id, tx.inner.clone()))
+                .collect(),
             expiring_nonce_order,
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
@@ -2070,7 +2074,7 @@ pub(crate) struct BestAA2dTransactions {
     ///
     /// Expiring nonce transactions are not stored in `by_id`; they are tracked
     /// separately by `expiring_nonce_order`.
-    by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
+    by_id: BTreeMap<AA2dTransactionId, AA2dStoredTransaction>,
     /// Expiring nonce pending transactions in eviction order. The best
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
@@ -2091,10 +2095,11 @@ impl BestAA2dTransactions {
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let (key, id) = self.independent.pop_last()?;
 
+        let tx = self.by_id.remove(&id)?;
         let tx = PendingTransaction {
             submission_id: key.submission_id,
             priority: key.priority,
-            transaction: self.by_id.remove(&id)?.inner.transaction.clone(),
+            transaction: tx.transaction,
         };
 
         Some((id, tx))
@@ -2193,13 +2198,10 @@ impl BestAA2dTransactions {
                     }
                     self.by_id.insert(
                         id,
-                        Arc::new(AA2dInternalTransaction {
-                            inner: AA2dStoredTransaction {
-                                submission_id: tx.submission_id,
-                                transaction: tx.transaction,
-                            },
-                            is_pending: AtomicBool::new(true),
-                        }),
+                        AA2dStoredTransaction {
+                            submission_id: tx.submission_id,
+                            transaction: tx.transaction,
+                        },
                     );
                 }
             } else {
@@ -2228,7 +2230,7 @@ impl BestAA2dTransactions {
                     }
                     // Advance transaction that just got unlocked, if any.
                     if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
-                        let key = unlocked.inner.eviction_key(self.base_fee);
+                        let key = unlocked.eviction_key(self.base_fee);
                         self.independent.insert(key, id.unlocks());
                     }
                     best
