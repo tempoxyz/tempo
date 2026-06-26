@@ -6,7 +6,7 @@ use crate::{
     tip20::{ITIP20, TIP20Token},
     view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IRolesAuth, TIP20Error};
 

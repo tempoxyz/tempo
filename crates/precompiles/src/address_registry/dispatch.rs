@@ -1,7 +1,7 @@
 use crate::{
     Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};

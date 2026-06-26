@@ -5,7 +5,7 @@ use crate::{
     tip403_registry::{AuthRole, TIP403Registry},
     view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP403Registry;
 

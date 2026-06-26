@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`StablecoinDEX`] precompile.
 
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStablecoinDEX;
 

@@ -135,13 +135,7 @@ pub(crate) fn dispatch_call<T>(
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
-        if storage.spec().is_t1() {
-            return Ok(storage.revert_output(Bytes::new()));
-        } else {
-            return Ok(storage.halt_output(PrecompileHalt::Other(
-                "Invalid input: missing function selector".into(),
-            )));
-        }
+        return missing_selector_result();
     }
 
     let result = decode(calldata);
@@ -161,74 +155,35 @@ pub(crate) fn dispatch_call<T>(
 }
 
 macro_rules! dispatch {
-    // Public dispatcher syntax: group match arms by ABI interface.
     ($calldata:expr, |$call:ident| match $match_call:ident {
-        $iface_1:ident::$calls_1:ident { $($(#[$($attr_1:tt)*])* $variant_1:ident($binding_1:pat) => $body_1:expr),* $(,)? }
-        $($iface_n:ident::$calls_n:ident { $($(#[$($attr_n:tt)*])* $variant_n:ident($binding_n:pat) => $body_n:expr),* $(,)? })*
+        $($iface:ident::$calls:ident {
+            $(
+                $(#[schedule($($gate:ident = $hf:ident),+ $(,)?)])*
+                $variant:ident($binding:pat) => $body:expr
+            ),* $(,)?
+        })+
     } $(,)?) => {
         paste::paste! {{
-            // Run hardfork gates before decoding, so malformed gated calls are still unknown.
             if let Some(selector) = crate::dispatch::selector_from_calldata($calldata) {
-                $($(crate::dispatch!(@pre_gate $calldata, selector, $iface_1::[<$variant_1 Call>]::SELECTOR; #[$($attr_1)*]);)*)*
-                $($($(crate::dispatch!(@pre_gate $calldata, selector, $iface_n::[<$variant_n Call>]::SELECTOR; #[$($attr_n)*]);)*)*)*
-
-                // Decode with the ABI whose selector set contains the calldata selector.
-                crate::dispatch!(@decode $calldata, selector, $call, $match_call,
-                    $iface_1::$calls_1 { $($variant_1($binding_1) => $body_1),* }
-                    $($iface_n::$calls_n { $($variant_n($binding_n) => $body_n),* })*
-                    else $iface_1::$calls_1
-                )
-            } else {
-                // Let dispatch_call apply the chain-specific missing-selector behavior.
-                crate::dispatch::dispatch_call($calldata, <$iface_1::$calls_1 as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
+                $($($($(
+                    if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
+                        && !crate::dispatch::$gate(tempo_chainspec::hardfork::TempoHardfork::$hf)
+                    {
+                        return crate::dispatch::unknown_selector_result($calldata);
+                    }
+                )+)*)*)+
+                $(
+                    if <$iface::$calls as alloy::sol_types::SolInterface>::valid_selector(selector) {
+                        type Calls = $iface::$calls;
+                        return crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
+                            $(Calls::$variant($binding) => $body,)*
+                        });
+                    }
+                )*
+                return crate::dispatch::unknown_selector_result($calldata);
             }
+            crate::dispatch::missing_selector_result()
         }}
-    };
-    // Try one interface; recurse until a matching selector set is found.
-    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident,
-        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* } $($rest:tt)*
-    ) => {{
-        type Calls = $iface::$calls;
-        if <Calls as alloy::sol_types::SolInterface>::valid_selector($selector) {
-            // Ensure no selector collision with later interfaces.
-            debug_assert!(!crate::dispatch!(@any_valid_selector $selector, $($rest)*));
-            crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |$call| match $match_call {
-                $(Calls::$variant($binding) => $body,)*
-            })
-        } else {
-            crate::dispatch!(@decode $calldata, $selector, $call, $match_call, $($rest)*)
-        }
-    }};
-    // Fallback preserves dispatch_call's unknown-selector decoding path.
-    (@decode $calldata:expr, $selector:expr, $call:ident, $match_call:ident, else $iface:ident::$calls:ident) => {{
-        type Calls = $iface::$calls;
-        crate::dispatch::dispatch_call($calldata, <Calls as alloy::sol_types::SolInterface>::abi_decode, |_| unreachable!())
-    }};
-    // Recursively check whether any remaining interface accepts the selector.
-    (@any_valid_selector $selector:expr, else $iface:ident::$calls:ident) => {
-        false
-    };
-    (@any_valid_selector $selector:expr,
-        $iface:ident::$calls:ident { $($variant:ident($binding:pat) => $body:expr),* } $($rest:tt)*
-    ) => {{
-        type Calls = $iface::$calls;
-        <Calls as alloy::sol_types::SolInterface>::valid_selector($selector)
-            || crate::dispatch!(@any_valid_selector $selector, $($rest)*)
-    }};
-    // Schedule gates: since rejects pre-fork, until rejects from that fork onward.
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $since:ident, until = $until:ident)]) => {
-        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(since = $since)]);
-        crate::dispatch!(@pre_gate $calldata, $selector, $call_selector; #[schedule(until = $until)]);
-    };
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(since = $hf:ident)]) => {
-        if $selector == $call_selector && crate::storage::StorageCtx.spec() < tempo_chainspec::hardfork::TempoHardfork::$hf {
-            return crate::dispatch::unknown_selector_result($calldata);
-        }
-    };
-    (@pre_gate $calldata:expr, $selector:expr, $call_selector:expr; #[schedule(until = $hf:ident)]) => {
-        if $selector == $call_selector && crate::storage::StorageCtx.spec() >= tempo_chainspec::hardfork::TempoHardfork::$hf {
-            return crate::dispatch::unknown_selector_result($calldata);
-        }
     };
 }
 
@@ -240,6 +195,28 @@ pub(crate) fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
             .try_into()
             .expect("selector slice has exactly 4 bytes")
     })
+}
+
+pub(crate) fn missing_selector_result() -> PrecompileResult {
+    let storage = StorageCtx::default();
+
+    if storage.spec().is_t1() {
+        Ok(storage.revert_output(Bytes::new()))
+    } else {
+        Ok(storage.halt_output(PrecompileHalt::Other(
+            "Invalid input: missing function selector".into(),
+        )))
+    }
+}
+
+#[inline]
+pub(crate) fn since(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+    StorageCtx.spec() >= hardfork
+}
+
+#[inline]
+pub(crate) fn until(hardfork: tempo_chainspec::hardfork::TempoHardfork) -> bool {
+    StorageCtx.spec() < hardfork
 }
 
 pub(crate) fn unknown_selector_result(calldata: &[u8]) -> PrecompileResult {
