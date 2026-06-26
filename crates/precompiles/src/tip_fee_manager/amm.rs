@@ -70,11 +70,11 @@ impl Pool {
 
     /// Encodes a [`Pool`] into the raw EVM storage slot value.
     pub fn encode_to_slot(&self) -> Result<U256> {
-        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
+        use crate::storage::packing::insert_into_word;
 
-        let mut slot = PackedSlot(U256::ZERO);
-        self.store(&mut slot, U256::ZERO, LayoutCtx::FULL)?;
-        Ok(slot.0)
+        let slot = insert_into_word(U256::ZERO, &self.reserve_user_token, 0, 16)?;
+        let slot = insert_into_word(slot, &self.reserve_validator_token, 16, 16)?;
+        Ok(slot)
     }
 
     /// Applies a fee swap to the pool.
