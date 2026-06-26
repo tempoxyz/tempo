@@ -1314,6 +1314,7 @@ impl AccountKeychain {
         }
 
         // Check key is valid (exists and not revoked)
+        let spec = self.storage.spec();
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(account, key_id, current_timestamp)?;
 
@@ -1324,25 +1325,24 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+        let limit = &mut self.spending_limits[limit_key][token];
+        if !spec.is_t3() {
+            let remaining = limit.remaining.read()?;
             if amount > remaining {
                 return Err(AccountKeychainError::spending_limit_exceeded().into());
             }
 
             let new_remaining = remaining - amount;
-            self.spending_limits[limit_key][token]
-                .remaining
-                .write(new_remaining)?;
+            limit.remaining.write(new_remaining)?;
             return Ok(());
         }
 
-        let mut limit_state = self.spending_limits[limit_key][token].read()?;
+        let mut limit_state = limit.read()?;
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
         if is_periodic {
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            if spec.is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
                 remaining = U256::ZERO;
             }
 
@@ -1362,16 +1362,14 @@ impl AccountKeychain {
         // Update remaining limit
         let new_remaining = remaining - amount;
         if is_periodic {
-            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+            if spec.is_t7() && new_remaining.is_zero() {
                 limit_state.remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
             } else {
                 limit_state.remaining = new_remaining;
             }
-            self.spending_limits[limit_key][token].write(limit_state)?;
+            limit.write(limit_state)?;
         } else {
-            self.spending_limits[limit_key][token]
-                .remaining
-                .write(new_remaining)?;
+            limit.remaining.write(new_remaining)?;
         }
 
         self.emit_event(AccountKeychainEvent::access_key_spend(
@@ -1410,6 +1408,7 @@ impl AccountKeychain {
 
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
+        let spec = self.storage.spec();
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = match self.load_active_key(account, transaction_key, current_timestamp) {
             Ok(key) => key,
@@ -1422,17 +1421,16 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
+        let limit = &mut self.spending_limits[limit_key][token];
+        if !spec.is_t3() {
+            let remaining = limit.remaining.read()?;
             let refunded = remaining.saturating_add(amount);
-            return self.spending_limits[limit_key][token]
-                .remaining
-                .write(refunded);
+            return limit.remaining.write(refunded);
         }
 
-        let mut limit_state = self.spending_limits[limit_key][token].read()?;
+        let mut limit_state = limit.read()?;
         // (T7+) decode the periodic zero sentinel before adding the refund.
-        let refunded = if self.storage.spec().is_t7()
+        let refunded = if spec.is_t7()
             && limit_state.period != 0
             && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL
         {
@@ -1450,7 +1448,7 @@ impl AccountKeychain {
             refunded.min(U256::from(limit_state.max))
         };
 
-        self.spending_limits[limit_key][token].write(limit_state)
+        limit.write(limit_state)
     }
 
     /// Authorize a token transfer with access key spending limits.
