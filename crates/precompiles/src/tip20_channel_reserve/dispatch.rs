@@ -5,7 +5,7 @@ use crate::{
     Precompile, charge_input_cost, dispatch, metadata, mutate, mutate_void,
     preserve_storage_credits, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20ChannelReserve;
 impl Precompile for TIP20ChannelReserve {

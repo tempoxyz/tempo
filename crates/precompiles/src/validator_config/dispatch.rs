@@ -4,7 +4,7 @@ use super::ValidatorConfig;
 use crate::{
     Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
 
