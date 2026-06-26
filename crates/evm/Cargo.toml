@@ -56,6 +56,7 @@ alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
 criterion.workspace = true
+eyre.workspace = true
 indexmap.workspace = true
 insta.workspace = true
 reth-execution-cache.workspace = true
