@@ -3,11 +3,10 @@
 //! Maintains a regular connection to an upstream node over websocker
 //! or `in_process::Actor` as an in-process actor working off of channels.
 
-use std::net::SocketAddr;
-
+use alloy_rpc_client::BuiltInConnectionString;
 use commonware_consensus::Reporter;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner};
-use eyre::{WrapErr as _, ensure};
+use eyre::WrapErr as _;
 use tempo_node::rpc::consensus::Event;
 use tokio::sync::mpsc;
 use url::Url;
@@ -79,16 +78,9 @@ pub(crate) struct Config {
 }
 
 fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
-    let url: Url = if url.starts_with("localhost:") || url.parse::<SocketAddr>().is_ok() {
-        format!("ws://{url}").parse()?
-    } else {
-        url.parse()?
+    let BuiltInConnectionString::Ws(url, _) = BuiltInConnectionString::try_as_ws(url)? else {
+        unreachable!("try_as_ws always returns a websocket connection string on success")
     };
-    ensure!(
-        matches!(url.scheme(), "ws" | "wss"),
-        "URL scheme must be ws or wss, was `{}`",
-        url.scheme()
-    );
     Ok(url)
 }
 
