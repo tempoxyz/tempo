@@ -99,6 +99,13 @@ impl EncodedBlockTransactionsBuilder {
     }
 
     pub(crate) fn finish(self) -> EncodedBlockTransactionList {
+        if self.transaction_count == 0 {
+            return EncodedBlockTransactionList {
+                transaction_count: 0,
+                rlp: Bytes::from_static(&[0xc0]),
+            };
+        }
+
         let header = alloy_rlp::Header {
             list: true,
             payload_length: self.payload.len(),
@@ -406,6 +413,14 @@ mod tests {
         let mut expected = Vec::new();
         block.encode(&mut expected);
         expected
+    }
+
+    #[test]
+    fn empty_block_transaction_list_uses_rlp_empty_list() {
+        let encoded_transactions = EncodedBlockTransactionsBuilder::default().finish();
+
+        assert_eq!(encoded_transactions.transaction_count, 0);
+        assert_eq!(encoded_transactions.rlp.as_ref(), &[0xc0]);
     }
 
     #[test]
