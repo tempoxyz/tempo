@@ -28,6 +28,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    skip_logs: bool,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -56,6 +57,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            skip_logs: false,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -64,6 +66,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
+        let skip_logs = cfg.disable_nonce_check && cfg.disable_balance_check;
         Self::new(
             internals,
             u64::MAX,
@@ -73,6 +76,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             false,
             cfg.gas_params.clone(),
         )
+        .with_skip_logs(skip_logs)
     }
 
     /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
@@ -82,6 +86,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         gas_limit: u64,
         reservoir: u64,
     ) -> Self {
+        let skip_logs = cfg.disable_nonce_check && cfg.disable_balance_check;
         Self::new(
             internals,
             gas_limit,
@@ -91,11 +96,18 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             false,
             cfg.gas_params.clone(),
         )
+        .with_skip_logs(skip_logs)
     }
 
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Skips journal log insertion while preserving gas accounting.
+    pub fn with_skip_logs(mut self, skip_logs: bool) -> Self {
+        self.skip_logs = skip_logs;
         self
     }
 
@@ -452,10 +464,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
                     .log_cost(event.topics().len() as u8, event.data.len() as u64),
         )?;
 
-        self.internals.log(Log {
-            address,
-            data: event,
-        });
+        if !self.skip_logs {
+            self.internals.log(Log {
+                address,
+                data: event,
+            });
+        }
 
         Ok(())
     }
@@ -604,7 +618,10 @@ pub fn deduct_gas(
 mod tests {
     use super::*;
     use alloy::primitives::{B256, b256, bytes, keccak256};
-    use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use alloy_evm::{
+        EvmEnv, EvmFactory, EvmInternals,
+        revm::context::{ContextTr, Host, JournalTr},
+    };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use revm::{
@@ -807,7 +824,6 @@ mod tests {
     #[test]
     fn test_emit_event() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
-        let mut provider = evm.provider_max_gas();
 
         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
         let data = bytes!(
@@ -816,8 +832,18 @@ mod tests {
 
         let log_data = LogData::new_unchecked(vec![topic], data);
 
-        // Should not error even though events can't be emitted from handlers
-        provider.emit_event(Address::random(), log_data)?;
+        {
+            let mut provider = evm.provider_max_gas();
+            provider.emit_event(Address::random(), log_data.clone())?;
+        }
+        assert_eq!(evm.0.ctx_mut().journal().logs().len(), 1);
+
+        let mut evm = TestEvm::default();
+        {
+            let mut provider = evm.provider_max_gas().with_skip_logs(true);
+            provider.emit_event(Address::random(), log_data)?;
+        }
+        assert!(evm.0.ctx_mut().journal().logs().is_empty());
 
         Ok(())
     }
