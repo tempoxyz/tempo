@@ -164,6 +164,15 @@ macro_rules! dispatch {
         })+
     } $(,)?) => {
         paste::paste! {{
+            #[cfg(debug_assertions)]
+            {
+                let mut selectors = std::collections::BTreeSet::new();
+                $(assert!(
+                    <$iface::$calls as alloy::sol_types::SolInterface>::selectors().all(|s| selectors.insert(s)),
+                    "duplicate precompile selector in dispatch! macro",
+                );)*
+            }
+
             if let Some(selector) = crate::dispatch::selector_from_calldata($calldata) {
                 $($($($(
                     if selector == <$iface::[<$variant Call>] as alloy::sol_types::SolCall>::SELECTOR
