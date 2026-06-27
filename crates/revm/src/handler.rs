@@ -1144,60 +1144,67 @@ where
             )?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
-            StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
-                    let mut nonce_manager = NonceManager::new();
+            let storage_prewarm = tx
+                .tempo_tx_env
+                .as_ref()
+                .is_some_and(|aa| aa.storage_prewarm);
+            if !storage_prewarm {
+                StorageCtx::enter_evm_without_tip1060_accounting(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    actions.clone(),
+                    || {
+                        let mut nonce_manager = NonceManager::new();
 
-                    if !cfg.is_nonce_check_disabled() {
-                        let tx_nonce = tx.nonce();
-                        let state = nonce_manager
-                            .get_nonce(getNonceCall {
-                                account: tx.caller(),
-                                nonceKey: nonce_key,
-                            })
+                        if !cfg.is_nonce_check_disabled() {
+                            let tx_nonce = tx.nonce();
+                            let state = nonce_manager
+                                .get_nonce(getNonceCall {
+                                    account: tx.caller(),
+                                    nonceKey: nonce_key,
+                                })
+                                .map_err(|err| match err {
+                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                    err => {
+                                        TempoInvalidTransaction::NonceManagerError(err.to_string())
+                                            .into()
+                                    }
+                                })?;
+
+                            match tx_nonce.cmp(&state) {
+                                Ordering::Greater => {
+                                    return Err(InvalidTransaction::NonceTooHigh {
+                                        tx: tx_nonce,
+                                        state,
+                                    }
+                                    .into());
+                                }
+                                Ordering::Less => {
+                                    return Err(InvalidTransaction::NonceTooLow {
+                                        tx: tx_nonce,
+                                        state,
+                                    }
+                                    .into());
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Always increment nonce for AA transactions with non-zero nonce keys.
+                        nonce_manager
+                            .increment_nonce(tx.caller(), nonce_key)
                             .map_err(|err| match err {
                                 TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                                 err => TempoInvalidTransaction::NonceManagerError(err.to_string())
                                     .into(),
                             })?;
 
-                        match tx_nonce.cmp(&state) {
-                            Ordering::Greater => {
-                                return Err(InvalidTransaction::NonceTooHigh {
-                                    tx: tx_nonce,
-                                    state,
-                                }
-                                .into());
-                            }
-                            Ordering::Less => {
-                                return Err(InvalidTransaction::NonceTooLow {
-                                    tx: tx_nonce,
-                                    state,
-                                }
-                                .into());
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Always increment nonce for AA transactions with non-zero nonce keys.
-                    nonce_manager
-                        .increment_nonce(tx.caller(), nonce_key)
-                        .map_err(|err| match err {
-                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                            err => {
-                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
-                            }
-                        })?;
-
-                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-                },
-            )?;
+                        Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    },
+                )?;
+            }
         } else {
             // Protocol nonce (nonce_key == 0)
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.

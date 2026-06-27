@@ -513,6 +513,7 @@ where
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
+            tempo_tx_env.storage_prewarm = false;
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 

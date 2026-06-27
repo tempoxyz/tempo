@@ -103,6 +103,7 @@ impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
         let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
+            tempo_tx_env.storage_prewarm = false;
         }
 
         tx_env

@@ -63,6 +63,9 @@ pub struct TempoBatchCallEnv {
     ///
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
+
+    /// Marks transaction execution used only to prewarm payload-builder storage reads.
+    pub storage_prewarm: bool,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -367,6 +370,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 override_key_id: None,
                 // can only be derived when given an entire block
                 expiring_nonce_idx: None,
+                storage_prewarm: false,
             })),
         }
     }
