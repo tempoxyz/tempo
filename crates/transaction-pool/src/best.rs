@@ -1,14 +1,16 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
-    tt_2d_pool::BestAA2dTransactions,
+    ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::{AASequenceId, BestAA2dTransactions},
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, Priority, TransactionOrdering, ValidPoolTransaction,
+    BestTransactions, PoolTransaction, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
@@ -142,6 +144,10 @@ pub struct StateAwareBestTransactions<I> {
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
+    /// Lowest still-possibly-valid nonce per regular sender inside this payload build.
+    regular_nonce_floors: HashMap<Address, u64>,
+    /// Lowest still-possibly-valid nonce per AA 2D sequence inside this payload build.
+    aa_2d_nonce_floors: HashMap<AASequenceId, u64>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -153,12 +159,16 @@ where
         Self {
             inner,
             decreased_balances: HashMap::default(),
+            regular_nonce_floors: HashMap::default(),
+            aa_2d_nonce_floors: HashMap::default(),
         }
     }
 
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+    pub fn on_new_result(&mut self, tx: &BestTransaction, result: &TempoTxResult) {
+        self.remember_included_or_stale_nonce(tx);
+
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;
@@ -174,6 +184,52 @@ where
             }
         }
     }
+
+    /// Records a transaction that failed only because the nonce was already spent.
+    pub fn on_nonce_too_low(&mut self, tx: &BestTransaction) {
+        self.remember_included_or_stale_nonce(tx);
+    }
+
+    fn remember_included_or_stale_nonce(&mut self, tx: &BestTransaction) {
+        if tx.transaction.is_expiring_nonce() {
+            return;
+        }
+
+        let next_nonce = tx.transaction.nonce().saturating_add(1);
+        if tx.transaction.is_aa_2d() {
+            let Some(id) = tx.transaction.aa_transaction_id() else {
+                return;
+            };
+            self.aa_2d_nonce_floors
+                .entry(id.seq_id)
+                .and_modify(|nonce| *nonce = (*nonce).max(next_nonce))
+                .or_insert(next_nonce);
+        } else {
+            self.regular_nonce_floors
+                .entry(tx.transaction.sender())
+                .and_modify(|nonce| *nonce = (*nonce).max(next_nonce))
+                .or_insert(next_nonce);
+        }
+    }
+
+    fn is_below_nonce_floor(&self, tx: &BestTransaction) -> bool {
+        if tx.transaction.is_expiring_nonce() {
+            return false;
+        }
+
+        if tx.transaction.is_aa_2d() {
+            let Some(id) = tx.transaction.aa_transaction_id() else {
+                return false;
+            };
+            self.aa_2d_nonce_floors
+                .get(&id.seq_id)
+                .is_some_and(|&nonce_floor| id.nonce < nonce_floor)
+        } else {
+            self.regular_nonce_floors
+                .get(&tx.transaction.sender())
+                .is_some_and(|&nonce_floor| tx.transaction.nonce() < nonce_floor)
+        }
+    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
@@ -185,6 +241,10 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
+
+            if self.is_below_nonce_floor(&tx) {
+                continue;
+            }
 
             let Some(key) = tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
@@ -242,7 +302,7 @@ mod tests {
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
+    use std::{collections::VecDeque, sync::Arc};
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -332,6 +392,84 @@ mod tests {
             aa_2d_best_transactions(aa_2d_txs),
             TEMPO_T1_BASE_FEE,
         )
+    }
+
+    struct VecBestTransactions {
+        txs: VecDeque<TestTx>,
+    }
+
+    impl VecBestTransactions {
+        fn new(txs: Vec<TestTx>) -> Self {
+            Self { txs: txs.into() }
+        }
+    }
+
+    impl Iterator for VecBestTransactions {
+        type Item = TestTx;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.txs.pop_front()
+        }
+    }
+
+    impl BestTransactions for VecBestTransactions {
+        fn mark_invalid(&mut self, _transaction: &Self::Item, _kind: InvalidPoolTransactionError) {}
+
+        fn no_updates(&mut self) {}
+
+        fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+    }
+
+    #[test]
+    fn test_state_aware_skips_regular_nonce_below_local_floor() {
+        let sender = Address::random();
+        let stale_feedback = protocol_tx_for_sender(sender, 7, 10);
+        let stale_candidate = protocol_tx_for_sender(sender, 7, 9);
+        let next_candidate = protocol_tx_for_sender(sender, 8, 8);
+        let other_sender = protocol_tx_for_sender(Address::random(), 7, 7);
+        let mut best_txs = StateAwareBestTransactions::new(VecBestTransactions::new(vec![
+            stale_candidate,
+            other_sender.clone(),
+            next_candidate.clone(),
+        ]));
+
+        best_txs.on_nonce_too_low(&stale_feedback);
+
+        assert_eq!(
+            best_txs.next().map(|tx| *tx.hash()),
+            Some(*other_sender.hash())
+        );
+        assert_eq!(
+            best_txs.next().map(|tx| *tx.hash()),
+            Some(*next_candidate.hash())
+        );
+        assert!(best_txs.next().is_none());
+    }
+
+    #[test]
+    fn test_state_aware_skips_aa_2d_nonce_below_local_floor() {
+        let sender = Address::random();
+        let stale_feedback = aa_2d_tx_for_sequence(sender, 3, 10);
+        let stale_candidate = aa_2d_tx_for_sequence(sender, 3, 9);
+        let next_candidate = aa_2d_tx_for_sequence(sender, 4, 8);
+        let other_sequence = aa_2d_tx_for_sequence(Address::random(), 3, 7);
+        let mut best_txs = StateAwareBestTransactions::new(VecBestTransactions::new(vec![
+            stale_candidate,
+            other_sequence.clone(),
+            next_candidate.clone(),
+        ]));
+
+        best_txs.on_nonce_too_low(&stale_feedback);
+
+        assert_eq!(
+            best_txs.next().map(|tx| *tx.hash()),
+            Some(*other_sequence.hash())
+        );
+        assert_eq!(
+            best_txs.next().map(|tx| *tx.hash()),
+            Some(*next_candidate.hash())
+        );
+        assert!(best_txs.next().is_none());
     }
 
     #[test]

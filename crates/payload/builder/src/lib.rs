@@ -728,7 +728,7 @@ where
                     total_fees += result.validator_fee();
 
                     // Notify transactions iterator about the new state.
-                    best_txs.on_new_result(result);
+                    best_txs.on_new_result(&pool_tx, result);
                 },
             );
             if let Err(err) = execution_result {
@@ -741,6 +741,7 @@ where
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
+                        best_txs.on_nonce_too_low(&pool_tx);
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");
                     } else {
