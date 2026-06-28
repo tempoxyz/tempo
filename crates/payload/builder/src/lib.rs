@@ -767,11 +767,9 @@ where
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
-            let receipt = executor.receipts().last().unwrap().clone();
-            if !receipt.success {
-                reverted_transactions += 1;
-            }
-            let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
+            let receipt = executor.receipts().last().unwrap();
+            reverted_transactions += u64::from(!receipt.success);
+            let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt.clone()));
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -846,11 +844,9 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                let receipt = executor.receipts().last().unwrap().clone();
-                if !receipt.success {
-                    reverted_transactions += 1;
-                }
-                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
+                let receipt = executor.receipts().last().unwrap();
+                reverted_transactions += u64::from(!receipt.success);
+                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt.clone()));
             }
 
             self.metrics
