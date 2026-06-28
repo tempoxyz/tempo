@@ -327,8 +327,8 @@ age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 
 # build deps
-vergen = "9.1.0"
-vergen-git2 = "9.1.0"
+vergen = { version = "=10.0.0", default-features = false, features = ["build", "cargo", "emit_and_set"] }
+vergen-git2 = { version = "=10.0.0", default-features = false, features = ["build", "cargo", "emit_and_set"] }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
