@@ -111,6 +111,13 @@ pub enum TempoPrecompileError {
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
 
+    /// `set_code` was called on an address that already has code. This is a "should be
+    /// impossible" invariant violation (callers must not overwrite live bytecode), so it
+    /// halts as a system/fatal error rather than reverting.
+    #[error("Code already exists at {0}")]
+    #[from(skip)]
+    CodeAlreadyExists(alloy::primitives::Address),
+
     /// Unrecoverable internal error (e.g. database failure).
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
@@ -168,7 +175,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::Fatal(_) | Self::CodeAlreadyExists(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -177,9 +184,11 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
-                true
-            }
+            Self::OutOfGas
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_)
+            | Self::CodeAlreadyExists(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -267,6 +276,9 @@ impl TempoPrecompileError {
             .into(),
             Self::Fatal(msg) => {
                 return Err(PrecompileError::Fatal(msg));
+            }
+            err @ Self::CodeAlreadyExists(_) => {
+                return Err(PrecompileError::Fatal(err.to_string()));
             }
         };
         Ok(PrecompileOutput::revert(gas, bytes, reservoir))

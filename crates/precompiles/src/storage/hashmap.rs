@@ -114,6 +114,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
+        // Match the EVM provider: never silently overwrite existing code.
+        if !account.is_empty_code_hash() {
+            return Err(TempoPrecompileError::CodeAlreadyExists(address));
+        }
         account.code_hash = code.hash_slow();
         account.code = Some(code);
         Ok(())

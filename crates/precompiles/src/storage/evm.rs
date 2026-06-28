@@ -13,7 +13,7 @@ use revm::{
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoAddressExt, TempoBlockEnv};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -310,20 +310,33 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let code_len = code.len();
+
+        // Reject overwriting live bytecode before any gas/state mutation, so the Fatal halt
+        // leaves nothing partially written. Callers must never re-deploy over existing code.
+        if !self
+            .internals
+            .load_account_mut(address)?
+            .data
+            .account()
+            .info
+            .is_empty_code_hash()
+        {
+            return Err(TempoPrecompileError::CodeAlreadyExists(address));
+        }
+
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
         // Track state gas for code deposit
         self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
 
-        let was_empty = {
-            let mut account = self.internals.load_account_mut(address)?;
-            let was_empty = account.data.account().info.is_empty();
-            account.set_code_and_hash_slow(code);
-            was_empty
-        };
+        self.internals
+            .load_account_mut(address)?
+            .set_code_and_hash_slow(code);
 
-        // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.amsterdam_eip8037_enabled && was_empty {
+        // TIP-1016: charge TIP20 deployments as CREATE. Keyed on the address prefix, not on
+        // whether the account was previously empty — a non-TIP20 deploy to a fresh address
+        // must not incur the CREATE charge.
+        if self.amsterdam_eip8037_enabled && address.is_tip20() {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
             self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
@@ -688,6 +701,24 @@ mod tests {
         }
     }
 
+    /// A random address carrying the TIP20 token prefix, so `is_tip20()` returns true.
+    fn tip20_address() -> Address {
+        let mut bytes = Address::random().into_array();
+        bytes[..12].copy_from_slice(&<Address as TempoAddressExt>::TIP20_PREFIX);
+        Address::from(bytes)
+    }
+
+    /// A random address guaranteed NOT to carry the TIP20 prefix, so `is_tip20()` is false.
+    /// State-gas tests use this so a prefix collision can't flip TIP-1016 CREATE detection.
+    fn non_tip20_address() -> Address {
+        loop {
+            let addr = Address::random();
+            if !addr.is_tip20() {
+                return addr;
+            }
+        }
+    }
+
     impl std::ops::Deref for TestEvm {
         type Target = TempoEvm<CacheDB<EmptyDB>>;
         fn deref(&self) -> &Self::Target {
@@ -782,6 +813,36 @@ mod tests {
         };
 
         assert_eq!(data, *code.original_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_code_rejects_overwrite() -> eyre::Result<()> {
+        let mut evm = TestEvm::default();
+        let mut provider = evm.provider_max_gas();
+
+        let addr = Address::random();
+        let original = Bytecode::new_raw(vec![0xff].into());
+        let overwrite = Bytecode::new_raw(vec![0xaa].into());
+
+        provider.set_code(addr, original.clone())?;
+
+        // Second set_code on the same address must be rejected, not silently applied.
+        let err = provider
+            .set_code(addr, overwrite)
+            .expect_err("set_code on an already-coded address must error");
+        assert_eq!(err, TempoPrecompileError::CodeAlreadyExists(addr));
+
+        std::mem::drop(provider);
+
+        let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
+            panic!("Failed to load account code")
+        };
+        assert_eq!(
+            data,
+            *original.original_bytes(),
+            "original bytecode must be unchanged after a rejected overwrite"
+        );
         Ok(())
     }
 
@@ -1044,7 +1105,7 @@ mod tests {
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
-        let (address, code_address, slot) = (Address::random(), Address::random(), U256::ONE);
+        let (address, code_address, slot) = (Address::random(), tip20_address(), U256::ONE);
 
         // SLOADs should not add state gas
         provider.sload(address, slot)?;
@@ -1215,7 +1276,7 @@ mod tests {
             + gas_params.keccak256_cost(code.len().div_ceil(32));
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
-        provider.set_code(Address::random(), code)?;
+        provider.set_code(tip20_address(), code)?;
         assert_eq!(
             provider.gas_used(),
             expected_regular_gas,
@@ -1225,6 +1286,38 @@ mod tests {
             provider.state_gas_used(),
             expected_state_gas,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_code_tip1016_create_charge_keys_on_tip20_prefix() -> eyre::Result<()> {
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let gas_params = evm.ctx().cfg.gas_params.clone();
+        let code = Bytecode::new_raw(vec![0xef].into());
+
+        let deposit_only_gas = gas_params.code_deposit_cost(code.len());
+        let create_charge =
+            gas_params.create_cost() + gas_params.keccak256_cost(code.len().div_ceil(32));
+
+        // Non-TIP20 fresh address: code deposit only, NO CREATE charge.
+        let mut provider = evm.provider_with_reservoir(u64::MAX);
+        provider.set_code(non_tip20_address(), code.clone())?;
+        assert_eq!(
+            provider.gas_used(),
+            deposit_only_gas,
+            "non-TIP20 deploy must not incur the TIP-1016 CREATE charge"
+        );
+        std::mem::drop(provider);
+
+        // TIP20-prefixed fresh address: code deposit PLUS CREATE charge.
+        let mut provider = evm.provider_with_reservoir(u64::MAX);
+        provider.set_code(tip20_address(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            deposit_only_gas + create_charge,
+            "TIP20 deploy must incur the TIP-1016 CREATE charge"
         );
 
         Ok(())
