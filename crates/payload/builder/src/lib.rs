@@ -336,6 +336,10 @@ where
             payload_id,
             ..
         } = config;
+        let parent_hash = parent_header.hash();
+        let parent_number = parent_header.number();
+        let parent_gas_limit = parent_header.gas_limit();
+        let parent_state_root = parent_header.state_root();
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
@@ -361,7 +365,7 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let mut state_provider = self.provider.state_by_block_hash(parent_hash)?;
         if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
@@ -393,7 +397,7 @@ where
 
         let block_gas_limit = self
             .config
-            .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
+            .gas_limit_with_target(parent_gas_limit, attributes.target_gas_limit);
         let shared_gas_limit =
             chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
@@ -426,13 +430,12 @@ where
         //
         // Also don't include any subblocks if we've seen an invalid subblock
         // at this height or above.
-        let mut subblocks = if empty
-            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
-        {
-            vec![]
-        } else {
-            attributes.subblocks()
-        };
+        let mut subblocks =
+            if empty || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_number {
+                vec![]
+            } else {
+                attributes.subblocks()
+            };
 
         subblocks.retain(|subblock| {
             // Edge case: remove subblocks with expired transactions
@@ -563,7 +566,7 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
-                parent_header.hash(),
+                parent_hash,
                 executor.evm().evm_env(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
@@ -946,7 +949,7 @@ where
                 debug!(
                     target: "payload_builder",
                     id = %payload_id,
-                    state_root = ?parent_header.state_root(),
+                    state_root = ?parent_state_root,
                     "skipping payload state-root computation"
                 );
                 None
@@ -990,7 +993,7 @@ where
         };
 
         let (state_root, trie_updates) = if self.config.skip_state_root {
-            (parent_header.state_root(), Arc::new(Default::default()))
+            (parent_state_root, Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
