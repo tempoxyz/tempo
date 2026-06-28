@@ -2227,9 +2227,10 @@ impl BestAA2dTransactions {
                         continue;
                     }
                     // Advance transaction that just got unlocked, if any.
-                    if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
+                    let unlocked_id = id.unlocks();
+                    if let Some(unlocked) = self.by_id.get(&unlocked_id) {
                         let key = unlocked.inner.eviction_key(self.base_fee);
-                        self.independent.insert(key, id.unlocks());
+                        self.independent.insert(key, unlocked_id);
                     }
                     best
                 }
