@@ -20,8 +20,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    parallel::{PlannedTransaction, PrewarmingPlanner},
-    prewarming::{BestTransactionsPrewarming, PrewarmingExecutionContext},
+    prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -63,7 +62,7 @@ use reth_transaction_pool::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -101,32 +100,29 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
-enum PayloadTransactions<Provider> {
+enum PayloadTransactions {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Parallel(Box<PrewarmingPlanner<Provider>>),
+    Prewarmed(BestTransactionsPrewarming),
 }
 
-impl<Provider> PayloadTransactions<Provider>
-where
-    Provider: StateProviderFactory + Clone + 'static,
-{
-    fn next(&mut self) -> Option<PlannedTransaction> {
+impl PayloadTransactions {
+    fn next(&mut self) -> Option<PrewarmedTransaction> {
         match self {
-            Self::Sequential(txs) => txs.next().map(PlannedTransaction::without_replay),
-            Self::Parallel(planner) => planner.next(),
+            Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
+            Self::Prewarmed(planner) => planner.next(),
         }
     }
 
-    fn mark_invalid(&mut self, tx: &BestTransaction, kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
         match self {
-            Self::Sequential(txs) => txs.mark_invalid(tx, kind),
-            Self::Parallel(planner) => planner.mark_invalid(tx, kind),
+            Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
+            Self::Prewarmed(prewarming) => prewarming.mark_invalid(tx, kind),
         }
     }
 
     fn recycle_actions(&mut self, actions: Vec<StorageAction>) {
-        if let Self::Parallel(planner) = self {
-            planner.recycle_actions(actions);
+        if let Self::Prewarmed(prewarming) = self {
+            prewarming.recycle_actions(actions);
         }
     }
 
@@ -139,7 +135,7 @@ where
     fn on_new_result(&mut self, result: &TempoTxResult) {
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
-            Self::Parallel(_) => {
+            Self::Prewarmed(_) => {
                 // Parallel planner does not track state updates.
             }
         }
@@ -602,36 +598,34 @@ where
             }));
         }
 
-        let base_fee = executor.evm().block().basefee;
-        let blob_gas_price = executor
-            .evm()
-            .block()
-            .blob_gasprice()
-            .map(|gasprice| gasprice as u64);
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(base_fee, blob_gas_price));
+        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
+            executor.evm().block().basefee,
+            executor
+                .evm()
+                .block()
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
             execution_cache,
             parent_header.hash(),
             executor.evm().evm_env(),
-            Arc::new(AtomicBool::new(false)),
+            self.config.enable_parallel,
         );
-        let mut best_txs = if self.config.enable_parallel {
-            PayloadTransactions::Parallel(Box::new(PrewarmingPlanner::new(
-                prewarm_ctx,
-                raw_best_txs,
-            )))
-        } else {
-            let inner = if self.config.enable_prewarming {
-                Box::new(BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs))
-                    as Box<dyn BestTransactions<Item = _>>
+        let mut best_txs = if self.config.enable_prewarming {
+            PayloadTransactions::Prewarmed(if self.config.enable_parallel {
+                BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs)
             } else {
-                Box::new(raw_best_txs)
-            };
-
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(inner))
+                BestTransactionsPrewarming::new(
+                    prewarm_ctx,
+                    StateAwareBestTransactions::new(raw_best_txs),
+                )
+            })
+        } else {
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -690,7 +684,7 @@ where
                 }
             }
 
-            let Some(planned_pool_tx) = best_txs.next() else {
+            let Some(mut pool_tx) = best_txs.next() else {
                 if build_once
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
@@ -708,15 +702,14 @@ where
                 };
                 break stop_reason;
             };
-            let parallel_replay = planned_pool_tx.replay;
-            if let Some(actions) = planned_pool_tx.action_buffer {
+            if let Some(actions) = pool_tx.action_buffer.take() {
                 best_txs.recycle_actions(actions);
             }
-            let pool_tx = planned_pool_tx.tx;
+            let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
             let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
+                tx.gas_limit(),
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
@@ -729,20 +722,20 @@ where
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                best_txs.recycle_replay(parallel_replay);
+                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
             let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.is_payment()
+                tx.transaction.is_payment()
             } else {
-                pool_tx.transaction.inner().is_payment_v1()
+                tx.transaction.inner().is_payment_v1()
             };
 
             // If the tx is not a payment and will exceed the general gas limit
@@ -756,7 +749,7 @@ where
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                best_txs.recycle_replay(parallel_replay);
+                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
@@ -765,7 +758,7 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
+            let tx_rlp_length = tx.transaction.encoded_length();
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -778,18 +771,17 @@ where
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
-                best_txs.recycle_replay(parallel_replay);
+                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
+                .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let replayed_transaction = parallel_replay.is_some();
-            if let Some(replay) = parallel_replay {
+            if let Some(replay) = pool_tx.replay.take() {
                 let execution_outcome = executor.execute_transaction_with_actions(
-                    pool_tx.transaction.executable(),
+                    tx.transaction.executable(),
                     *replay,
                     &mut action_replay_state,
                     pool_transactions_included as usize,
@@ -820,7 +812,7 @@ where
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::InsufficientFunds(
-                                    (U256::ZERO, pool_tx.transaction.fee_token_cost()).into(),
+                                    (U256::ZERO, tx.transaction.fee_token_cost()).into(),
                                 ),
                             ),
                         );
@@ -828,7 +820,7 @@ where
                         self.metrics.inc_pool_tx_skipped("insufficient_balance");
                         trace!(
                             target: "payload_builder",
-                            tx_hash = ?pool_tx.hash(),
+                            tx_hash = ?tx.hash(),
                             "Skipping replayed transaction with insufficient balance"
                         );
                         continue;
@@ -839,7 +831,7 @@ where
                         self.metrics.inc_pool_tx_skipped("parallel_action_conflict");
                         trace!(
                             target: "payload_builder",
-                            tx_hash = ?pool_tx.hash(),
+                            tx_hash = ?tx.hash(),
                             "Skipping replayed transaction with conflicting storage actions"
                         );
                         continue;
@@ -854,10 +846,12 @@ where
                         return Err(PayloadBuilderError::evm(error));
                     }
                 }
+
+                parallel_transactions_executed += 1;
             } else {
                 action_replay_state.invalidate_expiring_nonce_cache();
                 let execution_result = executor.execute_transaction_with_result_closure(
-                    pool_tx.transaction.executable(),
+                    tx.transaction.executable(),
                     |result| {
                         cumulative_gas_used += result.block_gas_used();
                         cumulative_state_gas_used += result.state_gas_used();
@@ -908,16 +902,13 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
-            if replayed_transaction {
-                parallel_transactions_executed += 1;
-            }
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
+            let _ = roots_tx.send((BuilderTx::Pooled(tx), receipt));
         };
 
         // cancel pre-warming, if any, by dropping the iter
