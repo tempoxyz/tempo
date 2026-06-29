@@ -97,15 +97,18 @@ impl StorageActionReplayState {
     /// Applies the result of a non-replayable transaction execution to the state.
     pub fn apply_result(&mut self, result: &TempoTxResult) {
         for (address, account) in &result.result().state {
-            for (slot, value) in &account.storage {
-                if *slot == NonceManager::new().expiring_nonce_ring_ptr.slot() {
-                    self.expiring_nonce.set_ring_ptr(value.present_value);
-                } else {
-                    self.writes
-                        .entry(*address)
-                        .or_default()
-                        .insert(*slot, WriteKind::Store);
+            for slot in account.storage.keys() {
+                // Pessimistically reset the expiring nonce replay state,
+                // it will be fetched again on the next replayed transaction.
+                if *address == NONCE_PRECOMPILE_ADDRESS
+                    && *slot == NonceManager::new().expiring_nonce_ring_ptr.slot()
+                {
+                    self.expiring_nonce.reset();
                 }
+                self.writes
+                    .entry(*address)
+                    .or_default()
+                    .insert(*slot, WriteKind::Store);
             }
         }
     }
@@ -283,6 +286,15 @@ struct ExpiringNonceReplayState {
 }
 
 impl ExpiringNonceReplayState {
+    fn reset(&mut self) {
+        self.ring_ptr = None;
+        self.pending_ring_ptr = None;
+    }
+
+    fn set_pending_ring_ptr(&mut self, ptr: U256) {
+        self.pending_ring_ptr = Some(ptr);
+    }
+
     fn reset_pending_ring_ptr(&mut self) {
         self.pending_ring_ptr = None;
     }
@@ -309,14 +321,6 @@ impl ExpiringNonceReplayState {
                 ptr
             }
         })
-    }
-
-    fn set_ring_ptr(&mut self, ptr: U256) {
-        self.ring_ptr = Some(ptr);
-    }
-
-    fn set_pending_ring_ptr(&mut self, next: U256) {
-        self.pending_ring_ptr = Some(next);
     }
 }
 
