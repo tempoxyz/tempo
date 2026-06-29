@@ -1210,6 +1210,7 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut validation_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_decode_recover_elapsed = Duration::ZERO;
         let mut ssmr_replay_decode_elapsed = Duration::ZERO;
@@ -1330,7 +1331,7 @@ where
                 }
 
                 let wait_elapsed = replay_progress.wait_for_next_event(&recovered_events)?;
-                normal_transaction_fill_idle_elapsed += wait_elapsed;
+                validation_wait_elapsed += wait_elapsed;
                 ssmr_replay_recovery_wait_elapsed += wait_elapsed;
             };
 
@@ -1427,6 +1428,7 @@ where
                     {
                         std::thread::sleep(Duration::from_millis(1));
                         normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        validation_wait_elapsed += Duration::from_millis(1);
                         continue;
                     }
                     let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -1576,17 +1578,19 @@ where
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+            elapsed_at_tx_cutoff.saturating_sub(validation_wait_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
-        self.metrics
-            .total_normal_transaction_fill_duration_seconds
-            .record(normal_transaction_fill_elapsed);
-        self.metrics
-            .normal_transaction_fill_idle_duration_seconds
-            .record(normal_transaction_fill_idle_elapsed);
+        if !is_ssmr_replay {
+            self.metrics
+                .total_normal_transaction_fill_duration_seconds
+                .record(normal_transaction_fill_elapsed);
+            self.metrics
+                .normal_transaction_fill_idle_duration_seconds
+                .record(normal_transaction_fill_idle_elapsed);
+        }
         self.metrics
             .payment_transactions
             .record(payment_transactions as f64);
@@ -1903,7 +1907,7 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = elapsed.saturating_sub(validation_wait_elapsed);
         if payload_build_budget.is_some() {
             self.update_build_time_multiplier(
                 validation_work_duration,
@@ -1956,6 +1960,7 @@ where
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ?validation_wait_elapsed,
             ssmr_replay_enabled = is_ssmr_replay,
             ?ssmr_replay_wait_elapsed,
             ?ssmr_replay_recovery_wait_elapsed,
