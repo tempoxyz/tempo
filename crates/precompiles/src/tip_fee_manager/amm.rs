@@ -237,6 +237,8 @@ impl TipFeeManager {
             }
         }
 
+        self.pools[pool_id].write(pool)?;
+
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
         validator_tip20_token.system_transfer_from(self.address, msg_sender, amount_in)?;
@@ -250,8 +252,6 @@ impl TipFeeManager {
                 amount: amount_out,
             },
         )?;
-
-        self.pools[pool_id].write(pool)?;
 
         self.emit_event(TIPFeeAMMEvent::rebalance_swap(
             user_token,
