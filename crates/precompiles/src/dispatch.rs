@@ -1,19 +1,14 @@
 //! ABI dispatch helpers for Tempo precompiles.
 
 use crate::{
-    IntoPrecompileResult, Result, error, input_cost, storage::StorageCtx,
+    IntoPrecompileResult, Result, StaticCallNotAllowed, error, input_cost, storage::StorageCtx,
     storage_credits::StorageCredits,
 };
 use alloy::{
     primitives::{Address, Bytes},
-    sol,
     sol_types::{SolCall, SolError},
 };
 use revm::precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult};
-
-sol! {
-    error StaticCallNotAllowed();
-}
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
