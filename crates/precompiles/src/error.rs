@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::{storage_credits::StorageCreditsErr, tip20::TIP20Error};
+use crate::{StaticCallNotAllowed, storage_credits::StorageCreditsErr, tip20::TIP20Error};
 use alloy::{
     primitives::{FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
@@ -107,6 +107,10 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// State mutation attempted during static execution.
+    #[error("Static call not allowed")]
+    StaticCallNotAllowed,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -168,6 +172,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
+            Self::StaticCallNotAllowed => StaticCallNotAllowed::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
@@ -196,6 +201,7 @@ impl TempoPrecompileError {
             | Self::SignatureVerifierError(_)
             | Self::ReceivePolicyGuardError(_)
             | Self::StorageCreditsError(_)
+            | Self::StaticCallNotAllowed
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -260,6 +266,7 @@ impl TempoPrecompileError {
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
+            Self::StaticCallNotAllowed => StaticCallNotAllowed {}.abi_encode().into(),
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
             }
