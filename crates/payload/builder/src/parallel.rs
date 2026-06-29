@@ -3,7 +3,7 @@ use reth_revm::ExecuteEvm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::WorkerPool;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, evm::TempoEvm};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
+use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
@@ -91,17 +91,7 @@ where
             return None;
         }
 
-        let mut actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
-
-        // Filter out expiring nonce actions, they will be handled separately
-        if expiring_nonce.is_some() {
-            actions.retain(|action| !is_nonce_manager_action(action));
-        }
-
-        if actions.is_empty() && expiring_nonce.is_none() {
-            action_buffer = Some(actions);
-            return None;
-        }
+        let actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
 
         Some(Box::new(StorageActionReplay {
             result,
@@ -131,15 +121,4 @@ fn is_replay_candidate(tx: &BestTransaction) -> bool {
     }
 
     true
-}
-
-fn is_nonce_manager_action(action: &StorageAction) -> bool {
-    let address = match *action {
-        StorageAction::Sload(address, ..)
-        | StorageAction::Sstore(address, ..)
-        | StorageAction::Sinc(address, ..)
-        | StorageAction::Sdec(address, ..)
-        | StorageAction::FeeAmmSwap(address, ..) => address,
-    };
-    address == NONCE_PRECOMPILE_ADDRESS
 }

@@ -28,6 +28,19 @@ pub enum StorageAction {
     FeeAmmSwap(Address, U256, U256),
 }
 
+impl StorageAction {
+    /// Returns the address of the storage action.
+    pub fn address(&self) -> Address {
+        match self {
+            Self::Sload(address, ..)
+            | Self::Sstore(address, ..)
+            | Self::Sinc(address, ..)
+            | Self::Sdec(address, ..)
+            | Self::FeeAmmSwap(address, ..) => *address,
+        }
+    }
+}
+
 /// Buffer for recording EVM [storage actions](StorageAction).
 #[derive(Debug, Clone)]
 pub enum StorageActions {
