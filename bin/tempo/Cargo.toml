@@ -46,6 +46,7 @@ alloy = { workspace = true, default-features = false, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-consensus.workspace = true
+alloy-genesis.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
