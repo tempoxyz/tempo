@@ -20,6 +20,7 @@ tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
+tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
@@ -43,6 +44,7 @@ reth-trie-common.workspace = true
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
 alloy-eips.workspace = true
+alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 

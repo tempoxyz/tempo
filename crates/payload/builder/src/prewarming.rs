@@ -4,9 +4,11 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use alloy_evm::FromRecoveredTx;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
+use reth_primitives_traits::Recovered;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
@@ -14,6 +16,8 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_primitives::TempoTxEnvelope;
+use tempo_revm::TempoTxEnv;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
@@ -208,6 +212,139 @@ impl BestTransactionsPrewarming {
             );
         });
     }
+}
+
+/// Fire-and-forget prewarming for ordered SSMR replay transactions.
+///
+/// Replay already has a deterministic tx stream and does not need the pool iterator/invalidation
+/// machinery from [`BestTransactionsPrewarming`]. It only schedules recovered transactions into
+/// the same prewarming worker pool so state reads can be warmed ahead of ordered execution.
+pub(crate) struct SsmrReplayPrewarmer {
+    commands_tx: Sender<SsmrReplayPrewarmingCommand>,
+    stop: Arc<AtomicBool>,
+}
+
+impl SsmrReplayPrewarmer {
+    pub(crate) fn new<Provider>(
+        executor: TaskExecutor,
+        provider: Provider,
+        cache: Option<SavedCache>,
+        parent_hash: B256,
+        evm_env: EvmEnvFor<TempoEvmConfig>,
+    ) -> Self
+    where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let prewarm = PrewarmingExecutionContext {
+            provider,
+            parent_hash,
+            cache,
+            evm_env,
+            stop: stop.clone(),
+        };
+
+        let prewarm_executor = executor.clone();
+        executor.spawn_blocking_named("ssmr-replay-prewarm", move || {
+            Self::start_prewarming(prewarm_executor, prewarm, commands_rx);
+        });
+
+        Self { commands_tx, stop }
+    }
+
+    pub(crate) fn prewarm(&self, tx: &Recovered<TempoTxEnvelope>) {
+        if self.stop.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let _ = self
+            .commands_tx
+            .send(SsmrReplayPrewarmingCommand::Prewarm(tx.clone()));
+    }
+
+    fn start_prewarming<Provider>(
+        executor: TaskExecutor,
+        prewarm: PrewarmingExecutionContext<Provider>,
+        commands_rx: Receiver<SsmrReplayPrewarmingCommand>,
+    ) where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        let pool = executor.prewarming_pool();
+
+        pool.in_place_scope(|scope| {
+            let init = prewarm.clone();
+            scope.spawn(move |_| {
+                pool.init::<PrewarmEvmState>(|_| init.evm_for_ctx());
+            });
+
+            while let Ok(command) = commands_rx.recv() {
+                match command {
+                    SsmrReplayPrewarmingCommand::Prewarm(tx) => {
+                        if prewarm.is_stopped() {
+                            continue;
+                        }
+
+                        let prewarm = prewarm.clone();
+                        scope.spawn(move |_| {
+                            Self::prewarm_transaction(prewarm, tx);
+                        });
+                    }
+                    SsmrReplayPrewarmingCommand::Stop => {
+                        prewarm.stop();
+                        return;
+                    }
+                }
+            }
+        });
+
+        pool.clear();
+    }
+
+    fn prewarm_transaction<Provider>(
+        prewarm: PrewarmingExecutionContext<Provider>,
+        tx: Recovered<TempoTxEnvelope>,
+    ) where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        if prewarm.is_stopped() {
+            return;
+        }
+
+        WorkerPool::with_worker_mut(|worker| {
+            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+                return;
+            };
+
+            if prewarm.is_stopped() {
+                return;
+            }
+
+            let tx_env = TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer());
+            if let Err(err) = evm.transact_raw(tx_env) {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    "Failed to prewarm SSMR replay transaction by execution"
+                );
+                return;
+            }
+
+            trace!(target: "payload_builder", "Prewarmed SSMR replay transaction");
+        });
+    }
+}
+
+impl Drop for SsmrReplayPrewarmer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.commands_tx.send(SsmrReplayPrewarmingCommand::Stop);
+    }
+}
+
+enum SsmrReplayPrewarmingCommand {
+    Prewarm(Recovered<TempoTxEnvelope>),
+    Stop,
 }
 
 impl Drop for BestTransactionsPrewarming {

@@ -19,7 +19,7 @@ use crate::{
     },
     encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, SsmrReplayPrewarmer},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -172,10 +172,19 @@ struct SsmrReplayProgress {
 }
 
 impl SsmrReplayProgress {
-    fn ingest_event(&mut self, event: SsmrRecoveredReplayEvent) -> Result<(), PayloadBuilderError> {
+    fn ingest_event(
+        &mut self,
+        event: SsmrRecoveredReplayEvent,
+        prewarmer: Option<&SsmrReplayPrewarmer>,
+    ) -> Result<(), PayloadBuilderError> {
         match event {
             SsmrRecoveredReplayEvent::Transactions(batch) => {
                 self.shards += batch.completed_shards;
+                if let Some(prewarmer) = prewarmer {
+                    for tx in &batch.transactions {
+                        prewarmer.prewarm(&tx.transaction);
+                    }
+                }
                 self.pending_transactions.extend(batch.transactions);
                 self.max_recovered_tx_ahead = self
                     .max_recovered_tx_ahead
@@ -208,6 +217,7 @@ impl SsmrReplayProgress {
     fn drain_ready_events(
         &mut self,
         recovered_events: &Receiver<SsmrRecoveredReplayEvent>,
+        prewarmer: Option<&SsmrReplayPrewarmer>,
     ) -> Result<(), PayloadBuilderError> {
         if self.replay_finished {
             return Ok(());
@@ -215,7 +225,7 @@ impl SsmrReplayProgress {
 
         loop {
             match recovered_events.try_recv() {
-                Ok(event) => self.ingest_event(event)?,
+                Ok(event) => self.ingest_event(event, prewarmer)?,
                 Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     return Err(self.recovery_closed_error());
@@ -231,6 +241,7 @@ impl SsmrReplayProgress {
     fn wait_for_next_event(
         &mut self,
         recovered_events: &Receiver<SsmrRecoveredReplayEvent>,
+        prewarmer: Option<&SsmrReplayPrewarmer>,
     ) -> Result<Duration, PayloadBuilderError> {
         let wait_start = Instant::now();
         let event = recovered_events.recv_timeout(SSMR_REPLAY_SOURCE_POLL_INTERVAL);
@@ -238,7 +249,7 @@ impl SsmrReplayProgress {
         self.execution_wait_for_recovery_elapsed += wait_elapsed;
 
         match event {
-            Ok(event) => self.ingest_event(event)?,
+            Ok(event) => self.ingest_event(event, prewarmer)?,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 return Err(self.recovery_closed_error());
@@ -1237,12 +1248,22 @@ where
         let post_return_tail_budget = attributes.post_return_tail_budget();
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
             let recovered_events = spawn_ssmr_replay_recovery(self.executor.clone(), replay_source);
+            let ssmr_replay_prewarmer = self.config.enable_prewarming.then(|| {
+                SsmrReplayPrewarmer::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache,
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                )
+            });
             let mut replay_progress = SsmrReplayProgress::default();
 
             let stop_reason = loop {
                 check_cancel!();
 
-                replay_progress.drain_ready_events(&recovered_events)?;
+                replay_progress
+                    .drain_ready_events(&recovered_events, ssmr_replay_prewarmer.as_ref())?;
 
                 if let Some(tx) = replay_progress.pending_transactions.pop_front() {
                     let SsmrRecoveredTx {
@@ -1332,7 +1353,8 @@ where
                     };
                 }
 
-                let wait_elapsed = replay_progress.wait_for_next_event(&recovered_events)?;
+                let wait_elapsed = replay_progress
+                    .wait_for_next_event(&recovered_events, ssmr_replay_prewarmer.as_ref())?;
                 validation_wait_elapsed += wait_elapsed;
                 ssmr_replay_recovery_wait_elapsed += wait_elapsed;
             };
