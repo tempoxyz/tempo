@@ -403,8 +403,9 @@ where
                     }
                 }
 
-                // Pre-T8 only: check if the fee manager recipient was blacklisted on this
-                // token's recipient policy.
+                // Check if the fee manager (recipient) was blacklisted on this token's
+                // recipient policy — the tx would fail at execution since the fee
+                // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_blacklisted.is_empty()
                     && get_recipient_policy_ids(provider, fee_token, spec)
@@ -446,7 +447,7 @@ where
                     }
                 }
 
-                // Pre-T8 only: check if the fee manager recipient was un-whitelisted on this
+                // Check if the fee manager (recipient) was un-whitelisted on this
                 // token's recipient policy.
                 let recipient_evicted = !sender_evicted
                     && !fee_manager_unwhitelisted.is_empty()
