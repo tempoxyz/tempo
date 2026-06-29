@@ -168,14 +168,10 @@ impl TipFeeManager {
 
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
+        // TIP-1042: T8 fee collection exempts FeeManager recipient authorization.
         if self.storage.spec().is_t8() {
-            // TIP-1042: fee collection only authorizes the fee payer. The FeeManager recipient
-            // side is intentionally exempt; public AMM operations still enforce FeeManager policy
-            // checks.
             tip20_token.ensure_authorized_as(fee_payer, AuthRole::sender())?;
         } else {
-            // Preserve pre-TIP-1042 historical execution: fee collection checked both the fee
-            // payer sender side and FeeManager recipient side.
             tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         }
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
