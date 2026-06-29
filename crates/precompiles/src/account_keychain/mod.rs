@@ -214,6 +214,16 @@ impl AccountKeychain {
         keccak256(data)
     }
 
+    /// Returns whether the account key has call scopes enabled.
+    pub fn is_key_call_scoped(&self, account: Address, key_id: Address) -> Result<bool> {
+        if key_id == Address::ZERO || !self.storage.spec().is_t3() {
+            return Ok(false);
+        }
+
+        let key_hash = Self::spending_limit_key(account, key_id);
+        self.key_scopes[key_hash].is_scoped.read()
+    }
+
     #[inline]
     fn t3_spending_limit_cap(limit: U256) -> Result<u128> {
         if limit > U256::from(u128::MAX) {
@@ -805,12 +815,12 @@ impl AccountKeychain {
             TxKind::Create => return Err(AccountKeychainError::call_not_allowed().into()),
         };
 
-        let key_hash = Self::spending_limit_key(account, key_id);
-
         // Key-level scoped flag decides whether this CALL must match the stored scope tree.
-        if !self.key_scopes[key_hash].is_scoped.read()? {
+        if !self.is_key_call_scoped(account, key_id)? {
             return Ok(());
         }
+
+        let key_hash = Self::spending_limit_key(account, key_id);
 
         if !self.key_scopes[key_hash].targets.contains(&target)? {
             return Err(AccountKeychainError::call_not_allowed().into());

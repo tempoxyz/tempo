@@ -149,6 +149,7 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 struct LoadedTxAccessKey {
     key_id: Address,
     key: AuthorizedKey,
+    call_scoped: bool,
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -469,6 +470,10 @@ where
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
         let spec = *evm.ctx().cfg().spec();
         if !spec.is_t3() {
+            return Ok(None);
+        }
+
+        if evm.keychain_call_scoped == Some(false) {
             return Ok(None);
         }
 
@@ -1326,14 +1331,20 @@ where
                             .set_transaction_key(access_key_addr)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
 
+                        let call_scoped = keychain
+                            .is_key_call_scoped(*user_address, access_key_addr)
+                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+
                         Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
                             key_id: access_key_addr,
                             key,
+                            call_scoped,
                         })
                     },
                 )?;
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
+                evm.keychain_call_scoped = Some(loaded_key.call_scoped);
                 keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
                 loaded_tx_access_key = Some(loaded_key);
             }
@@ -1593,6 +1604,10 @@ where
             if let Some(expiry) = key_auth.expiry {
                 evm.key_expiry = Some(expiry.get());
             }
+            if same_tx_key_authorization_use {
+                evm.keychain_call_scoped =
+                    Some(!key_auth.is_admin() && key_auth.allowed_calls.is_some());
+            }
 
             // activated only on T1/T1A fork.
             // T1B+: Skip adding precompile gas to initial_gas since it is already
@@ -1736,6 +1751,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.keychain_call_scoped = None;
         evm.non_creditable_slots.borrow_mut().clear();
 
         // Validate the fee payer signature
