@@ -1020,7 +1020,8 @@ jobs:
           name: tempo-bench-results
           path: |
             bench-results/
-            !bench-results/**/*.ndjson*
+            !bench-results/**/txgen-*.ndjson
+            !bench-results/**/txgen-*.ndjson.tmp
 
       - name: Post results to PR
         if: success()
