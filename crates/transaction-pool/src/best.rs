@@ -159,6 +159,8 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
+        let update_existing = !self.decreased_balances.is_empty();
+
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
                 continue;
@@ -168,7 +170,9 @@ where
                 if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
                         .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                } else if update_existing
+                    && let Some(balance) = self.decreased_balances.get_mut(&(address, slot))
+                {
                     *balance = storage_slot.present_value;
                 }
             }
