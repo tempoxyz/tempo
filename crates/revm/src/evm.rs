@@ -43,6 +43,8 @@ pub struct TempoEvm<DB: Database, I> {
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
+    /// The access key recovered for the current keychain transaction.
+    pub(crate) keychain_access_key: Option<Address>,
     /// When true, skips the `valid_after` time-window check during validation.
     ///
     /// The transaction pool sets this because it intentionally accepts transactions
@@ -104,6 +106,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             validator_fee,
             fee_token,
             key_expiry,
+            keychain_access_key,
             skip_valid_after_check,
             skip_liquidity_check,
             actions,
@@ -117,6 +120,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             validator_fee,
             fee_token,
             key_expiry,
+            keychain_access_key,
             skip_valid_after_check,
             skip_liquidity_check,
             actions,
@@ -146,6 +150,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             validator_fee: U256::ZERO,
             fee_token: None,
             key_expiry: None,
+            keychain_access_key: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             actions,
@@ -220,6 +225,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.collected_fee = U256::ZERO;
         self.fee_token = None;
         self.key_expiry = None;
+        self.keychain_access_key = None;
         self.non_creditable_slots.borrow_mut().clear();
     }
 }

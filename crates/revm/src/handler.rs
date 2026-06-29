@@ -472,6 +472,8 @@ where
             return Ok(None);
         }
 
+        let cached_access_key = evm.keychain_access_key;
+
         // Call-scope matching scales with batch size, so it runs under a metered storage provider.
         // This keeps unpaid transaction validation bounded while still failing before the first
         // user call executes.
@@ -486,7 +488,9 @@ where
                 return Ok(None);
             };
 
-            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+            let access_key_addr = if let Some(access_key_addr) = cached_access_key {
+                access_key_addr
+            } else if let Some(override_key_id) = tempo_tx_env.override_key_id {
                 override_key_id
             } else {
                 keychain_sig
@@ -1248,6 +1252,7 @@ where
                     .key_id(&tempo_tx_env.signature_hash)
                     .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
+            evm.keychain_access_key = Some(access_key_addr);
 
             let key_auth = tempo_tx_env.key_authorization.as_ref();
             // Classify whether this keychain-signed tx is using the same access key that the
@@ -1736,6 +1741,7 @@ where
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
+        evm.keychain_access_key = None;
         evm.non_creditable_slots.borrow_mut().clear();
 
         // Validate the fee payer signature
