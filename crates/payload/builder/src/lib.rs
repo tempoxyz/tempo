@@ -136,7 +136,7 @@ impl PayloadTransactions {
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
             Self::Prewarmed(_) => {
-                // Parallel planner does not track state updates.
+                // Parallel prewarming does not track state updates.
             }
         }
     }
@@ -862,8 +862,6 @@ where
                         // FeeManager precompile actually wrote during this transaction.
                         total_fees += result.validator_fee();
 
-                        // Notify transactions iterator about the new state.
-                        best_txs.on_new_result(result);
                         // Apply the result to the action replay state.
                         action_replay_state.apply_result(result);
                     },
