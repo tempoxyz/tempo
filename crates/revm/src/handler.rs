@@ -1335,7 +1335,9 @@ where
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
                 keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
-                loaded_tx_access_key = Some(loaded_key);
+                if key_auth.is_some() {
+                    loaded_tx_access_key = Some(loaded_key);
+                }
             }
         }
 
