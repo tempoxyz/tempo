@@ -85,12 +85,13 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     result
 }
 
-/// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
+/// Extracts `#[slot(N)]`, `#[base_slot(N)]`, and `#[transient]` from field attributes.
 ///
-/// This function iterates through the attributes a single time to find all
-/// relevant values. It returns a tuple containing:
+/// This function iterates through the attributes a single time to find all relevant values.
+/// It returns a tuple containing:
 /// - The slot number (if present)
 /// - The base_slot number (if present)
+/// - Whether the field uses transient storage
 ///
 /// # Errors
 ///

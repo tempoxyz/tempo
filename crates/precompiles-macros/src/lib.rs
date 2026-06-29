@@ -83,9 +83,18 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// 2. Constructor: `__new(address, storage)`
 /// 3. Type-safe (private) getter and setter methods
 ///
+/// # Field attributes
+///
+/// - `#[slot(N)]` places a field at an explicit slot in its storage space.
+/// - `#[base_slot(N)]` resets the auto-allocation base for subsequent fields in its storage space.
+/// - `#[transient]` places a field in the `tempo_precompiles::storage::Transient` storage space,
+///   which has independent slot allocation from persistent storage. Its generated field handlers
+///   are limited to primitive types; non-primitive types must be used through `Slot<T, Transient>`
+///   for whole-value `read`/`write`/`delete` operations.
+///
 /// # Requirements
 ///
-/// - No duplicate slot assignments
+/// - No duplicate slot assignments within the same storage space.
 /// - Unique field names, excluding the reserved ones: `address`, `storage`, `msg_sender`.
 /// - All field types must implement `Storable`, and mapping keys must implement `StorageKey`.
 #[proc_macro_attribute]
