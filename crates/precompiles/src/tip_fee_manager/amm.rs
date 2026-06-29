@@ -295,12 +295,16 @@ impl TipFeeManager {
         validate_usd_currency(validator_token)?;
 
         let user_tip20_token = TIP20Token::from_address(user_token)?;
-        user_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
-        user_tip20_token.ensure_authorized_as(self.address, AuthRole::recipient())?;
-        user_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
+        if self.storage.spec().is_t8() {
+            user_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
+            user_tip20_token.ensure_authorized_as(self.address, AuthRole::recipient())?;
+            user_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
+        }
 
         let mut validator_tip20_token = TIP20Token::from_address(validator_token)?;
-        validator_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
+        if self.storage.spec().is_t8() {
+            validator_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
+        }
 
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
@@ -432,10 +436,14 @@ impl TipFeeManager {
         validate_usd_currency(validator_token)?;
 
         let mut user_tip20_token = TIP20Token::from_address(user_token)?;
-        user_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
+        if self.storage.spec().is_t8() {
+            user_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
+        }
 
         let mut validator_tip20_token = TIP20Token::from_address(validator_token)?;
-        validator_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
+        if self.storage.spec().is_t8() {
+            validator_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
+        }
 
         let pool_id = self.pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
@@ -874,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_fee_manager_recipient_on_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
@@ -903,7 +911,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_to_recipient_on_validator_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let admin = Address::random();
         let to = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -981,7 +989,7 @@ mod tests {
 
     #[test]
     fn test_burn_requires_lp_sender_authorization_on_both_tokens() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let admin = Address::random();
         let lp = Address::random();
         let to = Address::random();

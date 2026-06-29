@@ -168,9 +168,16 @@ impl TipFeeManager {
 
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
-        // Fee collection only authorizes the fee payer. The FeeManager recipient side is
-        // intentionally exempt; public AMM operations still enforce FeeManager policy checks.
-        tip20_token.ensure_authorized_as(fee_payer, AuthRole::sender())?;
+        if self.storage.spec().is_t8() {
+            // TIP-1042: fee collection only authorizes the fee payer. The FeeManager recipient
+            // side is intentionally exempt; public AMM operations still enforce FeeManager policy
+            // checks.
+            tip20_token.ensure_authorized_as(fee_payer, AuthRole::sender())?;
+        } else {
+            // Preserve pre-TIP-1042 historical execution: fee collection checked both the fee
+            // payer sender side and FeeManager recipient side.
+            tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
+        }
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
@@ -520,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_collect_fee_pre_tx_exempts_fee_manager_recipient_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
         let user = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
@@ -562,6 +569,58 @@ mod tests {
             let result =
                 fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert_eq!(result?, token.address());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx_pre_t8_requires_fee_manager_recipient_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let user = Address::random();
+        let validator = Address::random();
+        let beneficiary = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let max_amount = U256::from(10000);
+            let mut token = TIP20Setup::create("Test", "TST", user)
+                .with_issuer(user)
+                .with_mint(user, U256::from(u64::MAX))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let policy_id = registry.create_policy_with_accounts(
+                user,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin: user,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    accounts: vec![user],
+                },
+            )?;
+            token.change_transfer_policy_id(
+                user,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: token.address(),
+                },
+                beneficiary,
+            )?;
+
+            let result =
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
 
             Ok(())
         })
