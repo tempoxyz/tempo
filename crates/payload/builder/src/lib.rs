@@ -788,29 +788,12 @@ where
 
             let replayed_transaction = parallel_replay.is_some();
             if let Some(replay) = parallel_replay {
-                let mut stop_reason = None;
                 let execution_outcome = executor.execute_transaction_with_actions(
                     pool_tx.transaction.executable(),
                     *replay,
                     &mut action_replay_state,
                     pool_transactions_included as usize,
                     |result| {
-                        if cumulative_gas_used + result.block_gas_used() > non_shared_gas_limit {
-                            stop_reason = Some(BlockBuildStopReason::GasLimit);
-                            return false;
-                        }
-                        if !is_payment
-                            && non_payment_gas_used + result.block_gas_used() > general_gas_limit
-                        {
-                            stop_reason = Some(BlockBuildStopReason::GasLimit);
-                            return false;
-                        }
-                        if is_osaka && estimated_rlp_block_size + tx_rlp_length > MAX_RLP_BLOCK_SIZE
-                        {
-                            stop_reason = Some(BlockBuildStopReason::RlpBlockSizeLimit);
-                            return false;
-                        }
-
                         cumulative_gas_used += result.block_gas_used();
                         cumulative_state_gas_used += result.state_gas_used();
                         if !is_payment {
@@ -823,18 +806,12 @@ where
 
                         // Notify transactions iterator about the new state.
                         best_txs.on_new_result(result);
-                        true
                     },
                     bal_task_handle.is_some(),
                 );
                 best_txs.recycle_actions(execution_outcome.actions);
-                let execution_result = execution_outcome.result;
 
-                if let Some(stop_reason) = stop_reason {
-                    break stop_reason;
-                }
-
-                match execution_result {
+                match execution_outcome.result {
                     Ok(_) => {}
                     Err(StorageActionReplayExecutionError::Fallback(
                         StorageActionReplayFallback::Underflow,

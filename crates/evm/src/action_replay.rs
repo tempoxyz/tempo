@@ -318,7 +318,7 @@ where
         replay: StorageActionReplay,
         replay_state: &mut StorageActionReplayState,
         transaction_index: usize,
-        should_commit: impl FnOnce(&TempoTxResult) -> bool,
+        result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> StorageActionReplayOutcome {
         let (tx_env, recovered) = tx.into_parts();
@@ -373,10 +373,7 @@ where
                 block_gas_used,
                 validator_fee,
             );
-            if !should_commit(&result) {
-                replay_state.reset_tx_changes();
-                return Ok(());
-            }
+            result_closure(&result);
 
             self.commit_transaction(result);
             replay_state.commit_tx_changes();
