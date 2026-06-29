@@ -203,6 +203,7 @@ def txgen-tip20-liquidity-steps [scenario: record] {
                 gas_limit: 1000000
                 max_fee_per_gas: 100000000000
                 max_priority_fee_per_gas: 100000000000
+                fee_token: $TXGEN_HELPER_PATHUSD_ADDRESS
                 call: {
                     to: $TXGEN_HELPER_FEE_AMM_ADDRESS
                     abi: FeeAMM
