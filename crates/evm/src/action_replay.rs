@@ -232,9 +232,17 @@ impl StorageActionReplayState {
     /// Commits the accumulated transaction changes to the state.
     fn commit_tx_changes(&mut self) {
         for (address, slots) in self.tx_changes.drain() {
+            let account_writes = self.writes.entry(address).or_default();
             for (slot, change) in slots {
                 if let Some(kind) = change.write_kind {
-                    merge_committed_write_kind(&mut self.writes, address, slot, kind);
+                    account_writes
+                        .entry(slot)
+                        .and_modify(|existing| {
+                            if kind == WriteKind::Store {
+                                *existing = WriteKind::Store;
+                            }
+                        })
+                        .or_insert(kind);
                 }
             }
         }
@@ -392,13 +400,20 @@ where
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<EvmState, StorageActionReplayExecutionError> {
         let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
-        let db = self.inner.evm.db_mut();
 
         if let Some(expiring_nonce) = expiring_nonce {
-            apply_expiring_nonce_replay(db, replay_state, expiring_nonce, block_timestamp)?;
+            self.apply_expiring_nonce_replay(replay_state, expiring_nonce, block_timestamp)?;
         }
 
+        let db = self.inner.evm.db_mut();
         for action in actions {
+            // Filter out expiring nonce actions, we already handled them above
+            //
+            // TODO(alexey): disable recording of storage actions for nonce precompile
+            if action.address() == NONCE_PRECOMPILE_ADDRESS {
+                continue;
+            }
+
             match action {
                 StorageAction::Sload(address, key, value) => {
                     if replay_state.has_store(address, key) {
@@ -491,80 +506,82 @@ where
 
         Ok(state)
     }
-}
 
-fn apply_expiring_nonce_replay<DB: Database>(
-    db: &mut State<DB>,
-    replay_state: &mut StorageActionReplayState,
-    expiring_nonce: ExpiringNonceReplay,
-    block_timestamp: u64,
-) -> Result<(), StorageActionReplayExecutionError> {
-    if expiring_nonce.valid_before <= block_timestamp
-        || expiring_nonce.valid_before
-            > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
-    {
-        return Err(StorageActionReplayFallback::ActionConflict.into());
-    }
-
-    let nonce_manager = NonceManager::new();
-    let now = U256::from(block_timestamp);
-    let ptr = replay_state.expiring_nonce.ring_ptr(db)?;
-
-    let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
-    let seen_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
-    if !seen_expiry.is_zero() && seen_expiry > now {
-        return Err(StorageActionReplayFallback::ActionConflict.into());
-    }
-
-    let ptr_u32 = ptr
-        .try_into()
-        .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
-    let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
-    let old_hash = state_storage(db, NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
-    if !old_hash.is_zero() {
-        let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
-        let old_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
-        if !old_expiry.is_zero() && old_expiry > now {
+    fn apply_expiring_nonce_replay(
+        &mut self,
+        replay_state: &mut StorageActionReplayState,
+        expiring_nonce: ExpiringNonceReplay,
+        block_timestamp: u64,
+    ) -> Result<(), StorageActionReplayExecutionError> {
+        if expiring_nonce.valid_before <= block_timestamp
+            || expiring_nonce.valid_before
+                > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
             return Err(StorageActionReplayFallback::ActionConflict.into());
         }
+
+        let db = self.evm_mut().db_mut();
+
+        let nonce_manager = NonceManager::new();
+        let now = U256::from(block_timestamp);
+        let ptr = replay_state.expiring_nonce.ring_ptr(db)?;
+
+        let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
+        let seen_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
+        if !seen_expiry.is_zero() && seen_expiry > now {
+            return Err(StorageActionReplayFallback::ActionConflict.into());
+        }
+
+        let ptr_u32 = ptr
+            .try_into()
+            .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+        let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
+        let old_hash = state_storage(db, NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
+        if !old_hash.is_zero() {
+            let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
+            let old_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
+            if !old_expiry.is_zero() && old_expiry > now {
+                return Err(StorageActionReplayFallback::ActionConflict.into());
+            }
+            replay_state.record_sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                old_seen_slot,
+                old_expiry,
+                U256::ZERO,
+                WriteKind::Store,
+            );
+        }
+
         replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
-            old_seen_slot,
-            old_expiry,
-            U256::ZERO,
+            ring_slot,
+            old_hash,
+            U256::from_be_slice(expiring_nonce.hash.as_slice()),
             WriteKind::Store,
         );
+        replay_state.record_sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            seen_slot,
+            seen_expiry,
+            U256::from(expiring_nonce.valid_before),
+            WriteKind::Store,
+        );
+
+        let next = ptr
+            .checked_add(U256::ONE)
+            .filter(|next| *next < EXPIRING_NONCE_SET_CAPACITY)
+            .unwrap_or(U256::ZERO);
+        replay_state.record_sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            nonce_manager.expiring_nonce_ring_ptr.slot(),
+            ptr,
+            next,
+            WriteKind::Store,
+        );
+        replay_state.expiring_nonce.set_next_ring_ptr(next);
+
+        Ok(())
     }
-
-    replay_state.record_sstore(
-        NONCE_PRECOMPILE_ADDRESS,
-        ring_slot,
-        old_hash,
-        U256::from_be_slice(expiring_nonce.hash.as_slice()),
-        WriteKind::Store,
-    );
-    replay_state.record_sstore(
-        NONCE_PRECOMPILE_ADDRESS,
-        seen_slot,
-        seen_expiry,
-        U256::from(expiring_nonce.valid_before),
-        WriteKind::Store,
-    );
-
-    let next = ptr
-        .checked_add(U256::ONE)
-        .filter(|next| *next < EXPIRING_NONCE_SET_CAPACITY)
-        .unwrap_or(U256::ZERO);
-    replay_state.record_sstore(
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_manager.expiring_nonce_ring_ptr.slot(),
-        ptr,
-        next,
-        WriteKind::Store,
-    );
-    replay_state.expiring_nonce.set_next_ring_ptr(next);
-
-    Ok(())
 }
 
 fn state_storage<DB: Database>(
@@ -575,24 +592,6 @@ fn state_storage<DB: Database>(
     db.storage(address, slot)
         .map_err(BlockExecutionError::other)
         .map_err(StorageActionReplayExecutionError::Database)
-}
-
-fn merge_committed_write_kind(
-    writes: &mut AddressMap<U256Map<WriteKind>>,
-    address: Address,
-    slot: U256,
-    kind: WriteKind,
-) {
-    writes
-        .entry(address)
-        .or_default()
-        .entry(slot)
-        .and_modify(|existing| {
-            if kind == WriteKind::Store {
-                *existing = WriteKind::Store;
-            }
-        })
-        .or_insert(kind);
 }
 
 fn action_account_info<DB: StateDB>(
