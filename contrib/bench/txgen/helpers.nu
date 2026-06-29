@@ -3,9 +3,21 @@ const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = ["tip20_existing_recipients" "tip20_2d_nonces" "tip20_protocol_nonces"]
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
+    "tip20_existing_recipients"
+    "tip20_2d_nonces"
+    "tip20_protocol_nonces"
+    "tip20_keychain_existing_recipients"
+]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = ["dex"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
+const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
+const TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = 20000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT = 3000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
+const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
+const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
+const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
 
 def txgen-tip20-token-address [token_id: int] {
     ^printf "0x20c000000000000000000000%016x" $token_id
@@ -21,6 +33,68 @@ def txgen-tip20-token-choices [token_count: int] {
 
 def --env txgen-configure-tip20-token-env [token_count: int] {
     $env.TXGEN_TIP20_TOKENS = (txgen-tip20-token-choices $token_count)
+}
+
+def txgen-keychain-tip20-limits [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                token: (txgen-tip20-token-address $id)
+                amount: $TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT
+                period: 0
+            }
+        }
+        | to json -r
+}
+
+def txgen-keychain-tip20-allowed-calls [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "keychain TIP20 token count must be greater than zero" }
+    }
+
+    0..<$token_count
+        | each { |id|
+            {
+                target: (txgen-tip20-token-address $id)
+                selectors: [
+                    {
+                        selector: $TXGEN_HELPER_TIP20_TRANSFER_SELECTOR
+                        recipients: []
+                    }
+                ]
+            }
+        }
+        | to json -r
+}
+
+def txgen-key-authorization-gas-limit [token_count: int] {
+    if $token_count <= 0 {
+        error make { msg: "key authorization token count must be greater than zero" }
+    }
+
+    if $token_count == 1 {
+        return ($TXGEN_HELPER_KEY_AUTHORIZATION_MIN_GAS_LIMIT | into string)
+    }
+
+    ($TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT + ($token_count * $TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT)) | into string
+}
+
+def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
+    if $accounts <= 0 {
+        error make { msg: "keychain account count must be greater than zero" }
+    }
+
+    let access_keys_end = $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START + $accounts
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_START = ($TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START | into string)
+    $env.TXGEN_KEYCHAIN_ACCESS_KEYS_END = ($access_keys_end | into string)
+    $env.TXGEN_KEYCHAIN_TIP20_LIMITS = (txgen-keychain-tip20-limits $token_count)
+    $env.TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS = (txgen-keychain-tip20-allowed-calls $token_count)
+    $env.TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT = ($TXGEN_HELPER_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT | into string)
+    $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
 }
 
 def txgen-shell-quote [value: any] {
@@ -136,6 +210,10 @@ def txgen-parse-bench-args [bench_args: string] {
 
 def txgen-validate-bench-args [bench_args: string] {
     txgen-parse-bench-args $bench_args | ignore
+}
+
+def txgen-spec-has-keychain-setup [spec_path: string] {
+    (open --raw $spec_path) =~ '(?m)^\s*keychain_authorize_pool:\s*$'
 }
 
 def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
@@ -278,6 +356,7 @@ def txgen-run-preset-pipeline [
     }
     let tx_token_count = if $tip20_token_count > 0 { $tip20_token_count } else { $bloat_token_count }
     txgen-configure-tip20-token-env $tx_token_count
+    txgen-configure-keychain-env $accounts $tx_token_count
     txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     let preset_name = ($spec_path | path basename | str replace --regex '\.yml$' '')
     let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
@@ -304,16 +383,27 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let txgen_setup_cmd = [
+        $txgen_tempo_bin
+        "generate"
+        "-s" $spec_path
+        "-n" 0
+        "--seed" $TXGEN_HELPER_DEFAULT_SEED
+        "--rpc" $generate_rpc_url
+    ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
-    let bench_base_cmd = [
+    let bench_send_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
         "--retries" 0
-        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
+    ]
+    let bench_base_cmd = [
+        ...$bench_send_base_cmd
+        ...$metrics_url_args
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
@@ -351,9 +441,26 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let use_two_phase_keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
+    let bench_cmd = if $use_two_phase_keychain_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+
+    if $use_two_phase_keychain_setup {
+        let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
+        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+
+        print "  Streaming keychain setup transactions into bench send..."
+        let setup_result = (bash -lc $setup_pipeline | complete)
+        if $setup_result.stdout != "" { print $setup_result.stdout }
+        if $setup_result.stderr != "" { print $setup_result.stderr }
+
+        if $setup_result.exit_code != 0 {
+            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+        }
+    }
 
     print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     let result = (bash -lc $pipeline | complete)

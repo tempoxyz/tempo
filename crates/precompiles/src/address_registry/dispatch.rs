@@ -1,18 +1,10 @@
 use crate::{
-    Precompile, SelectorSchedule, address_registry::AddressRegistry, charge_input_cost,
-    dispatch_call, mutate, view,
+    Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IAddressRegistry::{self, IAddressRegistryCalls};
+use tempo_contracts::precompiles::IAddressRegistry;
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
-
-/// Selectors introduced at T5 (TIP-1035).
-const T5_ADDED: &[[u8; 4]] = &[IAddressRegistry::isImplicitlyApprovedCall::SELECTOR];
 
 impl Precompile for AddressRegistry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -20,40 +12,37 @@ impl Precompile for AddressRegistry {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED)],
-            IAddressRegistryCalls::abi_decode,
             |call| match call {
-                // Registration
-                IAddressRegistryCalls::registerVirtualMaster(call) => {
-                    mutate(call, msg_sender, |s, c| self.register_virtual_master(s, c))
+                IAddressRegistry::IAddressRegistryCalls {
+                    // Registration
+                    registerVirtualMaster(call) => mutate(call, msg_sender, |s, c| {
+                        self.register_virtual_master(s, c)
+                    }),
+                    // View functions
+                    getMaster(call) => view(call, |c| {
+                        Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
+                    }),
+                    resolveRecipient(call) => view(call, |c| self.resolve_recipient(c.to)),
+                    resolveVirtualAddress(call) => view(call, |c| {
+                        self.resolve_virtual_address(c.virtualAddr)
+                    }),
+                    // Pure functions
+                    isVirtualAddress(call) => view(call, |c| Ok(c.addr.is_virtual())),
+                    decodeVirtualAddress(call) => view(call, |c| {
+                        let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
+                            Some((mid, tag)) => (true, mid, tag),
+                            None => (false, MasterId::ZERO, UserTag::ZERO),
+                        };
+                        Ok((is_virtual, master_id, user_tag).into())
+                    }),
+                    #[schedule(since = T5)]
+                    isImplicitlyApproved(call) => view(call, |c| {
+                        Ok(self.is_implicitly_approved(c.addr))
+                    })
                 }
-                // View functions
-                IAddressRegistryCalls::getMaster(call) => view(call, |c| {
-                    Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
-                }),
-                IAddressRegistryCalls::resolveRecipient(call) => {
-                    view(call, |c| self.resolve_recipient(c.to))
-                }
-                IAddressRegistryCalls::resolveVirtualAddress(call) => {
-                    view(call, |c| self.resolve_virtual_address(c.virtualAddr))
-                }
-                // Pure functions
-                IAddressRegistryCalls::isVirtualAddress(call) => {
-                    view(call, |c| Ok(c.addr.is_virtual()))
-                }
-                IAddressRegistryCalls::decodeVirtualAddress(call) => view(call, |c| {
-                    let (is_virtual, master_id, user_tag) = match c.addr.decode_virtual() {
-                        Some((mid, tag)) => (true, mid, tag),
-                        None => (false, MasterId::ZERO, UserTag::ZERO),
-                    };
-                    Ok((is_virtual, master_id, user_tag).into())
-                }),
-                IAddressRegistryCalls::isImplicitlyApproved(call) => {
-                    view(call, |c| Ok(self.is_implicitly_approved(c.addr)))
-                }
-            },
+            }
         )
     }
 }
@@ -68,6 +57,7 @@ mod tests {
     };
     use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
