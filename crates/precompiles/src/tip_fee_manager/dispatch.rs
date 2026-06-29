@@ -9,13 +9,40 @@ use crate::{
     },
     view,
 };
-use alloy::primitives::Address;
+use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IFeeManager;
 impl Precompile for TipFeeManager {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
+        }
+
+        if let Some(selector) = crate::dispatch::selector_from_calldata(calldata) {
+            match selector {
+                IFeeManager::userTokensCall::SELECTOR => {
+                    return crate::dispatch::dispatch_call(
+                        calldata,
+                        IFeeManager::userTokensCall::abi_decode,
+                        |call| view(call, |c| self.user_tokens(c)),
+                    );
+                }
+                IFeeManager::validatorTokensCall::SELECTOR => {
+                    return crate::dispatch::dispatch_call(
+                        calldata,
+                        IFeeManager::validatorTokensCall::abi_decode,
+                        |call| view(call, |c| self.get_validator_token(c.validator)),
+                    );
+                }
+                IFeeManager::collectedFeesCall::SELECTOR => {
+                    return crate::dispatch::dispatch_call(
+                        calldata,
+                        IFeeManager::collectedFeesCall::abi_decode,
+                        |call| view(call, |c| self.collected_fees[c.validator][c.token].read()),
+                    );
+                }
+                _ => {}
+            }
         }
 
         dispatch!(
