@@ -142,8 +142,11 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
+        self.policy_type_with_t2(StorageCtx.spec().is_t2())
+    }
 
+    /// Decodes the raw `policy_type` u8 using a caller-provided T2 hardfork flag.
+    fn policy_type_with_t2(&self, is_t2: bool) -> Result<PolicyType> {
         match self.policy_type.try_into() {
             Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
             _ => Err(if is_t2 {
@@ -336,8 +339,14 @@ impl TIP403Registry {
             return Ok(None);
         }
 
+        let is_t2 = self.storage.spec().is_t2();
         let token_filter_data = config.token_filter_data();
-        if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
+        if !self.is_authorized_simple_with_t2(
+            config.token_filter_id,
+            token,
+            Some(token_filter_data),
+            is_t2,
+        )? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
@@ -346,7 +355,12 @@ impl TIP403Registry {
         }
 
         let sender_policy_data = config.sender_policy_data();
-        if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
+        if !self.is_authorized_simple_with_t2(
+            config.sender_policy_id,
+            sender,
+            Some(sender_policy_data),
+            is_t2,
+        )? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
@@ -709,6 +723,7 @@ impl TIP403Registry {
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
         let hardfork = self.storage.spec();
+        let is_t2 = hardfork.is_t2();
 
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
         if ALWAYS_AUTHORIZED
@@ -728,29 +743,43 @@ impl TIP403Registry {
             let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
                 AuthRole::Sender => {
-                    self.is_authorized_simple(compound.sender_policy_id, user, None)
+                    self.is_authorized_simple_with_t2(compound.sender_policy_id, user, None, is_t2)
                 }
-                AuthRole::Recipient => {
-                    self.is_authorized_simple(compound.recipient_policy_id, user, None)
-                }
-                AuthRole::MintRecipient => {
-                    self.is_authorized_simple(compound.mint_recipient_policy_id, user, None)
-                }
+                AuthRole::Recipient => self.is_authorized_simple_with_t2(
+                    compound.recipient_policy_id,
+                    user,
+                    None,
+                    is_t2,
+                ),
+                AuthRole::MintRecipient => self.is_authorized_simple_with_t2(
+                    compound.mint_recipient_policy_id,
+                    user,
+                    None,
+                    is_t2,
+                ),
                 AuthRole::Transfer => {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
-                    let sender_auth =
-                        self.is_authorized_simple(compound.sender_policy_id, user, None)?;
-                    if hardfork.is_t2() && !sender_auth {
+                    let sender_auth = self.is_authorized_simple_with_t2(
+                        compound.sender_policy_id,
+                        user,
+                        None,
+                        is_t2,
+                    )?;
+                    if is_t2 && !sender_auth {
                         return Ok(false);
                     }
-                    let recipient_auth =
-                        self.is_authorized_simple(compound.recipient_policy_id, user, None)?;
+                    let recipient_auth = self.is_authorized_simple_with_t2(
+                        compound.recipient_policy_id,
+                        user,
+                        None,
+                        is_t2,
+                    )?;
                     Ok(sender_auth && recipient_auth)
                 }
             };
         }
 
-        self.is_authorized_simple_inner(policy_id, user, &data)
+        self.is_authorized_simple_inner(policy_id, user, &data, is_t2)
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
@@ -764,14 +793,15 @@ impl TIP403Registry {
         }
     }
 
-    /// Authorization for simple (non-compound) policies only.
+    /// Authorization for simple (non-compound) policies only, using a cached T2 flag.
     ///
     /// **WARNING:** skips compound check - caller must guarantee policy is simple.
-    fn is_authorized_simple(
+    fn is_authorized_simple_with_t2(
         &self,
         policy_id: u64,
         user: Address,
         cache: Option<PolicyData>,
+        is_t2: bool,
     ) -> Result<bool> {
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
@@ -780,7 +810,7 @@ impl TIP403Registry {
             Some(data) => data,
             None => self.get_policy_data(policy_id)?,
         };
-        self.is_authorized_simple_inner(policy_id, user, &data)
+        self.is_authorized_simple_inner(policy_id, user, &data, is_t2)
     }
 
     /// Authorization check for simple (non-compound) policies.
@@ -789,13 +819,14 @@ impl TIP403Registry {
         policy_id: u64,
         user: Address,
         data: &PolicyData,
+        is_t2: bool,
     ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
-        match data.policy_type()? {
+        match data.policy_type_with_t2(is_t2)? {
             PolicyType::WHITELIST => Ok(is_in_set),
             PolicyType::BLACKLIST => Ok(!is_in_set),
             PolicyType::COMPOUND => Err(TIP403RegistryError::incompatible_policy_type().into()),
