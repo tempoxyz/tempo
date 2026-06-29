@@ -52,7 +52,7 @@ where
     oracle: TPeerManager,
     execution_node: Arc<TempoFullNode>,
     epoch_strategy: FixedEpocher,
-    last_finalized_height: Height,
+    finalized_floor: Height,
     latest_observed_finalized_tip: (Height, Digest),
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
@@ -74,7 +74,7 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            last_marshal_finalized_height: last_finalized_height,
+            finalized_floor,
             finalized_tip,
         }: super::Config<TPeerManager>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
@@ -92,7 +92,7 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            last_finalized_height,
+            finalized_floor,
             latest_observed_finalized_tip: finalized_tip,
             mailbox,
             peers,
@@ -187,8 +187,8 @@ where
             .provider
             .finalized_block_number()
             .wrap_err("unable to read highest finalized block from execution layer")?
-            .unwrap_or(self.last_finalized_height.get())
-            .max(self.last_finalized_height.get())
+            .unwrap_or(self.finalized_floor.get())
+            .max(self.finalized_floor.get())
             .min(self.latest_observed_finalized_tip.0.get());
 
         // Short circuit - no need to read the same state if there is no new data.

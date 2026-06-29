@@ -151,7 +151,7 @@ where
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
-            finalized_floor: last_marshal_finalized_height,
+            finalized_floor,
             finalized_tip,
         } = alias::marshal::init(
             context.clone(),
@@ -178,7 +178,7 @@ where
             context.with_label("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
-                finalized_floor: last_marshal_finalized_height,
+                finalized_floor,
                 finalized_tip,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
@@ -193,7 +193,7 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                last_marshal_finalized_height,
+                finalized_floor,
                 finalized_tip,
             },
         );
@@ -293,7 +293,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                last_finalized_height,
+                last_finalized_height: finalized_floor,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),

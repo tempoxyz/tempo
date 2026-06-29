@@ -55,7 +55,7 @@ pub(crate) struct Config<TOracle> {
     /// The last finalized height according to the marshal actor.
     /// Used during start to determine the correct boundary block, since
     /// the execution layer may be behind.
-    pub(crate) last_marshal_finalized_height: Height,
+    pub(crate) finalized_floor: Height,
     /// Highest finalized tip observed from consensus at startup.
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
