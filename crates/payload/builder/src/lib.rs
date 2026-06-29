@@ -99,7 +99,7 @@ const DEFAULT_SSMR_SHARD_TARGET_BYTES: usize = 10 * 1024;
 const DEFAULT_SSMR_FIRST_SHARD_TARGET_BYTES: usize = 5 * 1024;
 const SSMR_REPLAY_SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 // Keep recovery bounded; replay execution, BAL, and sparse-trie work also consume CPU.
-const SSMR_REPLAY_RECOVERY_WORKERS: usize = 4;
+const SSMR_REPLAY_RECOVERY_WORKERS: usize = 8;
 const SSMR_REPLAY_RECOVERY_EVENT_QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
