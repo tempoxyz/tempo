@@ -1322,7 +1322,17 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        // Check and update spending limit
+        self.update_prevalidated_spending_limit(account, key_id, token, amount, current_timestamp)
+    }
+
+    fn update_prevalidated_spending_limit(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        amount: U256,
+        current_timestamp: u64,
+    ) -> Result<()> {
         let limit_key = Self::spending_limit_key(account, key_id);
         if !self.storage.spec().is_t3() {
             let remaining = self.spending_limits[limit_key][token].remaining.read()?;
@@ -1485,6 +1495,31 @@ impl AccountKeychain {
 
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, amount)
+    }
+
+    /// Authorize a transfer for a key the transaction handler already validated as active.
+    ///
+    /// This is used by pre-execution fee collection for existing-key transactions. It still
+    /// applies the same origin check and spending-limit update as [`Self::authorize_transfer`],
+    /// but skips reloading the active key row that was validated immediately before fee debit.
+    pub fn authorize_prevalidated_transfer(
+        &mut self,
+        account: Address,
+        key_id: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        if key_id == Address::ZERO {
+            return Ok(());
+        }
+
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        self.update_prevalidated_spending_limit(account, key_id, token, amount, current_timestamp)
     }
 
     /// Authorize a token approval with access key spending limits.

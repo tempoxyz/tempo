@@ -1160,6 +1160,24 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
+    fn check_and_update_spending_limit_with_prevalidated_key(
+        &mut self,
+        from: Address,
+        amount: U256,
+        prevalidated_key: Option<Address>,
+    ) -> Result<()> {
+        if let Some(key_id) = prevalidated_key {
+            AccountKeychain::new().authorize_prevalidated_transfer(
+                from,
+                key_id,
+                self.address,
+                amount,
+            )
+        } else {
+            self.check_and_update_spending_limit(from, amount)
+        }
+    }
+
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
@@ -1292,12 +1310,21 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        self.transfer_fee_pre_tx_with_prevalidated_key(from, amount, None)
+    }
+
+    pub fn transfer_fee_pre_tx_with_prevalidated_key(
+        &mut self,
+        from: Address,
+        amount: U256,
+        prevalidated_key: Option<Address>,
+    ) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
-        self.check_and_update_spending_limit(from, amount)?;
+        self.check_and_update_spending_limit_with_prevalidated_key(from, amount, prevalidated_key)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;

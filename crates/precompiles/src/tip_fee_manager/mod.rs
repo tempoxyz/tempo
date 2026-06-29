@@ -162,6 +162,25 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
+        self.collect_fee_pre_tx_with_prevalidated_key(
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+            None,
+        )
+    }
+
+    pub fn collect_fee_pre_tx_with_prevalidated_key(
+        &mut self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+        prevalidated_key: Option<Address>,
+    ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -169,7 +188,11 @@ impl TipFeeManager {
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
-        tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+        tip20_token.transfer_fee_pre_tx_with_prevalidated_key(
+            fee_payer,
+            max_amount,
+            prevalidated_key,
+        )?;
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;

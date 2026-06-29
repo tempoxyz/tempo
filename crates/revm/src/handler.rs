@@ -1223,6 +1223,7 @@ where
         let mut loaded_tx_access_key = None;
         // Access key whose fee-token spending limit was debited during fee collection, if any.
         let mut keychain_fee_key = None;
+        let mut prevalidated_fee_key = None;
         let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
@@ -1335,6 +1336,9 @@ where
 
                 evm.key_expiry = Some(loaded_key.key.expiry);
                 keychain_fee_key = loaded_key.key.enforce_limits.then_some(loaded_key.key_id);
+                if loaded_key.key.enforce_limits && fee_payer == tx.caller {
+                    prevalidated_fee_key = Some(loaded_key.key_id);
+                }
                 loaded_tx_access_key = Some(loaded_key);
             }
         }
@@ -1390,12 +1394,13 @@ where
                 tx,
                 actions.clone(),
                 || {
-                    fee_manager.collect_fee_pre_tx(
+                    fee_manager.collect_fee_pre_tx_with_prevalidated_key(
                         fee_payer,
                         fee_token,
                         gas_balance_spending,
                         block.beneficiary(),
                         skip_liquidity_check,
+                        prevalidated_fee_key,
                     )
                 },
             );

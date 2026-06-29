@@ -31,6 +31,25 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         skip_liquidity_check: bool,
     ) -> TempoResult<Address>;
 
+    /// Collects the maximum possible fee with an access key already validated by the handler.
+    fn collect_fee_pre_tx_with_prevalidated_key(
+        &self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+        _prevalidated_key: Option<Address>,
+    ) -> TempoResult<Address> {
+        self.collect_fee_pre_tx(
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )
+    }
+
     /// Settles the final fee after transaction execution.
     fn collect_fee_post_tx(
         &self,
@@ -68,6 +87,25 @@ impl<DB: Database> ProtocolFeeManager<DB> for TempoFeeManager {
             max_amount,
             beneficiary,
             skip_liquidity_check,
+        )
+    }
+
+    fn collect_fee_pre_tx_with_prevalidated_key(
+        &self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+        prevalidated_key: Option<Address>,
+    ) -> TempoResult<Address> {
+        TipFeeManager::new().collect_fee_pre_tx_with_prevalidated_key(
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+            prevalidated_key,
         )
     }
 
