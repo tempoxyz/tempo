@@ -176,6 +176,10 @@ impl BestTransactionsPrewarming {
         }
 
         WorkerPool::with_worker_mut(|worker| {
+            if prewarm.is_stopped() {
+                return;
+            }
+
             let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
                 return;
             };
