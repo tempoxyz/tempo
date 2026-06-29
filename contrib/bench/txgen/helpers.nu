@@ -18,6 +18,400 @@ const TXGEN_HELPER_KEY_AUTHORIZATION_BASE_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEY_AUTHORIZATION_PER_TOKEN_GAS_LIMIT = 2000000
 const TXGEN_HELPER_KEYCHAIN_LIMIT_AMOUNT = "1000000000000000000000000000000000000"
 const TXGEN_HELPER_TIP20_TRANSFER_SELECTOR = "0xa9059cbb"
+const TXGEN_HELPER_FEE_AMM_ADDRESS = "0xfeec000000000000000000000000000000000000"
+const TXGEN_HELPER_PATHUSD_ADDRESS = "0x20c0000000000000000000000000000000000000"
+const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
+
+def txgen-tip20-default-scenario [] {
+    {
+        workload: "tip20"
+        recipient: "users"
+        auth: "direct"
+        nonce: "expiring"
+        fee_token: "pathusd"
+        fee_amm: "auto"
+    }
+}
+
+def txgen-tip20-scenario-alias [name: string] {
+    if $name == "tip20" {
+        return (txgen-tip20-default-scenario)
+    }
+    if $name == "tip20_random_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_existing_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain" {
+        return ((txgen-tip20-default-scenario) | merge { auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_random_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "random", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_keychain_existing_recipients" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", auth: "keychain", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_key_authorization" {
+        return ((txgen-tip20-default-scenario) | merge { auth: "key_authorization", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_protocol_nonces" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "protocol", fee_token: "any_tip20" })
+    }
+    if $name == "tip20_2d_nonces" {
+        return ((txgen-tip20-default-scenario) | merge { recipient: "existing", nonce: "2d", fee_token: "any_tip20" })
+    }
+
+    null
+}
+
+def txgen-scenario-field-name [field: string] {
+    $field | str trim | str replace -a "-" "_"
+}
+
+def txgen-parse-tip20-scenario [preset: string] {
+    let preset_name = ($preset | str trim)
+    let alias = (txgen-tip20-scenario-alias $preset_name)
+    if $alias != null {
+        return $alias
+    }
+
+    if not ($preset_name | str starts-with "tip20:") {
+        return null
+    }
+
+    let body = ($preset_name | str replace --regex '^tip20:' '')
+    mut scenario = (txgen-tip20-default-scenario)
+    if ($body | str trim) != "" {
+        for raw_part in ($body | split row "," | each { |part| $part | str trim } | where { |part| $part != "" }) {
+            let kv = ($raw_part | split row "=")
+            if ($kv | length) != 2 {
+                error make { msg: $"invalid tip20 scenario component '($raw_part)'; expected key=value" }
+            }
+
+            let key = (txgen-scenario-field-name ($kv | get 0))
+            let value = (($kv | get 1) | str trim)
+            if $key not-in ["recipient" "auth" "nonce" "fee_token" "fee_amm"] {
+                error make { msg: $"unknown tip20 scenario field '($key)'" }
+            }
+            if $value == "" {
+                error make { msg: $"tip20 scenario field '($key)' must not be empty" }
+            }
+
+            $scenario = ($scenario | upsert $key $value)
+        }
+    }
+
+    txgen-validate-tip20-scenario $scenario
+    $scenario
+}
+
+def txgen-ensure-one-of [field: string, value: string, allowed: list<string>] {
+    if $value not-in $allowed {
+        error make { msg: $"invalid ($field)=($value); expected one of: ($allowed | str join ', ')" }
+    }
+}
+
+def txgen-validate-tip20-scenario [scenario: record] {
+    txgen-ensure-one-of "recipient" $scenario.recipient ["users" "random" "existing"]
+    txgen-ensure-one-of "auth" $scenario.auth ["direct" "keychain" "key_authorization"]
+    txgen-ensure-one-of "nonce" $scenario.nonce ["expiring" "protocol" "2d"]
+    txgen-ensure-one-of "fee_token" $scenario.fee_token ["pathusd" "any_tip20"]
+    txgen-ensure-one-of "fee_amm" $scenario.fee_amm ["auto" "on" "off"]
+
+    if $scenario.auth != "direct" and $scenario.nonce != "expiring" {
+        error make { msg: $"auth=($scenario.auth) currently supports only nonce=expiring" }
+    }
+}
+
+def txgen-tip20-scenario-id [scenario: record] {
+    $"tip20:recipient=($scenario.recipient),auth=($scenario.auth),nonce=($scenario.nonce),fee_token=($scenario.fee_token),fee_amm=($scenario.fee_amm)"
+}
+
+def txgen-scenario-file-stem [scenario_id: string] {
+    $scenario_id
+        | str replace -a ":" "-"
+        | str replace -a "," "-"
+        | str replace -a "=" "-"
+        | str replace -a "/" "-"
+}
+
+def txgen-helper-path [name: string] {
+    [ (txgen-repo-root) "contrib/bench/txgen" $name ] | path join
+}
+
+def txgen-tip20-uses-fee-amm [scenario: record] {
+    if $scenario.fee_amm == "on" {
+        return true
+    }
+    if $scenario.fee_amm == "off" {
+        return false
+    }
+
+    $scenario.fee_token == "any_tip20"
+}
+
+def txgen-tip20-recipient-arg [recipient: string] {
+    if $recipient == "users" {
+        return {
+            pool: {
+                pool: users
+                select: random
+            }
+        }
+    }
+    if $recipient == "random" {
+        return random
+    }
+    if $recipient == "existing" {
+        return {
+            address_pool: {
+                pool: existing_recipients
+                select: random
+            }
+        }
+    }
+
+    error make { msg: $"unsupported tip20 recipient mode: ($recipient)" }
+}
+
+def txgen-tip20-fee-token [scenario: record] {
+    if $scenario.fee_token == "pathusd" {
+        return $TXGEN_HELPER_PATHUSD_ADDRESS
+    }
+
+    { choice: "${TXGEN_TIP20_TOKENS}" }
+}
+
+def txgen-tip20-liquidity-steps [scenario: record] {
+    let amount = if $scenario.nonce == "2d" { 10000000000000 } else { 10000000000 }
+    [
+        [alpha 1]
+        [beta 2]
+        [theta 3]
+    ] | each { |entry|
+        let label = ($entry | get 0)
+        let token_id = ($entry | get 1)
+        {
+            id: $"mint_($label)_pathusd_liquidity"
+            tx: {
+                type: tempo
+                from: {
+                    pool: users
+                    select: { index: 0 }
+                }
+                gas_limit: 1000000
+                max_fee_per_gas: 100000000000
+                max_priority_fee_per_gas: 100000000000
+                call: {
+                    to: $TXGEN_HELPER_FEE_AMM_ADDRESS
+                    abi: FeeAMM
+                    function: mint
+                    args: [
+                        (txgen-tip20-token-address $token_id)
+                        $TXGEN_HELPER_PATHUSD_ADDRESS
+                        $amount
+                        $TXGEN_HELPER_FEE_AMM_ADDRESS
+                    ]
+                }
+            }
+        }
+    }
+}
+
+def txgen-tip20-keychain-setup-step [] {
+    {
+        id: authorize_keychain_users
+        keychain_authorize_pool: {
+            accounts: {
+                pool: users
+            }
+            access_keys: {
+                mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC
+                range: [
+                    "${TXGEN_KEYCHAIN_ACCESS_KEYS_START}"
+                    "${TXGEN_KEYCHAIN_ACCESS_KEYS_END}"
+                ]
+            }
+            key_type: secp256k1
+            gas_limit: "${TXGEN_KEYCHAIN_AUTHORIZE_SETUP_GAS_LIMIT}"
+            fee_token: $TXGEN_HELPER_PATHUSD_ADDRESS
+            limits: "${TXGEN_KEYCHAIN_TIP20_LIMITS}"
+            allowed_calls: "${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}"
+        }
+    }
+}
+
+def txgen-tip20-template-name [scenario: record] {
+    if $scenario.auth == "keychain" {
+        return "keychain_tip20_transfer"
+    }
+    if $scenario.auth == "key_authorization" {
+        return "key_authorization_tip20_transfer"
+    }
+
+    "tip20_transfer"
+}
+
+def txgen-tip20-gas-limit [scenario: record] {
+    if $scenario.auth == "keychain" {
+        return 3000000
+    }
+    if $scenario.auth == "key_authorization" {
+        return "${TXGEN_KEY_AUTHORIZATION_GAS_LIMIT}"
+    }
+    if $scenario.nonce in ["protocol" "2d"] {
+        return 350000
+    }
+
+    300000
+}
+
+def txgen-tip20-auth [scenario: record] {
+    if $scenario.auth == "keychain" {
+        return {
+            mode: keychain
+            access_key: {
+                from_setup: authorize_keychain_users
+                pair: same_index
+            }
+        }
+    }
+    if $scenario.auth == "key_authorization" {
+        return {
+            mode: key_authorization
+            access_key: {
+                derive: per_tx
+            }
+            key_type: secp256k1
+            limits: "${TXGEN_KEYCHAIN_TIP20_LIMITS}"
+            allowed_calls: "${TXGEN_KEYCHAIN_TIP20_ALLOWED_CALLS}"
+            witness: {
+                random_bytes: 32
+            }
+        }
+    }
+
+    null
+}
+
+def txgen-render-tip20-spec [scenario: record, out_dir: string] {
+    let out_dir = if ($out_dir | str trim) == "" {
+        [ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR ] | path join
+    } else {
+        $out_dir | path expand
+    }
+    mkdir $out_dir
+
+    let uses_fee_amm = (txgen-tip20-uses-fee-amm $scenario)
+    mut artifacts = { ERC20: (txgen-helper-path "erc20.abi.json") }
+    if $uses_fee_amm {
+        $artifacts = ($artifacts | insert FeeAMM (txgen-helper-path "fee-amm.abi.json"))
+    }
+
+    mut spec = {
+        chain_id: 1337
+        gas: {
+            max_fee_per_gas: 100000000000
+            max_priority_fee_per_gas: 100000000000
+        }
+        accounts: {
+            users: {
+                mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC
+                range: [
+                    0
+                    "${TXGEN_ACCOUNTS}"
+                ]
+            }
+        }
+        artifacts: $artifacts
+    }
+
+    if $scenario.recipient == "existing" {
+        $spec = ($spec | insert address_pools {
+            existing_recipients: {
+                fast: {
+                    seed: $TXGEN_HELPER_ACCOUNT_MNEMONIC
+                    range: [
+                        "${TXGEN_EXISTING_RECIPIENTS_START}"
+                        "${TXGEN_EXISTING_RECIPIENTS_END}"
+                    ]
+                }
+            }
+        })
+    }
+
+    mut setup_steps = []
+    if $uses_fee_amm {
+        $setup_steps = ($setup_steps | append (txgen-tip20-liquidity-steps $scenario))
+    }
+    if $scenario.auth == "keychain" {
+        $setup_steps = ($setup_steps | append (txgen-tip20-keychain-setup-step))
+    }
+    if ($setup_steps | length) > 0 {
+        $spec = ($spec | insert setup { steps: $setup_steps })
+    }
+
+    mut template = {
+        type: tempo
+        from: {
+            pool: users
+            select: random
+        }
+        gas_limit: (txgen-tip20-gas-limit $scenario)
+        max_fee_per_gas: 100000000000
+        max_priority_fee_per_gas: 100000000000
+        fee_token: (txgen-tip20-fee-token $scenario)
+        call: {
+            to: {
+                choice: "${TXGEN_TIP20_TOKENS}"
+            }
+            abi: ERC20
+            function: transfer
+            args: [
+                (txgen-tip20-recipient-arg $scenario.recipient)
+                1
+            ]
+        }
+    }
+
+    let auth = (txgen-tip20-auth $scenario)
+    if $auth != null {
+        $template = ($template | insert auth $auth)
+    }
+    if $scenario.nonce == "expiring" {
+        $template = ($template | insert expiring_nonce true | insert valid_for_secs 5)
+    }
+    if $scenario.nonce == "2d" {
+        $template = ($template | insert nonce_key { uniform: [1 "18446744073709551615"] } | insert nonce 0)
+    }
+
+    let template_name = (txgen-tip20-template-name $scenario)
+    let templates = ({} | insert $template_name $template)
+    $spec = ($spec | insert templates $templates | insert mix [
+        {
+            template: $template_name
+            weight: 100
+        }
+    ])
+
+    let scenario_id = (txgen-tip20-scenario-id $scenario)
+    let spec_path = ([ $out_dir $"(txgen-scenario-file-stem $scenario_id).yml" ] | path join)
+    $spec
+        | to yaml
+        | str replace -a "'18446744073709551615'" "18446744073709551615"
+        | save -f $spec_path
+
+    {
+        kind: generated
+        scenario_id: $scenario_id
+        spec_path: ($spec_path | path expand)
+        rendered: true
+        requires_existing_recipients: ($scenario.recipient == "existing")
+        requires_keychain_setup: ($scenario.auth == "keychain")
+        uses_fee_amm: $uses_fee_amm
+    }
+}
 
 def txgen-tip20-token-address [token_id: int] {
     ^printf "0x20c000000000000000000000%016x" $token_id
@@ -166,11 +560,11 @@ def txgen-available-presets-message [] {
     if ($presets | is-empty) {
         "none"
     } else {
-        $presets | str join ", "
+        $"($presets | str join ', '), or tip20:<field>=<value>,..."
     }
 }
 
-def txgen-preset-path [preset: string] {
+def txgen-static-preset-path [preset: string] {
     let preset_name = ($preset | str trim)
     if $preset_name == "" {
         error make { msg: $"--preset is required; available txgen presets: (txgen-available-presets-message)" }
@@ -186,6 +580,29 @@ def txgen-preset-path [preset: string] {
     }
 
     $spec_path
+}
+
+def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
+    let preset_name = ($preset | str trim)
+    let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
+    if $tip20_scenario != null {
+        return (txgen-render-tip20-spec $tip20_scenario $out_dir)
+    }
+
+    let spec_path = (txgen-static-preset-path $preset_name)
+    {
+        kind: static
+        scenario_id: $preset_name
+        spec_path: $spec_path
+        rendered: false
+        requires_existing_recipients: false
+        requires_keychain_setup: (txgen-spec-has-keychain-setup $spec_path)
+        uses_fee_amm: false
+    }
+}
+
+def txgen-preset-path [preset: string] {
+    (txgen-resolve-bench-spec $preset).spec_path
 }
 
 def txgen-account-mnemonic [] {
@@ -236,7 +653,12 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
 
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
-    if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
+    let spec_uses_existing_recipients = if ($preset_path | path exists) {
+        (open --raw $preset_path) =~ '(?m)^\s*existing_recipients:\s*$'
+    } else {
+        false
+    }
+    if ($preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS) and (not $spec_uses_existing_recipients) {
         return
     }
 
