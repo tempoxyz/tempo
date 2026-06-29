@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, TxKind};
+use alloy_primitives::{Address, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_evm::RecoveredTx;
 use reth_revm::{ExecuteEvm, context::Transaction as _};
@@ -43,7 +43,7 @@ where
             return None;
         }
 
-        if !is_storage_action_replay_candidate(&tx) {
+        if !is_replay_candidate(&tx) {
             evm.clear_actions();
             return None;
         }
@@ -122,80 +122,19 @@ where
     }
 }
 
-fn is_storage_action_replay_candidate(tx: &BestTransaction) -> bool {
-    let tx_env = tx.transaction.tx_env();
-
-    if tx.transaction.inner().tx().subblock_proposer().is_some() {
-        return false;
-    }
-    if !tx_env.value().is_zero() {
-        return false;
-    }
-    if tx_env
-        .access_list()
-        .is_some_and(|mut access_list| access_list.next().is_some())
-    {
-        return false;
-    }
-    if tx_env.authorization_list_len() != 0 {
-        return false;
-    }
-
-    let Some(aa_env) = tx_env.tempo_tx_env.as_ref() else {
-        return false;
-    };
-    if !aa_env.tempo_authorization_list.is_empty() {
-        return false;
-    }
-    if aa_env.key_authorization.is_some() {
-        return false;
-    }
-    if tx_env.nonce() != 0 {
+fn is_replay_candidate(tx: &BestTransaction) -> bool {
+    if !tx.transaction.is_payment() {
         return false;
     }
     if tx
         .transaction
-        .inner()
-        .tx()
-        .as_aa()
-        .is_some_and(|aa| aa.signature().as_keychain().is_some())
+        .nonce_key()
+        .is_none_or(|nonce_key| nonce_key == U256::ZERO)
     {
         return false;
     }
-    if tx_env.fee_payer().is_err() {
-        return false;
-    }
 
-    let mut calls = tx_env.calls();
-    let Some((kind, input)) = calls.next() else {
-        return false;
-    };
-    if !is_valid_tip20_transfer_call(*kind, input) {
-        return false;
-    }
-    calls.next().is_none()
-}
-
-fn is_valid_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
-    let TxKind::Call(token) = kind else {
-        return false;
-    };
-    if !token.is_tip20() {
-        return false;
-    }
-
-    match ITIP20::ITIP20Calls::abi_decode(input) {
-        Ok(ITIP20::ITIP20Calls::transfer(call)) => is_valid_direct_recipient(call.to),
-        Ok(ITIP20::ITIP20Calls::transferWithMemo(call)) => is_valid_direct_recipient(call.to),
-        Ok(ITIP20::ITIP20Calls::transferFrom(_))
-        | Ok(ITIP20::ITIP20Calls::transferFromWithMemo(_))
-        | Ok(_) => false,
-        Err(_) => false,
-    }
-}
-
-fn is_valid_direct_recipient(to: Address) -> bool {
-    !to.is_zero() && !to.is_tip20() && !to.is_virtual()
+    true
 }
 
 fn is_nonce_manager_action(action: &StorageAction) -> bool {
