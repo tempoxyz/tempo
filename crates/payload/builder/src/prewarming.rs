@@ -15,7 +15,7 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::storage::StorageAction;
-use tempo_transaction_pool::best::BestTransaction;
+use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::trace;
 
 use crate::parallel;
@@ -308,6 +308,12 @@ impl PrewarmedTransaction {
             replay: None,
             action_buffer: None,
         }
+    }
+}
+
+impl StateAwarePoolTransaction for PrewarmedTransaction {
+    fn best_transaction(&self) -> &BestTransaction {
+        &self.tx
     }
 }
 

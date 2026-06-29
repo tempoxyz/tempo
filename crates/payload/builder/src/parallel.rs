@@ -1,13 +1,9 @@
-use alloy_primitives::{Address, TxKind, U256};
-use alloy_sol_types::SolInterface;
-use reth_evm::RecoveredTx;
-use reth_revm::{ExecuteEvm, context::Transaction as _};
+use alloy_primitives::U256;
+use reth_revm::ExecuteEvm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::WorkerPool;
-use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, evm::TempoEvm};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
-use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 

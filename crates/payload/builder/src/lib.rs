@@ -102,27 +102,32 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 enum PayloadTransactions {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
-    Prewarmed(BestTransactionsPrewarming),
+    Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
+    Parallel(BestTransactionsPrewarming),
 }
 
 impl PayloadTransactions {
     fn next(&mut self) -> Option<PrewarmedTransaction> {
         match self {
             Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
-            Self::Prewarmed(planner) => planner.next(),
+            Self::Prewarming(txs) => txs.next(),
+            Self::Parallel(planner) => planner.next(),
         }
     }
 
     fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
         match self {
             Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
-            Self::Prewarmed(prewarming) => prewarming.mark_invalid(tx, kind),
+            Self::Prewarming(txs) => txs.mark_invalid(tx, kind),
+            Self::Parallel(prewarming) => prewarming.mark_invalid(tx, kind),
         }
     }
 
     fn recycle_actions(&mut self, actions: Vec<StorageAction>) {
-        if let Self::Prewarmed(prewarming) = self {
-            prewarming.recycle_actions(actions);
+        match self {
+            Self::Sequential(_) => {}
+            Self::Prewarming(txs) => txs.inner().recycle_actions(actions),
+            Self::Parallel(prewarming) => prewarming.recycle_actions(actions),
         }
     }
 
@@ -135,8 +140,9 @@ impl PayloadTransactions {
     fn on_new_result(&mut self, result: &TempoTxResult) {
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
-            Self::Prewarmed(_) => {
-                // Parallel planner does not track state updates.
+            Self::Prewarming(txs) => txs.on_new_result(result),
+            Self::Parallel(_) => {
+                // Parallel does not use state-aware best transactions iterator.
             }
         }
     }
@@ -616,14 +622,16 @@ where
             self.config.enable_parallel,
         );
         let mut best_txs = if self.config.enable_prewarming {
-            PayloadTransactions::Prewarmed(if self.config.enable_parallel {
-                BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs)
-            } else {
-                BestTransactionsPrewarming::new(
+            if self.config.enable_parallel {
+                PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
-                    StateAwareBestTransactions::new(raw_best_txs),
-                )
-            })
+                    raw_best_txs,
+                ))
+            } else {
+                PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
+                    BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                ))
+            }
         } else {
             PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
         };
