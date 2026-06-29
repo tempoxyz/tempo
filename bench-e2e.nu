@@ -1137,6 +1137,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
+    let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
@@ -1147,7 +1148,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --txgen-bench-bin $ctx.txgen.txgen_bench_bin
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
-                --submit-rpc-url $a_rpc
+                --submit-rpc-url $submit_rpc_url
                 --metrics-url $metrics_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
