@@ -12,13 +12,10 @@ use reth_storage_api::StateProviderFactory;
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
 use tempo_contracts::precompiles::ITIP20;
-use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoTxResult, evm::TempoEvm};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, evm::TempoEvm};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::StorageAction};
 use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::{
-    StateAwareBestTransactions,
-    best::{BestTransaction, StateAwareBestTransactionsUpdate},
-};
+use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 use crate::prewarming::{PrewarmEvmState, PrewarmingExecutionContext};
@@ -46,26 +43,18 @@ pub(crate) struct PrewarmingPlanner<Provider> {
     results_rx: Receiver<PlannedTransaction>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    /// Reusable state updates received from the prewarming.
-    state_updates_rx: Receiver<StateAwareBestTransactionsUpdate>,
-    /// Buffer of reusable [`StateAwareBestTransactionsUpdate`]s.
-    state_updates_buffer: Vec<StateAwareBestTransactionsUpdate>,
 }
 
 impl<Provider> PrewarmingPlanner<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    pub(crate) fn new<Txs>(
-        prewarm: PrewarmingExecutionContext<Provider>,
-        best_txs: StateAwareBestTransactions<Txs>,
-    ) -> Self
+    pub(crate) fn new<Txs>(prewarm: PrewarmingExecutionContext<Provider>, best_txs: Txs) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let (results_tx, results_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        let (state_updates_tx, state_updates_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
 
         let executor = prewarm.executor();
@@ -74,7 +63,6 @@ where
             results_tx,
             commands_tx: commands_tx.clone(),
             commands_rx,
-            state_updates_tx,
             stop: stop.clone(),
             prewarm: prewarm.clone(),
             action_buffers: Vec::new(),
@@ -91,15 +79,11 @@ where
             results_rx,
             stop,
             prewarm,
-            state_updates_rx,
-            state_updates_buffer: Vec::new(),
         }
     }
 
-    fn start_planner<Txs>(
-        executor: TaskExecutor,
-        mut ctx: PlannerContext<StateAwareBestTransactions<Txs>, Provider>,
-    ) where
+    fn start_planner<Txs>(executor: TaskExecutor, mut ctx: PlannerContext<Txs, Provider>)
+    where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let pool = executor.prewarming_pool();
@@ -110,39 +94,38 @@ where
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx().map(TempoEvm::with_actions));
             });
 
-            let advance =
-                |planner: &mut PlannerContext<StateAwareBestTransactions<Txs>, Provider>| {
-                    if planner.stop.load(Ordering::Relaxed) {
-                        return;
-                    }
+            let advance = |planner: &mut PlannerContext<Txs, Provider>| {
+                if planner.stop.load(Ordering::Relaxed) {
+                    return;
+                }
 
-                    let Some(tx) = planner.best_txs.next() else {
-                        return;
-                    };
-
-                    let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                        let offset = planner.next_expiring_nonce_offset;
-                        planner.next_expiring_nonce_offset += 1;
-                        Some(offset)
-                    } else {
-                        None
-                    };
-
-                    let prewarm = planner.prewarm.clone();
-                    let results_tx = planner.results_tx.clone();
-                    let commands_tx = planner.commands_tx.clone();
-                    let action_buffer = planner.action_buffers.pop();
-                    scope.spawn(move |_| {
-                        let planned = Self::plan_transaction_replay(
-                            prewarm,
-                            tx,
-                            action_buffer,
-                            expiring_nonce_offset,
-                        );
-                        let _ = results_tx.send(planned);
-                        let _ = commands_tx.send(PlannerCommand::Advance);
-                    });
+                let Some(tx) = planner.best_txs.next() else {
+                    return;
                 };
+
+                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                    let offset = planner.next_expiring_nonce_offset;
+                    planner.next_expiring_nonce_offset += 1;
+                    Some(offset)
+                } else {
+                    None
+                };
+
+                let prewarm = planner.prewarm.clone();
+                let results_tx = planner.results_tx.clone();
+                let commands_tx = planner.commands_tx.clone();
+                let action_buffer = planner.action_buffers.pop();
+                scope.spawn(move |_| {
+                    let planned = Self::plan_transaction_replay(
+                        prewarm,
+                        tx,
+                        action_buffer,
+                        expiring_nonce_offset,
+                    );
+                    let _ = results_tx.send(planned);
+                    let _ = commands_tx.send(PlannerCommand::Advance);
+                });
+            };
 
             for _ in 0..pool.current_num_threads() * 2 {
                 advance(&mut ctx);
@@ -155,11 +138,6 @@ where
                     }
                     PlannerCommand::Invalid { tx, kind } => {
                         ctx.best_txs.mark_invalid(&tx, kind);
-                    }
-                    PlannerCommand::StateUpdate(mut update) => {
-                        ctx.best_txs.apply_update(&update);
-                        update.clear();
-                        let _ = ctx.state_updates_tx.send(update);
                     }
                     PlannerCommand::RecycleActions(mut actions) => {
                         actions.clear();
@@ -307,30 +285,6 @@ where
             .commands_tx
             .send(PlannerCommand::RecycleActions(actions));
     }
-
-    pub(crate) fn on_state_update(&mut self, result: &TempoTxResult) {
-        self.recycle_state_updates();
-
-        let mut update = self.state_updates_buffer.pop().unwrap_or_default();
-        update.update_from_result(result);
-        if update.is_empty() {
-            self.state_updates_buffer.push(update);
-            return;
-        }
-
-        if let Err(mpsc::SendError(PlannerCommand::StateUpdate(mut update))) =
-            self.commands_tx.send(PlannerCommand::StateUpdate(update))
-        {
-            update.clear();
-            self.state_updates_buffer.push(update);
-        }
-    }
-
-    fn recycle_state_updates(&mut self) {
-        while let Ok(update) = self.state_updates_rx.try_recv() {
-            self.state_updates_buffer.push(update);
-        }
-    }
 }
 
 impl<Provider> Drop for PrewarmingPlanner<Provider> {
@@ -349,7 +303,6 @@ struct PlannerContext<Txs, Provider> {
     results_tx: Sender<PlannedTransaction>,
     commands_tx: Sender<PlannerCommand>,
     commands_rx: Receiver<PlannerCommand>,
-    state_updates_tx: Sender<StateAwareBestTransactionsUpdate>,
     stop: Arc<AtomicBool>,
     prewarm: PrewarmingExecutionContext<Provider>,
     action_buffers: Vec<Vec<StorageAction>>,
@@ -362,7 +315,6 @@ enum PlannerCommand {
         tx: BestTransaction,
         kind: InvalidPoolTransactionError,
     },
-    StateUpdate(StateAwareBestTransactionsUpdate),
     RecycleActions(Vec<StorageAction>),
     Stop {
         drain_rx: Receiver<PlannedTransaction>,

@@ -139,8 +139,8 @@ where
     fn on_new_result(&mut self, result: &TempoTxResult) {
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
-            Self::Parallel(planner) => {
-                planner.on_state_update(result);
+            Self::Parallel(_) => {
+                // Parallel planner does not track state updates.
             }
         }
     }
@@ -621,7 +621,7 @@ where
         let mut best_txs = if self.config.enable_parallel {
             PayloadTransactions::Parallel(Box::new(PrewarmingPlanner::new(
                 prewarm_ctx,
-                StateAwareBestTransactions::new(raw_best_txs),
+                raw_best_txs,
             )))
         } else {
             let inner = if self.config.enable_prewarming {

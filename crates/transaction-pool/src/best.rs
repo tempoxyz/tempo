@@ -5,7 +5,6 @@ use crate::{
     tt_2d_pool::BestAA2dTransactions,
 };
 use alloy_primitives::{Address, U256, map::HashMap};
-use derive_more::{Deref, DerefMut};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -157,7 +156,8 @@ where
         }
     }
 
-    /// Applies relevant state changes from an executed transaction result.
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
         for (&address, account) in &result.result().state {
             if !is_tip20_prefix(address) {
@@ -165,40 +165,13 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                self.apply_tip20_balance_update(
-                    address,
-                    slot,
-                    storage_slot.original_value,
-                    storage_slot.present_value,
-                );
+                if storage_slot.present_value < storage_slot.original_value {
+                    self.decreased_balances
+                        .insert((address, slot), storage_slot.present_value);
+                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                    *balance = storage_slot.present_value;
+                }
             }
-        }
-    }
-
-    /// Applies a state update produced from a transaction execution result.
-    pub fn apply_update(&mut self, update: &StateAwareBestTransactionsUpdate) {
-        for balance in update.iter().copied() {
-            self.apply_tip20_balance_update(
-                balance.address,
-                balance.slot,
-                balance.original_balance,
-                balance.present_balance,
-            );
-        }
-    }
-
-    fn apply_tip20_balance_update(
-        &mut self,
-        address: Address,
-        slot: U256,
-        original_balance: U256,
-        present_balance: U256,
-    ) {
-        if present_balance < original_balance {
-            self.decreased_balances
-                .insert((address, slot), present_balance);
-        } else if let Some(existing) = self.decreased_balances.get_mut(&(address, slot)) {
-            *existing = present_balance;
         }
     }
 }
@@ -252,40 +225,6 @@ where
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
     }
-}
-
-/// State update used by [`StateAwareBestTransactions`].
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct StateAwareBestTransactionsUpdate(Vec<StateAwareTip20BalanceUpdate>);
-
-impl StateAwareBestTransactionsUpdate {
-    /// Replaces this update with relevant state changes from an executed transaction result.
-    pub fn update_from_result(&mut self, result: &TempoTxResult) {
-        self.clear();
-
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
-
-            for (&slot, storage_slot) in &account.storage {
-                self.push(StateAwareTip20BalanceUpdate {
-                    address,
-                    slot,
-                    original_balance: storage_slot.original_value,
-                    present_balance: storage_slot.present_value,
-                });
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct StateAwareTip20BalanceUpdate {
-    address: Address,
-    slot: U256,
-    original_balance: U256,
-    present_balance: U256,
 }
 
 #[cfg(test)]
