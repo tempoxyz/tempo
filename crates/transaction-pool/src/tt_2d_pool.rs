@@ -2087,6 +2087,12 @@ pub(crate) struct BestAA2dTransactions {
 }
 
 impl BestAA2dTransactions {
+    /// Removes regular 2D nonce transactions for an invalidated sequence from this snapshot.
+    fn prune_invalid_sequence(&mut self, seq_id: AASequenceId) {
+        self.by_id.retain(|id, _| id.seq_id != seq_id);
+        self.independent.retain(|_, id| id.seq_id != seq_id);
+    }
+
     /// Removes the best regular transaction from the set.
     fn pop_best_regular(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let (key, id) = self.independent.pop_last()?;
@@ -2279,6 +2285,7 @@ impl BestTransactions for BestAA2dTransactions {
 
         if let Some(id) = transaction.transaction.aa_transaction_id() {
             self.invalid.insert(id.seq_id);
+            self.prune_invalid_sequence(id.seq_id);
         }
     }
 
