@@ -1,3 +1,11 @@
+default:
+    @just --list
+
+[group('build')]
+build-all:
+    cargo build --workspace
+    cd tips/verify && forge build
+
 [group('deps')]
 [doc('Bump all reth dependencies to a specific commit hash')]
 bump-reth commit:
@@ -7,8 +15,12 @@ bump-reth commit:
 mod scripts
 
 [group('dev')]
-tempo-dev-up: scripts::tempo-dev-up
-tempo-dev-down: scripts::tempo-dev-down
+tempo-dev-up:
+    @just scripts::tempo-dev-up
+
+[group('dev')]
+tempo-dev-down:
+    @just scripts::tempo-dev-down
 
 [group('specs')]
 [doc('Build tempo-std interfaces and compare them against Rust sol! ABIs')]
