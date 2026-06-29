@@ -114,12 +114,7 @@ impl Read for Message {
     }
 }
 
-struct HeaderForBackfill {
-    height: Height,
-    target_height: Height,
-    target_digest: Digest,
-    header: Option<TempoHeader>,
-}
+type BackfillFuture = BoxFuture<'static, (Height, Option<TempoHeader>)>;
 
 pub(crate) struct Actor<TContext>
 where
@@ -298,8 +293,30 @@ where
             })?;
 
         let mut ancestry_stream = AncestorStream::new();
-        let mut pending_backfill = OptionFuture::none();
-        let mut backfill_attempted = false;
+
+        let backfill_target = self.config.last_finalized_height.min(
+            self.config
+                .epoch_strategy
+                .last(round.epoch())
+                .expect("epoch strategy is covering all DKG epochs"),
+        );
+
+        let backfill_start = first_height_to_backfill(
+            storage,
+            &self.config.epoch_strategy,
+            &round,
+            backfill_target,
+        );
+
+        let mut pending_backfill = OptionFuture::new(backfill_start.map(|first_height| {
+            info!(%first_height, %backfill_target, "DKG startup backfill");
+            get_header_for_backfill(
+                self.config.execution_node.clone(),
+                self.config.marshal.clone(),
+                first_height,
+            )
+            .boxed()
+        }));
 
         info_span!("start_dkg", epoch = %state.epoch).in_scope(|| {
             info!(
@@ -322,9 +339,10 @@ where
                 }
 
                 backfill_result = &mut pending_backfill => {
-                    pending_backfill = self
+                    let (new_state, next_backfill) = self
                         .do_backfill(
                             backfill_result,
+                            backfill_target,
                             &state,
                             &round,
                             &mut round_sender,
@@ -332,75 +350,75 @@ where
                             &mut dealer_state,
                             &mut player_state,
                         )
-                        .await?
-                        .into();
-                    backfill_attempted = pending_backfill.is_none();
+                        .await?;
+
+                    if let Some(new_state) = new_state {
+                        info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
+                            info!(
+                                "constructed a new epoch state during startup backfill; \
+                                persisting new state and exiting current epoch",
+                            )
+                        });
+
+                        if let Err(err) = storage
+                            .set_state(new_state)
+                            .await
+                            .wrap_err("failed appending new state to journal")
+                        {
+                            break Err(err);
+                        }
+
+                        // Emits an error event.
+                        let _ = self.exit_epoch(&state);
+                        break Ok(());
+                    }
+
+                    pending_backfill = next_backfill.into();
                 }
 
                 Some((cause, block, ack)) = self.pending_finalized_blocks.next()
                 , if pending_backfill.is_none()
                 => {
-                    if !backfill_attempted
-                        && let Some(parent_height) = block.height().previous()
-                        && let Some(first_height) = first_height_to_backfill(
-                            storage,
-                            &self.config.epoch_strategy,
+                    let should_break = match self
+                        .handle_finalized_header(
+                            cause,
+                            &state,
                             &round,
-                            parent_height,
+                            &mut round_sender,
+                            storage,
+                            &mut dealer_state,
+                            &mut player_state,
+                            block.header().clone(),
                         )
+                        .await
+                        .wrap_err("failed handling finalized block")?
                     {
-                        pending_backfill = OptionFuture::some(
-                            get_header_for_backfill(
-                                self.config.execution_node.clone(),
-                                self.config.marshal.clone(),
-                                first_height,
-                                parent_height,
-                                block.parent_digest(),
-                            )
-                            .boxed(),
-                        );
-                        self.pending_finalized_blocks.push_front(ready((cause, block, ack)));
-                    } else {
-                        let should_break = match self
-                            .handle_finalized_header(
-                                cause,
-                                &state,
-                                &round,
-                                &mut round_sender,
-                                storage,
-                                &mut dealer_state,
-                                &mut player_state,
-                                block.header().clone(),
-                            )
-                            .await
-                            .wrap_err("failed handling finalized block")?
-                        {
-                            Some(new_state) => {
-                                info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
-                                    info!(
-                                        "constructed a new epoch state; persisting new state \
-                                        and exiting current epoch",
-                                    )
-                                });
+                        Some(new_state) => {
+                            info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
+                                info!(
+                                    "constructed a new epoch state; persisting new state \
+                                    and exiting current epoch",
+                                )
+                            });
 
-                                if let Err(err) = storage
-                                    .set_state(new_state)
-                                    .await
-                                    .wrap_err("failed appending new state to journal")
-                                {
-                                    break Err(err);
-                                }
-                                // Emits an error event.
-                                let _ = self.exit_epoch(&state);
-
-                                true
+                            if let Err(err) = storage
+                                .set_state(new_state)
+                                .await
+                                .wrap_err("failed appending new state to journal")
+                            {
+                                break Err(err);
                             }
-                            None => false,
-                        };
-                        ack.acknowledge();
-                        if should_break {
-                            break Ok(());
+
+                            // Emits an error event.
+                            let _ = self.exit_epoch(&state);
+                            true
                         }
+                        None => false,
+                    };
+
+                    ack.acknowledge();
+                    if should_break {
+                        break Ok(());
                     }
                 }
 
@@ -572,25 +590,21 @@ where
     )]
     async fn do_backfill<TStorageContext, TSender>(
         &mut self,
-        HeaderForBackfill {
-            height,
-            target_height,
-            target_digest,
-            header,
-        }: HeaderForBackfill,
+        (height, header): (Height, Option<TempoHeader>),
+        target_height: Height,
         state: &state::State,
         round: &state::Round,
         round_sender: &mut TSender,
         storage: &mut state::Storage<TStorageContext>,
         dealer_state: &mut Option<state::Dealer>,
         player_state: &mut Option<state::Player>,
-    ) -> eyre::Result<Option<BoxFuture<'static, HeaderForBackfill>>>
+    ) -> eyre::Result<(Option<State>, Option<BackfillFuture>)>
     where
         TStorageContext: commonware_runtime::Metrics + Clock + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
         if let Some(header) = header {
-            let state = self
+            let new_state = self
                 .handle_finalized_header(
                     info_span!(
                         "dkg_backfill",
@@ -607,22 +621,21 @@ where
                 )
                 .await
                 .wrap_err("failed handling finalized block during backfill")?;
-            assert_eq!(
-                state, None,
-                "backfills never result in a state because they are before the boundary",
-            );
+            if new_state.is_some() {
+                return Ok((new_state, None));
+            }
         }
 
-        Ok((height.next() <= target_height).then(|| {
+        let next_backfill = (height.next() <= target_height).then(|| {
             get_header_for_backfill(
                 self.config.execution_node.clone(),
                 self.config.marshal.clone(),
                 height.next(),
-                target_height,
-                target_digest,
             )
             .boxed()
-        }))
+        });
+
+        Ok((None, next_backfill))
     }
 
     /// Handles a finalized block.
@@ -1335,14 +1348,12 @@ async fn read_outcome_from_boundary(
         .wrap_err("the marshal boundary block did not contain the on-chain DKG outcome")
 }
 
-#[instrument(skip_all, fields(%height, %target_height))]
+#[instrument(skip_all, fields(%height))]
 async fn get_header_for_backfill(
     node: std::sync::Arc<TempoFullNode>,
     marshal: crate::alias::marshal::Mailbox,
     height: Height,
-    target_height: Height,
-    target_digest: Digest,
-) -> HeaderForBackfill {
+) -> (Height, Option<TempoHeader>) {
     let execution_finalized_watermark = node
         .provider
         .canonical_in_memory_state()
@@ -1372,12 +1383,7 @@ async fn get_header_for_backfill(
             .map(|block| block.header().clone())
     };
 
-    HeaderForBackfill {
-        height,
-        target_height,
-        target_digest,
-        header,
-    }
+    (height, header)
 }
 
 fn first_height_to_backfill<TStorageContext>(
