@@ -199,6 +199,11 @@ impl OrderHandler {
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
     }
 
+    /// Clears the cached physical storage version so the next access re-detects it from storage.
+    pub(crate) fn clear_version_cache(&self) {
+        self.version.set(None);
+    }
+
     /// Returns the cached physical storage version, detecting and caching it if needed.
     pub(crate) fn version(&self) -> StorageResult<OrderVersion> {
         if !StorageCtx.spec().is_t8() {
@@ -706,6 +711,36 @@ mod tests {
         LegacyOrder::store(&order, &mut storage, handler.base_slot, LayoutCtx::FULL)?;
         handler.version.set(Some(OrderVersion::Legacy));
         Ok(())
+    }
+
+    #[test]
+    fn test_clear_version_cache_redetects_after_checkpoint_revert() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            let id = 42;
+            let order = Order::new_bid(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
+            store_legacy_order(&exchange.orders[id], order)?;
+            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
+
+            {
+                let _checkpoint = StorageCtx.checkpoint();
+                exchange.orders[id].write(order)?;
+                assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
+            }
+
+            assert_eq!(exchange.orders[id].version()?, OrderVersion::V1);
+            exchange.orders[id].clear_version_cache();
+            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
+
+            exchange.orders[id].next()?.write(99)?;
+            let updated = exchange.orders[id].read()?;
+            assert_eq!(updated.next(), 99);
+            assert_eq!(exchange.orders[id].version()?, OrderVersion::Legacy);
+
+            Ok(())
+        })
     }
 
     fn legacy_order_slot(order: Order, loc: packing::FieldLocation) -> StorageResult<U256> {
