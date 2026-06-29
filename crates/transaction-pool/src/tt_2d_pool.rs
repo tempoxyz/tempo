@@ -2142,6 +2142,13 @@ impl BestAA2dTransactions {
         loop {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
+                    if !tx.transaction.transaction.is_expiring_nonce()
+                        && let Some(id) = tx.transaction.transaction.aa_transaction_id()
+                        && self.invalid.contains(&id.seq_id)
+                    {
+                        continue;
+                    }
+
                     let priority = TempoTipOrdering::default()
                         .priority(&tx.transaction.transaction, self.base_fee);
                     let tx = PendingTransaction {
