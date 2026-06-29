@@ -13537,6 +13537,7 @@ name = "tempo-sidecar"
 version = "1.9.1"
 dependencies = [
  "alloy",
+ "alloy-consensus",
  "clap",
  "eyre",
  "futures",
