@@ -849,7 +849,6 @@ where
 
                 parallel_transactions_executed += 1;
             } else {
-                action_replay_state.invalidate_expiring_nonce_cache();
                 let execution_result = executor.execute_transaction_with_result_closure(
                     tx.transaction.executable(),
                     |result| {
@@ -865,6 +864,8 @@ where
 
                         // Notify transactions iterator about the new state.
                         best_txs.on_new_result(result);
+                        // Apply the result to the action replay state.
+                        action_replay_state.apply_result(result);
                     },
                 );
                 if let Err(err) = execution_result {
