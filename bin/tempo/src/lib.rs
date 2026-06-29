@@ -250,10 +250,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         // Set Reth logs OTLP. Consensus logs are exported as well via the same tracing system.
         cli.traces.logs_otlp = Some(config.logs_otlp_url.clone());
-        cli.traces.logs_otlp_filter = config
-            .logs_otlp_filter
-            .parse()
-            .wrap_err("invalid default logs filter")?;
 
         telemetry_config = Some(config);
     }

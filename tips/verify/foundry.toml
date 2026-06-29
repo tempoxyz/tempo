@@ -1,5 +1,5 @@
 [profile.default]
-hardfork = "tempo:T6"
+hardfork = "tempo:T7"
 
 # layout and file system
 src = "src"

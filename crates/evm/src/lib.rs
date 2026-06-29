@@ -19,6 +19,7 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
 use alloy_evm::{
@@ -41,7 +42,10 @@ use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
-pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess};
+pub use tempo_revm::{
+    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoHaltReason, TempoInvalidTransaction,
+    TempoStateAccess,
+};
 
 #[cfg(test)]
 mod test_utils;
@@ -162,6 +166,11 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }
@@ -211,6 +220,11 @@ impl ConfigureEvm for TempoEvmConfig {
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .unwrap_or(NonZeroU64::MIN),
             },
         })
     }

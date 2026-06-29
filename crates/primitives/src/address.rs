@@ -1,4 +1,5 @@
 use alloy_primitives::{Address, FixedBytes, hex};
+use tempo_contracts::{TempoHardfork, precompiles::SYSTEM_PRECOMPILES};
 
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
@@ -37,6 +38,11 @@ pub trait TempoAddressExt {
     ///
     /// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
     fn is_tip20(&self) -> bool;
+
+    /// Returns `true` if the address is a precompile. This is the case if it is either:
+    /// - A TIP-20 token address.
+    /// - A system precompile active at the specified `spec` hardfork.
+    fn is_precompile(&self, spec: TempoHardfork) -> bool;
 
     /// Returns `true` if the address matches the [TIP-1022] virtual-address format
     /// (bytes `[4:14]` == [`Self::VIRTUAL_MAGIC`]).
@@ -92,12 +98,20 @@ impl TempoAddressExt for Address {
         bytes[14..20].copy_from_slice(user_tag.as_slice());
         Self::from(bytes)
     }
+
+    fn is_precompile(&self, spec: TempoHardfork) -> bool {
+        self.is_tip20()
+            || SYSTEM_PRECOMPILES
+                .iter()
+                .any(|&(a, activated)| &a == self && spec >= activated)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::address;
+    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 
     #[test]
     fn is_tip20_prefix_variations() {
@@ -165,5 +179,21 @@ mod tests {
         let mut tip20_bytes = [0u8; 20];
         tip20_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
         assert!(!Address::from(tip20_bytes).is_valid_master());
+    }
+
+    #[test]
+    fn test_is_precompile_address() {
+        for &(address, activated) in SYSTEM_PRECOMPILES {
+            assert!(address.is_precompile(activated));
+            assert!(address.is_precompile(TempoHardfork::T7));
+
+            if activated != TempoHardfork::Genesis {
+                assert!(!address.is_precompile(TempoHardfork::Genesis));
+            }
+        }
+
+        // Assert TIP20 prefixed addresses are classified as precompiles
+        assert!(PATH_USD_ADDRESS.is_tip20());
+        assert!(PATH_USD_ADDRESS.is_precompile(TempoHardfork::Genesis));
     }
 }

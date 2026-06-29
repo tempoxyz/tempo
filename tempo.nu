@@ -949,6 +949,8 @@ def generate-summary [
     mut feature_builder_pool_fetch_samples = []
     mut baseline_builder_invalid_tx_execution_attempts_samples = []
     mut feature_builder_invalid_tx_execution_attempts_samples = []
+    mut baseline_builder_reverted_txs = []
+    mut feature_builder_reverted_txs = []
     mut baseline_builder_invalid_tx_skips = []
     mut feature_builder_invalid_tx_skips = []
     mut baseline_builder_nonce_too_low_skips = []
@@ -1088,6 +1090,34 @@ def generate-summary [
         }
     }
 
+    let histogram_delta_sum_total = { |samples: list<any>, metric: string|
+        let sum_name = $"($metric)_sum"
+        let sum_samples = ($samples | where name == $sum_name)
+        if ($sum_samples | length) == 0 {
+            0.0
+        } else {
+            let deltas = (
+                $sum_samples
+                    | group-by { |sample| $sample.labels | to json --raw }
+                    | transpose labels samples
+                    | each { |series|
+                        let points = (
+                            $series.samples
+                                | where { |sample| ($sample | get -o value | default null) != null }
+                                | sort-by unix_ms
+                        )
+                        if ($points | length) > 1 {
+                            let first = ($points | first)
+                            let last = ($points | last)
+                            let delta = ($last.value - $first.value)
+                            if $delta >= 0 { $delta } else { $last.value }
+                        } else { 0.0 }
+                    }
+            )
+            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
+        }
+    }
+
     let metric_sample_names = [
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
@@ -1095,6 +1125,8 @@ def generate-summary [
         "reth_tempo_payload_builder_pool_fetch_duration_seconds_count"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
+        "reth_tempo_payload_builder_reverted_transactions_sum"
+        "reth_tempo_payload_builder_reverted_transactions_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
@@ -1215,6 +1247,7 @@ def generate-summary [
         let builder_finish_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
         let builder_pool_fetch_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_pool_fetch_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
+        let builder_reverted_txs = do $histogram_delta_sum_total $metric_samples "reth_tempo_payload_builder_reverted_transactions"
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
             let samples = (
@@ -1243,6 +1276,7 @@ def generate-summary [
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
             $baseline_builder_pool_fetch_samples = ($baseline_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $baseline_builder_reverted_txs = ($baseline_builder_reverted_txs | append $builder_reverted_txs)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1258,6 +1292,7 @@ def generate-summary [
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
             $feature_builder_pool_fetch_samples = ($feature_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $feature_builder_reverted_txs = ($feature_builder_reverted_txs | append $builder_reverted_txs)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1310,6 +1345,7 @@ def generate-summary [
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
+            builder_reverted_txs: $builder_reverted_txs
             tps: $actual_tps
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
@@ -1357,6 +1393,8 @@ def generate-summary [
     let f_builder_pool_fetch = do $compute_value_stats $feature_builder_pool_fetch_samples
     let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
     let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
+    let b_builder_reverted_txs = if ($baseline_builder_reverted_txs | length) > 0 { $baseline_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_reverted_txs = if ($feature_builder_reverted_txs | length) > 0 { $feature_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
@@ -1428,6 +1466,9 @@ def generate-summary [
         if $base > 0.0 or $feature > 0.0 {
             $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
         } else { null }
+    }
+    let count_row = { |label: string, base: float, feature: float|
+        $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
     }
     let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
     let b_builder_mgas = do $to_mgas_s $b_builder_gas
@@ -1525,6 +1566,7 @@ def generate-summary [
         $"| Pool Fetch P99 [ms] | (do $fmt_stat $b_builder_pool_fetch p99) | (do $fmt_stat $f_builder_pool_fetch p99) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p99) |"
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
+        (do $count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
         (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
@@ -1592,6 +1634,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
+                builder_reverted_txs: $b_builder_reverted_txs
                 builder_invalid_tx_skips: $b_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $b_builder_fill_idle.p50
@@ -1629,6 +1672,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
+                builder_reverted_txs: $f_builder_reverted_txs
                 builder_invalid_tx_skips: $f_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $f_builder_fill_idle.p50
@@ -1666,6 +1710,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
+                builder_reverted_txs: (do $delta $b_builder_reverted_txs $f_builder_reverted_txs)
                 builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
                 builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
                 builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)
@@ -1773,6 +1818,8 @@ def "main localnet" [
     --skip-build                           # Skip building tempo and tempo-xtask (assumes binaries are already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
+    --gas-limit: string = ""               # Block gas limit for generated genesis
+    --general-gas-limit: string = ""       # General (non-payment) gas limit for generated genesis
 ] {
     validate-mode $mode
     if $epoch_length <= 0 {
@@ -1789,6 +1836,8 @@ def "main localnet" [
     # Parse custom args
     let extra_args = (parse-cli-args $node_args)
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
 
     # Build first (unless skipped)
     if not $skip_build {
@@ -1800,9 +1849,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit_args $general_gas_limit_args
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $skip_build $loud $extra_args $bloat $gas_limit_args $general_gas_limit_args
     }
 }
 
@@ -1810,7 +1859,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit_args: list<string>, general_gas_limit_args: list<string>] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1839,7 +1888,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis"]
+            run-tempo-xtask $profile $skip_build ["generate-genesis" "--output" $LOCALNET_DIR "-a" $"($accounts)" "--epoch-length" $"($epoch_length)" "--no-dkg-in-genesis" ...$gas_limit_args ...$general_gas_limit_args]
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1902,7 +1951,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, skip_build: bool, loud: bool, extra_args: list<string>, bloat: int, gas_limit_args: list<string>, general_gas_limit_args: list<string>] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1922,7 +1971,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force"] | ignore
+            run-tempo-xtask $profile $skip_build ["generate-localnet" "-o" $LOCALNET_DIR "--accounts" $"($accounts)" "--epoch-length" $"($epoch_length)" "--validators" $validators "--force" ...$gas_limit_args ...$general_gas_limit_args] | ignore
         }
     }
 
@@ -2895,6 +2944,8 @@ def "main bench" [
     | append (if $loud { ["--loud"] } else { [] })
     | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
     | append (if $bloat > 0 { ["--bloat" $"($bloat)"] } else { [] })
+    | append (if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] })
+    | append (if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
@@ -3440,7 +3491,8 @@ def main [] {
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
     print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
-    print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
+    print "  --gas-limit <N>          Block gas limit for genesis"
+    print "  --general-gas-limit <N>  General (non-payment) gas limit for genesis"
     print ""
     print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
@@ -3448,6 +3500,8 @@ def main [] {
     print "  --accounts <N>           Genesis accounts (default: 1000)"
     print "  --epoch-length <N>       Epoch length in blocks for generated genesis/localnet (default: 302400)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
+    print "  --gas-limit <N>          Block gas limit for generated genesis"
+    print "  --general-gas-limit <N>  General (non-payment) gas limit for generated genesis"
     print "  --samply                 Enable samply profiling (foreground node only)"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
