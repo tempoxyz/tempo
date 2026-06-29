@@ -2135,6 +2135,7 @@ where
             Some(
                 TempoInvalidTransaction::ExpiringNonceReplay
                     | TempoInvalidTransaction::ExpiringNonceSetFull
+                    | TempoInvalidTransaction::ValidBefore { .. }
                     | TempoInvalidTransaction::EthInvalidTransaction(
                         InvalidTransaction::LackOfFundForMaxFee { .. },
                     )
@@ -6357,10 +6358,14 @@ mod tests {
     }
 
     #[test]
-    fn test_expiring_nonce_conflicts_revert_without_gas() {
+    fn test_async_execution_validation_errors_revert_without_gas() {
         for err in [
             TempoInvalidTransaction::ExpiringNonceReplay,
             TempoInvalidTransaction::ExpiringNonceSetFull,
+            TempoInvalidTransaction::ValidBefore {
+                current: 1_000,
+                valid_before: 1_000,
+            },
             TempoInvalidTransaction::EthInvalidTransaction(
                 InvalidTransaction::LackOfFundForMaxFee {
                     fee: Box::new(U256::from(30_001)),
