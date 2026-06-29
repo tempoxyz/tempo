@@ -145,40 +145,6 @@ pub struct StateAwareBestTransactions<I> {
     decreased_balances: HashMap<(Address, U256), U256>,
 }
 
-/// Compact state update used by [`StateAwareBestTransactions`].
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct StateAwareBestTransactionsUpdate(Vec<StateAwareTip20BalanceUpdate>);
-
-impl StateAwareBestTransactionsUpdate {
-    /// Replaces this update with relevant state changes from an executed transaction result.
-    pub fn update_from_result(&mut self, result: &TempoTxResult) {
-        self.clear();
-
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
-
-            for (&slot, storage_slot) in &account.storage {
-                self.push(StateAwareTip20BalanceUpdate {
-                    address,
-                    slot,
-                    original_balance: storage_slot.original_value,
-                    present_balance: storage_slot.present_value,
-                });
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct StateAwareTip20BalanceUpdate {
-    address: Address,
-    slot: U256,
-    original_balance: U256,
-    present_balance: U256,
-}
-
 impl<I> StateAwareBestTransactions<I>
 where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -286,6 +252,40 @@ where
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
     }
+}
+
+/// State update used by [`StateAwareBestTransactions`].
+#[derive(Debug, Default, Deref, DerefMut)]
+pub struct StateAwareBestTransactionsUpdate(Vec<StateAwareTip20BalanceUpdate>);
+
+impl StateAwareBestTransactionsUpdate {
+    /// Replaces this update with relevant state changes from an executed transaction result.
+    pub fn update_from_result(&mut self, result: &TempoTxResult) {
+        self.clear();
+
+        for (&address, account) in &result.result().state {
+            if !is_tip20_prefix(address) {
+                continue;
+            }
+
+            for (&slot, storage_slot) in &account.storage {
+                self.push(StateAwareTip20BalanceUpdate {
+                    address,
+                    slot,
+                    original_balance: storage_slot.original_value,
+                    present_balance: storage_slot.present_value,
+                });
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StateAwareTip20BalanceUpdate {
+    address: Address,
+    slot: U256,
+    original_balance: U256,
+    present_balance: U256,
 }
 
 #[cfg(test)]
