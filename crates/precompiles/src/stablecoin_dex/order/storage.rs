@@ -137,6 +137,7 @@ pub(crate) struct OrderHandler {
     /// Contract address whose storage contains the order mapping.
     address: Address,
     /// Cached physical layout version for this record.
+    /// NOTE: Storage checkpoint rollbacks do not reset it. Clear manually if execution continues.
     pub(crate) version: Cell<Option<OrderVersion>>,
 }
 
