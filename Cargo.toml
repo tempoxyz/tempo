@@ -217,7 +217,7 @@ alloy-contract = { version = "2.1.0", default-features = false }
 alloy-eip7928 = { version = "0.4.5", default-features = false }
 alloy-eips = { version = "2.1.0", default-features = false }
 alloy-evm = { version = "0.37.1", default-features = false }
-revm-inspectors = "0.41.1"
+revm-inspectors = "=0.41.0"
 alloy-genesis = { version = "2.1.0", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-abi = { version = "1.6.0", default-features = false }
@@ -327,8 +327,8 @@ age = { version = "0.11", default-features = false }
 secrecy = "0.10"
 
 # build deps
-vergen = "9.1.0"
-vergen-git2 = "9.1.0"
+vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
+vergen-git2 = "10.0.1"
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
