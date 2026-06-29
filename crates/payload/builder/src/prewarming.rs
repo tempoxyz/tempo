@@ -271,16 +271,6 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
 }
 
-impl<Provider> PrewarmingExecutionContext<Provider> {
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-}
-
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
@@ -334,6 +324,16 @@ where
 
     pub(crate) fn executor(&self) -> TaskExecutor {
         self.executor.clone()
+    }
+}
+
+impl<Provider> PrewarmingExecutionContext<Provider> {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
