@@ -3806,7 +3806,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -12894,7 +12894,7 @@ dependencies = [
  "reth-trie",
  "reth-trie-db",
  "rustls",
- "secp256k1 0.30.0",
+ "secp256k1 0.31.1",
  "serde",
  "serde_json",
  "tar",
@@ -13608,7 +13608,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "revm",
- "secp256k1 0.30.0",
+ "secp256k1 0.31.1",
  "serde",
  "serde_json",
  "tempo-chainspec",
