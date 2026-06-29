@@ -13433,6 +13433,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "p256",
+ "paste",
  "proptest",
  "rand 0.8.6",
  "revm",
