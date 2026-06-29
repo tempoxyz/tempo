@@ -1,9 +1,9 @@
 # Scheduled e2e regression benchmarks.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each preset below.
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for each scenario below.
 # Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
-# same preset.
+# same state key.
 # Tag runs compare the pushed release tag against the previous release tag.
 
 name: bench-e2e-scheduled
@@ -63,10 +63,13 @@ jobs:
           INPUT_FORCE: ${{ inputs.force || 'false' }}
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
-          presets=(tip20 tip20_existing_recipients)
+          scenarios=(
+            '{"preset":"default","state_key":"default","token_count":"1"}'
+            '{"preset":"tip20:recipient=existing,fee-token=any_tip20","state_key":"tip20-existing-any","token_count":"4"}'
+          )
           bench_entries=()
           save_entries=()
-          stale_presets=()
+          stale_scenarios=()
 
           get_output() {
             local file="$1"
@@ -74,13 +77,12 @@ jobs:
             grep -E "^${key}=" "$file" | tail -1 | sed "s/^${key}=//"
           }
 
-          for preset in "${presets[@]}"; do
+          for scenario in "${scenarios[@]}"; do
+            preset="$(jq -r '.preset' <<< "$scenario")"
+            state_key="$(jq -r '.state_key' <<< "$scenario")"
+            token_count="$(jq -r '.token_count' <<< "$scenario")"
             out="$(mktemp)"
-            GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$preset"
-            token_count="4"
-            if [ "$preset" = "tip20" ]; then
-              token_count="1"
-            fi
+            GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$state_key"
 
             baseline_ref="$(get_output "$out" baseline-ref)"
             baseline_name="$(get_output "$out" baseline-name)"
@@ -93,7 +95,7 @@ jobs:
             state_file="$(get_output "$out" state-file)"
 
             if [ "$is_stale" = "true" ]; then
-              stale_presets+=("$preset")
+              stale_scenarios+=("$preset")
             fi
 
             if [ "$should_skip" != "true" ] && [ "$is_stale" != "true" ]; then
@@ -107,7 +109,8 @@ jobs:
                 --arg run_type "$run_type" \
                 --arg state_file "$state_file" \
                 --arg token_count "$token_count" \
-                '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file, token_count:$token_count}')"
+                --arg state_key "$state_key" \
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file, token_count:$token_count}')"
               bench_entries+=("$entry")
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
@@ -117,8 +120,8 @@ jobs:
             rm -f "$out"
           done
 
-          if [ "${#stale_presets[@]}" -gt 0 ]; then
-            echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark for preset(s): ${stale_presets[*]}."
+          if [ "${#stale_scenarios[@]}" -gt 0 ]; then
+            echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark for scenario(s): ${stale_scenarios[*]}."
             exit 1
           fi
 

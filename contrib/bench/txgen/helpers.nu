@@ -3,12 +3,7 @@ const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
-const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS = [
-    "tip20_existing_recipients"
-    "tip20_2d_nonces"
-    "tip20_protocol_nonces"
-    "tip20_keychain_existing_recipients"
-]
+const TXGEN_HELPER_TIP20_SCENARIO_PRESETS = ["default" "tip20"]
 const TXGEN_HELPER_ALWAYS_FUND_PRESETS = ["dex"]
 const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 const TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START = 100000
@@ -34,9 +29,11 @@ def txgen-tip20-default-scenario [] {
 }
 
 def txgen-tip20-scenario-alias [name: string] {
-    if $name == "tip20" {
+    if $name in ["default" "tip20"] {
         return (txgen-tip20-default-scenario)
     }
+
+    # Legacy preset names remain accepted, but active workflows should use scenario strings.
     if $name == "tip20_random_recipients" {
         return ((txgen-tip20-default-scenario) | merge { recipient: "random", fee_token: "any_tip20" })
     }
@@ -548,12 +545,14 @@ def txgen-presets-dir [] {
 def txgen-available-presets [] {
     let presets_dir = (txgen-presets-dir)
     if not ($presets_dir | path exists) {
-        return []
+        return $TXGEN_HELPER_TIP20_SCENARIO_PRESETS
     }
 
-    glob ([ $presets_dir "*.yml" ] | path join)
+    let static_presets = (glob ([ $presets_dir "*.yml" ] | path join)
         | each { |preset_path| $preset_path | path basename | str replace --regex '\.yml$' '' }
-        | sort
+    )
+
+    $static_presets | append $TXGEN_HELPER_TIP20_SCENARIO_PRESETS | uniq | sort
 }
 
 def txgen-available-presets-message [] {
@@ -659,7 +658,7 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
     } else {
         false
     }
-    if ($preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS) and (not $spec_uses_existing_recipients) {
+    if not $spec_uses_existing_recipients {
         return
     }
 

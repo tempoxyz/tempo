@@ -185,8 +185,7 @@ jobs:
             const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root']);
             const bloatValues = new Set(['1', '10', '100']);
             const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9']);
-            const keychainSetupPresets = new Set(['tip20_keychain', 'tip20_keychain_random_recipients', 'tip20_keychain_existing_recipients']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
+            const defaults = { mode: 'e2e', preset: 'default', duration: '300', bloat: '100', 'token-count': '4', tps: '50000', accounts: '1000', 'max-concurrent-requests': '500', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'baseline-features': '', 'feature-features': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '10', 'tracy-offset': '', otlp: 'true', valscope: 'false', metrics: 'false', 'skip-state-root': 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'general-gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2', 'run-side': 'comparison' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -306,9 +305,6 @@ jobs:
             featureArgs = defaults['feature-args'];
             gasLimit = defaults['gas-limit'];
             generalGasLimit = defaults['general-gas-limit'];
-            if (!generalGasLimit && mode === 'e2e' && keychainSetupPresets.has(preset)) {
-              generalGasLimit = gasLimit;
-            }
             runType = 'manual';
             forceBloat = defaults['force-bloat'];
             noCache = defaults['no-cache'];

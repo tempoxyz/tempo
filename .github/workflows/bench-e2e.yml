@@ -30,10 +30,10 @@ on:
         required: false
         default: ""
       preset:
-        description: Benchmark preset or scenario, e.g. tip20:recipient=existing,auth=keychain.
+        description: Benchmark preset or scenario, e.g. default or tip20:recipient=existing,auth=keychain.
         type: string
         required: true
-        default: tip20_existing_recipients
+        default: default
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -159,7 +159,7 @@ on:
       preset:
         type: string
         required: false
-        default: tip20_existing_recipients
+        default: default
       duration:
         type: string
         required: false
