@@ -178,26 +178,24 @@ where
         // Pre-T8 fee collection checked TIP_FEE_MANAGER_ADDRESS as the fee-token recipient.
         // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
         // authorization.
-        let fee_collection_checks_fee_manager = !spec.is_t8();
-        let fee_manager_blacklisted: Vec<u64> = if fee_collection_checks_fee_manager {
-            updates
-                .blacklist_additions
-                .iter()
-                .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                .map(|(policy_id, _)| *policy_id)
-                .collect()
+        let is_t8 = spec.is_t8();
+        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
+            (
+                updates
+                    .blacklist_additions
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+                updates
+                    .whitelist_removals
+                    .iter()
+                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
+                    .map(|(policy_id, _)| *policy_id)
+                    .collect(),
+            )
         } else {
-            Vec::new()
-        };
-        let fee_manager_unwhitelisted: Vec<u64> = if fee_collection_checks_fee_manager {
-            updates
-                .whitelist_removals
-                .iter()
-                .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                .map(|(policy_id, _)| *policy_id)
-                .collect()
-        } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
