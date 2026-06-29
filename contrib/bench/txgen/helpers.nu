@@ -251,8 +251,6 @@ def txgen-run-preset-pipeline [
     --max-concurrent-requests: int
     --bench-args: string = ""
     --bench-env: string = ""
-    --tx-file: string = ""
-    --generate-tx-count: int = 0
     --git-ref: string = ""
     --git-ref-label: string = ""
     --build-profile: string = ""
@@ -292,17 +290,17 @@ def txgen-run-preset-pipeline [
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
 
-    let tx_count = if $generate_tx_count > 0 { $generate_tx_count } else { [($tps * $duration) 1] | math max }
+    let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
-    let txgen_cmd_base = [
+    let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
         "-n" $tx_count
+        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
-    let txgen_cmd = $txgen_cmd_base | append ["--duration" $txgen_duration]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
         $txgen_bench_bin
@@ -350,43 +348,12 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let result = if $tx_file == "" {
-        let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
-        let bench_cmd_str = (txgen-shell-join $bench_cmd)
-        let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
+    let bench_cmd_str = (txgen-shell-join $bench_cmd)
+    let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-        print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
-        bash -lc $pipeline | complete
-    } else {
-        let tx_file_path = ($tx_file | path expand)
-        if not ($tx_file_path | path exists) {
-            mkdir ($tx_file_path | path dirname)
-            let tmp_tx_file_path = $"($tx_file_path).tmp"
-            if ($tmp_tx_file_path | path exists) {
-                rm -f $tmp_tx_file_path
-            }
-            let txgen_file_cmd_str = (txgen-shell-join ($txgen_cmd_base | append ["-o" $tmp_tx_file_path] | append $txgen_extra_args))
-            let generate_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_file_cmd_str)"
-
-            print $"  Generating ($tx_count) txgen transaction\(s\) into ($tx_file_path)..."
-            let generate_result = (bash -lc $generate_pipeline | complete)
-            if $generate_result.stdout != "" { print $generate_result.stdout }
-            if $generate_result.stderr != "" { print $generate_result.stderr }
-            if $generate_result.exit_code != 0 {
-                return { ok: false, exit_code: $generate_result.exit_code, report_path: $report_path }
-            }
-            mv -f $tmp_tx_file_path $tx_file_path
-        } else {
-            print $"  Reusing pregenerated tx file: ($tx_file_path)"
-        }
-
-        let tx_file_arg = (txgen-shell-quote $tx_file_path)
-        let bench_file_cmd_str = (txgen-shell-join $bench_cmd)
-        let send_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && cat ($tx_file_arg) | ($bench_file_cmd_str)"
-
-        print $"  Sending pregenerated tx file into bench send at ($tps) TPS..."
-        bash -lc $send_pipeline | complete
-    }
+    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
+    let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 
