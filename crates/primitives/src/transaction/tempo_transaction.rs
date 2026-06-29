@@ -20,6 +20,9 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// Placeholder signature used to mark transactions that need fee-payer signing.
+pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -239,11 +242,23 @@ pub struct TempoTransaction {
     /// Optional fee payer signature for sponsored transactions (secp256k1 only)
     pub fee_payer_signature: Option<Signature>,
 
-    /// Transaction can only be included in a block before this timestamp
+    /// Upper bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp < valid_before`. For expiring nonces, this is the
+    /// `validBefore` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_before: Option<NonZeroU64>,
 
-    /// Transaction can only be included in a block after this timestamp
+    /// Lower bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp >= valid_after`. For expiring nonces, this is the
+    /// `validAfter` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_after: Option<NonZeroU64>,
 
@@ -406,7 +421,7 @@ impl TempoTransaction {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
-    fn rlp_encoded_fields_length(
+    pub(crate) fn rlp_encoded_fields_length(
         &self,
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
@@ -439,7 +454,7 @@ impl TempoTransaction {
             }
     }
 
-    fn rlp_encode_fields(
+    pub(crate) fn rlp_encode_fields(
         &self,
         out: &mut dyn BufMut,
         encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
@@ -2063,7 +2078,7 @@ mod tests {
 mod compact_tests {
     use super::*;
     use crate::transaction::{
-        KeyAuthorization, SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit,
+        KeyAuthorization, TempoSignedAuthorization, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, PrimitiveSignature, TempoSignature},
     };
     use alloy_eips::{eip2930::AccessListItem, eip7702::Authorization};
@@ -2132,8 +2147,8 @@ mod compact_tests {
             fee_payer_signature: Some(Signature::new(U256::from(1u64), U256::from(2u64), false)),
             valid_before: Some(NonZeroU64::new(1_700_001_000).unwrap()),
             valid_after: Some(NonZeroU64::new(1_700_000_000).unwrap()),
-            key_authorization: Some(SignedKeyAuthorization {
-                authorization: KeyAuthorization {
+            key_authorization: Some(
+                KeyAuthorization {
                     chain_id: 42170,
                     key_type: SignatureType::P256,
                     key_id: address!("0x000000000000000000000000000000000000dead"),
@@ -2145,8 +2160,10 @@ mod compact_tests {
                     }]),
                     allowed_calls: None,
                     witness: None,
-                },
-                signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    is_admin: false,
+                    account: None,
+                }
+                .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),
                     s: b256!("0x2222222222222222222222222222222222222222222222222222222222222222"),
                     pub_key_x: b256!(
@@ -2156,8 +2173,8 @@ mod compact_tests {
                         "0x4444444444444444444444444444444444444444444444444444444444444444"
                     ),
                     pre_hash: false,
-                }),
-            }),
+                })),
+            ),
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 Authorization {
                     chain_id: U256::from(42170u64),

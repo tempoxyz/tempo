@@ -35,12 +35,23 @@ use reth_trie::{
 };
 use revm::{
     DatabaseCommit,
-    context::{BlockEnv, CfgEnv},
+    context::{BlockEnv, CfgEnv, JournalTr},
     database::{CacheDB, DbAccount, EmptyDB},
-    inspector::JournalExt,
 };
-use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use std::{
+    collections::BTreeSet,
+    fs,
+    hint::black_box,
+    num::NonZeroU64,
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::TEMPO_T1_BASE_FEE,
+};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
@@ -50,7 +61,7 @@ use tempo_precompiles::{
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::StorageCtx,
+    storage::{StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -62,14 +73,21 @@ use tempo_primitives::{
 };
 use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const CHAIN_ID: u64 = 1337;
 const TXGEN_MNEMONIC: &str = "test test test test test test test test test test test junk";
 const DEFAULT_ACCOUNT_COUNT: usize = 1_024;
 const DEFAULT_TX_COUNT: usize = 4_096;
 const DEFAULT_BLOCK_TIMESTAMP: u64 = 1_700_000_000;
-const TXGEN_GAS_LIMIT: u64 = 300_000;
+const TXGEN_GAS_LIMIT: u64 = 2_000_000;
 const TXGEN_FEE_PER_GAS: u128 = 100_000_000_000;
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
+const REWARD_BENCH_TX_COUNT: usize = 1_024;
+const REWARD_DISTRIBUTION_AMOUNT: u128 = 1_000_000_000_000;
+const REWARD_TRANSFER_AMOUNT: u128 = 1_000_000;
 const EXECUTION_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -77,6 +95,35 @@ struct Workload {
     transactions: Vec<Recovered<TempoTxEnvelope>>,
     participants: Vec<Address>,
     block_timestamp: u64,
+}
+
+#[derive(Clone, Copy)]
+enum RewardSeedMode {
+    None,
+    SelfRecipient,
+    SharedDelegate,
+    DistinctDelegate,
+}
+
+#[derive(Clone, Copy)]
+enum RewardBenchKind {
+    Transfer {
+        sender: RewardSeedMode,
+        recipient: RewardSeedMode,
+        reward_delta: bool,
+    },
+    ClaimRewards,
+    DistributeReward {
+        opted_in_accounts: usize,
+    },
+}
+
+struct RewardBenchWorkload {
+    name: &'static str,
+    transactions: Vec<Recovered<TempoTxEnvelope>>,
+    participants: Vec<Address>,
+    delegates: Vec<Address>,
+    kind: RewardBenchKind,
 }
 
 #[derive(Default)]
@@ -100,15 +147,14 @@ struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-type FixedCacheDb<const PREWARM: bool = false> =
-    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, PREWARM>>>;
+type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
 
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
             self.provider.clone(),
             self.cache.clone(),
-            self.metrics.clone(),
+            Some(self.metrics.clone()),
         );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
@@ -116,12 +162,8 @@ impl ExecutionFixture {
             .build()
     }
 
-    fn prewarm_state_db(&self) -> FixedCacheDb<true> {
-        let provider = CachedStateProvider::new_prewarm(
-            self.provider.clone(),
-            self.cache.clone(),
-            self.metrics.clone(),
-        );
+    fn prewarm_state_db(&self) -> FixedCacheDb {
+        let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
@@ -243,8 +285,37 @@ impl HashedPostStateProvider for InMemoryStateProvider {
     }
 }
 
-fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
-    let spec = TempoHardfork::T5;
+fn current_active_hardfork() -> TempoHardfork {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before UNIX_EPOCH")
+        .as_secs();
+    TempoChainSpec::mainnet().tempo_hardfork_at(now)
+}
+
+fn latest_known_hardfork() -> TempoHardfork {
+    *TempoHardfork::VARIANTS
+        .last()
+        .expect("TempoHardfork must define at least one variant")
+}
+
+fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
+    let current = current_active_hardfork();
+    let latest = latest_known_hardfork();
+    let mut cases = vec![("current", current)];
+
+    if latest != current {
+        cases.push(("latest", latest));
+    }
+
+    cases
+}
+
+fn bench_env(
+    hardfork: TempoHardfork,
+    block_timestamp: u64,
+) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
+    let spec = hardfork;
     let amsterdam_eip8037_enabled = false;
     let mut cfg_env = CfgEnv::default();
     cfg_env.chain_id = CHAIN_ID;
@@ -264,15 +335,23 @@ fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
                 ..Default::default()
             },
             timestamp_millis_part: 0,
+            ..Default::default()
         },
     }
 }
 
-fn seed_in_memory_cache_db(participants: &[Address], block_timestamp: u64) -> CacheDB<EmptyDB> {
+fn seed_in_memory_cache_db(
+    participants: &[Address],
+    block_timestamp: u64,
+    reward_seed: Option<(&[Address], RewardBenchKind)>,
+    hardfork: TempoHardfork,
+) -> CacheDB<EmptyDB> {
     // This setup database only materializes the benchmark fixture in memory. The measured
     // execution path below uses Reth's fixed-cache execution provider, not CacheDB.
-    let mut evm = TempoEvmFactory::default()
-        .create_evm(CacheDB::new(EmptyDB::default()), bench_env(block_timestamp));
+    let mut evm = TempoEvmFactory::default().create_evm(
+        CacheDB::new(EmptyDB::default()),
+        bench_env(hardfork, block_timestamp),
+    );
     let admin = participants
         .first()
         .copied()
@@ -284,6 +363,7 @@ fn seed_in_memory_cache_db(participants: &[Address], block_timestamp: u64) -> Ca
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
+        StorageActions::disabled(),
         || {
             TIP403Registry::new().initialize()?;
             TIP20Factory::new().initialize()?;
@@ -308,6 +388,10 @@ fn seed_in_memory_cache_db(participants: &[Address], block_timestamp: u64) -> Ca
                 )?;
             }
 
+            if let Some((delegates, kind)) = reward_seed {
+                seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
+            }
+
             TipFeeManager::new().initialize()?;
             NonceManager::new().initialize()?;
             Ok::<(), TempoPrecompileError>(())
@@ -320,8 +404,13 @@ fn seed_in_memory_cache_db(participants: &[Address], block_timestamp: u64) -> Ca
     evm.finish().0
 }
 
-fn setup_fixed_cache_state(participants: &[Address], block_timestamp: u64) -> ExecutionFixture {
-    let seeded = seed_in_memory_cache_db(participants, block_timestamp);
+fn setup_fixed_cache_state(
+    participants: &[Address],
+    block_timestamp: u64,
+    reward_seed: Option<(&[Address], RewardBenchKind)>,
+    hardfork: TempoHardfork,
+) -> ExecutionFixture {
+    let seeded = seed_in_memory_cache_db(participants, block_timestamp, reward_seed, hardfork);
     let state_cache = seeded.cache;
     let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
 
@@ -389,6 +478,87 @@ fn insert_account(
     accounts.insert(address, account);
 }
 
+fn seed_reward_bench_state(
+    token: &mut TIP20Token,
+    admin: Address,
+    participants: &[Address],
+    delegates: &[Address],
+    kind: RewardBenchKind,
+) -> Result<(), TempoPrecompileError> {
+    match kind {
+        RewardBenchKind::Transfer {
+            sender,
+            recipient,
+            reward_delta,
+        } => {
+            for chunk in participants.chunks(2) {
+                if let Some(sender_addr) = chunk.first().copied() {
+                    apply_seed_reward_mode(token, sender_addr, sender, delegates)?;
+                }
+                if let Some(recipient_addr) = chunk.get(1).copied() {
+                    apply_seed_reward_mode(token, recipient_addr, recipient, delegates)?;
+                }
+            }
+            if reward_delta {
+                token.distribute_reward(
+                    admin,
+                    ITIP20::distributeRewardCall {
+                        amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
+                    },
+                )?;
+            }
+        }
+        RewardBenchKind::ClaimRewards => {
+            for participant in participants {
+                token.set_reward_recipient(
+                    *participant,
+                    ITIP20::setRewardRecipientCall {
+                        recipient: *participant,
+                    },
+                )?;
+            }
+            token.distribute_reward(
+                admin,
+                ITIP20::distributeRewardCall {
+                    amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
+                },
+            )?;
+            for participant in participants {
+                token.update_rewards(*participant)?;
+            }
+        }
+        RewardBenchKind::DistributeReward { opted_in_accounts } => {
+            for participant in participants.iter().take(opted_in_accounts) {
+                token.set_reward_recipient(
+                    *participant,
+                    ITIP20::setRewardRecipientCall {
+                        recipient: *participant,
+                    },
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_seed_reward_mode(
+    token: &mut TIP20Token,
+    account: Address,
+    mode: RewardSeedMode,
+    delegates: &[Address],
+) -> Result<(), TempoPrecompileError> {
+    let recipient = match mode {
+        RewardSeedMode::None => return Ok(()),
+        RewardSeedMode::SelfRecipient => account,
+        RewardSeedMode::SharedDelegate => delegates[0],
+        RewardSeedMode::DistinctDelegate => {
+            delegates[account.as_slice()[19] as usize % delegates.len()]
+        }
+    };
+    token.set_reward_recipient(account, ITIP20::setRewardRecipientCall { recipient })?;
+    Ok(())
+}
+
 fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
     (0..account_count)
         .map(|idx| {
@@ -406,10 +576,19 @@ fn sign_tip20_transfer(
     recipient: Address,
     amount: U256,
 ) -> Recovered<TempoTxEnvelope> {
-    let call = ITIP20::transferCall {
-        to: recipient,
-        amount,
-    };
+    sign_tip20_call(
+        signer,
+        Bytes::from(
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode(),
+        ),
+    )
+}
+
+fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTxEnvelope> {
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
         fee_token: Some(PATH_USD_ADDRESS),
@@ -419,7 +598,7 @@ fn sign_tip20_transfer(
         calls: vec![Call {
             to: TxKind::Call(PATH_USD_ADDRESS),
             value: U256::ZERO,
-            input: Bytes::from(call.abi_encode()),
+            input,
         }],
         access_list: Default::default(),
         nonce_key: TEMPO_EXPIRING_NONCE_KEY,
@@ -440,7 +619,7 @@ fn sign_tip20_transfer(
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
-        .expect("generated TIP20 transaction should recover")
+        .expect("generated TIP20 benchmark transaction should recover")
 }
 
 fn generated_workload() -> Workload {
@@ -460,6 +639,132 @@ fn generated_workload() -> Workload {
         transactions,
         participants,
         block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
+    }
+}
+
+fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
+    let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
+    let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
+    let delegates = vec![Address::repeat_byte(0xa1), Address::repeat_byte(0xa2)];
+
+    vec![
+        transfer_reward_workload(
+            "tip20_transfer_rewards_opted_out",
+            &signers,
+            RewardSeedMode::None,
+            RewardSeedMode::None,
+            false,
+            &delegates,
+        ),
+        transfer_reward_workload(
+            "tip20_transfer_rewards_self_no_delta",
+            &signers,
+            RewardSeedMode::SelfRecipient,
+            RewardSeedMode::SelfRecipient,
+            false,
+            &delegates,
+        ),
+        transfer_reward_workload(
+            "tip20_transfer_rewards_self_with_delta",
+            &signers,
+            RewardSeedMode::SelfRecipient,
+            RewardSeedMode::SelfRecipient,
+            true,
+            &delegates,
+        ),
+        transfer_reward_workload(
+            "tip20_transfer_rewards_delegate_no_delta",
+            &signers,
+            RewardSeedMode::SharedDelegate,
+            RewardSeedMode::SharedDelegate,
+            false,
+            &delegates,
+        ),
+        transfer_reward_workload(
+            "tip20_transfer_rewards_delegate_with_delta",
+            &signers,
+            RewardSeedMode::SharedDelegate,
+            RewardSeedMode::SharedDelegate,
+            true,
+            &delegates,
+        ),
+        transfer_reward_workload(
+            "tip20_transfer_mixed_sender_recipient",
+            &signers,
+            RewardSeedMode::DistinctDelegate,
+            RewardSeedMode::SelfRecipient,
+            true,
+            &delegates,
+        ),
+        RewardBenchWorkload {
+            name: "tip20_claim_rewards",
+            transactions: signers
+                .iter()
+                .take(REWARD_BENCH_TX_COUNT)
+                .map(|signer| {
+                    sign_tip20_call(
+                        signer,
+                        Bytes::from(ITIP20::claimRewardsCall {}.abi_encode()),
+                    )
+                })
+                .collect(),
+            participants: participants.clone(),
+            delegates: delegates.clone(),
+            kind: RewardBenchKind::ClaimRewards,
+        },
+        RewardBenchWorkload {
+            name: "tip20_distribute_reward",
+            transactions: signers
+                .iter()
+                .take(REWARD_BENCH_TX_COUNT)
+                .map(|signer| {
+                    sign_tip20_call(
+                        signer,
+                        Bytes::from(
+                            ITIP20::distributeRewardCall {
+                                amount: U256::from(REWARD_DISTRIBUTION_AMOUNT / 1_000),
+                            }
+                            .abi_encode(),
+                        ),
+                    )
+                })
+                .collect(),
+            participants,
+            delegates,
+            kind: RewardBenchKind::DistributeReward {
+                opted_in_accounts: DEFAULT_ACCOUNT_COUNT,
+            },
+        },
+    ]
+}
+
+fn transfer_reward_workload(
+    name: &'static str,
+    signers: &[PrivateKeySigner],
+    sender: RewardSeedMode,
+    recipient: RewardSeedMode,
+    reward_delta: bool,
+    delegates: &[Address],
+) -> RewardBenchWorkload {
+    let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
+    let transactions = (0..REWARD_BENCH_TX_COUNT)
+        .map(|idx| {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            sign_tip20_transfer(signer, recipient, U256::from(REWARD_TRANSFER_AMOUNT))
+        })
+        .collect();
+
+    RewardBenchWorkload {
+        name,
+        transactions,
+        participants,
+        delegates: delegates.to_vec(),
+        kind: RewardBenchKind::Transfer {
+            sender,
+            recipient,
+            reward_delta,
+        },
     }
 }
 
@@ -544,11 +849,13 @@ fn execute_txs<DB>(
     db: DB,
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
+    hardfork: TempoHardfork,
 ) -> ExecutionStats
 where
     DB: StateDB,
 {
-    let evm: TempoEvm<_, _> = TempoEvmFactory::default().create_evm(db, bench_env(block_timestamp));
+    let evm: TempoEvm<_, _> =
+        TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
@@ -595,33 +902,85 @@ where
 
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
+    let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
-    let fixture = setup_fixed_cache_state(&workload.participants, workload.block_timestamp);
-    execute_txs(
-        &config,
-        fixture.prewarm_state_db(),
-        &workload.transactions,
-        workload.block_timestamp,
-    );
 
-    let mut group = c.benchmark_group("tip20_execution");
-    group.throughput(Throughput::Elements(workload.transactions.len() as u64));
-    group.bench_function("txgen_tip20_pure_execution", |b| {
-        b.iter_batched(
-            || fixture.state_db(),
-            |db| {
-                let stats = execute_txs(
-                    &config,
-                    db,
-                    &workload.transactions,
-                    workload.block_timestamp,
-                );
-                black_box(stats.gas_used);
-            },
-            BatchSize::SmallInput,
-        )
-    });
-    group.finish();
+    for &(label, hardfork) in &hardfork_cases {
+        let fixture = setup_fixed_cache_state(
+            &workload.participants,
+            workload.block_timestamp,
+            None,
+            hardfork,
+        );
+        execute_txs(
+            &config,
+            fixture.prewarm_state_db(),
+            &workload.transactions,
+            workload.block_timestamp,
+            hardfork,
+        );
+
+        let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
+        group.throughput(Throughput::Elements(workload.transactions.len() as u64));
+        group.bench_function("txgen_tip20_pure_execution", |b| {
+            b.iter_batched(
+                || fixture.state_db(),
+                |db| {
+                    let stats = execute_txs(
+                        &config,
+                        db,
+                        &workload.transactions,
+                        workload.block_timestamp,
+                        hardfork,
+                    );
+                    black_box(stats.gas_used);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+        group.finish();
+    }
+
+    let reward_workloads = reward_bench_workloads();
+    for &(label, hardfork) in &hardfork_cases {
+        for reward_workload in &reward_workloads {
+            let fixture = setup_fixed_cache_state(
+                &reward_workload.participants,
+                DEFAULT_BLOCK_TIMESTAMP,
+                Some((&reward_workload.delegates, reward_workload.kind)),
+                hardfork,
+            );
+            execute_txs(
+                &config,
+                fixture.prewarm_state_db(),
+                &reward_workload.transactions,
+                DEFAULT_BLOCK_TIMESTAMP,
+                hardfork,
+            );
+
+            let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
+            group.throughput(Throughput::Elements(
+                reward_workload.transactions.len() as u64
+            ));
+            group.bench_function(reward_workload.name, |b| {
+                b.iter_batched(
+                    || fixture.state_db(),
+                    |db| {
+                        let stats = execute_txs(
+                            &config,
+                            db,
+                            &reward_workload.transactions,
+                            DEFAULT_BLOCK_TIMESTAMP,
+                            hardfork,
+                        );
+                        black_box(stats.gas_used);
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+            group.finish();
+        }
+    }
 }
 
 criterion_group!(benches, tip20_execution);

@@ -8,7 +8,7 @@ use std::time::Duration;
 use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Clock, Runner as _,
     deterministic::{self, Context, Runner},
 };
 use commonware_utils::NZU64;
@@ -19,58 +19,31 @@ use reth_node_metrics::recorder::install_prometheus_recorder;
 use tracing::debug;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
-    get_pipeline_runs, setup_validators,
+    Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
+    metrics::{Metrics, MetricsExt, wait_for_metrics},
+    setup_validators,
 };
 
 #[test_traced("WARN")]
-fn committee_of_one_no_legacy_archive() {
+fn committee_of_one_restart() {
     SimpleRestart {
         committee_size: 1,
         epoch_length: 10,
         restart_after: 5,
         stop_at: 10,
         connect_execution_layer: false,
-        no_legacy_archive: true,
     }
     .run()
 }
 
 #[test_traced]
-fn committee_of_three_no_legacy_archive() {
+fn committee_of_three_restart() {
     SimpleRestart {
         committee_size: 3,
         epoch_length: 10,
         restart_after: 5,
         stop_at: 10,
         connect_execution_layer: false,
-        no_legacy_archive: true,
-    }
-    .run()
-}
-
-#[test_traced("WARN")]
-fn committee_of_one_with_legacy_archive() {
-    SimpleRestart {
-        committee_size: 1,
-        epoch_length: 10,
-        restart_after: 5,
-        stop_at: 10,
-        connect_execution_layer: false,
-        no_legacy_archive: false,
-    }
-    .run()
-}
-
-#[test_traced]
-fn committee_of_three_with_legacy_archive() {
-    SimpleRestart {
-        committee_size: 3,
-        epoch_length: 10,
-        restart_after: 5,
-        stop_at: 10,
-        connect_execution_layer: false,
-        no_legacy_archive: false,
     }
     .run()
 }
@@ -81,9 +54,6 @@ struct SimpleRestart {
     restart_after: u64,
     stop_at: u64,
     connect_execution_layer: bool,
-    /// Whether to disable dual-writing to the legacy immutable archive.
-    /// Forces recovery to only flow through the new hybrid storage.
-    no_legacy_archive: bool,
 }
 
 impl SimpleRestart {
@@ -95,15 +65,13 @@ impl SimpleRestart {
             restart_after,
             stop_at,
             connect_execution_layer,
-            no_legacy_archive,
         } = self;
         let _ = tempo_eyre::install();
 
         let setup = Setup::new()
             .how_many_signers(committee_size)
             .seed(0)
-            .epoch_length(epoch_length)
-            .no_legacy_archive(no_legacy_archive);
+            .epoch_length(epoch_length);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -352,7 +320,7 @@ impl RestartSetup {
                 assert_skips,
             )
             .await;
-    })
+        })
     }
 }
 
@@ -364,80 +332,28 @@ async fn wait_for_height(
     assert_skips: bool,
 ) {
     let mut skips_observed = false;
-    loop {
-        let metrics = context.encode();
-        let mut validators_at_height = 0;
+    wait_for_metrics(context, |metrics| {
+        skips_observed |= metrics
+            .values::<u64>("_rounds_skipped_total")
+            .any(|count| count > 0);
 
-        for line in metrics.lines() {
-            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                continue;
-            }
-
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-
-            // Check if this is a height metric
-            if metric.ends_with("_marshal_processed_height") {
-                let height = value.parse::<u64>().unwrap();
-                if height >= target_height {
-                    validators_at_height += 1;
-                }
-            }
-            if metric.ends_with("_rounds_skipped_total") {
-                let count = value.parse::<u64>().unwrap();
-                skips_observed |= count > 0;
-            }
-        }
-        if validators_at_height == expected_validators {
+        if metrics.consensus_at_height(target_height) == expected_validators as usize {
             assert!(!assert_skips || skips_observed);
-            break;
+            true
+        } else {
+            false
         }
-        context.sleep(Duration::from_secs(1)).await;
-    }
+    })
+    .await;
 }
 
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
-    let baseline = {
-        let metrics = context.encode();
-        let mut height = None;
-        for line in metrics.lines() {
-            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-            if metric.ends_with("_marshal_processed_height") {
-                let value = value.parse::<u64>().unwrap();
-                if Some(value) > height {
-                    height.replace(value);
-                }
-            }
-        }
-        height.expect("processed height is a metric")
-    };
+    let baseline = max_consensus_height(&context.to_metrics());
     for _ in 0..=tries {
         context.sleep(Duration::from_secs(1)).await;
 
-        let metrics = context.encode();
-        let mut height = None;
-        for line in metrics.lines() {
-            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let metric = parts.next().unwrap();
-            let value = parts.next().unwrap();
-            if metric.ends_with("_marshal_processed_height") {
-                let value = value.parse::<u64>().unwrap();
-                if Some(value) > height {
-                    height.replace(value);
-                }
-            }
-        }
-        let height = height.expect("processed height is a metric");
+        let height = max_consensus_height(&context.to_metrics());
         if height != baseline {
             panic!(
                 "height has changed, progress was made while the network was \
@@ -446,6 +362,14 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         }
     }
 }
+
+fn max_consensus_height(metrics: &Metrics) -> u64 {
+    metrics
+        .values::<u64>("_marshal_processed_height")
+        .max()
+        .expect("processed height is a metric")
+}
+
 enum ShutdownAfterFinalizing {
     Boundary,
     Ceremony,
@@ -522,64 +446,50 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             // Best-effort: we hot-loop in 100ms steps, but if processing is too
             // fast we might miss the window and the test will succeed no matter
             // what.
-            let (stopped_val_metric, height) = 'wait_to_boundary: loop {
-                let metrics = context.encode();
-                'lines: for line in metrics.lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue 'lines;
-                    }
-                    let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
-                    let value = parts.next().unwrap();
+            let (stopped_val_idx, height) = 'wait_to_boundary: loop {
+                let metrics = context.to_metrics();
+                for (idx, validator) in validators.iter().enumerate() {
+                    let scoped = metrics.for_scope(validator);
+                    let Some(value) = scoped.latest_consensus_height() else {
+                        continue;
+                    };
 
-                    if metric.ends_with("_marshal_processed_height") {
-                        let value = value.parse::<u64>().unwrap();
-                        if shutdown_after_finalizing
-                            .is_target_height(setup.epoch_length, Height::new(value))
-                        {
-                            break 'wait_to_boundary (metric.to_string(), value);
-                        }
+                    if shutdown_after_finalizing
+                        .is_target_height(setup.epoch_length, Height::new(value))
+                    {
+                        break 'wait_to_boundary (idx, value);
                     }
                 }
                 context.sleep(Duration::from_millis(100)).await;
             };
 
             tracing::debug!(
-                stopped_val_metric,
+                stopped_val_uid = validators[stopped_val_idx].uid(),
                 height,
                 target = %shutdown_after_finalizing,
                 "found a node that finalized the target height",
             );
             // Now restart the node for which we found the metric.
-            let idx = validators
-                .iter()
-                .position(|node| stopped_val_metric.contains(node.uid()))
-                .unwrap();
-            let uid = validators[idx].uid.clone();
-            validators[idx].stop().await;
-            validators[idx].start(&context).await;
+            validators[stopped_val_idx].stop().await;
+            validators[stopped_val_idx].start(&context).await;
 
             let mut iteration = 0;
             'look_for_progress: loop {
                 context.sleep(Duration::from_secs(1)).await;
-                let metrics = context.encode();
-                'lines: for line in metrics.lines() {
-                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                        continue 'lines;
-                    }
-                    let mut parts = line.split_whitespace();
-                    let metric = parts.next().unwrap();
-                    let value = parts.next().unwrap();
-                    if metric.contains(&uid)
-                        && metric.ends_with("_marshal_processed_height")
-                        && value.parse::<u64>().unwrap() > height + 10
-                    {
-                        break 'look_for_progress;
-                    }
-                    if metric.ends_with("ceremony_bad_dealings") {
-                        assert_eq!(value.parse::<u64>().unwrap(), 0);
-                    }
+                let metrics = context.to_metrics();
+                let restarted = metrics.for_scope(&validators[stopped_val_idx]);
+                if restarted
+                    .latest_consensus_height()
+                    .is_some_and(|value| value > height + 10)
+                {
+                    break 'look_for_progress;
                 }
+                assert!(
+                    metrics
+                        .values::<u64>("ceremony_bad_dealings")
+                        .all(|bad_dealings| bad_dealings == 0)
+                );
+
                 iteration += 1;
                 assert!(
                     iteration < 10,

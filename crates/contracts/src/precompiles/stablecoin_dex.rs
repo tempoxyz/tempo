@@ -75,6 +75,7 @@ crate::sol! {
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
         function nextOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
+        function storageCredits(address user) external view returns (uint64 credits);
 
         // Constants (exposed as view functions)
         function MIN_TICK() external pure returns (int16);
@@ -94,6 +95,7 @@ crate::sol! {
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, bool isFlipOrder, int16 flipTick);
         event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderFlipped(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
+        event FlipFailed(uint128 indexed orderId, address indexed maker, bytes4 reason);
         event OrderCancelled(uint128 indexed orderId);
 
         // Errors

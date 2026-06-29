@@ -134,6 +134,8 @@ def run-txgen-bench-single [
         --git-ref-label $git_ref_label
         --platform $platform
         --scenario $scenario
+        --bloat-mib $bloat
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
         --skip-funding=($bloat > 0))
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
@@ -241,6 +243,7 @@ def "main run" [
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
     let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     let resolved_scenario = if $scenario != "" {
         $scenario
     } else {
@@ -598,9 +601,10 @@ def "main run" [
     if $tracy != "off" {
         for run in $runs {
             let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-            let viewer_url = (upload-tracy-profile $profile $run.label $run.git_ref)
-            if $viewer_url != null {
-                $viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+            let tracy_urls = (upload-tracy-profile $profile $run.label $run.git_ref)
+            if $tracy_urls != null {
+                $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
+                $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.label)-profile-url.txt"
             }
         }
     }

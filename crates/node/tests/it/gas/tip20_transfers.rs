@@ -3,7 +3,7 @@ use alloy::{
     providers::Provider,
     sol_types::SolEvent,
 };
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IAddressRegistry, ITIP20, ITIP403Registry, ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS,
 };
@@ -12,6 +12,7 @@ use tempo_precompiles::{
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
 };
 use tempo_primitives::TempoAddressExt;
+use test_case::test_case;
 
 use super::helpers::{
     GAS_LIMIT, GasSnapshot, TempoCalls, TempoTxSender, fixed_signer, print_gas_snapshot,
@@ -19,7 +20,7 @@ use super::helpers::{
 };
 use crate::{
     gas::helpers::Receipt,
-    utils::{TestNodeBuilder, setup_test_token},
+    utils::{TestNodeBuilder, make_genesis_at, setup_test_token},
 };
 
 const MINT_AMOUNT: u64 = 1_000_000;
@@ -566,11 +567,18 @@ async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
     Ok(gas)
 }
 
+#[test_case(TempoHardfork::T5 ; "t5")]
+#[test_case(TempoHardfork::T6 ; "t6")]
+#[test_case(TempoHardfork::T7 ; "t7")]
+#[test_case(TempoHardfork::T8 ; "t8")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)?).await?;
     let token = setup_test_token(admin.provider.clone(), admin.address()).await?;
     admin.sync_nonce().await?;
@@ -620,7 +628,60 @@ async fn test_tip20_transfer_gas_snapshots() -> eyre::Result<()> {
 
     let gas = run_tip20_transfer_gas_cases(&mut env, tip20_transfer_gas_cases()).await?;
 
-    print_gas_snapshot("TIP20 transfer gas snapshot", &gas);
+    let snapshot_name = format!(
+        "tip20_transfer_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    print_gas_snapshot(
+        &format!("TIP20 transfer gas snapshot ({})", hardfork.name()),
+        &gas,
+    );
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
+
+    Ok(())
+}
+
+/// Current TIP20 balance storage must not leak into pre-activation hardfork gas accounting.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T0))
+        .build_http_only()
+        .await?;
+    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    let token = setup_test_token(sender.provider.clone(), sender.address()).await?;
+    sender.sync_nonce().await?;
+
+    TempoCalls::new()
+        .gas_limit(1_000_000)
+        .push(
+            *token.address(),
+            ITIP20::mintCall {
+                to: sender.address(),
+                amount: U256::from(1_000u64),
+            },
+        )
+        .send(&mut sender)
+        .await?;
+
+    let mut gas = GasSnapshot::new();
+    let receipt = TempoCalls::new()
+        .gas_limit(1_000_000)
+        .push(
+            *token.address(),
+            ITIP20::transferWithMemoCall {
+                to: fixed_signer(0x22).address(),
+                amount: U256::from(100u64),
+                memo: FixedBytes::repeat_byte(0x59),
+            },
+        )
+        .send(&mut sender)
+        .await?;
+    gas.record("t0_transfer_with_memo", receipt.gas_used);
+
+    print_gas_snapshot("TIP20 T0 transferWithMemo gas snapshot", &gas);
     insta::assert_yaml_snapshot!(gas);
 
     Ok(())

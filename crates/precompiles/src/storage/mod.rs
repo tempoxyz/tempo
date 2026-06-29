@@ -3,6 +3,9 @@
 //! Provides traits and types for reading/writing contract state from EVM storage,
 //! including persistent (SLOAD/SSTORE) and transient (TLOAD/TSTORE) operations.
 
+pub mod actions;
+pub use actions::{StorageAction, StorageActions};
+
 pub mod evm;
 pub mod hashmap;
 
@@ -24,6 +27,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -42,14 +46,8 @@ pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
 
-    /// Returns the current block timestamp.
-    fn timestamp(&self) -> U256;
-
-    /// Returns the current block beneficiary (coinbase).
-    fn beneficiary(&self) -> Address;
-
-    /// Returns the current block number.
-    fn block_number(&self) -> u64;
+    /// Returns the full Tempo block environment.
+    fn block_env(&self) -> &TempoBlockEnv;
 
     /// Sets the bytecode at the given address.
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()>;
@@ -69,6 +67,30 @@ pub trait PrecompileStorageProvider {
 
     /// Performs an SSTORE operation (persistent storage write).
     fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
+
+    /// Increments a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let value = self
+            .sload(address, key)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.sstore(address, key, value)
+    }
+
+    /// Decrements a persistent storage slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let current = self.sload(address, key)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.sstore(address, key, value)
+    }
 
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
@@ -100,6 +122,11 @@ pub trait PrecompileStorageProvider {
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
 
+    /// Returns the shared storage-actions recorder for this provider.
+    fn storage_actions(&self) -> StorageActions {
+        StorageActions::disabled()
+    }
+
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
     /// regular/state gas split independently of the active hardfork.
     fn amsterdam_eip8037_enabled(&self) -> bool;
@@ -124,6 +151,20 @@ pub trait PrecompileStorageProvider {
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint);
+
+    /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
+    ///
+    /// Implementations that do not run TIP-1060 accounting may treat this as a no-op. Production
+    /// providers must still hardfork-gate enabling so calling this with `true` before T7 does not
+    /// activate storage credits early.
+    fn set_tip1060_storage_credits(&mut self, enabled: bool);
+
+    /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
+    ///
+    /// This leaves storage-credit accounting active for storage creation charges, redemptions, and
+    /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
+    /// as a no-op.
+    fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
 
     /// Computes keccak256 and charges the appropriate gas.
     ///
@@ -169,6 +210,30 @@ pub trait StorageOps {
     fn store(&mut self, slot: U256, value: U256) -> Result<()>;
     /// Loads a value from the provided slot.
     fn load(&self, slot: U256) -> Result<U256>;
+
+    /// Increments a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-increment value, preserving `sinc` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sinc(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let value = self
+            .load(slot)?
+            .checked_add(delta)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.store(slot, value)
+    }
+
+    /// Decrements a value at the provided slot by `delta`.
+    ///
+    /// Intentionally returns no post-decrement value, preserving `sdec` as a semantic
+    /// storage delta rather than an observation point that callers can branch on.
+    fn sdec(&mut self, slot: U256, delta: U256) -> Result<()> {
+        let current = self.load(slot)?;
+        let value = current
+            .checked_sub(delta)
+            .ok_or_else(|| TempoPrecompileError::storage_delta_underflow(current))?;
+        self.store(slot, value)
+    }
 }
 
 /// Trait providing access to a contract's address.

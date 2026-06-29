@@ -37,7 +37,7 @@
 //! - Expiring nonce replay protection.
 //! - Keychain spending limit TOCTOU DoS.
 
-use crate::utils::ForkSchedule;
+use crate::utils::{ForkSchedule, run_schedule_cases};
 use test_case::test_case;
 
 pub(crate) mod helpers;
@@ -72,7 +72,12 @@ async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_local(schedule: ForkSchedule) -> eyre::Result<()> {
-    run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await
+    run_schedule_cases(schedule, |schedule| async move {
+        run_all_matrices(&mut local::Localnet::with_schedule(schedule).await?).await?;
+
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]

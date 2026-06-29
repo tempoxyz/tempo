@@ -3,8 +3,13 @@ name = "tempo-payload-builder"
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -36,11 +41,19 @@ reth-transaction-pool.workspace = true
 reth-trie-common.workspace = true
 
 alloy-consensus.workspace = true
+alloy-eip7928.workspace = true
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 
 metrics.workspace = true
 tracing.workspace = true
+crossbeam-channel.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [features]
+bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]

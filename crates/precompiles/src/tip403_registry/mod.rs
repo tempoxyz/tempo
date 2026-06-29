@@ -7,7 +7,13 @@
 
 pub mod dispatch;
 
-use crate::StorageCtx;
+// Re-export the generated slots module for external access to storage slot constants.
+pub use slots as tip403_registry_slots;
+
+use crate::{
+    StorageCtx,
+    receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
+};
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
@@ -15,11 +21,12 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    TIP403_REGISTRY_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -27,6 +34,10 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 
 /// Built-in policy ID that always allows authorization.
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
+
+/// System addresses that cannot be policed.
+pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
+    &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -48,6 +59,32 @@ pub struct TIP403Registry {
     /// value is `true` when the address is allowed; for blacklists it is `true` when the
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
+    /// Account receive policy configuration.
+    receive_policies: Mapping<Address, ReceivePolicy>,
+}
+
+/// Per-account TIP-1028 receive policy configuration.
+#[derive(Debug, Clone, Default, Storable)]
+struct ReceivePolicy {
+    config: ReceivePolicyConfig,
+    recovery_address: Address,
+}
+
+/// Per-account TIP-1028 receive policy configuration. Packed in a single slot.
+#[derive(Debug, Clone, Default, Storable)]
+struct ReceivePolicyConfig {
+    /// Whether the account has configured a receive policy.
+    has_receive_policy: bool,
+    /// Policy ID authorizing senders for inbound transfers.
+    sender_policy_id: u64,
+    /// Type of the sender policy ID; either WHITELIST, or BLACKLIST.
+    sender_policy_type: u8,
+    /// Policy ID filtering which tokens may be received.
+    token_filter_id: u64,
+    /// Type of the token policy ID; either WHITELIST, or BLACKLIST.
+    token_filter_type: u8,
+    /// Recovery authority for blocked inbound funds.
+    recovery_mode: RecoveryMode,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -90,11 +127,13 @@ pub enum AuthRole {
     MintRecipient,
 }
 
-/// Base policy metadata. Packed into a single storage slot.
+/// TIP403 policy data
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
-    // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
-    /// Discriminant of the [`PolicyType`] enum, stored as `u8` for slot packing.
+    /// Policy type, either whitelist, blacklist or compound.
+    ///
+    /// IMPORTANT: `policy_type` is immutable after policy creation. TIP-1028 receive policies
+    /// cache this value and rely on immutability for correctness and gas savings.
     pub policy_type: u8,
     /// Address authorized to modify this policy.
     pub admin: Address,
@@ -129,6 +168,34 @@ impl PolicyData {
     /// Returns `true` if the policy data is the default (uninitialized) value.
     fn is_default(&self) -> bool {
         self.policy_type == 0 && self.admin == Address::ZERO
+    }
+}
+
+impl ReceivePolicyConfig {
+    fn sender_policy_data(&self) -> PolicyData {
+        PolicyData {
+            policy_type: self.sender_policy_type,
+            admin: Address::ZERO,
+        }
+    }
+
+    fn token_filter_data(&self) -> PolicyData {
+        PolicyData {
+            policy_type: self.token_filter_type,
+            admin: Address::ZERO,
+        }
+    }
+
+    fn sender_policy_type(&self) -> Result<PolicyType> {
+        self.sender_policy_type
+            .try_into()
+            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
+    }
+
+    fn token_filter_type(&self) -> Result<PolicyType> {
+        self.token_filter_type
+            .try_into()
+            .map_err(|_| TIP403RegistryError::invalid_receive_policy_type().into())
     }
 }
 
@@ -230,6 +297,76 @@ impl TIP403Registry {
         })
     }
 
+    /// Returns `account`'s receive-policy configuration.
+    pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
+        let config = self.receive_policies[account].config.read()?;
+        Ok(ITIP403Registry::receivePolicyReturn {
+            hasReceivePolicy: config.has_receive_policy,
+            senderPolicyId: config.sender_policy_id,
+            senderPolicyType: config.sender_policy_type()?,
+            tokenFilterId: config.token_filter_id,
+            tokenFilterType: config.token_filter_type()?,
+            recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
+        })
+    }
+
+    /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
+    /// reason, or `None` if authorized.
+    pub fn validate_receive_policy(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<ITIP403Registry::BlockedReason>> {
+        Ok(self
+            .check_receive_policy(token, sender, receiver)?
+            .map(|(reason, _)| reason))
+    }
+
+    /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
+    /// blocking reason and recovery address.
+    pub(crate) fn check_receive_policy(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        let config = self.receive_policies[receiver].config.read()?;
+        if !config.has_receive_policy {
+            return Ok(None);
+        }
+
+        let token_filter_data = config.token_filter_data();
+        if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
+            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
+            return Ok(Some((
+                ITIP403Registry::BlockedReason::TOKEN_FILTER,
+                recovery_address,
+            )));
+        }
+
+        let sender_policy_data = config.sender_policy_data();
+        if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
+            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
+            return Ok(Some((
+                ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                recovery_address,
+            )));
+        }
+
+        Ok(None)
+    }
+
+    /// Returns the recovery authority encoded by `mode` for `account`.
+    /// Originator and receiver modes return sentinel addresses; third-party mode reads storage.
+    fn receive_policy_recovery(&self, account: Address, mode: RecoveryMode) -> Result<Address> {
+        match mode {
+            RecoveryMode::Originator => Ok(RECOVERY_ORIGINATOR),
+            RecoveryMode::Receiver => Ok(account),
+            RecoveryMode::ThirdParty => self.receive_policies[account].recovery_address.read(),
+        }
+    }
+
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
     ///
     /// # Errors
@@ -270,6 +407,49 @@ impl TIP403Registry {
         ))?;
 
         Ok(new_policy_id)
+    }
+
+    /// Sets the caller's TIP-1028 receive policy.
+    pub fn set_receive_policy(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP403Registry::setReceivePolicyCall,
+    ) -> Result<()> {
+        if msg_sender.is_virtual() {
+            return Err(TIP403RegistryError::virtual_address_not_allowed().into());
+        }
+
+        let recovery_address = call.recoveryAuthority;
+        let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
+
+        if recovery_address.is_precompile(self.storage.spec()) || recovery_address.is_virtual() {
+            return Err(TIP403RegistryError::invalid_recovery_authority().into());
+        }
+
+        let sender_policy_type = self.validate_receive_policy_id(call.senderPolicyId)?;
+        let token_filter_type = self.validate_receive_policy_id(call.tokenFilterId)?;
+
+        let config = ReceivePolicyConfig {
+            has_receive_policy: true,
+            sender_policy_id: call.senderPolicyId,
+            sender_policy_type,
+            token_filter_id: call.tokenFilterId,
+            token_filter_type,
+            recovery_mode,
+        };
+        self.receive_policies[msg_sender].config.write(config)?;
+        self.receive_policies[msg_sender]
+            .recovery_address
+            .write(recovery_write)?;
+
+        self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
+            ITIP403Registry::ReceivePolicyUpdated {
+                account: msg_sender,
+                senderPolicyId: call.senderPolicyId,
+                tokenFilterId: call.tokenFilterId,
+                recoveryAuthority: recovery_address,
+            },
+        ))
     }
 
     /// Creates a simple policy and pre-populates it with an initial set of accounts.
@@ -518,7 +698,8 @@ impl TIP403Registry {
 
     /// Core role-based authorization check ([TIP-1015]). Resolves built-in policies (0 = reject,
     /// 1 = allow) immediately, delegates compound policies to their sub-policies, and evaluates
-    /// simple policies via `is_simple`.
+    /// simple policies. (T6+) introduces protocol addresses that can't be policed.
+    ///
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     ///
@@ -527,6 +708,16 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
+        let hardfork = self.storage.spec();
+
+        // (spec: +T6) some protocol addresses can't be policed and are always authorized.
+        if ALWAYS_AUTHORIZED
+            .iter()
+            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
+        {
+            return Ok(true);
+        }
+
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
         }
@@ -536,27 +727,30 @@ impl TIP403Registry {
         if data.is_compound() {
             let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
-                AuthRole::Sender => self.is_authorized_simple(compound.sender_policy_id, user),
+                AuthRole::Sender => {
+                    self.is_authorized_simple(compound.sender_policy_id, user, None)
+                }
                 AuthRole::Recipient => {
-                    self.is_authorized_simple(compound.recipient_policy_id, user)
+                    self.is_authorized_simple(compound.recipient_policy_id, user, None)
                 }
                 AuthRole::MintRecipient => {
-                    self.is_authorized_simple(compound.mint_recipient_policy_id, user)
+                    self.is_authorized_simple(compound.mint_recipient_policy_id, user, None)
                 }
                 AuthRole::Transfer => {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
-                    let sender_auth = self.is_authorized_simple(compound.sender_policy_id, user)?;
-                    if self.storage.spec().is_t2() && !sender_auth {
+                    let sender_auth =
+                        self.is_authorized_simple(compound.sender_policy_id, user, None)?;
+                    if hardfork.is_t2() && !sender_auth {
                         return Ok(false);
                     }
                     let recipient_auth =
-                        self.is_authorized_simple(compound.recipient_policy_id, user)?;
+                        self.is_authorized_simple(compound.recipient_policy_id, user, None)?;
                     Ok(sender_auth && recipient_auth)
                 }
             };
         }
 
-        self.is_simple(policy_id, user, &data)
+        self.is_authorized_simple_inner(policy_id, user, &data)
     }
 
     /// Returns authorization result for built-in policies ([`REJECT_ALL_POLICY_ID`] / [`ALLOW_ALL_POLICY_ID`]).
@@ -573,16 +767,29 @@ impl TIP403Registry {
     /// Authorization for simple (non-compound) policies only.
     ///
     /// **WARNING:** skips compound check - caller must guarantee policy is simple.
-    fn is_authorized_simple(&self, policy_id: u64, user: Address) -> Result<bool> {
+    fn is_authorized_simple(
+        &self,
+        policy_id: u64,
+        user: Address,
+        cache: Option<PolicyData>,
+    ) -> Result<bool> {
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
         }
-        let data = self.get_policy_data(policy_id)?;
-        self.is_simple(policy_id, user, &data)
+        let data = match cache {
+            Some(data) => data,
+            None => self.get_policy_data(policy_id)?,
+        };
+        self.is_authorized_simple_inner(policy_id, user, &data)
     }
 
-    /// Authorization check for simple (non-compound) policies
-    fn is_simple(&self, policy_id: u64, user: Address, data: &PolicyData) -> Result<bool> {
+    /// Authorization check for simple (non-compound) policies.
+    fn is_authorized_simple_inner(
+        &self,
+        policy_id: u64,
+        user: Address,
+        data: &PolicyData,
+    ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
@@ -617,6 +824,22 @@ impl TIP403Registry {
         Ok(())
     }
 
+    /// Ensures `policy_id` is a built-in or an existing simple policy.
+    /// Returns the policy type so that the caller can use it.
+    fn validate_receive_policy_id(&self, policy_id: u64) -> Result<u8> {
+        if self.builtin_authorization(policy_id).is_some() {
+            return Ok(policy_id as u8); // safe downcast as it's either 0 or 1.
+        }
+        if policy_id >= self.policy_id_counter()? {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+        let data = self.get_policy_data(policy_id)?;
+        if !data.is_simple() {
+            return Err(TIP403RegistryError::invalid_receive_policy_type().into());
+        }
+        Ok(data.policy_type)
+    }
+
     // Internal helper functions
 
     /// Returns policy data for the given policy ID.
@@ -636,6 +859,10 @@ impl TIP403Registry {
         Ok(data)
     }
 
+    /// Sets the policy data for `policy_id`.
+    ///
+    /// IMPORTANT: callers must not change `policy_type` for an existing policy. TIP-1028 receive
+    /// policies cache `policy_type` and rely on it being immutable after creation.
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
         self.policy_records[policy_id].base.write(data)
     }
@@ -726,8 +953,9 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_contracts::precompiles::{
+        PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
+    };
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
@@ -774,6 +1002,82 @@ mod tests {
 
             // Policy 1 should always allow
             assert!(registry.is_authorized_as(1, user, AuthRole::Transfer)?);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_always_authorized_t6_bypasses_policy_variants() -> eyre::Result<()> {
+        const ROLES: &[AuthRole] = &[
+            AuthRole::Transfer,
+            AuthRole::Sender,
+            AuthRole::Recipient,
+            AuthRole::MintRecipient,
+        ];
+        let admin = Address::random();
+
+        // pre-T6 the address is NOT protected
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            assert!(!registry.is_authorized_as(
+                REJECT_ALL_POLICY_ID,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                AuthRole::Transfer,
+            )?);
+            Ok::<(), TempoPrecompileError>(())
+        })?;
+
+        // T6+ the address is protected
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            let whitelist_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let blacklist_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            let compound_id = registry.create_compound_policy(
+                admin,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: REJECT_ALL_POLICY_ID,
+                    mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: blacklist_id,
+                    account: RECEIVE_POLICY_GUARD_ADDRESS,
+                    restricted: true,
+                },
+            )?;
+            for (policy_id, roles) in [
+                (REJECT_ALL_POLICY_ID, ROLES),
+                (whitelist_id, &[AuthRole::Transfer][..]),
+                (blacklist_id, &[AuthRole::Transfer][..]),
+                (compound_id, ROLES),
+            ] {
+                for role in roles {
+                    assert!(registry.is_authorized_as(
+                        policy_id,
+                        RECEIVE_POLICY_GUARD_ADDRESS,
+                        *role,
+                    )?);
+                }
+            }
+
             Ok(())
         })
     }
@@ -902,6 +1206,268 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_receive_policy_defaults_to_none() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            let policy = registry.receive_policy(account)?;
+            assert!(!policy.hasReceivePolicy);
+            assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.senderPolicyType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.tokenFilterId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.tokenFilterType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.recoveryAuthority, Address::ZERO);
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), account)?,
+                None
+            );
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                Address::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_stores_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let recovery = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: recovery,
+                },
+            )?;
+
+            let policy = registry.receive_policy(account)?;
+            assert!(policy.hasReceivePolicy);
+            assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.senderPolicyType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.tokenFilterId, ALLOW_ALL_POLICY_ID);
+            assert_eq!(
+                policy.tokenFilterType,
+                ITIP403Registry::PolicyType::BLACKLIST
+            );
+            assert_eq!(policy.recoveryAuthority, recovery);
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                recovery
+            );
+
+            registry.assert_emitted_events(vec![TIP403RegistryEvent::ReceivePolicyUpdated(
+                ITIP403Registry::ReceivePolicyUpdated {
+                    account,
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: recovery,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_virtual_account() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let virtual_result = registry.set_receive_policy(
+                Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                virtual_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::VirtualAddressNotAllowed(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_recovery_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let virtual_addr = Address::new_virtual(MasterId::random(), UserTag::random());
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let rejected = SYSTEM_PRECOMPILES
+                .iter()
+                .filter_map(|&(address, hf)| (hf <= StorageCtx.spec()).then_some(address))
+                .chain([PATH_USD_ADDRESS, virtual_addr]);
+
+            for recovery_address in rejected {
+                let result = registry.set_receive_policy(
+                    account,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAuthority: recovery_address,
+                    },
+                );
+                assert_eq!(
+                    result.unwrap_err(),
+                    TIP403RegistryError::invalid_recovery_authority().into()
+                );
+            }
+
+            // Zero is the originator-recovery sentinel; the caller's own address selects receiver recovery.
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: account,
+                },
+            )?;
+            let policy = registry.receive_policy(account)?;
+            assert_eq!(policy.recoveryAuthority, account);
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                Address::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let creator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let missing_result = registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: 99,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                missing_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::PolicyNotFound(_)
+                ))
+            ));
+
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                    mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
+                },
+            )?;
+            let compound_result = registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: compound_id,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                compound_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::InvalidReceivePolicyType(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_receive_policy_reports_token_filter_first() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let receiver = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: REJECT_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), receiver)?,
+                Some(ITIP403Registry::BlockedReason::TOKEN_FILTER)
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_receive_policy_reports_sender_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let receiver = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), receiver)?,
+                Some(ITIP403Registry::BlockedReason::RECEIVE_POLICY)
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -1842,8 +2408,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_simple_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
-        // This test verifies that is_simple explicitly errors for __Invalid
+    fn test_is_authorized_simple_inner_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
+        // This test verifies that is_authorized_simple_inner explicitly errors for __Invalid
         // rather than returning false. We need to manually create a policy
         // with an invalid type to test this edge case.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);

@@ -22,6 +22,10 @@ Explain what problem this solves/functionality this introduces, and any alternat
 
 List the explicit assumptions this spec depends on (for example: upstream invariants, trust boundaries, deployment ordering, and backward compatibility expectations). Call out what happens if an assumption is violated.
 
+## Threat Model
+
+List the actors this spec relies on and, for each, describe the trust assumptions in one or two lines. Include any trust boundaries, permissions, or adversarial behaviors that are in or out of scope.
+
 ---
 
 # Specification
@@ -34,6 +38,14 @@ If the feature introduces a precompile, this section should include the full int
 For features that do not introduce a precompile, this section should define the exact mechanics of the feature/system. Describe the relevant state transitions, data structures, encodings, etc. When the feature interacts with existing components, explain how they relate and how data moves between them each system component.
 
 Where a feature involves multiple processes, state diagrams / flowcharts should be considered when helpful.
+
+# Tooling
+
+Describe any tooling impact for this TIP. Include new or changed commands, SDK or library interfaces, test helpers, fixtures, machine-readable outputs, debugging or recovery workflows, and integration guidance needed by implementers, operators, support teams, or users. If no tooling changes are required, write `N/A` and explain why existing tooling is sufficient.
+
+# Observability
+
+Describe the events needed to monitor and debug this TIP in production. List each event that MUST be emitted, its fields, and the operational question it answers. If no new events are required, write `N/A` and explain why existing observability is sufficient.
 
 # Invariants
 

@@ -24,11 +24,21 @@ set -euxo pipefail
 FORCE="${1:-false}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
 STATE_REPO="${BENCH_REPLAY_STATE_REPO:-decofe/tempo-bench-charts}"
-STATE_FILE="${BENCH_REPLAY_STATE_FILE:-state/replay-nightly-last-feature-ref}"
+CHAIN="${BENCH_REPLAY_CHAIN:-mainnet}"
+STATE_FILE="${BENCH_REPLAY_STATE_FILE:-state/replay-nightly-${CHAIN}-last-feature-ref}"
 STALE_THRESHOLD_HOURS="${BENCH_REPLAY_STALE_THRESHOLD_HOURS:-24}"
+
+case "$CHAIN" in
+  mainnet|testnet) ;;
+  *)
+    echo "::error::Unknown chain value for replay state: $CHAIN"
+    exit 1
+    ;;
+esac
 
 echo "Force: $FORCE"
 echo "Repository: $REPO"
+echo "Chain: $CHAIN"
 
 # --- Step 1: Query latest successful scheduled docker.yml run ---
 echo "::group::Querying latest nightly docker build"

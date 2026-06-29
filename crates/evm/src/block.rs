@@ -4,8 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, GasOutput, OnStateHook, StateChangePreBlockSource, StateChangeSource,
-        TxResult,
+        ExecutableTx, GasOutput, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -28,8 +27,8 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -114,7 +113,7 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent()
+        self.inner.result.result.gas().state_gas_spent_final()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
@@ -199,17 +198,12 @@ where
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
         if info.is_empty_code_hash() {
+            let mut account = Account::from(info);
             let code = Bytecode::new_legacy([0xef].into());
-            let mut new_info = info;
-            new_info.code_hash = code.hash_slow();
-            new_info.code = Some(code);
-            let mut account: Account = new_info.into();
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
-            self.inner.system_caller.on_state(
-                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
-                &state,
-            );
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
@@ -497,6 +491,12 @@ where
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
+        if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+        }
+        if self.inner.spec.is_t7_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(STORAGE_CREDITS_ADDRESS)?;
+        }
 
         Ok(())
     }
@@ -647,10 +647,6 @@ where
         Ok((evm, result))
     }
 
-    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.inner.set_state_hook(hook)
-    }
-
     fn evm_mut(&mut self) -> &mut Self::Evm {
         self.inner.evm_mut()
     }
@@ -702,12 +698,12 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
-    use reth_revm::State;
+    use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tempo_chainspec::spec::DEV;
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
@@ -1641,9 +1637,6 @@ mod tests {
 
     #[test]
     fn test_apply_pre_execution_deploys_validator_v2_code() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -1652,6 +1645,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(VALIDATOR_CONFIG_V2_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
@@ -1660,9 +1654,6 @@ mod tests {
 
     #[test]
     fn test_apply_pre_execution_deploys_signature_verifier_code() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -1671,8 +1662,26 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_guard_code() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }
@@ -1687,6 +1696,7 @@ mod tests {
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
         let info = acc.account_info();
@@ -1698,28 +1708,24 @@ mod tests {
 
     #[test]
     fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
-        use std::sync::{Arc, Mutex};
-
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr).unwrap();
+        drop(executor);
 
         // Verify code was deployed.
         let acc = db.load_cache_account(addr).unwrap();
@@ -1730,8 +1736,51 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].1.contains_key(&addr),
+            calls[0].contains_key(&addr),
             "state hook should contain the deployed address"
+        );
+        assert_eq!(
+            calls[0][&addr].original_info(),
+            Default::default(),
+            "state hook account should preserve original_info"
+        );
+    }
+
+    #[test]
+    fn test_deploy_precompile_at_boundary_preserves_existing_original_info() {
+        use std::sync::{Arc, Mutex};
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let addr = Address::with_last_byte(0xfe);
+        let original_info = AccountInfo {
+            balance: U256::from(42),
+            nonce: 7,
+            ..Default::default()
+        };
+        db.insert_account(addr, original_info.clone());
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+
+        executor.deploy_precompile_at_boundary(addr).unwrap();
+
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "state hook should be called exactly once");
+        assert_eq!(
+            calls[0][&addr].original_info(),
+            original_info,
+            "state hook account should preserve existing original_info"
         );
     }
 
@@ -1741,9 +1790,6 @@ mod tests {
     /// exempted from block capacity.
     #[test]
     fn test_t4_finish_exempts_state_gas_from_header() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T4 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();

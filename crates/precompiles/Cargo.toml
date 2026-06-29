@@ -4,8 +4,13 @@ description = "Tempo EVM precompile implementations for TIP-20 tokens, stablecoi
 
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish.workspace = true
 
 [lints]
@@ -13,12 +18,14 @@ workspace = true
 
 [dependencies]
 tempo-contracts.workspace = true
-tempo-chainspec.workspace = true
-tempo-primitives.workspace = true
+tempo-chainspec = { workspace = true, features = ["evm"] }
+tempo-primitives = { workspace = true, features = ["evm"] }
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }
+alloy-primitives = { workspace = true, features = ["map-foldhash"] }
 revm.workspace = true
+paste.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -39,7 +46,7 @@ rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempo-evm.workspace = true
+tempo-evm = { workspace = true, features = ["engine"] }
 tempo-alloy.workspace = true
 tempo-revm.workspace = true
 

@@ -32,9 +32,11 @@ jobs:
     outputs:
       should_run: ${{ steps.filter.outputs.specs }}
       foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
+      release_only_sdk_crates: ${{ steps.release-only.outputs.release_only_sdk_crates }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         id: filter
@@ -43,7 +45,11 @@ jobs:
             specs:
               - 'tips/verify/**'
               - 'crates/contracts/**'
+              - '!crates/contracts/CHANGELOG.md'
+              - '!crates/contracts/Cargo.toml'
               - 'crates/precompiles/**'
+              - '!crates/precompiles/CHANGELOG.md'
+              - '!crates/precompiles/Cargo.toml'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
@@ -52,6 +58,35 @@ jobs:
               - 'scripts/foundry-patch.sh'
               - '.github/workflows/specs.yml'
               - '.github/workflows/update-reth.yml'
+      - name: Check release-only SDK crate changes
+        id: release-only
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'main' }}
+        run: |
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "Not skipping Foundry precompile tests on push events."
+            exit 0
+          fi
+
+          base_ref="${BASE_REF#refs/heads/}"
+          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD")"
+          if [[ -z "$changed_files" ]]; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "No changed files detected against origin/${base_ref}."
+            exit 0
+          fi
+
+          # Release PRs may also add/delete consumed changelog fragments.
+          allowed='^(Cargo\.lock|\.changelog/[^/]+\.md|crates/(alloy|chainspec|contracts|primitives|hardfork)/(Cargo\.toml|CHANGELOG\.md))$'
+          if printf '%s\n' "$changed_files" | grep -Ev "$allowed" >/dev/null; then
+            echo "release_only_sdk_crates=false" >> "$GITHUB_OUTPUT"
+            echo "Found non-release-only SDK crate changes."
+          else
+            echo "release_only_sdk_crates=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping Foundry precompile tests: only SDK crate release metadata changed."
+          fi
 
   foundry-resolver-smoke:
     name: Foundry Resolver Smoke
@@ -77,8 +112,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: rus/bump-tempo-v1.7
-          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
+          ref: centaur/update-tempo-pr-6206-1782139029
           path: foundry
           persist-credentials: false
 
@@ -116,6 +150,13 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD \
+            | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
+            && ! git diff --name-only origin/"$BASE_REF"...HEAD \
+              | grep -vE '^(crates/(precompiles|contracts)/(Cargo\.toml|CHANGELOG\.md))$' \
+              | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: only precompiles/contracts release metadata changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
@@ -162,7 +203,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
 
       - name: Install Foundry
@@ -203,7 +244,7 @@ jobs:
     name: Forge Test (Rust Precompiles)
     needs: [check-specs-changes, check-precompiles]
     # Skip for forked repos
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.release_only_sdk_crates != 'true' && (github.event_name != 'pull_request' || needs.check-precompiles.outputs.coverage == 'true')
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -220,8 +261,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: rus/bump-tempo-v1.7
-          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
+          ref: centaur/update-tempo-pr-6206-1782139029
           path: foundry
           persist-credentials: false
 
@@ -229,7 +269,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: foundry
@@ -245,7 +285,7 @@ jobs:
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
+        run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -258,7 +298,7 @@ jobs:
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
-        run: cargo build -p forge --profile release --no-default-features
+        run: cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'

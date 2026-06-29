@@ -54,7 +54,7 @@ const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 #[command(
     about = "Run a proxy P2P node that serves cached block data fetched from an RPC endpoint"
 )]
-pub(crate) struct P2pProxyArgs {
+pub struct P2pProxyArgs {
     /// RPC endpoint to fetch blocks from (HTTP or WebSocket).
     #[arg(long, required = true)]
     rpc_url: String,
@@ -229,9 +229,7 @@ impl BlockCache {
 
     fn evict(&mut self) {
         while self.by_number.len() as u64 > self.capacity {
-            if let Some((&oldest_num, _)) = self.by_number.iter().next()
-                && let Some(block) = self.by_number.remove(&oldest_num)
-            {
+            if let Some((_, block)) = self.by_number.pop_first() {
                 self.by_hash.remove(&block.hash);
             }
         }

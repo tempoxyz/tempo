@@ -43,6 +43,14 @@ on:
         description: "Feature git ref (default: branch head)"
         type: string
         default: ""
+      baseline-features:
+        description: "Cargo features for the baseline build. Empty = default replay features."
+        type: string
+        default: ""
+      feature-features:
+        description: "Cargo features for the feature build. Empty = default replay features."
+        type: string
+        default: ""
       baseline-args:
         description: "Extra node args for baseline"
         type: string
@@ -98,6 +106,14 @@ on:
       feature-args:
         type: string
         required: false
+      baseline-features:
+        type: string
+        required: false
+        default: ""
+      feature-features:
+        type: string
+        required: false
+        default: ""
       blocks:
         type: string
         required: true
@@ -108,6 +124,10 @@ on:
         type: string
         required: false
         default: "2"
+      metrics:
+        type: string
+        required: false
+        default: "false"
       comment-id:
         type: string
         required: false
@@ -152,6 +172,8 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
+      BENCH_VICTORIAMETRICS_URL:
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -173,11 +195,14 @@ jobs:
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+      BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
+      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -232,12 +257,19 @@ jobs:
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@v8
+        env:
+          INPUT_ACTOR: ${{ github.actor }}
+          INPUT_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+          INPUT_BRANCH: ${{ github.ref_name }}
+          INPUT_CHAIN: ${{ inputs.chain || 'mainnet' }}
+          INPUT_FEATURE_FEATURES: ${{ inputs.feature-features }}
+          INPUT_REF: ${{ github.ref }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
               // Auto-discover PR for the current branch
-              const branch = '${{ github.ref_name }}';
+              const branch = process.env.INPUT_BRANCH;
               const { data: prs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -248,14 +280,17 @@ jobs:
               if (prs.length) {
                 const pr = prs[0];
                 core.exportVariable('BENCH_PR', String(pr.number));
-                core.exportVariable('BENCH_ACTOR', '${{ github.actor }}');
+                core.exportVariable('BENCH_ACTOR', process.env.INPUT_ACTOR);
                 core.info(`Found PR #${pr.number} for branch '${branch}'`);
                 const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                const baselineFeatureFlags = process.env.INPUT_BASELINE_FEATURES || '';
+                const featureFeatureFlags = process.env.INPUT_FEATURE_FEATURES || '';
+                const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
                 const { data: comment } = await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\`, run-pairs: \`${process.env.BENCH_RUN_PAIRS || '2'}\``,
+                  body: `cc @${process.env.INPUT_ACTOR}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${process.env.INPUT_CHAIN}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\`, run-pairs: \`${process.env.BENCH_RUN_PAIRS || '2'}\`${featureFlagsNote}`,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -265,12 +300,12 @@ jobs:
                 }
               } else {
                 core.info(`No open PR found for branch '${branch}', results will be in job summary`);
-                core.setOutput('ref', '${{ github.ref }}');
+                core.setOutput('ref', process.env.INPUT_REF);
               }
               return;
             }
             if (!process.env.BENCH_PR) {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_REF);
               return;
             }
             const sha = process.env.BENCH_PR_HEAD_SHA;
@@ -314,8 +349,11 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${featureFlagsNote}${samplyNote}${otlpNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -326,7 +364,7 @@ jobs:
             });
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
         continue-on-error: true
 
       - name: Install uv
@@ -423,6 +461,7 @@ jobs:
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
           BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
@@ -504,20 +543,39 @@ jobs:
           fi
           CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
 
-          TMP_DIR=$(mktemp -d)
-          if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
-            true
-          else
-            git init "${TMP_DIR}"
-            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
-          fi
+          TMP_DIR=""
+          prepare_charts() {
+            if [ -n "${TMP_DIR}" ]; then
+              rm -rf "${TMP_DIR}"
+            fi
 
-          mkdir -p "${TMP_DIR}/${CHART_DIR}"
-          cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
-          git -C "${TMP_DIR}" add "${CHART_DIR}"
-          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
-          git -C "${TMP_DIR}" push origin HEAD:main
+            TMP_DIR=$(mktemp -d)
+            if git clone --depth 1 "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+              true
+            else
+              git init "${TMP_DIR}"
+              git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+            fi
+
+            mkdir -p "${TMP_DIR}/${CHART_DIR}"
+            cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
+            git -C "${TMP_DIR}" add "${CHART_DIR}"
+          }
+
+          for attempt in 1 2 3 4 5; do
+            prepare_charts
+            git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+              commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
+            if git -C "${TMP_DIR}" push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to push charts after ${attempt} attempts"
+              rm -rf "${TMP_DIR}"
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"

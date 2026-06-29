@@ -2,41 +2,49 @@
 name = "tempo-chainspec"
 description = "Tempo hardfork configuration and chain specification helpers"
 
-version = "1.5.4"
+version = "1.9.1"
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
 publish = true
 
 [lints]
 workspace = true
 
 [dependencies]
+tempo-hardfork.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
 reth-network-peers = { workspace = true, optional = true }
+tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, optional = true }
 alloy-genesis.workspace = true
 once_cell.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
-alloy-hardforks.workspace = true
-
 eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 paste.workspace = true
+commonware-codec = { workspace = true, optional = true }
+commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
 
 [features]
 default = ["std", "serde", "reth", "cli"]
 std = [
+    "tempo-hardfork/std",
     "alloy-eips/std",
-    "alloy-evm/std",
+    "alloy-evm?/std",
     "alloy-genesis/std",
     "alloy-primitives/std",
     "once_cell/std",
@@ -47,15 +55,21 @@ std = [
     "tempo-primitives/std",
 ]
 serde = [
+    "tempo-hardfork/serde",
     "alloy-eips/serde",
-    "alloy-hardforks/serde",
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
+evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]
 reth = [
     "std",
+    "evm",
+    "dep:commonware-codec",
+    "dep:commonware-cryptography",
+    "dep:eyre",
     "dep:reth-chainspec",
     "dep:reth-network-peers",
+    "dep:tempo-dkg-onchain-artifacts",
     "tempo-primitives/reth",
 ]
 cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

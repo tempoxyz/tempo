@@ -1,4 +1,4 @@
-use crate::utils::{ForkSchedule, TestNodeBuilder, setup_test_token};
+use crate::utils::{ForkSchedule, TestNodeBuilder, run_schedule_cases, setup_test_token};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -62,44 +62,47 @@ fn state_diff(address: Address, diffs: &[(B256, U256)]) -> StateOverride {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    run_schedule_cases(schedule, |schedule| async move {
+        reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_http_only()
+            .await?;
+        let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let caller = wallet.address();
+        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test token
-    let token = setup_test_token(provider.clone(), caller).await?;
+        // Setup test token
+        let token = setup_test_token(provider.clone(), caller).await?;
 
-    // First, mint some tokens to the caller for testing
-    let mint_amount = U256::from(rand::random::<u128>());
-    token
-        .mint(caller, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        // First, mint some tokens to the caller for testing
+        let mint_amount = U256::from(rand::random::<u128>());
+        token
+            .mint(caller, mint_amount)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
-    let recipient = Address::random();
-    let calldata = token.transfer(recipient, mint_amount).calldata().clone();
-    let tx = TransactionRequest::default()
-        .to(*token.address())
-        .gas_price(0)
-        .input(TransactionInput::new(calldata));
+        let recipient = Address::random();
+        let calldata = token.transfer(recipient, mint_amount).calldata().clone();
+        let tx = TransactionRequest::default()
+            .to(*token.address())
+            .gas_price(0)
+            .input(TransactionInput::new(calldata));
 
-    let res = provider.call(tx).await?;
-    let success = transferCall::abi_decode_returns(&res)?;
-    assert!(success);
+        let res = provider.call(tx).await?;
+        let success = transferCall::abi_decode_returns(&res)?;
+        assert!(success);
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
@@ -107,99 +110,102 @@ async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    run_schedule_cases(schedule, |schedule| async move {
+        reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_http_only()
+            .await?;
+        let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let caller = wallet.address();
+        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test token
-    let token = setup_test_token(provider.clone(), caller).await?;
-    let token_address = *token.address();
+        // Setup test token
+        let token = setup_test_token(provider.clone(), caller).await?;
+        let token_address = *token.address();
 
-    // First, mint some tokens to the caller for testing
-    let mint_amount = U256::from(rand::random::<u128>());
-    token
-        .mint(caller, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        // First, mint some tokens to the caller for testing
+        let mint_amount = U256::from(rand::random::<u128>());
+        token
+            .mint(caller, mint_amount)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
-    let recipient = Address::random();
-    let calldata = token.transfer(recipient, mint_amount).calldata().clone();
-    let tx = TransactionRequest::default()
-        .from(caller)
-        .to(*token.address())
-        .input(TransactionInput::new(calldata));
+        let recipient = Address::random();
+        let calldata = token.transfer(recipient, mint_amount).calldata().clone();
+        let tx = TransactionRequest::default()
+            .from(caller)
+            .to(*token.address())
+            .input(TransactionInput::new(calldata));
 
-    let res = provider.call(tx.clone()).await?;
-    let success = transferCall::abi_decode_returns(&res)?;
-    assert!(success);
+        let res = provider.call(tx.clone()).await?;
+        let success = transferCall::abi_decode_returns(&res)?;
+        assert!(success);
 
-    let trace_res = provider.trace_call(&tx).state_diff().await?;
+        let trace_res = provider.trace_call(&tx).state_diff().await?;
 
-    let success = transferCall::abi_decode_returns(&trace_res.output)?;
-    assert!(success);
+        let success = transferCall::abi_decode_returns(&trace_res.output)?;
+        assert!(success);
 
-    let state_diff = trace_res.state_diff.expect("Could not get state diff");
-    let caller_diff = state_diff.get(&caller).expect("Could not get caller diff");
-    assert!(caller_diff.nonce.is_changed());
-    assert!(caller_diff.balance.is_unchanged());
-    assert!(caller_diff.code.is_unchanged());
-    assert!(caller_diff.storage.is_empty());
+        let state_diff = trace_res.state_diff.expect("Could not get state diff");
+        let caller_diff = state_diff.get(&caller).expect("Could not get caller diff");
+        assert!(caller_diff.nonce.is_changed());
+        assert!(caller_diff.balance.is_unchanged());
+        assert!(caller_diff.code.is_unchanged());
+        assert!(caller_diff.storage.is_empty());
 
-    let token_diff = state_diff
-        .get(token.address())
-        .expect("Could not get token diff");
+        let token_diff = state_diff
+            .get(token.address())
+            .expect("Could not get token diff");
 
-    assert!(token_diff.balance.is_unchanged());
-    assert!(token_diff.code.is_unchanged());
-    assert!(token_diff.nonce.is_unchanged());
+        assert!(token_diff.balance.is_unchanged());
+        assert!(token_diff.code.is_unchanged());
+        assert!(token_diff.nonce.is_unchanged());
 
-    let token_storage_diff = token_diff.storage.clone();
-    // Assert sender token balance has changed
-    let slot = TIP20Token::from_address(token_address)
-        .expect("valid TIP20 address")
-        .balances[caller]
-        .slot();
-    let sender_balance = token_storage_diff
-        .get(&B256::from(slot))
-        .expect("Could not get recipient balance delta");
+        let token_storage_diff = token_diff.storage.clone();
+        // Assert sender token balance has changed
+        let slot = TIP20Token::from_address(token_address)
+            .expect("valid TIP20 address")
+            .balances[caller]
+            .slot();
+        let sender_balance = token_storage_diff
+            .get(&B256::from(slot))
+            .expect("Could not get recipient balance delta");
 
-    assert!(sender_balance.is_changed());
+        assert!(sender_balance.is_changed());
 
-    let Delta::Changed(ChangedType { from, to }) = sender_balance else {
-        panic!("Unexpected delta");
-    };
-    assert_eq!(from.into_u256(), mint_amount);
-    assert_eq!(to.into_u256(), U256::ZERO);
+        let Delta::Changed(ChangedType { from, to }) = sender_balance else {
+            panic!("Unexpected delta");
+        };
+        assert_eq!(from.into_u256(), mint_amount);
+        assert_eq!(to.into_u256(), U256::ZERO);
 
-    // Assert recipient token balance is changed
-    let slot = TIP20Token::from_address(token_address)
-        .expect("valid TIP20 address")
-        .balances[recipient]
-        .slot();
-    let recipient_balance = token_storage_diff
-        .get(&B256::from(slot))
-        .expect("Could not get recipient balance delta");
-    assert!(recipient_balance.is_changed());
+        // Assert recipient token balance is changed
+        let slot = TIP20Token::from_address(token_address)
+            .expect("valid TIP20 address")
+            .balances[recipient]
+            .slot();
+        let recipient_balance = token_storage_diff
+            .get(&B256::from(slot))
+            .expect("Could not get recipient balance delta");
+        assert!(recipient_balance.is_changed());
 
-    let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
-        panic!("Unexpected delta");
-    };
-    assert_eq!(from.into_u256(), U256::ZERO);
-    assert_eq!(to.into_u256(), mint_amount);
+        let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
+            panic!("Unexpected delta");
+        };
+        assert_eq!(from.into_u256(), U256::ZERO);
+        assert_eq!(to.into_u256(), mint_amount);
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
@@ -207,64 +213,67 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    run_schedule_cases(schedule, |schedule| async move {
+        reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_http_only()
+            .await?;
+        let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let caller = wallet.address();
+        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test token
-    let token = setup_test_token(provider.clone(), caller).await?;
+        // Setup test token
+        let token = setup_test_token(provider.clone(), caller).await?;
 
-    let mint_amount = U256::from(rand::random::<u128>());
-    let mint_receipt = token
-        .mint(caller, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        let mint_amount = U256::from(rand::random::<u128>());
+        let mint_receipt = token
+            .mint(caller, mint_amount)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
-    let recipient = Address::random();
-    token
-        .transfer(recipient, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+        let recipient = Address::random();
+        token
+            .transfer(recipient, mint_amount)
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
 
-    let filter = Filter::new()
-        .address(*token.address())
-        .from_block(mint_receipt.block_number.unwrap());
-    let logs = provider.get_logs(&filter).await?;
-    assert_eq!(logs.len(), 3);
+        let filter = Filter::new()
+            .address(*token.address())
+            .from_block(mint_receipt.block_number.unwrap());
+        let logs = provider.get_logs(&filter).await?;
+        assert_eq!(logs.len(), 3);
 
-    // NOTE: this currently reflects the event emission from the reference contract. Double check
-    // this is the expected behavior
-    let transfer_event = ITIP20::Transfer::decode_log(&logs[0].inner)?;
-    assert_eq!(transfer_event.from, Address::ZERO);
-    assert_eq!(transfer_event.to, caller);
-    assert_eq!(transfer_event.amount, mint_amount);
+        // NOTE: this currently reflects the event emission from the reference contract. Double check
+        // this is the expected behavior
+        let transfer_event = ITIP20::Transfer::decode_log(&logs[0].inner)?;
+        assert_eq!(transfer_event.from, Address::ZERO);
+        assert_eq!(transfer_event.to, caller);
+        assert_eq!(transfer_event.amount, mint_amount);
 
-    let mint_event = ITIP20::Mint::decode_log(&logs[1].inner)?;
-    assert_eq!(mint_event.to, caller);
-    assert_eq!(mint_event.amount, mint_amount);
+        let mint_event = ITIP20::Mint::decode_log(&logs[1].inner)?;
+        assert_eq!(mint_event.to, caller);
+        assert_eq!(mint_event.amount, mint_amount);
 
-    let transfer_event = ITIP20::Transfer::decode_log(&logs[2].inner)?;
-    assert_eq!(transfer_event.from, caller);
-    assert_eq!(transfer_event.to, recipient);
-    assert_eq!(transfer_event.amount, mint_amount);
+        let transfer_event = ITIP20::Transfer::decode_log(&logs[2].inner)?;
+        assert_eq!(transfer_event.from, caller);
+        assert_eq!(transfer_event.to, recipient);
+        assert_eq!(transfer_event.amount, mint_amount);
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[test_case(ForkSchedule::Devnet ; "devnet")]
@@ -272,43 +281,52 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    run_schedule_cases(schedule, |schedule| async move {
+        reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_http_only()
+            .await?;
+        let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let caller = wallet.address();
+        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    let token = setup_test_token(provider.clone(), caller).await?;
-    let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
-    let tx = TransactionRequest::default()
-        .to(*token.address())
-        .input(calldata.into());
+        let token = setup_test_token(provider.clone(), caller).await?;
+        let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
+        let tx = TransactionRequest::default()
+            .to(*token.address())
+            .input(calldata.into());
 
-    let gas = provider.estimate_gas(tx.clone()).await?;
-    // gas estimation is calldata dependent, but should be consistent with same calldata
-    // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-    let expected_gas = if schedule.is_active(TempoHardfork::T3) {
-        551540
-    } else {
-        549423
-    };
-    assert_eq!(gas, expected_gas);
+        let gas = provider.estimate_gas(tx.clone()).await?;
+        // gas estimation is calldata dependent, but should be consistent with same calldata
+        // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
+        let expected_gas = if schedule.is_active(TempoHardfork::T8) {
+            547407
+        } else if schedule.is_active(TempoHardfork::T7) {
+            555874
+        } else if schedule.is_active(TempoHardfork::T6) {
+            553657
+        } else if schedule.is_active(TempoHardfork::T3) {
+            551540
+        } else {
+            549423
+        };
+        assert_eq!(gas, expected_gas);
 
-    // ensure we can successfully send the tx with that gas
-    let receipt = provider
-        .send_transaction(tx.gas_limit(gas))
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.gas_used <= gas);
+        // ensure we can successfully send the tx with that gas
+        let receipt = provider
+            .send_transaction(tx.gas_limit(gas))
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(receipt.gas_used <= gas);
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -632,38 +650,41 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
+    run_schedule_cases(schedule, |schedule| async move {
+        reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .with_schedule(schedule)
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
+        let setup = TestNodeBuilder::new()
+            .with_schedule(schedule)
+            .build_http_only()
+            .await?;
+        let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Call with an unknown function selector (0x12345678)
-    let unknown_selector = [0x12u8, 0x34, 0x56, 0x78];
-    let mut calldata = unknown_selector.to_vec();
-    // Add some dummy data
-    calldata.extend_from_slice(&[0u8; 64]);
+        // Call with an unknown function selector (0x12345678)
+        let unknown_selector = [0x12u8, 0x34, 0x56, 0x78];
+        let mut calldata = unknown_selector.to_vec();
+        // Add some dummy data
+        calldata.extend_from_slice(&[0u8; 64]);
 
-    let tx = TransactionRequest::default()
-        .to(TIP20_FACTORY_ADDRESS)
-        .input(TransactionInput::new(Bytes::from(calldata)));
+        let tx = TransactionRequest::default()
+            .to(TIP20_FACTORY_ADDRESS)
+            .input(TransactionInput::new(Bytes::from(calldata)));
 
-    // The call should fail with UnknownFunctionSelector containing the unknown selector
-    let err = provider.call(tx).await.unwrap_err();
-    let expected = Bytes::from(
-        UnknownFunctionSelector {
-            selector: unknown_selector.into(),
-        }
-        .abi_encode(),
-    );
-    assert_eq!(extract_revert_data(&err), expected);
+        // The call should fail with UnknownFunctionSelector containing the unknown selector
+        let err = provider.call(tx).await.unwrap_err();
+        let expected = Bytes::from(
+            UnknownFunctionSelector {
+                selector: unknown_selector.into(),
+            }
+            .abi_encode(),
+        );
+        assert_eq!(extract_revert_data(&err), expected);
 
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
