@@ -302,18 +302,15 @@ impl TipFeeManager {
         validate_usd_currency(user_token)?;
         validate_usd_currency(validator_token)?;
 
-        let user_tip20_token = TIP20Token::from_address(user_token)?;
+        let mut validator_tip20_token = TIP20Token::from_address(validator_token)?;
         if self.storage.spec().is_t8() {
             if to.is_zero() || to.is_tip20() || to.is_virtual() {
                 return Err(TIP20Error::invalid_recipient().into());
             }
+            let user_tip20_token = TIP20Token::from_address(user_token)?;
             user_tip20_token.ensure_authorized_as(msg_sender, AuthRole::sender())?;
             user_tip20_token.ensure_authorized_as(self.address, AuthRole::recipient())?;
             user_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
-        }
-
-        let mut validator_tip20_token = TIP20Token::from_address(validator_token)?;
-        if self.storage.spec().is_t8() {
             validator_tip20_token.ensure_authorized_as(to, AuthRole::recipient())?;
         }
 
