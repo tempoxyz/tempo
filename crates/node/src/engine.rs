@@ -145,7 +145,7 @@ where
             let error_block = payload.block.clone().into_sealed_block();
             return self
                 .inner
-                .on_inserted_executed_block(executed_block, ctx.state())
+                .on_inserted_executed_block(executed_block)
                 .map(|executed_block| ValidationOutput::new(executed_block, None))
                 .map_err(|error| {
                     InsertBlockError::new(error_block, InsertBlockErrorKind::Provider(error)).into()
@@ -166,9 +166,8 @@ where
     fn on_inserted_executed_block(
         &self,
         block: BuiltPayloadExecutedBlock<TempoPrimitives>,
-        state: &EngineApiTreeState<TempoPrimitives>,
     ) -> ProviderResult<ExecutedBlock<TempoPrimitives>> {
-        self.inner.on_inserted_executed_block(block, state)
+        self.inner.on_inserted_executed_block(block)
     }
 
     fn cache_for(&self, block_hash: alloy_primitives::B256) -> Option<SavedCache> {
