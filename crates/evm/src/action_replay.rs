@@ -89,6 +89,7 @@ pub struct StorageActionReplayState {
     writes: AddressMap<U256Map<WriteKind>>,
     /// Changes for the current transaction.
     tx_changes: AddressMap<U256Map<SlotChange>>,
+    /// Expiring nonce replay state.
     expiring_nonce: ExpiringNonceReplayState,
 }
 
@@ -230,8 +231,11 @@ enum WriteKind {
 
 #[derive(Debug, Default)]
 struct ExpiringNonceReplayState {
+    /// Current cached ring pointer.
     ring_ptr: Option<U256>,
+    /// Pending ring pointer to be committed by current transaction.
     pending_ring_ptr: Option<U256>,
+    /// Changes for the current transaction.
     tx_changes: Vec<(U256, SlotChange)>,
 }
 
