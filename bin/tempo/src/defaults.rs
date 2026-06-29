@@ -217,9 +217,13 @@ fn init_engine_defaults() {
 
 fn init_pruning_defaults() {
     let mut minimal_prune_modes = DefaultPruningValues::default().minimal_prune_modes;
-    // This defines Tempo's minimum peer sync window: nodes should retain enough
-    // block bodies to serve peers up to three mainnet epochs behind the finalized
-    // tip, plus Reth's normal 64-block safety margin.
+    // This defines Tempo's minimum history retention window: nodes should retain
+    // enough block and state history for peers and unwinds up to three mainnet
+    // epochs behind the finalized tip, plus Reth's normal 64-block safety margin.
+    minimal_prune_modes.account_history =
+        Some(PruneMode::Distance(MINIMAL_PEER_SYNC_RETENTION_BLOCKS));
+    minimal_prune_modes.storage_history =
+        Some(PruneMode::Distance(MINIMAL_PEER_SYNC_RETENTION_BLOCKS));
     minimal_prune_modes.bodies_history =
         Some(PruneMode::Distance(MINIMAL_PEER_SYNC_RETENTION_BLOCKS));
 
