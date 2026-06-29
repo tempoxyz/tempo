@@ -610,8 +610,8 @@ where
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
-            execution_cache,
             parent_header.hash(),
+            execution_cache,
             executor.evm().evm_env(),
             self.config.enable_parallel,
         );

@@ -62,8 +62,6 @@ impl BestTransactionsPrewarming {
                         commands_rx,
                         commands_tx,
                         prewarm,
-                        next_expiring_nonce_offset: 0,
-                        action_buffers: Vec::new(),
                     },
                 );
             });
@@ -102,8 +100,8 @@ impl BestTransactionsPrewarming {
                     return;
                 };
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
-                    let offset = ctx.next_expiring_nonce_offset;
-                    ctx.next_expiring_nonce_offset += 1;
+                    let offset = ctx.prewarm.next_expiring_nonce_offset;
+                    ctx.prewarm.next_expiring_nonce_offset += 1;
                     Some(offset)
                 } else {
                     None
@@ -119,7 +117,7 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
-                let action_buffer = ctx.action_buffers.pop();
+                let action_buffer = ctx.prewarm.action_buffers.pop();
                 scope.spawn(move |_| {
                     if parallel {
                         let tx = parallel::plan_transaction_replay(
@@ -177,7 +175,7 @@ impl BestTransactionsPrewarming {
                     }
                     BestTransactionsCommand::RecycleActions(mut actions) => {
                         actions.clear();
-                        ctx.action_buffers.push(actions);
+                        ctx.prewarm.action_buffers.push(actions);
                     }
                 }
             }
@@ -290,8 +288,6 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    next_expiring_nonce_offset: usize,
-    action_buffers: Vec<Vec<StorageAction>>,
 }
 
 #[derive(Debug)]
@@ -321,6 +317,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    next_expiring_nonce_offset: usize,
+    action_buffers: Vec<Vec<StorageAction>>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -330,8 +328,8 @@ where
     pub(crate) fn new(
         provider: Provider,
         executor: TaskExecutor,
-        cache: Option<SavedCache>,
         parent_hash: B256,
+        cache: Option<SavedCache>,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
     ) -> Self {
@@ -343,6 +341,8 @@ where
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            next_expiring_nonce_offset: 0,
+            action_buffers: Vec::new(),
         }
     }
 
@@ -625,15 +625,14 @@ mod tests {
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
         let prewarming = BestTransactionsPrewarming::new(
-            PrewarmingExecutionContext {
+            PrewarmingExecutionContext::new(
                 provider,
-                executor: executor.clone(),
-                parent_hash: parent_header.hash(),
-                cache: None,
+                executor.clone(),
+                parent_header.hash(),
+                None,
                 evm_env,
-                stop: Arc::default(),
-                parallel: false,
-            },
+                false,
+            ),
             TestBestTransactions::new(txs, log),
         );
         TestPrewarming {

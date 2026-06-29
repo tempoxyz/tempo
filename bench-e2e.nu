@@ -25,12 +25,14 @@ const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 7
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
+    "--disable-tx-gossip"
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
+    "--txpool.no-local-transactions-propagation"
     "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
