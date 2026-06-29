@@ -849,6 +849,7 @@ where
 
                 parallel_transactions_executed += 1;
             } else {
+                action_replay_state.invalidate_expiring_nonce_cache();
                 let execution_result = executor.execute_transaction_with_result_closure(
                     tx.transaction.executable(),
                     |result| {
@@ -861,9 +862,6 @@ where
                         // Score payload value by the validator-credited fee amount that the
                         // FeeManager precompile actually wrote during this transaction.
                         total_fees += result.validator_fee();
-
-                        // Apply the result to the action replay state.
-                        action_replay_state.apply_result(result);
                     },
                 );
                 if let Err(err) = execution_result {

@@ -9,7 +9,7 @@ use alloy_primitives::{
     Address, B256, U256,
     map::{AddressMap, U256Map},
 };
-use reth_evm::block::{StateDB, TxResult};
+use reth_evm::block::StateDB;
 use reth_revm::{
     Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
@@ -94,20 +94,9 @@ pub struct StorageActionReplayState {
 }
 
 impl StorageActionReplayState {
-    /// Applies the result of a non-replayable transaction execution to the state.
-    pub fn apply_result(&mut self, result: &TempoTxResult) {
-        for (address, account) in &result.result().state {
-            for (slot, value) in &account.storage {
-                if *slot == NonceManager::new().expiring_nonce_ring_ptr.slot() {
-                    self.expiring_nonce.set_ring_ptr(value.present_value);
-                } else {
-                    self.writes
-                        .entry(*address)
-                        .or_default()
-                        .insert(*slot, WriteKind::Store);
-                }
-            }
-        }
+    /// Clears cached expiring-nonce state after execution that did not go through action replay.
+    pub fn invalidate_expiring_nonce_cache(&mut self) {
+        self.expiring_nonce.invalidate_cache();
     }
 
     /// Returns whether the state has any write at the given address and slot.
@@ -283,6 +272,11 @@ struct ExpiringNonceReplayState {
 }
 
 impl ExpiringNonceReplayState {
+    fn invalidate_cache(&mut self) {
+        self.ring_ptr = None;
+        self.reset_pending_ring_ptr();
+    }
+
     fn reset_pending_ring_ptr(&mut self) {
         self.pending_ring_ptr = None;
     }
@@ -311,11 +305,7 @@ impl ExpiringNonceReplayState {
         })
     }
 
-    fn set_ring_ptr(&mut self, ptr: U256) {
-        self.ring_ptr = Some(ptr);
-    }
-
-    fn set_pending_ring_ptr(&mut self, next: U256) {
+    fn set_next_ring_ptr(&mut self, next: U256) {
         self.pending_ring_ptr = Some(next);
     }
 }
@@ -347,6 +337,7 @@ where
             expiring_nonce,
             validator_fee,
         } = replay;
+        replay_state.reset_tx_changes();
 
         let result = (|| {
             if !result.is_success() {
@@ -587,7 +578,7 @@ where
             next,
             WriteKind::Store,
         );
-        replay_state.expiring_nonce.set_pending_ring_ptr(next);
+        replay_state.expiring_nonce.set_next_ring_ptr(next);
 
         Ok(())
     }
