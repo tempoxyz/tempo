@@ -458,12 +458,12 @@ where
             );
         }
 
-        // Run the unified EVM validation pipeline.
-        // This covers: non-zero value, keychain version, intrinsic gas, fee payer/token
-        // resolution & validation, nonce checks (protocol, 2D, expiring), keychain
-        // authorization, and balance checks.
+        // Run the EVM environment/intrinsic-gas validation pipeline.
+        // This covers stateless checks such as non-zero value, keychain version,
+        // AA structure, time bounds, priority fee, and intrinsic gas. Stateful
+        // pre-execution checks are deferred to block execution.
         //
-        // Returns resolved fee token and key expiry for pool caching.
+        // Returns an explicit-or-default fee token and key expiry for pool caching.
         let result = if let Some(tx_env) = transaction.cached_tx_env() {
             evm.validate_transaction(tx_env.clone())
         } else {

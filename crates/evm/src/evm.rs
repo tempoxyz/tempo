@@ -156,7 +156,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         }
     }
 
-    /// Runs the full transaction validation pipeline without executing the transaction.
+    /// Runs transaction environment and intrinsic gas validation without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(

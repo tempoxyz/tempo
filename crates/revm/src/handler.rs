@@ -35,7 +35,8 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError, TIPFeeAMMError,
+    DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType as PrecompileSignatureType, NonceError,
+    TIPFeeAMMError,
 };
 #[cfg(test)]
 use tempo_precompiles::tip_fee_manager::TipFeeManager;
@@ -2188,19 +2189,24 @@ impl<DB, I> TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
 {
-    /// Runs the full transaction validation pipeline without executing the transaction.
+    /// Runs transaction environment and intrinsic gas validation without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
     pub fn validate_transaction(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<ValidationContext, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let mut init_and_floor_gas = self.validate(evm)?;
-        self.pre_execution(evm, &mut init_and_floor_gas)?;
+        if let Err(err) = self.validate(evm) {
+            evm.clear();
+            return Err(err);
+        }
+        let fee_token = evm.ctx.tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN);
+        if !fee_token.is_tip20() {
+            evm.clear();
+            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
+        }
         let result = ValidationContext {
-            fee_token: evm
-                .fee_token
-                .expect("set in `validate_against_state_and_deduct_caller`"),
+            fee_token,
             key_expiry: evm.key_expiry,
         };
         evm.clear();
