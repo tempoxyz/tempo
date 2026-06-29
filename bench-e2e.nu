@@ -22,6 +22,7 @@ const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
+const E2E_PREGENERATED_TX_TPS = 50000
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -1123,6 +1124,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --max-concurrent-requests $ctx.max_concurrent_requests
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
+                --tx-file $ctx.tx_file
+                --generate-tx-count $ctx.tx_file_count
                 --git-ref $run.ref
                 --git-ref-label ($run | get -o ref_label | default $run.ref)
                 --build-profile $ctx.profile
@@ -1598,6 +1601,10 @@ def "main e2e" [
     }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let tx_file_tps = [$E2E_PREGENERATED_TX_TPS $tps] | math max
+    let tx_file_count = [($tx_file_tps * $duration) 1] | math max
+    let tx_file = $"($results_dir)/txgen-($preset)-($tx_file_tps)tps-($duration)s.ndjson"
+    print $"Pregenerated tx file: ($tx_file) \(($tx_file_count) txs for ($tx_file_tps) TPS over ($duration)s\)"
     let ctx = {
         genesis: $genesis_path
         trusted_peers: $trusted_peers
@@ -1630,6 +1637,9 @@ def "main e2e" [
         bloat: $bloat_mib
         token_count: $token_count
         txgen: $txgen
+        tx_file: $tx_file
+        tx_file_tps: $tx_file_tps
+        tx_file_count: $tx_file_count
         results_dir: $results_dir
         profile: $profile
         samply: $samply
