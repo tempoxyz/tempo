@@ -12888,6 +12888,7 @@ dependencies = [
  "reth-node-builder",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-prune-types",
  "reth-rpc-server-types",
  "reth-storage-api",
  "reth-trie",
