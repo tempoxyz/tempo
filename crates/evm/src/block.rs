@@ -106,6 +106,7 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
+    /// Creates a new [`TempoTxResult`] from a precomputed result and state.
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
         result: ExecutionResult<TempoHaltReason>,

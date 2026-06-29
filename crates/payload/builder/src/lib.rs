@@ -837,7 +837,7 @@ where
                 match execution_result {
                     Ok(_) => {}
                     Err(StorageActionReplayExecutionError::Fallback(
-                        StorageActionReplayFallback::InsufficientBalance,
+                        StorageActionReplayFallback::Underflow,
                     )) => {
                         best_txs.mark_invalid(
                             &pool_tx,

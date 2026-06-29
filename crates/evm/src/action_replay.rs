@@ -5,7 +5,10 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor, ExecutableTx},
 };
-use alloy_primitives::{Address, B256, U256, map::AddressMap};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{AddressMap, U256Map},
+};
 use reth_evm::block::StateDB;
 use reth_revm::{
     Database as _, Inspector, State,
@@ -54,8 +57,8 @@ pub struct StorageActionReplayOutcome {
 pub enum StorageActionReplayFallback {
     ActionExecutionFailed,
     ActionConflict,
-    BalanceOverflow,
-    InsufficientBalance,
+    Overflow,
+    Underflow,
 }
 
 /// Error returned by the storage-action replay execution API.
@@ -82,8 +85,10 @@ impl From<StorageActionReplayFallback> for StorageActionReplayExecutionError {
 
 #[derive(Debug, Default)]
 pub struct StorageActionReplayState {
-    writes: AddressMap<alloy_primitives::map::U256Map<WriteKind>>,
-    tx_changes: AddressMap<alloy_primitives::map::U256Map<SlotChange>>,
+    /// Writes recorded for all transactions.
+    writes: AddressMap<U256Map<WriteKind>>,
+    /// Changes for the current transaction.
+    tx_changes: AddressMap<U256Map<SlotChange>>,
     expiring_nonce: ExpiringNonceReplayState,
 }
 
@@ -93,12 +98,14 @@ impl StorageActionReplayState {
         self.expiring_nonce.invalidate_cache();
     }
 
+    /// Returns whether the state has any write at the given address and slot.
     fn has_write(&self, address: Address, slot: U256) -> bool {
         self.writes
             .get(&address)
             .is_some_and(|slots| slots.contains_key(&slot))
     }
 
+    /// Returns whether the state has a [store](`WriteKind::Store`) write at the given address and slot.
     fn has_store(&self, address: Address, slot: U256) -> bool {
         self.writes
             .get(&address)
@@ -106,22 +113,27 @@ impl StorageActionReplayState {
             .is_some_and(|kind| *kind == WriteKind::Store)
     }
 
-    fn sstore<DB: Database>(
+    /// Stores the value of a slot that has already been loaded for this transaction.
+    fn sstore(
         &mut self,
-        db: &mut State<DB>,
         address: Address,
         slot: U256,
         value: U256,
         kind: WriteKind,
     ) -> Result<(), StorageActionReplayExecutionError> {
-        let _ = self.sload(db, address, slot, None)?;
+        // `Sstore` actions record only the new value. The transaction-start
+        // value must already be established by a load, otherwise replay would
+        // invent `original` from current state and reuse gas/refund data from a
+        // different storage transition.
         let change = self
             .tx_changes
             .get_mut(&address)
             .and_then(|slots| slots.get_mut(&slot))
-            .expect("action replay slot change inserted");
+            .ok_or(StorageActionReplayFallback::ActionConflict)?;
         change.current = value;
 
+        // Absolute stores are non-commutative, so they dominate deltas when
+        // recording cross-transaction conflict state.
         if change.write_kind.is_none() || kind == WriteKind::Store {
             change.write_kind = Some(kind);
         }
@@ -129,59 +141,68 @@ impl StorageActionReplayState {
         Ok(())
     }
 
-    fn sload<DB: Database>(
+    /// Returns the current value for a slot and validates that it matches the expected value.
+    fn sload_exact<DB: Database>(
         &mut self,
         db: &mut State<DB>,
         address: Address,
         slot: U256,
-        value: Option<U256>,
+        expected: U256,
     ) -> Result<U256, StorageActionReplayExecutionError> {
-        if let Some(change) = self
-            .tx_changes
-            .get(&address)
-            .and_then(|slots| slots.get(&slot))
-        {
-            return Ok(change.current);
-        }
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(change) => {
+                if change.get().current != expected {
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                }
+                Ok(change.get().current)
+            }
+            Entry::Vacant(change) => {
+                let current = state_storage(db, address, slot)?;
+                if current != expected {
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                }
 
-        if let Some(original) = value {
-            let cached_value = db
-                .cache
-                .accounts
-                .get(&address)
-                .and_then(|account| account.account.as_ref())
-                .and_then(|account| account.storage.get(&slot).copied());
-
-            let value = cached_value.unwrap_or(original);
-            self.tx_changes.entry(address).or_default().insert(
-                slot,
-                SlotChange {
-                    original: value,
-                    current: value,
+                change.insert(SlotChange {
+                    original: current,
+                    current,
                     write_kind: None,
-                },
-            );
-            return Ok(value);
+                });
+                Ok(current)
+            }
         }
-
-        let value = state_storage(db, address, slot)?;
-
-        self.tx_changes.entry(address).or_default().insert(
-            slot,
-            SlotChange {
-                original: value,
-                current: value,
-                write_kind: None,
-            },
-        );
-        Ok(value)
     }
 
+    /// Returns the current value for a slot.
+    ///
+    /// If it was previously written, returns the value from the transaction change.
+    /// Otherwise, returns the value from the database.
+    fn sload_current<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+        address: Address,
+        slot: U256,
+    ) -> Result<U256, StorageActionReplayExecutionError> {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(change) => Ok(change.get().current),
+            Entry::Vacant(change) => {
+                let current = state_storage(db, address, slot)?;
+                change.insert(SlotChange {
+                    original: current,
+                    current,
+                    write_kind: None,
+                });
+                Ok(current)
+            }
+        }
+    }
+
+    /// Resets the accumulated transaction changes.
     fn reset_tx_changes(&mut self) {
         self.tx_changes.clear();
         self.expiring_nonce.reset_tx_changes();
     }
 
+    /// Commits the accumulated transaction changes to the state.
     fn commit_tx_changes(&mut self) {
         for (address, slots) in self.tx_changes.drain() {
             for (slot, change) in slots {
@@ -194,17 +215,17 @@ impl StorageActionReplayState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteKind {
-    Store,
-    Delta,
-}
-
 #[derive(Debug)]
 struct SlotChange {
     original: U256,
     current: U256,
     write_kind: Option<WriteKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteKind {
+    Store,
+    Delta,
 }
 
 #[derive(Debug, Default)]
@@ -225,10 +246,7 @@ impl ExpiringNonceReplayState {
         self.tx_changes.clear();
     }
 
-    fn commit_tx_changes(
-        &mut self,
-        writes: &mut AddressMap<alloy_primitives::map::U256Map<WriteKind>>,
-    ) {
+    fn commit_tx_changes(&mut self, writes: &mut AddressMap<U256Map<WriteKind>>) {
         for (slot, change) in self.tx_changes.drain(..) {
             if let Some(kind) = change.write_kind {
                 merge_committed_write_kind(writes, NONCE_PRECOMPILE_ADDRESS, slot, kind);
@@ -383,13 +401,13 @@ where
                     if replay_state.has_store(address, key) {
                         return Err(StorageActionReplayFallback::ActionConflict.into());
                     }
-                    let _ = replay_state.sload(db, address, key, Some(value))?;
+                    let _ = replay_state.sload_exact(db, address, key, value)?;
                 }
                 StorageAction::Sstore(address, key, value) => {
                     if replay_state.has_write(address, key) {
                         return Err(StorageActionReplayFallback::ActionConflict.into());
                     }
-                    replay_state.sstore(db, address, key, value, WriteKind::Store)?;
+                    replay_state.sstore(address, key, value, WriteKind::Store)?;
                 }
                 StorageAction::Sinc(address, key, delta) => {
                     if replay_state.has_store(address, key) {
@@ -397,10 +415,10 @@ where
                     }
 
                     let value = replay_state
-                        .sload(db, address, key, None)?
+                        .sload_current(db, address, key)?
                         .checked_add(delta)
-                        .ok_or(StorageActionReplayFallback::BalanceOverflow)?;
-                    replay_state.sstore(db, address, key, value, WriteKind::Delta)?;
+                        .ok_or(StorageActionReplayFallback::Overflow)?;
+                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::Sdec(address, key, delta) => {
                     if replay_state.has_store(address, key) {
@@ -408,17 +426,17 @@ where
                     }
 
                     let value = replay_state
-                        .sload(db, address, key, None)?
+                        .sload_current(db, address, key)?
                         .checked_sub(delta)
-                        .ok_or(StorageActionReplayFallback::InsufficientBalance)?;
-                    replay_state.sstore(db, address, key, value, WriteKind::Delta)?;
+                        .ok_or(StorageActionReplayFallback::Underflow)?;
+                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::FeeAmmSwap(address, key, amount_in) => {
                     if replay_state.has_store(address, key) {
                         return Err(StorageActionReplayFallback::ActionConflict.into());
                     }
 
-                    let pool_slot = replay_state.sload(db, address, key, None)?;
+                    let pool_slot = replay_state.sload_current(db, address, key)?;
                     let mut pool = Pool::decode_from_slot(pool_slot);
                     pool.apply_swap(
                         amount_in,
@@ -429,7 +447,7 @@ where
                     let value = pool
                         .encode_to_slot()
                         .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
-                    replay_state.sstore(db, address, key, value, WriteKind::Delta)?;
+                    replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
             }
         }
@@ -597,7 +615,7 @@ fn state_storage<DB: Database>(
 }
 
 fn merge_committed_write_kind(
-    writes: &mut AddressMap<alloy_primitives::map::U256Map<WriteKind>>,
+    writes: &mut AddressMap<U256Map<WriteKind>>,
     address: Address,
     slot: U256,
     kind: WriteKind,
@@ -622,4 +640,119 @@ fn action_account_info<DB: StateDB>(
         .map_err(BlockExecutionError::other)
         .map_err(StorageActionReplayExecutionError::Database)
         .map(|account| account.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::database::EmptyDB;
+    use std::assert_matches;
+
+    fn state_with_storage(address: Address, slot: U256, value: U256) -> State<EmptyDB> {
+        let mut db = State::builder().with_database(EmptyDB::default()).build();
+        db.insert_account_with_storage(
+            address,
+            AccountInfo::default(),
+            [(slot, value)].into_iter().collect(),
+        );
+        db
+    }
+
+    #[test]
+    fn recorded_sload_rejects_changed_database_value() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(11));
+        let mut replay_state = StorageActionReplayState::default();
+
+        assert_matches!(
+            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
+            Err(StorageActionReplayExecutionError::Fallback(
+                StorageActionReplayFallback::ActionConflict
+            ))
+        );
+    }
+
+    #[test]
+    fn recorded_sload_rejects_changed_transaction_view() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(10));
+        let mut replay_state = StorageActionReplayState::default();
+
+        assert_eq!(
+            replay_state
+                .sload_current(&mut db, address, slot)
+                .expect("load current storage"),
+            U256::from(10),
+        );
+        replay_state
+            .sstore(address, slot, U256::from(11), WriteKind::Delta)
+            .expect("store loaded slot");
+
+        assert_matches!(
+            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
+            Err(StorageActionReplayExecutionError::Fallback(
+                StorageActionReplayFallback::ActionConflict
+            ))
+        );
+    }
+
+    #[test]
+    fn recorded_sload_does_not_rebase_on_committed_delta() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(11));
+        let mut replay_state = StorageActionReplayState::default();
+        replay_state
+            .writes
+            .entry(address)
+            .or_default()
+            .insert(slot, WriteKind::Delta);
+
+        assert_matches!(
+            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
+            Err(StorageActionReplayExecutionError::Fallback(
+                StorageActionReplayFallback::ActionConflict
+            ))
+        );
+    }
+
+    #[test]
+    fn sstore_requires_prior_load() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut replay_state = StorageActionReplayState::default();
+
+        assert_matches!(
+            replay_state.sstore(address, slot, U256::from(11), WriteKind::Store,),
+            Err(StorageActionReplayExecutionError::Fallback(
+                StorageActionReplayFallback::ActionConflict
+            ))
+        );
+    }
+
+    #[test]
+    fn current_sload_allows_semantic_rebase() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(11));
+        let mut replay_state = StorageActionReplayState::default();
+
+        let current = replay_state
+            .sload_current(&mut db, address, slot)
+            .expect("load current storage");
+        replay_state
+            .sstore(address, slot, current + U256::from(3), WriteKind::Delta)
+            .expect("store loaded slot");
+
+        let change = replay_state
+            .tx_changes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .expect("slot change recorded");
+        assert_eq!(change.original, U256::from(11));
+        assert_eq!(change.current, U256::from(14));
+        assert_eq!(change.write_kind, Some(WriteKind::Delta));
+    }
 }
