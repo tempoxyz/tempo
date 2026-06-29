@@ -97,7 +97,7 @@ impl StorageActionReplayState {
     /// Applies the result of a non-replayable transaction execution to the state.
     pub fn apply_result(&mut self, result: &TempoTxResult) {
         for (address, account) in &result.result().state {
-            for slot in account.storage.keys() {
+            for (slot, _) in account.changed_storage_slots() {
                 // Pessimistically reset the expiring nonce replay state,
                 // it will be fetched again on the next replayed transaction.
                 if *address == NONCE_PRECOMPILE_ADDRESS
