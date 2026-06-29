@@ -34,6 +34,7 @@ alloy-sol-types.workspace = true
 
 auto_impl.workspace = true
 derive_more.workspace = true
+metrics.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 

@@ -2130,18 +2130,15 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
 
-        if matches!(
-            error.as_invalid_tx_err(),
-            Some(
-                TempoInvalidTransaction::ExpiringNonceReplay
-                    | TempoInvalidTransaction::ExpiringNonceSetFull
-                    | TempoInvalidTransaction::ValidBefore { .. }
-                    | TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::LackOfFundForMaxFee { .. },
-                    )
-            )
-        ) && !evm.ctx.tx.is_subblock_transaction()
+        if let Some(reason) = expected_async_execution_revert_reason(error.as_invalid_tx_err())
+            && !evm.ctx.tx.is_subblock_transaction()
         {
+            metrics::counter!(
+                "tempo_async_execution_expected_validation_reverts_total",
+                "reason" => reason,
+            )
+            .increment(1);
+
             evm.ctx().local_mut().clear();
             evm.ctx.journaled_state.discard_tx();
             evm.frame_stack().clear();
@@ -2208,6 +2205,20 @@ where
         };
         evm.clear();
         Ok(result)
+    }
+}
+
+fn expected_async_execution_revert_reason(
+    error: Option<&TempoInvalidTransaction>,
+) -> Option<&'static str> {
+    match error? {
+        TempoInvalidTransaction::ExpiringNonceReplay => Some("expiring_nonce_replay"),
+        TempoInvalidTransaction::ExpiringNonceSetFull => Some("expiring_nonce_set_full"),
+        TempoInvalidTransaction::ValidBefore { .. } => Some("valid_before"),
+        TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { .. },
+        ) => Some("insufficient_funds"),
+        _ => None,
     }
 }
 
@@ -6373,6 +6384,11 @@ mod tests {
                 },
             ),
         ] {
+            assert!(
+                expected_async_execution_revert_reason(Some(&err)).is_some(),
+                "{err} should be classified for async execution metrics"
+            );
+
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv {
                     gas_limit: 100_000,

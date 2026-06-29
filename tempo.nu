@@ -951,6 +951,16 @@ def generate-summary [
     mut feature_builder_invalid_tx_execution_attempts_samples = []
     mut baseline_builder_reverted_txs = []
     mut feature_builder_reverted_txs = []
+    mut baseline_builder_expected_validation_reverts = []
+    mut feature_builder_expected_validation_reverts = []
+    mut baseline_builder_valid_before_reverts = []
+    mut feature_builder_valid_before_reverts = []
+    mut baseline_builder_expiring_nonce_replay_reverts = []
+    mut feature_builder_expiring_nonce_replay_reverts = []
+    mut baseline_builder_expiring_nonce_set_full_reverts = []
+    mut feature_builder_expiring_nonce_set_full_reverts = []
+    mut baseline_builder_insufficient_funds_reverts = []
+    mut feature_builder_insufficient_funds_reverts = []
     mut baseline_builder_invalid_tx_skips = []
     mut feature_builder_invalid_tx_skips = []
     mut baseline_builder_nonce_too_low_skips = []
@@ -1127,6 +1137,7 @@ def generate-summary [
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
         "reth_tempo_payload_builder_reverted_transactions_sum"
         "reth_tempo_payload_builder_reverted_transactions_count"
+        "reth_tempo_async_execution_expected_validation_reverts_total"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
@@ -1248,6 +1259,19 @@ def generate-summary [
         let builder_pool_fetch_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_pool_fetch_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_reverted_txs = do $histogram_delta_sum_total $metric_samples "reth_tempo_payload_builder_reverted_transactions"
+        let builder_expected_validation_revert_samples = ($metric_samples | where name == "reth_tempo_async_execution_expected_validation_reverts_total")
+        let builder_expected_validation_reverts = do $counter_delta_total $builder_expected_validation_revert_samples "reth_tempo_async_execution_expected_validation_reverts_total"
+        let builder_expected_validation_reverts_for_reason = { |reason: string|
+            let samples = (
+                $builder_expected_validation_revert_samples
+                    | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
+            )
+            do $counter_delta_total $samples "reth_tempo_async_execution_expected_validation_reverts_total"
+        }
+        let builder_valid_before_reverts = do $builder_expected_validation_reverts_for_reason "valid_before"
+        let builder_expiring_nonce_replay_reverts = do $builder_expected_validation_reverts_for_reason "expiring_nonce_replay"
+        let builder_expiring_nonce_set_full_reverts = do $builder_expected_validation_reverts_for_reason "expiring_nonce_set_full"
+        let builder_insufficient_funds_reverts = do $builder_expected_validation_reverts_for_reason "insufficient_funds"
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
             let samples = (
@@ -1277,6 +1301,11 @@ def generate-summary [
             $baseline_builder_pool_fetch_samples = ($baseline_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $baseline_builder_reverted_txs = ($baseline_builder_reverted_txs | append $builder_reverted_txs)
+            $baseline_builder_expected_validation_reverts = ($baseline_builder_expected_validation_reverts | append $builder_expected_validation_reverts)
+            $baseline_builder_valid_before_reverts = ($baseline_builder_valid_before_reverts | append $builder_valid_before_reverts)
+            $baseline_builder_expiring_nonce_replay_reverts = ($baseline_builder_expiring_nonce_replay_reverts | append $builder_expiring_nonce_replay_reverts)
+            $baseline_builder_expiring_nonce_set_full_reverts = ($baseline_builder_expiring_nonce_set_full_reverts | append $builder_expiring_nonce_set_full_reverts)
+            $baseline_builder_insufficient_funds_reverts = ($baseline_builder_insufficient_funds_reverts | append $builder_insufficient_funds_reverts)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1293,6 +1322,11 @@ def generate-summary [
             $feature_builder_pool_fetch_samples = ($feature_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $feature_builder_reverted_txs = ($feature_builder_reverted_txs | append $builder_reverted_txs)
+            $feature_builder_expected_validation_reverts = ($feature_builder_expected_validation_reverts | append $builder_expected_validation_reverts)
+            $feature_builder_valid_before_reverts = ($feature_builder_valid_before_reverts | append $builder_valid_before_reverts)
+            $feature_builder_expiring_nonce_replay_reverts = ($feature_builder_expiring_nonce_replay_reverts | append $builder_expiring_nonce_replay_reverts)
+            $feature_builder_expiring_nonce_set_full_reverts = ($feature_builder_expiring_nonce_set_full_reverts | append $builder_expiring_nonce_set_full_reverts)
+            $feature_builder_insufficient_funds_reverts = ($feature_builder_insufficient_funds_reverts | append $builder_insufficient_funds_reverts)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1346,6 +1380,11 @@ def generate-summary [
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
             builder_reverted_txs: $builder_reverted_txs
+            builder_expected_validation_reverts: $builder_expected_validation_reverts
+            builder_valid_before_reverts: $builder_valid_before_reverts
+            builder_expiring_nonce_replay_reverts: $builder_expiring_nonce_replay_reverts
+            builder_expiring_nonce_set_full_reverts: $builder_expiring_nonce_set_full_reverts
+            builder_insufficient_funds_reverts: $builder_insufficient_funds_reverts
             tps: $actual_tps
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
@@ -1395,6 +1434,16 @@ def generate-summary [
     let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
     let b_builder_reverted_txs = if ($baseline_builder_reverted_txs | length) > 0 { $baseline_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_reverted_txs = if ($feature_builder_reverted_txs | length) > 0 { $feature_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_expected_validation_reverts = if ($baseline_builder_expected_validation_reverts | length) > 0 { $baseline_builder_expected_validation_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_expected_validation_reverts = if ($feature_builder_expected_validation_reverts | length) > 0 { $feature_builder_expected_validation_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_valid_before_reverts = if ($baseline_builder_valid_before_reverts | length) > 0 { $baseline_builder_valid_before_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_valid_before_reverts = if ($feature_builder_valid_before_reverts | length) > 0 { $feature_builder_valid_before_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_expiring_nonce_replay_reverts = if ($baseline_builder_expiring_nonce_replay_reverts | length) > 0 { $baseline_builder_expiring_nonce_replay_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_expiring_nonce_replay_reverts = if ($feature_builder_expiring_nonce_replay_reverts | length) > 0 { $feature_builder_expiring_nonce_replay_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_expiring_nonce_set_full_reverts = if ($baseline_builder_expiring_nonce_set_full_reverts | length) > 0 { $baseline_builder_expiring_nonce_set_full_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_expiring_nonce_set_full_reverts = if ($feature_builder_expiring_nonce_set_full_reverts | length) > 0 { $feature_builder_expiring_nonce_set_full_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_insufficient_funds_reverts = if ($baseline_builder_insufficient_funds_reverts | length) > 0 { $baseline_builder_insufficient_funds_reverts | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_insufficient_funds_reverts = if ($feature_builder_insufficient_funds_reverts | length) > 0 { $feature_builder_insufficient_funds_reverts | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
@@ -1567,6 +1616,11 @@ def generate-summary [
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
         (do $count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
+        (do $nonzero_count_row "Expected Validation Reverts" $b_builder_expected_validation_reverts $f_builder_expected_validation_reverts)
+        (do $nonzero_count_row "Expired Tx Reverts" $b_builder_valid_before_reverts $f_builder_valid_before_reverts)
+        (do $nonzero_count_row "Expiring Nonce Replay Reverts" $b_builder_expiring_nonce_replay_reverts $f_builder_expiring_nonce_replay_reverts)
+        (do $nonzero_count_row "Expiring Nonce Set Full Reverts" $b_builder_expiring_nonce_set_full_reverts $f_builder_expiring_nonce_set_full_reverts)
+        (do $nonzero_count_row "Insufficient Funds Reverts" $b_builder_insufficient_funds_reverts $f_builder_insufficient_funds_reverts)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
         (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
@@ -1635,6 +1689,11 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
                 builder_reverted_txs: $b_builder_reverted_txs
+                builder_expected_validation_reverts: $b_builder_expected_validation_reverts
+                builder_valid_before_reverts: $b_builder_valid_before_reverts
+                builder_expiring_nonce_replay_reverts: $b_builder_expiring_nonce_replay_reverts
+                builder_expiring_nonce_set_full_reverts: $b_builder_expiring_nonce_set_full_reverts
+                builder_insufficient_funds_reverts: $b_builder_insufficient_funds_reverts
                 builder_invalid_tx_skips: $b_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $b_builder_fill_idle.p50
@@ -1673,6 +1732,11 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
                 builder_reverted_txs: $f_builder_reverted_txs
+                builder_expected_validation_reverts: $f_builder_expected_validation_reverts
+                builder_valid_before_reverts: $f_builder_valid_before_reverts
+                builder_expiring_nonce_replay_reverts: $f_builder_expiring_nonce_replay_reverts
+                builder_expiring_nonce_set_full_reverts: $f_builder_expiring_nonce_set_full_reverts
+                builder_insufficient_funds_reverts: $f_builder_insufficient_funds_reverts
                 builder_invalid_tx_skips: $f_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $f_builder_fill_idle.p50
@@ -1711,6 +1775,11 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
                 builder_reverted_txs: (do $delta $b_builder_reverted_txs $f_builder_reverted_txs)
+                builder_expected_validation_reverts: (do $delta $b_builder_expected_validation_reverts $f_builder_expected_validation_reverts)
+                builder_valid_before_reverts: (do $delta $b_builder_valid_before_reverts $f_builder_valid_before_reverts)
+                builder_expiring_nonce_replay_reverts: (do $delta $b_builder_expiring_nonce_replay_reverts $f_builder_expiring_nonce_replay_reverts)
+                builder_expiring_nonce_set_full_reverts: (do $delta $b_builder_expiring_nonce_set_full_reverts $f_builder_expiring_nonce_set_full_reverts)
+                builder_insufficient_funds_reverts: (do $delta $b_builder_insufficient_funds_reverts $f_builder_insufficient_funds_reverts)
                 builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
                 builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
                 builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)

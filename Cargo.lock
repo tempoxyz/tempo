@@ -13513,6 +13513,7 @@ dependencies = [
  "base64 0.22.1",
  "derive_more",
  "eyre",
+ "metrics",
  "p256",
  "proptest",
  "reth-evm",
