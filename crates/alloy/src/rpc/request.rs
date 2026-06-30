@@ -471,9 +471,9 @@ impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
         let (tx, signature, _) = value.into_parts();
         let multisig = signature.as_multisig();
-        let multisig_init = multisig.and_then(|multisig| multisig.init.clone());
-        let multisig_config_id = multisig.map(|multisig| multisig.config_id);
-        let multisig_signature_count = multisig.map(|multisig| multisig.signatures.len());
+        let multisig_init = multisig.and_then(|multisig| multisig.init().cloned());
+        let multisig_config_id = multisig.map(|multisig| multisig.config_id());
+        let multisig_signature_count = multisig.map(|multisig| multisig.signature_count());
         Self {
             multisig_init,
             multisig_config_id,
