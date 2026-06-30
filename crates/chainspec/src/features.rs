@@ -26,17 +26,25 @@ pub const FEATURE_REGISTRY: &[Feature] = &[Feature {
     name: "tip-1063.feature-registry",
 }];
 
-const FEATURE_HEAD_COUNT: usize = FEATURE_REGISTRY.len() + 1;
+const FEATURE_HEADS_COUNT: usize = FEATURE_REGISTRY.len() + 1;
 
 /// Cached feature hash-chain heads.
 ///
 /// Index `0` is [`NO_ACTIVE_FEATURE_HEAD`], and index `N > 0` is the head for
 /// feature IDs `1..=N`.
-pub static FEATURE_HEADS: LazyLock<[B256; FEATURE_HEAD_COUNT]> = LazyLock::new(build_feature_heads);
+pub static FEATURE_HEADS: LazyLock<[B256; FEATURE_HEADS_COUNT]> =
+    LazyLock::new(build_feature_heads);
 
-fn update_len_prefixed(hasher: &mut Keccak256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
+fn build_feature_heads() -> [B256; FEATURE_HEADS_COUNT] {
+    let mut heads = [NO_ACTIVE_FEATURE_HEAD; FEATURE_HEADS_COUNT];
+    let mut head = NO_ACTIVE_FEATURE_HEAD;
+
+    for (index, feature) in FEATURE_REGISTRY.iter().enumerate() {
+        head = extend_feature_head(head, feature);
+        heads[index + 1] = head;
+    }
+
+    heads
 }
 
 /// Returns the head produced by appending `feature` to `parent_head`.
@@ -48,16 +56,9 @@ pub fn extend_feature_head(parent_head: B256, feature: &Feature) -> B256 {
     hasher.finalize()
 }
 
-fn build_feature_heads() -> [B256; FEATURE_HEAD_COUNT] {
-    let mut heads = [NO_ACTIVE_FEATURE_HEAD; FEATURE_HEAD_COUNT];
-    let mut head = NO_ACTIVE_FEATURE_HEAD;
-
-    for (index, feature) in FEATURE_REGISTRY.iter().enumerate() {
-        head = extend_feature_head(head, feature);
-        heads[index + 1] = head;
-    }
-
-    heads
+fn update_len_prefixed(hasher: &mut Keccak256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 /// Highest feature head supported by this binary.
