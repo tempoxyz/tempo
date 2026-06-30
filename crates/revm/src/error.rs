@@ -240,6 +240,13 @@ pub enum TempoInvalidTransaction {
     #[error("native multisig transactions are not active")]
     NativeMultisigNotActive,
 
+    /// Native multisig transaction shape or stateless policy is invalid.
+    #[error("native multisig invalid transaction: {reason}")]
+    NativeMultisigInvalidTransaction {
+        /// Validation error details.
+        reason: String,
+    },
+
     /// Native multisig validation failed.
     #[error("native multisig validation failed: {reason}")]
     NativeMultisigValidationFailed {
@@ -338,6 +345,7 @@ impl TempoInvalidTransaction {
             | Self::SubblockTransactionMustHaveZeroFee
             | Self::KeychainOpInSubblockTransaction
             | Self::NativeMultisigNotActive
+            | Self::NativeMultisigInvalidTransaction { .. }
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
@@ -521,6 +529,25 @@ mod tests {
         for err in cases {
             assert!(!err.is_bad_transaction(), "{err} should not be bad");
         }
+    }
+
+    #[test]
+    fn test_native_multisig_bad_transaction_classification() {
+        let invalid_shape = TempoInvalidTransaction::NativeMultisigInvalidTransaction {
+            reason: "invalid shape".to_string(),
+        };
+        assert!(
+            invalid_shape.is_bad_transaction(),
+            "stateless native multisig shape/policy failures should be bad transactions"
+        );
+
+        let validation_failed = TempoInvalidTransaction::NativeMultisigValidationFailed {
+            reason: "below threshold".to_string(),
+        };
+        assert!(
+            !validation_failed.is_bad_transaction(),
+            "config/quorum validation can depend on native multisig account state"
+        );
     }
 
     #[test]

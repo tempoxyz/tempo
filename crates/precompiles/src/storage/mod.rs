@@ -183,7 +183,8 @@ pub trait PrecompileStorageProvider {
     /// Recovers the signer address from an ECDSA signature and charges ecrecover gas.
     /// As per [TIP-1004], it only accepts `v` values of `27` or `28` (no `0`/`1` normalization).
     ///
-    /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
+    /// Returns `Ok(None)` on invalid signatures. Callers MUST map `None` to their
+    /// domain-specific invalid-signature error before using the result for authorization.
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
     fn recover_signer(&mut self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
