@@ -55,7 +55,6 @@ use reth_revm::{
     State,
     context::Block,
     database::StateProviderDatabase,
-    database_interface::bal::BalState,
     db::states::bundle_state::BundleRetention,
     state::{
         EvmState,
@@ -2616,32 +2615,22 @@ where
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state = BalState::new().with_bal_builder();
-            let mut shard_bal_state = BalState::new().with_bal_builder();
+            let mut bal_state = BuilderBalState::new();
             for msg in task_rx {
                 match msg {
                     BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                        shard_bal_state.bump_bal_index();
+                        bal_state.bump_index();
                     }
                     BalMessage::Snapshot {
                         first_tx_index,
                         next_tx_index,
                         reply_tx,
                     } => {
-                        let snapshot = encode_bal_range_snapshot(
-                            &bal_state,
-                            &shard_bal_state,
-                            first_tx_index,
-                            next_tx_index,
-                        );
+                        let snapshot = bal_state.snapshot(first_tx_index, next_tx_index);
                         let _ = reply_tx.send(snapshot);
-                        shard_bal_state = BalState::new().with_bal_builder();
-                        shard_bal_state.bump_bal_index();
                     }
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
-                        shard_bal_state.commit(&state);
                         if let Some(state_root_task_hook) = &mut state_root_task_hook {
                             state_root_task_hook.on_state(state);
                         }
@@ -2650,12 +2639,7 @@ where
             }
 
             drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
+            let _ = bal_tx.send(bal_state.finish());
         });
 
         BalTaskHandle {
@@ -2709,15 +2693,65 @@ enum BalMessage {
     },
 }
 
+struct BuilderBalState {
+    full_bal: RevmBal,
+    shard_bal: RevmBal,
+    full_index: BlockAccessIndex,
+    shard_index: BlockAccessIndex,
+}
+
+impl BuilderBalState {
+    fn new() -> Self {
+        Self {
+            full_bal: RevmBal::new(),
+            shard_bal: RevmBal::new(),
+            full_index: BlockAccessIndex::PRE_EXECUTION,
+            shard_index: BlockAccessIndex::PRE_EXECUTION,
+        }
+    }
+
+    fn bump_index(&mut self) {
+        self.full_index.increment();
+        self.shard_index.increment();
+    }
+
+    fn commit(&mut self, state: &EvmState) {
+        for (address, account) in state {
+            self.full_bal
+                .update_account(self.full_index, *address, account);
+            self.shard_bal
+                .update_account(self.shard_index, *address, account);
+        }
+    }
+
+    fn snapshot(&mut self, first_tx_index: u64, next_tx_index: u64) -> Option<Bytes> {
+        let snapshot = encode_bal_range_snapshot(
+            &self.full_bal,
+            &self.shard_bal,
+            first_tx_index,
+            next_tx_index,
+        );
+        self.shard_bal = RevmBal::new();
+        self.shard_index = BlockAccessIndex::from_tx_index(0);
+        snapshot
+    }
+
+    fn finish(self) -> (Bytes, B256) {
+        let bal: Bal = self.full_bal.into_alloy_bal().into();
+        let mut encoded = Vec::new();
+        bal.encode(&mut encoded);
+        let bal_hash = keccak256(&encoded);
+        (encoded.into(), bal_hash)
+    }
+}
+
 fn encode_bal_range_snapshot(
-    bal_state: &BalState,
-    shard_filter_state: &BalState,
+    full_bal: &RevmBal,
+    shard_filter: &RevmBal,
     first_tx_index: u64,
     next_tx_index: u64,
 ) -> Option<Bytes> {
-    let full_bal = bal_state.bal_builder()?;
-    let shard_filter = shard_filter_state.bal_builder()?;
-    let bal: Bal = slice_bal_range(&full_bal, &shard_filter, first_tx_index, next_tx_index)
+    let bal: Bal = slice_bal_range(full_bal, shard_filter, first_tx_index, next_tx_index)
         .into_alloy_bal()
         .into();
     let mut encoded = Vec::new();
