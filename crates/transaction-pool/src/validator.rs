@@ -1,5 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
+    metrics::TempoPoolIngressMetrics,
     state_cache::{StateCache, StateCacheDb},
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -30,9 +31,12 @@ use revm::{
         result::{EVMError, InvalidTransaction},
     },
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Instant,
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -346,6 +350,12 @@ where
         cached_state: Arc<StateCache>,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
+        let transactions = transactions.into_iter().collect::<Vec<_>>();
+        let metrics = TempoPoolIngressMetrics::default();
+        let started = Instant::now();
+        let guard = metrics.start_validation_batch(transactions.len());
+        guard.keep();
+
         let mut db = StateCacheDb::new(&cached_state, StateProviderDatabase::new(&state_provider));
         let evm_env = self.cached_evm_env.read().clone();
 
@@ -361,7 +371,7 @@ where
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
 
-        transactions
+        let outcomes = transactions
             .into_iter()
             .map(|(origin, transaction)| {
                 let outcome = self.validate_one_with_evm(origin, transaction, &mut evm);
@@ -371,7 +381,21 @@ where
                 evm.ctx_mut().journal_mut().discard_tx();
                 outcome
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        let mut valid = 0;
+        let mut invalid = 0;
+        let mut error = 0;
+        for outcome in &outcomes {
+            match outcome {
+                TransactionValidationOutcome::Valid { .. } => valid += 1,
+                TransactionValidationOutcome::Invalid(_, _) => invalid += 1,
+                TransactionValidationOutcome::Error(_, _) => error += 1,
+            }
+        }
+        metrics.record_validation_batch_result(started.elapsed(), valid, invalid, error);
+
+        outcomes
     }
 
     /// Returns the latest state provider and a state cache valid for the provider's tip.

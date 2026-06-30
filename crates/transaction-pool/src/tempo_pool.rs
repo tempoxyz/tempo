@@ -3,8 +3,8 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, metrics::TempoPoolIngressMetrics,
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
     validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
@@ -546,6 +546,19 @@ where
     /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
     /// stays in the protocol pool.
     fn add_validated_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TransactionValidationOutcome<TempoPooledTransaction>,
+    ) -> PoolResult<AddedTransactionOutcome> {
+        let metrics = TempoPoolIngressMetrics::default();
+        let started = Instant::now();
+        let _guard = metrics.start_pool_insert();
+        let result = self.add_validated_transaction_inner(origin, transaction);
+        metrics.record_pool_insert_duration(started.elapsed());
+        result
+    }
+
+    fn add_validated_transaction_inner(
         &self,
         origin: TransactionOrigin,
         transaction: TransactionValidationOutcome<TempoPooledTransaction>,

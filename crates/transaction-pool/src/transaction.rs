@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    metrics::TempoPoolIngressMetrics,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{
     BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
 };
@@ -24,6 +27,7 @@ use std::{
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
+    time::Instant,
 };
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
@@ -125,6 +129,34 @@ impl TempoPooledTransaction {
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
+    }
+
+    fn recover_raw_transaction_inner(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
+        if data.is_empty() {
+            return Err(RawPoolTransactionError::EmptyRawTransactionData);
+        }
+
+        let encoded_length = data.len();
+        let transaction = TempoTxEnvelope::decode_2718_exact(data)
+            .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
+
+        let (signer, expiring_nonce_hash) = match &transaction {
+            TempoTxEnvelope::AA(tx) => tx
+                .recover_signer_with_expiring_nonce_hash()
+                .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
+            _ => (
+                transaction
+                    .recover_signer()
+                    .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
+                None,
+            ),
+        };
+
+        Ok(Self::new_with(
+            Recovered::new_unchecked(transaction, signer),
+            expiring_nonce_hash,
+            encoded_length,
+        ))
     }
 
     /// Get the cost of the transaction in the fee token.
@@ -757,31 +789,12 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn recover_raw_transaction(data: &[u8]) -> Result<Self, RawPoolTransactionError> {
-        if data.is_empty() {
-            return Err(RawPoolTransactionError::EmptyRawTransactionData);
-        }
-
-        let encoded_length = data.len();
-        let transaction = Self::Pooled::decode_2718_exact(data)
-            .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
-
-        let (signer, expiring_nonce_hash) = match &transaction {
-            TempoTxEnvelope::AA(tx) => tx
-                .recover_signer_with_expiring_nonce_hash()
-                .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-            _ => (
-                transaction
-                    .recover_signer()
-                    .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)?,
-                None,
-            ),
-        };
-
-        Ok(Self::new_with(
-            Recovered::new_unchecked(transaction, signer),
-            expiring_nonce_hash,
-            encoded_length,
-        ))
+        let metrics = TempoPoolIngressMetrics::default();
+        let started = Instant::now();
+        let _guard = metrics.start_raw_decode_recovery(data.len());
+        let result = Self::recover_raw_transaction_inner(data);
+        metrics.record_raw_decode_recovery_result(started.elapsed(), result.is_ok());
+        result
     }
 
     fn hash(&self) -> &TxHash {
