@@ -121,6 +121,7 @@ struct SsmrReplayRecoveryJob {
 #[derive(Debug)]
 struct SsmrRecoveredTx {
     transaction: Recovered<TempoTxEnvelope>,
+    encoded: Bytes,
     tx_rlp_length: usize,
     pool_lookup_elapsed: Duration,
     pool_hit: bool,
@@ -453,6 +454,7 @@ where
             tx_index,
             tx: SsmrRecoveredTx {
                 transaction,
+                encoded,
                 tx_rlp_length,
                 pool_lookup_elapsed,
                 pool_hit: true,
@@ -480,6 +482,7 @@ where
         tx_index,
         tx: SsmrRecoveredTx {
             transaction: Recovered::new_unchecked(tx, sender),
+            encoded,
             tx_rlp_length,
             pool_lookup_elapsed,
             pool_hit: false,
@@ -1072,7 +1075,13 @@ where
         if !receipt.success {
             *reverted_transactions += 1;
         }
-        let _ = roots_tx.send((BuilderTx::Owned(Box::new(output.tx.transaction)), receipt));
+        let _ = roots_tx.send((
+            BuilderTx::Owned {
+                tx: Box::new(output.tx.transaction),
+                encoded_2718: Some(output.tx.encoded),
+            },
+            receipt,
+        ));
     }
     let ordered_commit_elapsed = ordered_commit_start.elapsed();
 
@@ -1701,6 +1710,7 @@ where
                         for tx in batch.transactions {
                             let SsmrRecoveredTx {
                                 transaction: recovered,
+                                encoded,
                                 tx_rlp_length,
                                 pool_lookup_elapsed: _,
                                 pool_hit: _,
@@ -1774,7 +1784,13 @@ where
                             if !receipt.success {
                                 reverted_transactions += 1;
                             }
-                            let _ = roots_tx.send((BuilderTx::Owned(Box::new(recovered)), receipt));
+                            let _ = roots_tx.send((
+                                BuilderTx::Owned {
+                                    tx: Box::new(recovered),
+                                    encoded_2718: Some(encoded),
+                                },
+                                receipt,
+                            ));
                         }
                     }
 
@@ -2027,13 +2043,19 @@ where
                 if !receipt.success {
                     reverted_transactions += 1;
                 }
-                maybe_push_ssmr_transaction(
+                let encoded_2718 = maybe_push_ssmr_transaction(
                     &mut ssmr_packer,
                     bal_task_handle.as_ref(),
                     &pool_tx.transaction,
                     pool_tx.gas_limit(),
                 );
-                let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
+                let _ = roots_tx.send((
+                    BuilderTx::Pooled {
+                        tx: pool_tx,
+                        encoded_2718,
+                    },
+                    receipt,
+                ));
             };
 
             // cancel pre-warming, if any, by dropping the iter
@@ -2120,13 +2142,19 @@ where
                 if !receipt.success {
                     reverted_transactions += 1;
                 }
-                maybe_push_ssmr_transaction(
+                let encoded_2718 = maybe_push_ssmr_transaction(
                     &mut ssmr_packer,
                     bal_task_handle.as_ref(),
                     tx.inner(),
                     tx.inner().gas_limit(),
                 );
-                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
+                let _ = roots_tx.send((
+                    BuilderTx::Owned {
+                        tx: Box::new(tx),
+                        encoded_2718,
+                    },
+                    receipt,
+                ));
             }
 
             self.metrics
@@ -2163,14 +2191,17 @@ where
                 bal_task_handle.bump_bal_index();
             }
 
-            maybe_push_ssmr_transaction(
+            let encoded_2718 = maybe_push_ssmr_transaction(
                 &mut ssmr_packer,
                 bal_task_handle.as_ref(),
                 system_tx.inner(),
                 system_tx.inner().gas_limit(),
             );
             let _ = roots_tx.send((
-                BuilderTx::Owned(Box::new(system_tx)),
+                BuilderTx::Owned {
+                    tx: Box::new(system_tx),
+                    encoded_2718,
+                },
                 executor.receipts().last().unwrap().clone(),
             ));
         }
@@ -2188,12 +2219,7 @@ where
             .record(total_transaction_execution_elapsed);
 
         if let Some(packer) = ssmr_packer.take() {
-            let block_access_list = packer.pending_range().and_then(|(first, next)| {
-                bal_task_handle
-                    .as_ref()
-                    .and_then(|handle| handle.snapshot_block_access_list(first, next))
-            });
-            packer.finish(block_access_list);
+            packer.finish(bal_task_handle.as_ref());
         }
 
         let payload_finalization_start = Instant::now();
@@ -2581,11 +2607,16 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.into_parts();
+                    let (tx, sender, encoded_2718) = tx.into_parts();
                     buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    encoded_block_transactions.push(&tx, &buf);
+                    let encoded_tx = if let Some(encoded_2718) = encoded_2718.as_ref() {
+                        encoded_2718.as_ref()
+                    } else {
+                        tx.encode_2718(&mut buf);
+                        buf.as_slice()
+                    };
+                    transactions_root.push_next(encoded_tx);
+                    encoded_block_transactions.push(&tx, encoded_tx);
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -2666,7 +2697,11 @@ impl BalTaskHandle {
         let _ = self.msg_tx.send(BalMessage::BumpIndex);
     }
 
-    fn snapshot_block_access_list(&self, first_tx_index: u64, next_tx_index: u64) -> Option<Bytes> {
+    fn request_snapshot_block_access_list(
+        &self,
+        first_tx_index: u64,
+        next_tx_index: u64,
+    ) -> Option<mpsc::Receiver<Option<Bytes>>> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.msg_tx
             .send(BalMessage::Snapshot {
@@ -2675,7 +2710,7 @@ impl BalTaskHandle {
                 reply_tx,
             })
             .ok()?;
-        reply_rx.recv().ok().flatten()
+        Some(reply_rx)
     }
 
     fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
@@ -2854,21 +2889,20 @@ fn maybe_push_ssmr_transaction<T>(
     bal_task_handle: Option<&BalTaskHandle>,
     tx: &T,
     gas_estimate: u64,
-) where
+) -> Option<Bytes>
+where
     T: Encodable2718,
 {
-    let Some(packer) = ssmr_packer.as_mut() else {
-        return;
-    };
+    let packer = ssmr_packer.as_mut()?;
 
-    let mut encoded = Vec::new();
+    let mut encoded = Vec::with_capacity(tx.encode_2718_len());
     tx.encode_2718(&mut encoded);
-    if packer.push(encoded.into(), gas_estimate) {
-        let block_access_list = packer.pending_range().and_then(|(first, next)| {
-            bal_task_handle.and_then(|handle| handle.snapshot_block_access_list(first, next))
-        });
-        packer.flush(block_access_list);
+    let encoded = Bytes::from(encoded);
+    if packer.push(encoded.clone(), gas_estimate) {
+        packer.queue_flush(bal_task_handle);
     }
+    packer.drain_ready();
+    Some(encoded)
 }
 
 struct SsmrShardPacker {
@@ -2882,6 +2916,12 @@ struct SsmrShardPacker {
     cumulative_gas_estimate: u64,
     pending_bytes: usize,
     pending_transactions: Vec<Bytes>,
+    pending_shards: VecDeque<PendingSsmrShard>,
+}
+
+struct PendingSsmrShard {
+    shard: SsmrBuilderShard,
+    block_access_list_rx: Option<mpsc::Receiver<Option<Bytes>>>,
 }
 
 impl SsmrShardPacker {
@@ -2905,6 +2945,7 @@ impl SsmrShardPacker {
             cumulative_gas_estimate: 0,
             pending_bytes: 0,
             pending_transactions: Vec::new(),
+            pending_shards: VecDeque::new(),
         }
     }
 
@@ -2926,40 +2967,18 @@ impl SsmrShardPacker {
         }
     }
 
-    fn pending_range(&self) -> Option<(u64, u64)> {
-        (!self.pending_transactions.is_empty()).then_some((self.first_tx_index, self.next_tx_index))
-    }
-
-    fn finish(mut self, block_access_list: Option<Bytes>) {
-        self.flush(block_access_list.clone());
+    fn finish(mut self, bal_task_handle: Option<&BalTaskHandle>) {
+        self.queue_flush(bal_task_handle);
+        self.emit_all_pending();
         if self.shard_index == 0 {
-            let bal_bytes = block_access_list
-                .as_ref()
-                .map(|bal| bal.len())
-                .unwrap_or_default();
-            self.metrics
-                .ssmr_builder_shard_bal_bytes
-                .record(bal_bytes as f64);
-            self.metrics
-                .ssmr_builder_shard_bal_bytes_last
-                .set(bal_bytes as f64);
-            debug!(
-                ssmr_builder_shard_index = 0,
-                ssmr_builder_first_tx_index = 0,
-                ssmr_builder_shard_transactions = 0,
-                ssmr_builder_shard_bal_bytes = bal_bytes,
-                ssmr_builder_cumulative_tx_bytes = 0,
-                ssmr_builder_cumulative_gas_estimate = 0,
-                "emitted SSMR builder shard"
-            );
-            (self.sink)(SsmrBuilderEvent::Shard(SsmrBuilderShard {
+            self.emit_shard(SsmrBuilderShard {
                 shard_index: 0,
                 first_tx_index: 0,
                 transactions: Vec::new(),
-                block_access_list,
+                block_access_list: None,
                 cumulative_tx_bytes: 0,
                 cumulative_gas_estimate: 0,
-            }));
+            });
             self.shard_index = 1;
         }
         debug!(
@@ -2973,12 +2992,68 @@ impl SsmrShardPacker {
         });
     }
 
-    fn flush(&mut self, block_access_list: Option<Bytes>) {
+    fn queue_flush(&mut self, bal_task_handle: Option<&BalTaskHandle>) {
         if self.pending_transactions.is_empty() {
             return;
         }
 
-        let bal_bytes = block_access_list
+        let block_access_list_rx = bal_task_handle.and_then(|handle| {
+            handle.request_snapshot_block_access_list(self.first_tx_index, self.next_tx_index)
+        });
+        let shard = SsmrBuilderShard {
+            shard_index: self.shard_index,
+            first_tx_index: self.first_tx_index,
+            transactions: std::mem::take(&mut self.pending_transactions),
+            block_access_list: None,
+            cumulative_tx_bytes: self.cumulative_tx_bytes,
+            cumulative_gas_estimate: self.cumulative_gas_estimate,
+        };
+        self.pending_shards.push_back(PendingSsmrShard {
+            shard,
+            block_access_list_rx,
+        });
+
+        self.shard_index += 1;
+        self.first_tx_index = self.next_tx_index;
+        self.pending_bytes = 0;
+    }
+
+    fn drain_ready(&mut self) {
+        loop {
+            let block_access_list = match self.pending_shards.front_mut() {
+                Some(pending) => match pending.block_access_list_rx.as_mut() {
+                    Some(rx) => match rx.try_recv() {
+                        Ok(block_access_list) => block_access_list,
+                        Err(mpsc::TryRecvError::Empty) => return,
+                        Err(mpsc::TryRecvError::Disconnected) => None,
+                    },
+                    None => None,
+                },
+                None => return,
+            };
+
+            let Some(mut pending) = self.pending_shards.pop_front() else {
+                return;
+            };
+            pending.shard.block_access_list = block_access_list;
+            self.emit_shard(pending.shard);
+        }
+    }
+
+    fn emit_all_pending(&mut self) {
+        while let Some(mut pending) = self.pending_shards.pop_front() {
+            let block_access_list = pending
+                .block_access_list_rx
+                .take()
+                .and_then(|rx| rx.recv().ok().flatten());
+            pending.shard.block_access_list = block_access_list;
+            self.emit_shard(pending.shard);
+        }
+    }
+
+    fn emit_shard(&self, shard: SsmrBuilderShard) {
+        let bal_bytes = shard
+            .block_access_list
             .as_ref()
             .map(|bal| bal.len())
             .unwrap_or_default();
@@ -2988,14 +3063,6 @@ impl SsmrShardPacker {
         self.metrics
             .ssmr_builder_shard_bal_bytes_last
             .set(bal_bytes as f64);
-        let shard = SsmrBuilderShard {
-            shard_index: self.shard_index,
-            first_tx_index: self.first_tx_index,
-            transactions: std::mem::take(&mut self.pending_transactions),
-            block_access_list,
-            cumulative_tx_bytes: self.cumulative_tx_bytes,
-            cumulative_gas_estimate: self.cumulative_gas_estimate,
-        };
         debug!(
             ssmr_builder_shard_index = shard.shard_index,
             ssmr_builder_first_tx_index = shard.first_tx_index,
@@ -3006,10 +3073,6 @@ impl SsmrShardPacker {
             "emitted SSMR builder shard"
         );
         (self.sink)(SsmrBuilderEvent::Shard(shard));
-
-        self.shard_index += 1;
-        self.first_tx_index = self.next_tx_index;
-        self.pending_bytes = 0;
     }
 }
 
@@ -3091,15 +3154,27 @@ fn maybe_override_fee_recipient<DB: Database>(
 
 #[derive(Debug)]
 enum BuilderTx {
-    Pooled(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
-    Owned(Box<Recovered<TempoTxEnvelope>>),
+    Pooled {
+        tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        encoded_2718: Option<Bytes>,
+    },
+    Owned {
+        tx: Box<Recovered<TempoTxEnvelope>>,
+        encoded_2718: Option<Bytes>,
+    },
 }
 
 impl BuilderTx {
-    fn into_parts(self) -> (TempoTxEnvelope, Address) {
+    fn into_parts(self) -> (TempoTxEnvelope, Address, Option<Bytes>) {
         match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
-            Self::Owned(tx) => tx.into_parts(),
+            Self::Pooled { tx, encoded_2718 } => {
+                let (tx, sender) = tx.transaction.inner().clone().into_parts();
+                (tx, sender, encoded_2718)
+            }
+            Self::Owned { tx, encoded_2718 } => {
+                let (tx, sender) = tx.into_parts();
+                (tx, sender, encoded_2718)
+            }
         }
     }
 }
@@ -3163,6 +3238,7 @@ mod tests {
             tx_index,
             tx: SsmrRecoveredTx {
                 transaction: Recovered::new_unchecked(tx, TEMPO_SYSTEM_TX_SENDER),
+                encoded: Bytes::from(vec![0; tx_index + 10]),
                 tx_rlp_length: tx_index + 10,
                 pool_lookup_elapsed: Duration::ZERO,
                 pool_hit: false,
@@ -3223,7 +3299,7 @@ mod tests {
         let mut packer = SsmrShardPacker::new(sink, 5, TempoPayloadBuilderMetrics::default());
         assert!(!packer.push(Bytes::from_static(b"aa"), 10));
         assert!(packer.push(Bytes::from_static(b"bbb"), 20));
-        packer.flush(None);
+        packer.queue_flush(None);
         assert!(!packer.push(Bytes::from_static(b"c"), 30));
         packer.finish(None);
 
@@ -3302,7 +3378,15 @@ mod tests {
 
         let mut packer = SsmrShardPacker::new(sink, 5, TempoPayloadBuilderMetrics::default());
         assert!(packer.push(Bytes::from_static(b"aaaaa"), 10));
-        packer.flush(Some(Bytes::from_static(b"bal0")));
+        let (reply_tx, reply_rx) = mpsc::channel();
+        packer.queue_flush(None);
+        packer
+            .pending_shards
+            .front_mut()
+            .unwrap()
+            .block_access_list_rx = Some(reply_rx);
+        reply_tx.send(Some(Bytes::from_static(b"bal0"))).unwrap();
+        packer.drain_ready();
         packer.finish(None);
 
         let events = events.lock().unwrap();
@@ -3349,7 +3433,7 @@ mod tests {
         );
         assert!(!packer.push(Bytes::from(vec![0; 4 * 1024]), 10));
         assert!(packer.push(Bytes::from(vec![0; 1024]), 20));
-        packer.flush(None);
+        packer.queue_flush(None);
         assert!(!packer.push(Bytes::from(vec![0; 6 * 1024]), 30));
         packer.finish(None);
 
