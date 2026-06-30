@@ -84,13 +84,13 @@ impl InitMultisig {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigSignature {
     /// Native multisig account address.
-    pub account: Address,
+    account: Address,
     /// Permanent config ID derived from the initial multisig config.
-    pub config_id: B256,
+    config_id: B256,
     /// Encoded primitive owner signatures over the multisig digest.
-    pub signatures: Vec<Bytes>,
+    signatures: Vec<Bytes>,
     /// Initial native multisig config for bootstrapping this account.
-    pub init: Option<InitMultisig>,
+    init: Option<InitMultisig>,
     /// Cached multisig digest for the transaction hash this signature approved.
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_digest: OnceLock<(B256, Address, B256, B256)>,
@@ -114,6 +114,31 @@ impl MultisigSignature {
             cached_digest: OnceLock::new(),
             cached_recovered_owners: OnceLock::new(),
         }
+    }
+
+    /// Returns the native multisig account address.
+    pub fn account(&self) -> Address {
+        self.account
+    }
+
+    /// Returns the permanent config ID.
+    pub fn config_id(&self) -> B256 {
+        self.config_id
+    }
+
+    /// Returns encoded primitive owner signatures.
+    pub fn signatures(&self) -> &[Bytes] {
+        &self.signatures
+    }
+
+    /// Returns the number of encoded owner signatures.
+    pub fn signature_count(&self) -> usize {
+        self.signatures.len()
+    }
+
+    /// Returns the optional bootstrap config.
+    pub fn init(&self) -> Option<&InitMultisig> {
+        self.init.as_ref()
     }
 
     /// Performs stateless sender-recovery checks and returns the attempted multisig account.

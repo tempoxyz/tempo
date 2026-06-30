@@ -541,10 +541,10 @@ mod tests {
             .as_multisig()
             .expect("mock native multisig signature");
 
-        assert_eq!(multisig_sig.init, Some(init));
-        assert_eq!(multisig_sig.account, account);
-        assert_eq!(multisig_sig.config_id, config_id);
-        assert_eq!(multisig_sig.signatures.len(), 1);
+        assert_eq!(multisig_sig.init(), Some(&init));
+        assert_eq!(multisig_sig.account(), account);
+        assert_eq!(multisig_sig.config_id(), config_id);
+        assert_eq!(multisig_sig.signature_count(), 1);
     }
 
     #[test]
@@ -592,11 +592,11 @@ mod tests {
             .as_multisig()
             .expect("mock native multisig signature");
 
-        assert_eq!(multisig_sig.init, None);
-        assert_eq!(multisig_sig.account, account);
-        assert_eq!(multisig_sig.config_id, config_id);
-        assert_eq!(multisig_sig.signatures.len(), 2);
-        assert!(multisig_sig.signatures.iter().all(|sig| sig.len() > 65));
+        assert_eq!(multisig_sig.init(), None);
+        assert_eq!(multisig_sig.account(), account);
+        assert_eq!(multisig_sig.config_id(), config_id);
+        assert_eq!(multisig_sig.signature_count(), 2);
+        assert!(multisig_sig.signatures().iter().all(|sig| sig.len() > 65));
     }
 
     #[test]
