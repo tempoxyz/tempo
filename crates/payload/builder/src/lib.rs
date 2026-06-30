@@ -100,6 +100,7 @@ use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
+/// Source of transactions for payload building.
 enum PayloadTransactions {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
     Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),

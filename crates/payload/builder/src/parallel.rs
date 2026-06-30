@@ -2,7 +2,7 @@ use alloy_primitives::U256;
 use reth_revm::ExecuteEvm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::WorkerPool;
-use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, evm::TempoEvm};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay};
 use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
@@ -27,7 +27,7 @@ where
     }
 
     let replay = WorkerPool::with_worker_mut(|worker| {
-        let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx_parallel()) else {
+        let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()) else {
             return None;
         };
 

@@ -110,16 +110,17 @@ impl BestTransactionsPrewarming {
                 };
 
                 let parallel = ctx.prewarm.parallel;
+                let prewarm = ctx.prewarm.clone();
+                let commands_tx = ctx.commands_tx.clone();
+                let transactions_tx = ctx.transactions_tx.clone();
+                let action_buffer = parallel.then(|| ctx.action_buffers.pop()).flatten();
+
                 if !parallel {
                     let _ = ctx
                         .transactions_tx
                         .send(Some(PrewarmedTransaction::without_replay(tx.clone())));
                 }
 
-                let prewarm = ctx.prewarm.clone();
-                let commands_tx = ctx.commands_tx.clone();
-                let transactions_tx = ctx.transactions_tx.clone();
-                let action_buffer = ctx.action_buffers.pop();
                 scope.spawn(move |_| {
                     if parallel {
                         let tx = parallel::plan_transaction_replay(
@@ -294,6 +295,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     action_buffers: Vec<Vec<StorageAction>>,
 }
 
+/// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
 #[derive(Debug)]
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
@@ -376,15 +378,12 @@ where
         let state_provider = StateProviderDatabase::new(state_provider);
         let mut evm = TempoEvm::new(state_provider, self.evm_env.clone());
 
+        // Record storage actions for future replay
         if self.parallel {
             evm = evm.with_actions();
         }
 
         Some(evm)
-    }
-
-    pub(crate) fn evm_for_ctx_parallel(&self) -> PrewarmEvmState {
-        self.evm_for_ctx().map(TempoEvm::with_actions)
     }
 
     pub(crate) fn executor(&self) -> TaskExecutor {
