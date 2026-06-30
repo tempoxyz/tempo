@@ -175,7 +175,6 @@ where
             }
         }
 
-        replay_state.insert_account();
         let mut state = EvmState::default();
 
         if commit_reads {
@@ -376,8 +375,6 @@ pub struct StorageActionReplayState {
     writes: AddressMap<U256Map<WriteKind>>,
     /// Changes for the current transaction.
     tx_changes: AddressMap<U256Map<SlotChange>>,
-    /// Last accessed account removed from `writes` and `tx_changes`.
-    account: CachedReplayAccount,
     /// Expiring nonce replay state.
     expiring_nonce: ExpiringNonceReplayState,
 }
@@ -388,56 +385,18 @@ impl StorageActionReplayState {
         self.expiring_nonce.invalidate_cache();
     }
 
-    /// Caches the account lookup across invocations of storage lookup and modification functions.
-    fn set_account(&mut self, address: Address) {
-        if self.account.address == Some(address) {
-            return;
-        }
-
-        self.insert_account();
-
-        self.writes.entry(address).or_default();
-        self.tx_changes.entry(address).or_default();
-        self.account = CachedReplayAccount {
-            address: Some(address),
-            writes: self.writes.remove(&address).unwrap_or_default(),
-            tx_changes: self.tx_changes.remove(&address).unwrap_or_default(),
-        };
-    }
-
-    /// Insert the current account into the replay state, clearing its cached writes and tx changes.
-    fn insert_account(&mut self) {
-        let Some(address) = self.account.address.take() else {
-            return;
-        };
-
-        if !self.account.writes.is_empty() {
-            self.writes
-                .insert(address, std::mem::take(&mut self.account.writes));
-        } else {
-            self.account.writes.clear();
-        }
-
-        if !self.account.tx_changes.is_empty() {
-            self.tx_changes
-                .insert(address, std::mem::take(&mut self.account.tx_changes));
-        } else {
-            self.account.tx_changes.clear();
-        }
-    }
-
     /// Returns whether the state has any write at the given address and slot.
-    fn has_write(&mut self, address: Address, slot: U256) -> bool {
-        self.set_account(address);
-        self.account.writes.contains_key(&slot)
+    fn has_write(&self, address: Address, slot: U256) -> bool {
+        self.writes
+            .get(&address)
+            .is_some_and(|slots| slots.contains_key(&slot))
     }
 
     /// Returns whether the state has a [store](`WriteKind::Store`) write at the given address and slot.
-    fn has_store(&mut self, address: Address, slot: U256) -> bool {
-        self.set_account(address);
-        self.account
-            .writes
-            .get(&slot)
+    fn has_store(&self, address: Address, slot: U256) -> bool {
+        self.writes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
             .is_some_and(|kind| *kind == WriteKind::Store)
     }
 
@@ -453,11 +412,10 @@ impl StorageActionReplayState {
         // value must already be established by a load, otherwise replay would
         // invent `original` from current state and reuse gas/refund data from a
         // different storage transition.
-        self.set_account(address);
         let change = self
-            .account
             .tx_changes
-            .get_mut(&slot)
+            .get_mut(&address)
+            .and_then(|slots| slots.get_mut(&slot))
             .ok_or(StorageActionReplayError::ActionConflict)?;
         change.current = value;
 
@@ -479,9 +437,9 @@ impl StorageActionReplayState {
         current: U256,
         kind: WriteKind,
     ) {
-        self.set_account(address);
-        self.account
-            .tx_changes
+        self.tx_changes
+            .entry(address)
+            .or_default()
             .entry(slot)
             .and_modify(|change| {
                 change.current = current;
@@ -504,8 +462,7 @@ impl StorageActionReplayState {
         slot: U256,
         expected: U256,
     ) -> Result<U256, BlockExecutionError> {
-        self.set_account(address);
-        match self.account.tx_changes.entry(slot) {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => {
                 if change.get().current != expected {
                     return Err(StorageActionReplayError::ActionConflict.into());
@@ -540,8 +497,7 @@ impl StorageActionReplayState {
         address: Address,
         slot: U256,
     ) -> Result<U256, BlockExecutionError> {
-        self.set_account(address);
-        match self.account.tx_changes.entry(slot) {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => Ok(change.get().current),
             Entry::Vacant(change) => {
                 let current = db
@@ -559,14 +515,12 @@ impl StorageActionReplayState {
 
     /// Resets the accumulated transaction changes.
     fn reset_tx_changes(&mut self) {
-        self.insert_account();
         self.tx_changes.clear();
         self.expiring_nonce.reset_pending_ring_ptr();
     }
 
     /// Commits the accumulated transaction changes to the state.
     fn commit_tx_changes(&mut self) {
-        self.insert_account();
         for (address, slots) in self.tx_changes.drain() {
             let account_writes = self.writes.entry(address).or_default();
             for (slot, change) in slots {
@@ -584,13 +538,6 @@ impl StorageActionReplayState {
         }
         self.expiring_nonce.commit_pending_ring_ptr();
     }
-}
-
-#[derive(Debug, Default)]
-struct CachedReplayAccount {
-    address: Option<Address>,
-    writes: U256Map<WriteKind>,
-    tx_changes: U256Map<SlotChange>,
 }
 
 #[derive(Debug)]
@@ -745,33 +692,6 @@ mod tests {
     }
 
     #[test]
-    fn set_account_reinserts_previous_account() {
-        let first = Address::repeat_byte(0x42);
-        let second = Address::repeat_byte(0x43);
-        let slot = U256::from(7);
-        let mut db = state_with_storage(first, slot, U256::from(11));
-        db.insert_account_with_storage(
-            second,
-            AccountInfo::default(),
-            [(slot, U256::from(22))].into_iter().collect(),
-        );
-        let mut replay_state = StorageActionReplayState::default();
-
-        replay_state
-            .sload_current(&mut db, first, slot)
-            .expect("load first account");
-        replay_state
-            .sload_current(&mut db, second, slot)
-            .expect("load second account");
-
-        assert!(replay_state.tx_changes.contains_key(&first));
-        assert!(!replay_state.tx_changes.contains_key(&second));
-
-        replay_state.insert_account();
-        assert!(replay_state.tx_changes.contains_key(&second));
-    }
-
-    #[test]
     fn current_sload_allows_semantic_rebase() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
@@ -785,7 +705,6 @@ mod tests {
             .sstore(address, slot, current + U256::from(3), WriteKind::Delta)
             .expect("store loaded slot");
 
-        replay_state.insert_account();
         let change = replay_state
             .tx_changes
             .get(&address)
