@@ -388,6 +388,19 @@ impl HashMapStorageProvider {
         self.block_env.number = U256::from(block_number);
     }
 
+    /// Overrides the proposer public key.
+    pub fn set_proposer_public_key(
+        &mut self,
+        proposer_public_key: Option<tempo_primitives::ed25519::PublicKey>,
+    ) {
+        self.block_env.proposer_public_key = proposer_public_key;
+    }
+
+    /// Overrides the consensus epoch length.
+    pub fn set_epoch_length(&mut self, epoch_length: core::num::NonZeroU64) {
+        self.block_env.epoch_length = epoch_length;
+    }
+
     /// Overrides the active hardfork spec.
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;

@@ -42,9 +42,9 @@ rayon = { workspace = true, optional = true }
 alloy-consensus.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 alloy-rlp.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
-alloy-sol-types.workspace = true
 
 derive_more.workspace = true
 thiserror.workspace = true

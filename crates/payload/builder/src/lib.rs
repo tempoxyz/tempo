@@ -26,6 +26,7 @@ use alloy_eip7928::bal::Bal;
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
+use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -66,12 +67,20 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    features::{highest_supported_feature_head, supports_feature_head},
+    hardfork::TempoHardforks,
+};
+use tempo_contracts::precompiles::{FEATURE_REGISTRY_ADDRESS, IFeatureRegistry};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
-use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::{
+    feature_registry::FeatureRegistry, storage::StorageActions,
+    validator_config_v2::ValidatorConfigV2,
+};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -202,22 +211,22 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to seal the block.
-    ///
-    /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        evm: &TempoEvm<impl Database>,
+        evm: &mut TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
-        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
-            // Post-T4, omit the subblocks metadata transaction if there are no subblocks
-            return vec![];
-        }
-
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
+        let mut txs = Vec::new();
+
+        if let Some(tx) = self.build_feature_head_readiness_confirmation_tx(evm, chain_id) {
+            txs.push(tx);
+        }
+
+        if subblocks.is_empty() && evm.cfg.spec.is_t4() {
+            return txs;
+        }
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -229,23 +238,87 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .chain(evm.block.number.to_be_bytes_vec())
             .collect();
 
-        let subblocks_signatures_tx = Recovered::new_unchecked(
+        txs.push(Self::system_tx(chain_id, Address::ZERO, subblocks_input));
+        txs
+    }
+
+    fn build_feature_head_readiness_confirmation_tx(
+        &self,
+        evm: &mut TempoEvm<impl Database>,
+        chain_id: Option<u64>,
+    ) -> Option<Recovered<TempoTxEnvelope>> {
+        if !evm.cfg.spec.is_t9() {
+            return None;
+        }
+
+        let public_key = B256::from(evm.block().proposer_public_key.as_ref()?);
+
+        let spec = evm.cfg.spec;
+        let readiness = match evm
+            .ctx_mut()
+            .journaled_state
+            .database
+            .with_read_only_storage_ctx(
+                spec,
+                StorageActions::disabled(),
+                || -> Result<Option<B256>, PayloadBuilderError> {
+                    let scheduled = FeatureRegistry::new()
+                        .scheduled_feature_head()
+                        .map_err(PayloadBuilderError::other)?;
+                    if scheduled.featureHead == B256::ZERO
+                        || !supports_feature_head(scheduled.featureHead)
+                    {
+                        return Ok(None);
+                    }
+
+                    let already_confirmed = FeatureRegistry::new()
+                        .validator_confirmed_feature_head_by_public_key(
+                            public_key,
+                            scheduled.featureHead,
+                        )
+                        .map_err(PayloadBuilderError::other)?;
+                    Ok((!already_confirmed).then_some(scheduled.featureHead))
+                },
+            ) {
+            Ok(readiness) => readiness,
+            Err(err) => {
+                debug!(%err, "skipping feature head readiness confirmation");
+                None
+            }
+        };
+
+        let Some(feature_head) = readiness else {
+            return None;
+        };
+
+        debug!(
+            %feature_head,
+            supported_feature_head = %highest_supported_feature_head(),
+            "confirming scheduled feature head readiness"
+        );
+
+        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+            .abi_encode()
+            .into();
+        Some(Self::system_tx(chain_id, FEATURE_REGISTRY_ADDRESS, input))
+    }
+
+    fn system_tx(chain_id: Option<u64>, to: Address, input: Bytes) -> Recovered<TempoTxEnvelope> {
+        Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
                     chain_id,
                     nonce: 0,
                     gas_price: 0,
                     gas_limit: 0,
-                    to: Address::ZERO.into(),
+                    to: to.into(),
                     value: U256::ZERO,
-                    input: subblocks_input,
+                    input,
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
             TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        vec![subblocks_signatures_tx]
+        )
     }
 }
 
@@ -494,7 +567,7 @@ where
 
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
-        maybe_override_fee_recipient(&mut executor, &attributes);
+        maybe_override_fee_recipient(&mut executor);
 
         let bal_task_handle = if self.enable_bal {
             let bal_task_handle =
@@ -530,7 +603,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
+        let system_txs = self.build_seal_block_txs(executor.evm_mut(), &subblocks);
         for tx in &system_txs {
             estimated_rlp_block_size += tx.inner().length();
         }
@@ -1362,12 +1435,11 @@ pub fn is_more_subblocks(
 /// non-zero address for the given `public_key`.
 fn maybe_override_fee_recipient<DB: Database>(
     executor: &mut impl BlockExecutor<Evm = TempoEvm<DB>>,
-    attributes: &TempoPayloadAttributes,
 ) {
-    let Some(public_key) = attributes.proposer_public_key() else {
+    let ctx = executor.evm_mut().ctx_mut();
+    let Some(public_key) = ctx.block.proposer_public_key.as_ref().map(B256::from) else {
         return;
     };
-    let ctx = executor.evm_mut().ctx_mut();
     if !ctx.cfg.spec.is_t2() {
         return;
     }
@@ -1394,7 +1466,7 @@ fn maybe_override_fee_recipient<DB: Database>(
                 return Ok(None);
             }
             let on_chain = config
-                .validator_by_public_key(*public_key)
+                .validator_by_public_key(public_key)
                 .map(|v| v.feeRecipient)
                 .map_err(PayloadBuilderError::other)?;
             Ok((!on_chain.is_zero()).then_some(on_chain))

@@ -521,6 +521,20 @@ impl StorageCtx {
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_proposer_public_key(
+        &mut self,
+        proposer_public_key: Option<tempo_primitives::ed25519::PublicKey>,
+    ) {
+        self.as_hashmap()
+            .set_proposer_public_key(proposer_public_key)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_epoch_length(&mut self, epoch_length: core::num::NonZeroU64) {
+        self.as_hashmap().set_epoch_length(epoch_length)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.as_hashmap().set_spec(spec)
     }

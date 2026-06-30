@@ -22,18 +22,18 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee,
-    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, FEATURE_REGISTRY_ADDRESS,
+    ICurrentCommittee, IFeatureRegistry, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
@@ -52,7 +52,10 @@ pub(crate) enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System { seen_subblocks_signatures: bool },
+    System {
+        seen_subblocks_signatures: bool,
+        seen_feature_head_readiness_confirmation: bool,
+    },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -148,6 +151,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
+    consensus_context: Option<TempoConsensusContext>,
     shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
@@ -170,6 +174,7 @@ where
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
+            consensus_context: ctx.consensus_context,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
@@ -256,9 +261,58 @@ where
         Ok(())
     }
 
+    fn transact_precompile_system_call(
+        &mut self,
+        contract: Address,
+        data: Bytes,
+        context: &str,
+    ) -> Result<(), BlockExecutionError> {
+        let result_and_state = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, contract, data)
+            .map_err(|err| {
+                BlockExecutionError::msg(format!("{context} system call failed: {err}"))
+            })?;
+
+        match result_and_state.result {
+            ExecutionResult::Success { .. } => {
+                self.evm_mut().db_mut().commit(result_and_state.state);
+                Ok(())
+            }
+            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call reverted: {output}"
+            ))),
+            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
+                "{context} system call halted: {reason:?}"
+            ))),
+        }
+    }
+
+    /// Activates a scheduled feature head once the consensus epoch reaches the target epoch.
+    fn activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
+        let Some(consensus_context) = self.consensus_context else {
+            return Ok(());
+        };
+        let Some(active_validator_public_keys) = self.validator_set.clone() else {
+            return Ok(());
+        };
+
+        let call = IFeatureRegistry::activateScheduledFeatureHeadCall {
+            currentEpoch: consensus_context.epoch,
+            activeValidatorPublicKeys: active_validator_public_keys,
+        };
+        self.transact_precompile_system_call(
+            FEATURE_REGISTRY_ADDRESS,
+            call.abi_encode().into(),
+            "feature head activation",
+        )?;
+
+        Ok(())
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
@@ -269,7 +323,15 @@ where
         let mut seen_subblocks_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
+                ..
             } => seen_subblocks_signatures,
+            _ => false,
+        };
+        let mut seen_feature_head_readiness_confirmation = match self.section {
+            BlockSection::System {
+                seen_feature_head_readiness_confirmation,
+                ..
+            } => seen_feature_head_readiness_confirmation,
             _ => false,
         };
 
@@ -308,13 +370,46 @@ where
             self.validate_shared_gas(&metadata)?;
 
             seen_subblocks_signatures = true;
+        } else if to == FEATURE_REGISTRY_ADDRESS {
+            if seen_feature_head_readiness_confirmation {
+                return Err(BlockValidationError::msg(
+                    "duplicate feature head readiness system transaction",
+                ));
+            }
+
+            if !self.evm().cfg.spec.is_t9() {
+                return Err(BlockValidationError::msg(
+                    "feature head readiness system transaction is disabled",
+                ));
+            }
+
+            self.validate_feature_registry_system_tx(tx)?;
+
+            seen_feature_head_readiness_confirmation = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
 
         Ok(BlockSection::System {
             seen_subblocks_signatures,
+            seen_feature_head_readiness_confirmation,
         })
+    }
+
+    fn validate_feature_registry_system_tx(
+        &mut self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<(), BlockValidationError> {
+        IFeatureRegistry::confirmFeatureHeadReadinessCall::abi_decode(tx.input()).map_err(
+            |_| BlockValidationError::msg("invalid feature head readiness system transaction"),
+        )?;
+        if self.evm().block().proposer_public_key.is_none() {
+            return Err(BlockValidationError::msg(
+                "invalid feature head readiness system transaction",
+            ));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn validate_shared_gas(
@@ -415,7 +510,7 @@ where
     /// the regular block gas limit checks and we need to make sure that they
     /// only perform explicitly allowed actions.
     pub(crate) fn validate_tx_pre_execution(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
@@ -441,7 +536,7 @@ where
     }
 
     pub(crate) fn validate_tx(
-        &self,
+        &mut self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
@@ -546,6 +641,10 @@ where
         }
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
+        }
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
+            self.activate_scheduled_feature_head()?;
         }
 
         Ok(())
@@ -668,6 +767,7 @@ where
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
                 seen_subblocks_signatures,
+                ..
             } => seen_subblocks_signatures,
             _ => false,
         };
@@ -746,17 +846,18 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
+    use alloy_primitives::{Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
+    use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
-        database::EmptyDB,
+        database::{EmptyDB, states::plain_account::PlainStorage},
     };
     use std::sync::{Arc, Mutex};
-    use tempo_chainspec::spec::DEV;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
@@ -789,6 +890,44 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn test_feature_head() -> B256 {
+        B256::repeat_byte(0x13)
+    }
+
+    fn word_from_b256(value: B256) -> U256 {
+        U256::from_be_bytes(value.0)
+    }
+
+    fn feature_registry_storage(
+        active_feature_head: B256,
+        scheduled_feature_head: B256,
+        scheduled_activation_epoch: u64,
+    ) -> PlainStorage {
+        let mut storage = PlainStorage::default();
+        storage.insert(U256::ZERO, word_from_b256(active_feature_head));
+        storage.insert(U256::from(1), word_from_b256(scheduled_feature_head));
+        storage.insert(U256::from(2), U256::from(scheduled_activation_epoch));
+        storage
+    }
+
+    fn public_key_from_private_key(
+        private_key: &PrivateKey,
+    ) -> tempo_primitives::ed25519::PublicKey {
+        tempo_primitives::ed25519::PublicKey::try_from(B256::from_slice(
+            &private_key.public_key().encode(),
+        ))
+        .unwrap()
+    }
+
+    fn consensus_context_from_proposer(proposer_key: &PrivateKey) -> TempoConsensusContext {
+        TempoConsensusContext {
+            epoch: 21,
+            view: 0,
+            parent_view: 0,
+            proposer: public_key_from_private_key(proposer_key),
+        }
     }
 
     #[test]
@@ -830,7 +969,7 @@ mod tests {
     fn test_validate_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
@@ -846,7 +985,8 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             BlockSection::System {
-                seen_subblocks_signatures: true
+                seen_subblocks_signatures: true,
+                seen_feature_head_readiness_confirmation: false,
             }
         );
     }
@@ -859,13 +999,17 @@ mod tests {
     }
 
     fn create_system_tx(chain_id: u64, input: Bytes) -> TempoTxEnvelope {
+        create_system_tx_to(chain_id, Address::ZERO, input)
+    }
+
+    fn create_system_tx_to(chain_id: u64, to: Address, input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
                 chain_id: Some(chain_id),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(Address::ZERO),
+                to: TxKind::Call(to),
                 value: U256::ZERO,
                 input,
             },
@@ -896,9 +1040,10 @@ mod tests {
     fn test_validate_system_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
+                seen_feature_head_readiness_confirmation: false,
             })
             .build(&mut db, &chainspec);
 
@@ -916,10 +1061,87 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_system_tx_feature_head_readiness_confirmation() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let proposer_key = PrivateKey::from_seed(0);
+        let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T9);
+        builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
+        let mut executor = builder.build(&mut db, &chainspec);
+
+        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+            .abi_encode()
+            .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(
+            result.is_ok(),
+            "validate_system_tx failed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            BlockSection::System {
+                seen_subblocks_signatures: false,
+                seen_feature_head_readiness_confirmation: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_feature_head_readiness_rejects_missing_proposer_public_key() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_runtime_spec(TempoHardfork::T9)
+            .build(&mut db, &chainspec);
+
+        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+            .abi_encode()
+            .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "invalid feature head readiness system transaction"
+        );
+    }
+
+    #[test]
+    fn test_validate_system_tx_duplicate_feature_head_readiness_confirmation() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_runtime_spec(TempoHardfork::T9)
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: false,
+                seen_feature_head_readiness_confirmation: true,
+            })
+            .build(&mut db, &chainspec);
+        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+            .abi_encode()
+            .into();
+        let system_tx =
+            create_system_tx_to(chainspec.chain().id(), FEATURE_REGISTRY_ADDRESS, input);
+
+        let result = executor.validate_system_tx(&system_tx);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "duplicate feature head readiness system transaction"
+        );
+    }
+
+    #[test]
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
@@ -938,7 +1160,7 @@ mod tests {
     fn test_validate_system_tx_invalid_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -1220,7 +1442,7 @@ mod tests {
     fn test_validate_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
@@ -1261,7 +1483,7 @@ mod tests {
         let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
 
         // Test with GasIncentive section
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::GasIncentive)
             .build(&mut db, &chainspec);
 
@@ -1275,9 +1497,10 @@ mod tests {
 
         // Also test with System section
         let mut db2 = State::builder().with_bundle_update().build();
-        let executor2 = TestExecutorBuilder::default()
+        let mut executor2 = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
+                seen_feature_head_readiness_confirmation: false,
             })
             .build(&mut db2, &chainspec);
 
@@ -1302,7 +1525,7 @@ mod tests {
         let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
 
         // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::SubBlock {
                 proposer: proposer2,
             })
@@ -1325,9 +1548,10 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
 
         // Set section to System
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
+                seen_feature_head_readiness_confirmation: false,
             })
             .build(&mut db, &chainspec);
 
@@ -1723,7 +1947,7 @@ mod tests {
 
     #[test]
     fn test_apply_pre_execution_deploys_guard_code() {
-        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1736,6 +1960,67 @@ mod tests {
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_skips_scheduled_feature_head_without_validator_set() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(B256::ZERO, test_feature_head(), 21),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T9)
+            .with_consensus_epoch(21)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
+        assert_eq!(acc.storage_slot(U256::ZERO).unwrap(), U256::ZERO);
+        assert_eq!(
+            acc.storage_slot(U256::from(1)).unwrap(),
+            word_from_b256(test_feature_head())
+        );
+        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(21));
+    }
+
+    #[test]
+    fn test_apply_pre_execution_waits_for_scheduled_feature_head_epoch() {
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(B256::ZERO, test_feature_head(), 21),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T9)
+            .with_consensus_epoch(20)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
+        assert_eq!(
+            acc.storage_slot(U256::ZERO).unwrap(),
+            word_from_b256(B256::ZERO)
+        );
+        assert_eq!(
+            acc.storage_slot(U256::from(1)).unwrap(),
+            word_from_b256(test_feature_head())
+        );
+        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(21));
     }
 
     #[test]
