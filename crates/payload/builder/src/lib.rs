@@ -185,7 +185,6 @@ struct BlockDraft {
     payment_transactions: u64,
     pool_transactions_yielded: u64,
     pool_transactions_included: u64,
-    pool_transaction_hashes: Vec<B256>,
     total_fees: U256,
     invalid_pool_transaction_execution_attempts: u64,
     normal_transaction_fill_idle_elapsed: Duration,
@@ -272,7 +271,6 @@ where
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
-        let mut pool_transaction_hashes = Vec::new();
         let mut total_fees = U256::ZERO;
         let mut skipped_oversized_block = false;
         let invalid_pool_transaction_execution_attempts = 0u64;
@@ -473,7 +471,6 @@ where
             trace!("Transaction selected without local execution");
 
             pool_transactions_included += 1;
-            pool_transaction_hashes.push(*pool_tx.hash());
             estimated_rlp_block_size += tx_rlp_length;
             let _ = roots_tx.send(BuilderTx::Pooled(pool_tx));
         };
@@ -493,7 +490,6 @@ where
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
-            pool_transaction_hashes,
             total_fees,
             invalid_pool_transaction_execution_attempts,
             normal_transaction_fill_idle_elapsed,
@@ -1281,15 +1277,6 @@ where
             draft.estimated_rlp_block_size,
             execution_block_encoded,
         );
-
-        if mode == PayloadBuildMode::Optimistic && !draft.pool_transaction_hashes.is_empty() {
-            let removed = self.pool.prune_transactions(draft.pool_transaction_hashes);
-            debug!(
-                target: "payload_builder",
-                optimistic_pool_transactions_pruned = removed.len(),
-                "pruned selected optimistic payload transactions from pool"
-            );
-        }
 
         drop(db);
         self.executor.spawn_drop(state_provider);
