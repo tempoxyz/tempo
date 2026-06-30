@@ -1591,10 +1591,18 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
-        let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
         let post_return_tail_budget = attributes.post_return_tail_budget();
+        let static_ssmr_build_budget = payload_build_budget.is_some()
+            && ssmr_packer.is_some()
+            && validation_latency.is_none()
+            && post_return_tail_budget == Some(Duration::ZERO);
+        let build_time_multiplier = if static_ssmr_build_budget {
+            BUILD_TIME_MULTIPLIER_SCALE
+        } else {
+            self.build_time_multiplier()
+        };
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
             let recovered_events =
                 spawn_ssmr_replay_recovery(self.executor.clone(), replay_source, self.pool.clone());
@@ -2397,7 +2405,7 @@ where
 
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(validation_wait_elapsed);
-        if payload_build_budget.is_some() {
+        if payload_build_budget.is_some() && !static_ssmr_build_budget {
             self.update_build_time_multiplier(
                 validation_work_duration,
                 validation_work_at_tx_cutoff,
