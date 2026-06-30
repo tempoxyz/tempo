@@ -7,6 +7,10 @@ pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
 
+mod dispatch;
+pub use dispatch::StaticCallNotAllowed;
+pub(crate) use dispatch::*;
+
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
@@ -69,39 +73,13 @@ pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
-
-/// Fixed system precompile addresses and corresponding activation hardfork
-pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
-    (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
-    (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
-    (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
-    (NONCE_PRECOMPILE_ADDRESS, TempoHardfork::Genesis),
-    (ACCOUNT_KEYCHAIN_ADDRESS, TempoHardfork::Genesis),
-    (VALIDATOR_CONFIG_ADDRESS, TempoHardfork::Genesis),
-    (VALIDATOR_CONFIG_V2_ADDRESS, TempoHardfork::Genesis),
-    (TIP20_FACTORY_ADDRESS, TempoHardfork::Genesis),
-    (ADDRESS_REGISTRY_ADDRESS, TempoHardfork::T3),
-    (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
-    (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
-    (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
-    (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
-    (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
-];
-
-/// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
-/// or a fixed system precompile.
-pub fn is_precompile_address(addr: Address, spec: TempoHardfork) -> bool {
-    addr.is_tip20()
-        || SYSTEM_PRECOMPILES
-            .iter()
-            .any(|&(a, activated)| a == addr && spec >= activated)
-}
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -241,7 +219,6 @@ pub fn extend_tempo_precompiles(
 
 sol! {
     error DelegateCallNotAllowed();
-    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
@@ -1351,26 +1328,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_precompile_address() {
-        for &(address, activated) in SYSTEM_PRECOMPILES {
-            assert!(is_precompile_address(address, activated));
-            assert!(is_precompile_address(address, TempoHardfork::T8));
-
-            if activated != TempoHardfork::Genesis {
-                assert!(!is_precompile_address(address, TempoHardfork::Genesis));
-            }
-        }
-
-        // Assert TIP20 prefixed addresses are classified as precompiles
-        assert!(PATH_USD_ADDRESS.is_tip20());
-        assert!(is_precompile_address(
-            PATH_USD_ADDRESS,
-            TempoHardfork::Genesis
-        ));
-    }
-
-    #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
         let has_p256 = |spec: TempoHardfork| -> bool {
             // P256VERIFY lives at address 0x100 (256), added in Osaka

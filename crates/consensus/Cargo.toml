@@ -28,6 +28,7 @@ tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-rpc-client = { workspace = true, features = ["ws-base"] }
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 
@@ -75,6 +76,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "net", "rt", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempo-precompiles = { workspace = true, features = ["test-utils"] }

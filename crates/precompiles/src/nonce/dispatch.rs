@@ -1,18 +1,17 @@
 //! ABI dispatch for the [`NonceManager`] precompile.
 
-use crate::{Precompile, charge_input_cost, dispatch_call, nonce::NonceManager, view};
-use alloy::{primitives::Address, sol_types::SolInterface};
+use crate::{Precompile, charge_input_cost, dispatch, nonce::NonceManager, view};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::INonce::INonceCalls;
-
+use tempo_contracts::precompiles::INonce;
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
 
-        dispatch_call(calldata, &[], INonceCalls::abi_decode, |call| match call {
-            INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
+        dispatch!(calldata, |call| match call {
+            INonce::INonceCalls { getNonce(call) => view(call, |c| self.get_nonce(c)) }
         })
     }
 }
@@ -25,7 +24,6 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use tempo_contracts::precompiles::INonce::INonceCalls;
-
     #[test]
     fn test_nonce_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);

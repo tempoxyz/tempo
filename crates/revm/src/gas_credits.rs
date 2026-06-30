@@ -19,7 +19,7 @@ use revm::{
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    storage::FromWord,
+    storage::{FromWord, StorageAction},
     storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
@@ -56,6 +56,8 @@ pub fn apply_refund<DB: Database, I>(
 
         // SLOAD the current persistent balance and settle pending refund-eligible creations against it.
         let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
+        evm.actions
+            .record(StorageAction::Sload(STORAGE_CREDITS_ADDRESS, key, old_word));
         let mut balance =
             u64::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
         let settled = pending.min(balance);
@@ -72,6 +74,11 @@ pub fn apply_refund<DB: Database, I>(
         debug_assert_ne!(new_word, old_word);
 
         journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
+        evm.actions.record(StorageAction::Sstore(
+            STORAGE_CREDITS_ADDRESS,
+            key,
+            new_word,
+        ));
     }
 
     // Refund storage credit value per settled credit.
