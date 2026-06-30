@@ -185,7 +185,7 @@ where
         let mut state = EvmState::default();
 
         if commit_reads {
-            let account = action_account_info(db, sender)?;
+            let account = state_account_info(db, sender)?;
             let mut account = Account::from(account);
             account.mark_touch();
             state.insert(sender, account);
@@ -198,7 +198,7 @@ where
                 }
 
                 if let Entry::Vacant(e) = state.entry(*address) {
-                    let mut account = Account::from(action_account_info(db, *address)?);
+                    let mut account = Account::from(state_account_info(db, *address)?);
                     account.mark_touch();
                     e.insert(account);
                 }
@@ -583,6 +583,7 @@ impl ExpiringNonceReplayState {
     }
 }
 
+/// Returns the value of the storage slot.
 fn state_storage<DB: Database>(
     db: &mut State<DB>,
     address: Address,
@@ -593,7 +594,8 @@ fn state_storage<DB: Database>(
         .map_err(StorageActionReplayExecutionError::Database)
 }
 
-fn action_account_info<DB: StateDB>(
+/// Returns the account info for the given address.
+fn state_account_info<DB: StateDB>(
     db: &mut DB,
     address: Address,
 ) -> Result<AccountInfo, StorageActionReplayExecutionError> {
