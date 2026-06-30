@@ -1058,20 +1058,21 @@ where
                         }
                     };
 
+                    let state = StateProviderDatabase::new(&state_provider);
+                    let mut db = State::builder()
+                        .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
+                        .with_bundle_update()
+                        .build();
+                    let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
+                    let mut worker_executor = evm_config.create_executor(evm, ctx.clone());
+                    worker_executor.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+
                     while let Ok(job) = job_rx.recv() {
                         let result = (|| -> Result<(), String> {
-                            let state = StateProviderDatabase::new(&state_provider);
-                            let mut db = State::builder()
-                                .with_database(
-                                    Box::new(state) as Box<dyn Database<Error = ProviderError>>
-                                )
-                                .with_bal(Arc::clone(&job.bal))
-                                .with_bundle_update()
-                                .build();
-                            let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
-                            let mut worker_executor = evm_config.create_executor(evm, ctx.clone());
-                            worker_executor.evm_mut().ctx_mut().block.beneficiary = beneficiary;
-
+                            worker_executor
+                                .evm_mut()
+                                .db_mut()
+                                .set_bal(Some(Arc::clone(&job.bal)));
                             for (bal_index, tx) in job.transactions.into_iter().enumerate() {
                                 worker_executor.evm_mut().db_mut().set_bal_index(
                                     BlockAccessIndex::from_tx_index(
