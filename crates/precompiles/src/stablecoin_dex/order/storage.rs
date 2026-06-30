@@ -66,16 +66,14 @@ impl TryFrom<U256> for OrderVersion {
 struct V1Order {
     /// Address of the user who placed the order.
     maker: Address,
-    /// Whether this order is a bid (`true`) or ask (`false`).
-    is_bid: bool,
+    /// Packed order metadata. Bit 0 stores `is_bid`; bit 1 stores `is_flip`.
+    metadata: u8,
     /// Price tick for the order's current side.
     tick: i16,
-    /// Whether the order should create an opposite-side order when fully filled.
-    is_flip: bool,
     /// Destination tick for a fully filled flip order.
     flip_tick: i16,
     /// Reserved bytes in packed slot 0. Kept zeroed for deterministic encoding and future use.
-    _unused: FixedBytes<5>,
+    _unused: FixedBytes<6>,
     /// Physical layout marker stored in packed slot 0.
     version: OrderVersion,
     /// Orderbook key identifying the trading pair.
@@ -91,15 +89,35 @@ struct V1Order {
 }
 
 impl V1Order {
+    const IS_BID_FLAG: u8 = 1 << 0;
+    const IS_FLIP_FLAG: u8 = 1 << 1;
+
+    /// Packs logical order flags into the V1 metadata byte.
+    #[inline]
+    fn metadata(is_bid: bool, is_flip: bool) -> u8 {
+        (u8::from(is_bid) * Self::IS_BID_FLAG) | (u8::from(is_flip) * Self::IS_FLIP_FLAG)
+    }
+
+    /// Returns whether this order is a bid (`true`) or ask (`false`).
+    #[inline]
+    fn is_bid(&self) -> bool {
+        self.metadata & Self::IS_BID_FLAG != 0
+    }
+
+    /// Returns whether this order should create an opposite-side order when fully filled.
+    #[inline]
+    fn is_flip(&self) -> bool {
+        self.metadata & Self::IS_FLIP_FLAG != 0
+    }
+
     /// Converts the logical order into the compact V1 physical layout.
     fn new(order: Order) -> Self {
         Self {
             maker: order.maker,
-            is_bid: order.is_bid,
             tick: order.tick,
-            is_flip: order.is_flip,
+            metadata: Self::metadata(order.is_bid, order.is_flip),
             flip_tick: order.flip_tick,
-            _unused: FixedBytes::<5>::ZERO,
+            _unused: FixedBytes::<6>::ZERO,
             version: OrderVersion::V1,
             book_key: order.book_key,
             amount: order.amount,
@@ -115,13 +133,13 @@ impl V1Order {
             order_id,
             maker: self.maker,
             book_key: self.book_key,
-            is_bid: self.is_bid,
+            is_bid: self.is_bid(),
             tick: self.tick,
             amount: self.amount,
             remaining: self.remaining,
             prev: self.prev,
             next: self.next,
-            is_flip: self.is_flip,
+            is_flip: self.is_flip(),
             flip_tick: self.flip_tick,
         }
     }
@@ -413,9 +431,9 @@ mod tests {
     #[test]
     fn test_v1_order_layout_matches_tip_1062() {
         assert_eq!(__packing_v1_order::MAKER_LOC.offset_slots, 0);
-        assert_eq!(__packing_v1_order::IS_BID_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::METADATA_LOC.offset_slots, 0);
+        assert_eq!(__packing_v1_order::METADATA_LOC.size, 1);
         assert_eq!(__packing_v1_order::TICK_LOC.offset_slots, 0);
-        assert_eq!(__packing_v1_order::IS_FLIP_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::FLIP_TICK_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::VERSION_LOC.offset_slots, 0);
         assert_eq!(__packing_v1_order::BOOK_KEY_LOC.offset_bytes, 0);
