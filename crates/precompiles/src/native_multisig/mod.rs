@@ -258,7 +258,7 @@ impl NativeMultisig {
             return Err(NativeMultisigError::invalid_config().into());
         }
 
-        let mut owners = Vec::with_capacity(owner_count);
+        let mut owners = Vec::new();
         for index in 0..header.owner_count {
             owners.push(self.owners[account][config_id][index].read()?);
         }
