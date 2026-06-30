@@ -68,7 +68,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -2730,44 +2730,40 @@ enum BalMessage {
 
 struct BuilderBalState {
     full_bal: RevmBal,
-    shard_bal: RevmBal,
+    shard_filter: ShardBalFilter,
     full_index: BlockAccessIndex,
-    shard_index: BlockAccessIndex,
 }
 
 impl BuilderBalState {
     fn new() -> Self {
         Self {
             full_bal: RevmBal::new(),
-            shard_bal: RevmBal::new(),
+            shard_filter: ShardBalFilter::default(),
             full_index: BlockAccessIndex::PRE_EXECUTION,
-            shard_index: BlockAccessIndex::PRE_EXECUTION,
         }
     }
 
     fn bump_index(&mut self) {
         self.full_index.increment();
-        self.shard_index.increment();
     }
 
     fn commit(&mut self, state: &EvmState) {
         for (address, account) in state {
             self.full_bal
                 .update_account(self.full_index, *address, account);
-            self.shard_bal
-                .update_account(self.shard_index, *address, account);
+            self.shard_filter
+                .record_account(*address, account.storage.keys().copied());
         }
     }
 
     fn snapshot(&mut self, first_tx_index: u64, next_tx_index: u64) -> Option<Bytes> {
         let snapshot = encode_bal_range_snapshot(
             &self.full_bal,
-            &self.shard_bal,
+            &self.shard_filter,
             first_tx_index,
             next_tx_index,
         );
-        self.shard_bal = RevmBal::new();
-        self.shard_index = BlockAccessIndex::from_tx_index(0);
+        self.shard_filter.clear();
         snapshot
     }
 
@@ -2780,9 +2776,25 @@ impl BuilderBalState {
     }
 }
 
+#[derive(Debug, Default)]
+struct ShardBalFilter {
+    accounts: BTreeMap<Address, BTreeSet<U256>>,
+}
+
+impl ShardBalFilter {
+    fn record_account(&mut self, address: Address, keys: impl IntoIterator<Item = U256>) {
+        let storage_keys = self.accounts.entry(address).or_default();
+        storage_keys.extend(keys);
+    }
+
+    fn clear(&mut self) {
+        self.accounts.clear();
+    }
+}
+
 fn encode_bal_range_snapshot(
     full_bal: &RevmBal,
-    shard_filter: &RevmBal,
+    shard_filter: &ShardBalFilter,
     first_tx_index: u64,
     next_tx_index: u64,
 ) -> Option<Bytes> {
@@ -2796,7 +2808,7 @@ fn encode_bal_range_snapshot(
 
 fn slice_bal_range(
     full_bal: &RevmBal,
-    shard_filter: &RevmBal,
+    shard_filter: &ShardBalFilter,
     first_tx_index: u64,
     next_tx_index: u64,
 ) -> RevmBal {
@@ -2824,7 +2836,7 @@ fn slice_bal_range(
 
 fn slice_account_bal_range(
     full_account: &AccountBal,
-    filter_account: &AccountBal,
+    storage_keys: &BTreeSet<U256>,
     first_tx_index: u64,
     next_tx_index: u64,
 ) -> AccountBal {
@@ -2846,7 +2858,7 @@ fn slice_account_bal_range(
                 next_tx_index,
             ),
         },
-        storage: StorageBal::from_iter(filter_account.storage.storage.keys().map(|key| {
+        storage: StorageBal::from_iter(storage_keys.iter().map(|key| {
             let writes = full_account
                 .storage
                 .storage
