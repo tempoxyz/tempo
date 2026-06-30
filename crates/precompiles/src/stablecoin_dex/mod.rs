@@ -1654,10 +1654,7 @@ impl StablecoinDEX {
     fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
-        for i in 0..path.len() - 1 {
-            let token_in = path[i];
-            let token_out = path[i + 1];
-
+        for [token_in, token_out] in path.array_windows::<2>().copied() {
             let (base, quote) = {
                 let token_in_tip20 = TIP20Token::from_address(token_in)?;
 
