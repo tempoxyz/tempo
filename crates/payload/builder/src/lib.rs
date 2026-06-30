@@ -1010,13 +1010,22 @@ where
                 let evm_env = evm_env.clone();
                 let ctx = ctx.clone();
                 scope.spawn(move |_| {
+                    let state_provider = match provider.state_by_block_hash(parent_hash) {
+                        Ok(state_provider) => state_provider,
+                        Err(error) => {
+                            let error = format!("failed opening SSMR replay state: {error}");
+                            while job_rx.recv().is_ok() {
+                                if result_tx.send(Err(error.clone())).is_err() {
+                                    return;
+                                }
+                            }
+                            return;
+                        }
+                    };
+
                     while let Ok(job) = job_rx.recv() {
                         let result = (|| -> Result<SsmrBalReplayOutput, String> {
-                            let state_provider =
-                                provider.state_by_block_hash(parent_hash).map_err(|error| {
-                                    format!("failed opening SSMR replay state: {error}")
-                                })?;
-                            let state = StateProviderDatabase::new(state_provider);
+                            let state = StateProviderDatabase::new(&state_provider);
                             let mut db = State::builder()
                                 .with_database(
                                     Box::new(state) as Box<dyn Database<Error = ProviderError>>
