@@ -536,53 +536,38 @@ fn forward_ssmr_replay_recovered_transaction(
         return false;
     }
 
-    let batch = match state.drain_ready_batch(recovery_wall_start) {
-        Ok(Some(batch)) => batch,
-        Ok(None) => return true,
-        Err(error) => {
-            let _ = send_ssmr_replay_event(
-                ready_tx,
-                SsmrRecoveredReplayEvent::Error(error),
-                &mut state.recovery_backpressure_elapsed,
-            );
-            return false;
-        }
-    };
-
-    state.recovery_queue_wait_sum_elapsed += batch.queue_wait_elapsed;
-
-    send_ssmr_replay_event(
-        ready_tx,
-        SsmrRecoveredReplayEvent::Transactions(batch),
-        &mut state.recovery_backpressure_elapsed,
-    )
+    forward_all_ssmr_replay_ready_batches(ready_tx, state, recovery_wall_start)
 }
 
-fn forward_ssmr_replay_ready_batch(
+fn forward_all_ssmr_replay_ready_batches(
     ready_tx: &Sender<SsmrRecoveredReplayEvent>,
     state: &mut SsmrReplayRecoveryState,
     recovery_wall_start: Option<&Instant>,
 ) -> bool {
-    let batch = match state.drain_ready_batch(recovery_wall_start) {
-        Ok(Some(batch)) => batch,
-        Ok(None) => return true,
-        Err(error) => {
-            let _ = send_ssmr_replay_event(
-                ready_tx,
-                SsmrRecoveredReplayEvent::Error(error),
-                &mut state.recovery_backpressure_elapsed,
-            );
+    loop {
+        let batch = match state.drain_ready_batch(recovery_wall_start) {
+            Ok(Some(batch)) => batch,
+            Ok(None) => return true,
+            Err(error) => {
+                let _ = send_ssmr_replay_event(
+                    ready_tx,
+                    SsmrRecoveredReplayEvent::Error(error),
+                    &mut state.recovery_backpressure_elapsed,
+                );
+                return false;
+            }
+        };
+
+        state.recovery_queue_wait_sum_elapsed += batch.queue_wait_elapsed;
+
+        if !send_ssmr_replay_event(
+            ready_tx,
+            SsmrRecoveredReplayEvent::Transactions(batch),
+            &mut state.recovery_backpressure_elapsed,
+        ) {
             return false;
         }
-    };
-
-    state.recovery_queue_wait_sum_elapsed += batch.queue_wait_elapsed;
-
-    send_ssmr_replay_event(
-        ready_tx,
-        SsmrRecoveredReplayEvent::Transactions(batch),
-        &mut state.recovery_backpressure_elapsed,
-    )
+    }
 }
 
 fn insert_ssmr_replay_shard(
@@ -705,7 +690,7 @@ where
                         return;
                     }
                     if tx_count == 0 {
-                        if !forward_ssmr_replay_ready_batch(
+                        if !forward_all_ssmr_replay_ready_batches(
                             &ready_tx,
                             &mut recovery_state,
                             recovery_wall_start.as_ref(),
@@ -768,7 +753,7 @@ where
                             }
                         }
                     }
-                    if !forward_ssmr_replay_ready_batch(
+                    if !forward_all_ssmr_replay_ready_batches(
                         &ready_tx,
                         &mut recovery_state,
                         recovery_wall_start.as_ref(),
@@ -3298,6 +3283,72 @@ mod tests {
         assert_eq!(batch.block_access_list, Some(Bytes::from_static(b"bal")));
         assert_eq!(batch.completed_shards, 1);
         assert!(state.pending_shards.is_empty());
+    }
+
+    #[test]
+    fn ssmr_replay_recovery_forwards_all_ready_shards() {
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(8);
+        let mut state = SsmrReplayRecoveryState::default();
+
+        state.pending_shards.insert(
+            0,
+            SsmrPendingRecoveredShard::new(1, Some(Bytes::from_static(b"a"))),
+        );
+        state.pending_shards.insert(
+            1,
+            SsmrPendingRecoveredShard::new(1, Some(Bytes::from_static(b"b"))),
+        );
+        state.pending_shards.insert(
+            2,
+            SsmrPendingRecoveredShard::new(2, Some(Bytes::from_static(b"c"))),
+        );
+
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(2, 1))
+            .unwrap();
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(0, 0))
+            .unwrap();
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(2, 0))
+            .unwrap();
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(1, 0))
+            .unwrap();
+
+        assert!(forward_all_ssmr_replay_ready_batches(
+            &ready_tx, &mut state, None
+        ));
+        assert!(state.pending_shards.is_empty());
+
+        let mut batches = Vec::new();
+        for _ in 0..3 {
+            let event = ready_rx
+                .try_recv()
+                .expect("ready shard should be forwarded");
+            let SsmrRecoveredReplayEvent::Transactions(batch) = event else {
+                panic!("expected transaction batch");
+            };
+            batches.push((
+                batch
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.tx_rlp_length)
+                    .collect::<Vec<_>>(),
+                batch.block_access_list,
+                batch.completed_shards,
+            ));
+        }
+
+        assert!(ready_rx.try_recv().is_err());
+        assert_eq!(
+            batches,
+            vec![
+                (vec![10], Some(Bytes::from_static(b"a")), 1),
+                (vec![10], Some(Bytes::from_static(b"b")), 1),
+                (vec![10, 11], Some(Bytes::from_static(b"c")), 1),
+            ]
+        );
     }
 
     #[test]
