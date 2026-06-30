@@ -156,6 +156,12 @@ where
         }
     }
 
+    /// Replaces the wrapped best-transaction iterator while preserving state
+    /// changes observed from transactions already executed in this block.
+    pub fn replace_inner(&mut self, inner: I) {
+        self.inner = inner;
+    }
+
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {

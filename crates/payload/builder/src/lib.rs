@@ -1440,7 +1440,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl Fn(BestTransactionsAttributes) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -1699,6 +1699,8 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut normal_transaction_fill_idle_polls = 0u64;
+        let mut normal_transaction_fill_iterator_refreshes = 0u64;
+        let mut normal_transaction_fill_last_iterator_refresh_poll = None;
         let mut normal_transaction_fill_pool_at_start = PoolSizeSnapshot::default();
         let mut normal_transaction_fill_pool_at_first_idle = PoolSizeSnapshot::default();
         let mut normal_transaction_fill_pool_at_last_idle = PoolSizeSnapshot::default();
@@ -1982,28 +1984,36 @@ where
             let pool_fetch_start = Instant::now();
             normal_transaction_fill_pool_at_start =
                 PoolSizeSnapshot::from_pool_size(self.pool.pool_size());
-            let best_txs = best_txs(BestTransactionsAttributes::new(
+            let best_txs_attributes = BestTransactionsAttributes::new(
                 base_fee,
                 executor
                     .evm()
                     .block()
                     .blob_gasprice()
                     .map(|gasprice| gasprice as u64),
-            ));
+            );
+            let prewarming_parent_hash = parent_header.hash();
+            let prewarming_evm_env = executor.evm().evm_env();
+            let make_best_txs = || -> Box<
+                dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+            > {
+                let best_txs = best_txs(best_txs_attributes);
+                if self.config.enable_prewarming {
+                    Box::new(BestTransactionsPrewarming::new(
+                        self.executor.clone(),
+                        self.provider.clone(),
+                        execution_cache.clone(),
+                        prewarming_parent_hash,
+                        prewarming_evm_env.clone(),
+                        best_txs,
+                    ))
+                } else {
+                    Box::new(best_txs)
+                }
+            };
             // Wrap best transactions into state-aware wrapper to skip transactions that
             // get invalidated by already-executed ones.
-            let mut best_txs = StateAwareBestTransactions::new(if self.config.enable_prewarming {
-                Box::new(BestTransactionsPrewarming::new(
-                    self.executor.clone(),
-                    self.provider.clone(),
-                    execution_cache,
-                    parent_header.hash(),
-                    executor.evm().evm_env(),
-                    best_txs,
-                )) as Box<dyn BestTransactions<Item = _>>
-            } else {
-                Box::new(best_txs)
-            });
+            let mut best_txs = StateAwareBestTransactions::new(make_best_txs());
             self.metrics
                 .pool_fetch_duration_seconds
                 .record(pool_fetch_start.elapsed());
@@ -2033,6 +2043,7 @@ where
                             ?elapsed,
                             ?normal_transaction_fill_idle_elapsed,
                             normal_transaction_fill_idle_polls,
+                            normal_transaction_fill_iterator_refreshes,
                             ?normal_transaction_fill_pool_at_start,
                             ?normal_transaction_fill_pool_at_first_idle,
                             ?normal_transaction_fill_pool_at_last_idle,
@@ -2064,6 +2075,22 @@ where
                             normal_transaction_fill_pool_at_first_idle = pool_snapshot;
                         }
                         normal_transaction_fill_pool_at_last_idle = pool_snapshot;
+                        let should_refresh_iterator = pool_snapshot.pending > 0
+                            && match normal_transaction_fill_last_iterator_refresh_poll {
+                                Some(last_refresh_poll) => {
+                                    normal_transaction_fill_idle_polls
+                                        .saturating_sub(last_refresh_poll)
+                                        >= 16
+                                }
+                                None => true,
+                            };
+                        if should_refresh_iterator {
+                            best_txs.replace_inner(make_best_txs());
+                            normal_transaction_fill_iterator_refreshes += 1;
+                            normal_transaction_fill_last_iterator_refresh_poll =
+                                Some(normal_transaction_fill_idle_polls);
+                            continue;
+                        }
                         normal_transaction_fill_idle_polls += 1;
                         std::thread::sleep(Duration::from_millis(1));
                         normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
@@ -2079,6 +2106,7 @@ where
                     };
                     break stop_reason;
                 };
+                normal_transaction_fill_last_iterator_refresh_poll = None;
                 pool_transactions_yielded += 1;
 
                 let max_regular_gas_used = core::cmp::min(
@@ -2690,6 +2718,7 @@ where
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             normal_transaction_fill_idle_polls,
+            normal_transaction_fill_iterator_refreshes,
             ?normal_transaction_fill_pool_at_start,
             ?normal_transaction_fill_pool_at_first_idle,
             ?normal_transaction_fill_pool_at_last_idle,
