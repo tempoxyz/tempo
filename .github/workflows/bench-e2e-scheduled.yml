@@ -26,6 +26,11 @@ on:
         required: false
         default: false
         type: boolean
+      samply:
+        description: "Enable samply profiling"
+        required: false
+        default: true
+        type: boolean
 
 permissions: {}
 
@@ -165,6 +170,7 @@ jobs:
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
       clickhouse-run: feature-1
+      samply: ${{ github.event_name == 'workflow_dispatch' && inputs.samply == false && 'false' || 'true' }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}

@@ -1,5 +1,17 @@
 # Changelog
 
+## `tempo-contracts@1.10.0`
+
+### Minor Changes
+
+- Bump the Tempo SDK crate set to the `1.10` minor release. (by @DerekCofausper, [#6610](https://github.com/tempoxyz/tempo/pull/6610))
+
+## `tempo-contracts@1.9.1`
+
+### Patch Changes
+
+- Moved `SYSTEM_PRECOMPILES` from `tempo-precompiles` to `tempo-contracts` and replaced the `is_precompile_address` function with an `is_precompile` method on the `TempoAddressExt` trait in `tempo-primitives`. (by @DerekCofausper, [#6535](https://github.com/tempoxyz/tempo/pull/6535))
+
 ## `tempo-contracts@1.9.0`
 
 ### Minor Changes
