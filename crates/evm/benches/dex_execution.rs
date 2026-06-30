@@ -270,12 +270,12 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
     let many_single_call = |call: Bytes| {
         signers
             .iter()
-            .take(4 * DEX_SCENARIO_COUNT)
+            .take(4 * DEX_SCENARIO_TX_COUNT)
             .map(|signer| sign_dex_call(signer, call.clone()))
             .collect()
     };
     let scenario_txs = |build_calls: &dyn Fn(usize) -> Vec<Bytes>| {
-        (0..DEX_SCENARIO_COUNT)
+        (0..DEX_SCENARIO_TX_COUNT)
             .map(|idx| sign_dex_calls(signer(idx), build_calls(idx)))
             .collect()
     };
@@ -298,7 +298,7 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
         })
     };
     let three_asks_fill_two_and_half = |flip: bool| {
-        (0..DEX_SCENARIO_COUNT)
+        (0..DEX_SCENARIO_TX_COUNT)
             .flat_map(|idx| {
                 let tick = ask_tick(idx);
                 [
