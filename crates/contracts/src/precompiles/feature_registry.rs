@@ -28,7 +28,7 @@ crate::sol! {
         function scheduleFeatureHead(bytes32 featureHead, uint64 activationEpoch) external;
 
         /// @notice Activates the scheduled feature head during block processing. System caller only.
-        function activateScheduledFeatureHead(uint64 currentEpoch, bytes32[] activeValidatorPublicKeys) external;
+        function activateScheduledFeatureHead() external;
 
         /// @notice Cancels the scheduled feature head before activation.
         function cancelScheduledFeatureHead() external;

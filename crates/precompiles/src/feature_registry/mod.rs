@@ -4,6 +4,7 @@ pub mod dispatch;
 
 use crate::{
     FEATURE_REGISTRY_ADDRESS,
+    current_committee::CurrentCommittee,
     error::Result,
     storage::{Handler, Mapping},
     validator_config_v2::ValidatorConfigV2,
@@ -186,33 +187,23 @@ impl FeatureRegistry {
     pub fn activate_scheduled_feature_head_from_system(
         &mut self,
         msg_sender: Address,
-        current_epoch: u64,
-        active_validator_public_keys: &[B256],
     ) -> Result<()> {
         if msg_sender != Address::ZERO {
             return Err(FeatureRegistryError::unauthorized().into());
         }
 
-        self.activate_scheduled_feature_head(current_epoch, active_validator_public_keys)?;
+        self.activate_scheduled_feature_head()?;
         Ok(())
     }
 
     /// Returns current active-validator readiness for a feature head.
-    ///
-    /// This uses the currently active validator-config set until the epoch-effective validator set
-    /// from TIP-1070 is available to precompiles.
     pub fn feature_head_support(
         &self,
         feature_head: B256,
     ) -> Result<IFeatureRegistry::featureHeadSupportReturn> {
-        let validators = ValidatorConfigV2::new().get_active_validators()?;
-        let required = required_activation_count(validators.len());
-        let mut support = 0usize;
-        for validator in validators {
-            if self.validator_confirmed_feature_head(validator.validatorAddress, feature_head)? {
-                support += 1;
-            }
-        }
+        let public_keys = self.current_committee_public_keys()?;
+        let (support, required) =
+            self.feature_head_support_for_public_keys(feature_head, &public_keys)?;
 
         Ok((U256::from(support), U256::from(required)).into())
     }
@@ -223,14 +214,18 @@ impl FeatureRegistry {
         Ok(!support.required.is_zero() && support.support >= support.required)
     }
 
+    fn current_committee_public_keys(&self) -> Result<Vec<B256>> {
+        Ok(CurrentCommittee::new().get_committee_members()?.publicKeys)
+    }
+
     fn feature_head_support_for_public_keys(
         &self,
         feature_head: B256,
-        active_validator_public_keys: &[B256],
+        committee_public_keys: &[B256],
     ) -> Result<(usize, usize)> {
-        let required = required_activation_count(active_validator_public_keys.len());
+        let required = required_activation_count(committee_public_keys.len());
         let mut support = 0usize;
-        for public_key in active_validator_public_keys {
+        for public_key in committee_public_keys {
             let validator = self.validator_address_by_epoch_public_key(*public_key)?;
             if self.validator_confirmed_feature_head(validator, feature_head)? {
                 support += 1;
@@ -241,13 +236,10 @@ impl FeatureRegistry {
     }
 
     /// Activates the scheduled feature head if its target epoch has arrived and has quorum.
-    pub fn activate_scheduled_feature_head(
-        &mut self,
-        current_epoch: u64,
-        active_validator_public_keys: &[B256],
-    ) -> Result<bool> {
+    pub fn activate_scheduled_feature_head(&mut self) -> Result<bool> {
         let scheduled_feature_head = self.scheduled_feature_head.read()?;
         let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
+        let current_epoch = self.storage.epoch(self.storage.block_number());
 
         if scheduled_feature_head == B256::ZERO
             || scheduled_activation_epoch == 0
@@ -257,10 +249,9 @@ impl FeatureRegistry {
         }
 
         let active_feature_head = self.active_feature_head.read()?;
-        let (support, required) = self.feature_head_support_for_public_keys(
-            scheduled_feature_head,
-            active_validator_public_keys,
-        )?;
+        let committee_public_keys = self.current_committee_public_keys()?;
+        let (support, required) = self
+            .feature_head_support_for_public_keys(scheduled_feature_head, &committee_public_keys)?;
         let activated =
             scheduled_feature_head != active_feature_head && required != 0 && support >= required;
         if activated {

@@ -33,12 +33,8 @@ impl Precompile for FeatureRegistry {
                         })
                     },
                     activateScheduledFeatureHead(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
-                            self.activate_scheduled_feature_head_from_system(
-                                sender,
-                                call.currentEpoch,
-                                &call.activeValidatorPublicKeys,
-                            )
+                        mutate_void(call, msg_sender, |sender, _| {
+                            self.activate_scheduled_feature_head_from_system(sender)
                         })
                     },
                     cancelScheduledFeatureHead(call) => {
@@ -69,6 +65,7 @@ mod tests {
     use super::*;
     use crate::{
         FEATURE_REGISTRY_ADDRESS,
+        current_committee::CurrentCommittee,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{VALIDATOR_NS_ADD, ValidatorConfigV2},
     };
@@ -80,7 +77,7 @@ mod tests {
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use std::num::NonZeroU64;
     use tempo_contracts::precompiles::{
-        FeatureRegistryError, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
+        FeatureRegistryError, ICurrentCommittee, IValidatorConfigV2, VALIDATOR_CONFIG_V2_ADDRESS,
     };
     use tempo_primitives::ed25519::PublicKey as TempoPublicKey;
 
@@ -133,6 +130,16 @@ mod tests {
         registry.storage.set_proposer_public_key(Some(
             TempoPublicKey::try_from(public_key).expect("test public key is valid"),
         ));
+    }
+
+    fn set_current_committee(public_keys: Vec<B256>) -> eyre::Result<()> {
+        CurrentCommittee::new().set_committee_members(
+            Address::ZERO,
+            ICurrentCommittee::setCommitteeMembersCall {
+                publicKeys: public_keys,
+            },
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -470,6 +477,12 @@ mod tests {
                 let public_key = add_test_validator(owner, validator, seed)?;
                 validators.push((validator, public_key));
             }
+            set_current_committee(
+                validators
+                    .iter()
+                    .map(|(_, public_key)| *public_key)
+                    .collect(),
+            )?;
 
             for (_, public_key) in validators.iter().take(3) {
                 set_proposer_public_key(&mut registry, *public_key);
@@ -491,13 +504,13 @@ mod tests {
 
     #[test]
     fn activate_scheduled_feature_head_waits_for_activation_epoch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(20);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
 
-            assert!(!registry.activate_scheduled_feature_head(20, &[])?);
+            assert!(!registry.activate_scheduled_feature_head()?);
             assert_eq!(registry.active_feature_head()?, B256::ZERO);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -510,16 +523,17 @@ mod tests {
 
     #[test]
     fn activate_scheduled_feature_head_requires_quorum_and_clears_schedule() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(21);
         let owner = Address::repeat_byte(0xaa);
         StorageCtx::enter(&mut storage, || {
             initialize_validator_config_owner(owner)?;
             let public_key = add_test_validator(owner, Address::repeat_byte(0x01), 1)?;
+            set_current_committee(vec![public_key])?;
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
 
-            assert!(!registry.activate_scheduled_feature_head(21, &[public_key])?);
+            assert!(!registry.activate_scheduled_feature_head()?);
             assert_eq!(registry.active_feature_head()?, B256::ZERO);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -532,19 +546,20 @@ mod tests {
 
     #[test]
     fn activate_scheduled_feature_head_activates_with_quorum() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_block_number(21);
         let owner = Address::repeat_byte(0xaa);
         let validator = Address::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
             initialize_validator_config_owner(owner)?;
             let public_key = add_test_validator(owner, validator, 1)?;
+            set_current_committee(vec![public_key])?;
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
             set_proposer_public_key(&mut registry, public_key);
             registry.confirm_feature_head_readiness(Address::ZERO)?;
 
-            assert!(registry.activate_scheduled_feature_head(21, &[public_key])?);
+            assert!(registry.activate_scheduled_feature_head()?);
             assert_eq!(registry.active_feature_head()?, FEATURE_HEAD);
 
             let scheduled = registry.scheduled_feature_head()?;
@@ -560,10 +575,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
-            let call = IFeatureRegistry::activateScheduledFeatureHeadCall {
-                currentEpoch: 21,
-                activeValidatorPublicKeys: Vec::new(),
-            };
+            let call = IFeatureRegistry::activateScheduledFeatureHeadCall {};
 
             let result = registry.call(&call.abi_encode(), Address::repeat_byte(0x01))?;
             assert!(result.is_revert());

@@ -33,7 +33,7 @@ use tempo_contracts::precompiles::{
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
@@ -151,7 +151,6 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
-    consensus_context: Option<TempoConsensusContext>,
     shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     extra_data: Bytes,
@@ -174,7 +173,6 @@ where
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
-            consensus_context: ctx.consensus_context,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
@@ -290,17 +288,7 @@ where
 
     /// Activates a scheduled feature head once the consensus epoch reaches the target epoch.
     fn activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
-        let Some(consensus_context) = self.consensus_context else {
-            return Ok(());
-        };
-        let Some(active_validator_public_keys) = self.validator_set.clone() else {
-            return Ok(());
-        };
-
-        let call = IFeatureRegistry::activateScheduledFeatureHeadCall {
-            currentEpoch: consensus_context.epoch,
-            activeValidatorPublicKeys: active_validator_public_keys,
-        };
+        let call = IFeatureRegistry::activateScheduledFeatureHeadCall {};
         self.transact_precompile_system_call(
             FEATURE_REGISTRY_ADDRESS,
             call.abi_encode().into(),
@@ -860,7 +848,7 @@ mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
-        SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
+        SubBlockMetadata, TempoConsensusContext, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
@@ -1963,8 +1951,8 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_skips_scheduled_feature_head_without_validator_set() {
-        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+    fn test_apply_pre_execution_clears_scheduled_feature_head_without_current_committee_quorum() {
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
         db.insert_account_with_storage(
@@ -1976,7 +1964,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_runtime_spec(TempoHardfork::T9)
-            .with_consensus_epoch(21)
+            .with_block_number(21)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
@@ -1984,11 +1972,8 @@ mod tests {
 
         let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
         assert_eq!(acc.storage_slot(U256::ZERO).unwrap(), U256::ZERO);
-        assert_eq!(
-            acc.storage_slot(U256::from(1)).unwrap(),
-            word_from_b256(test_feature_head())
-        );
-        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(21));
+        assert_eq!(acc.storage_slot(U256::from(1)).unwrap(), U256::ZERO);
+        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::ZERO);
     }
 
     #[test]
@@ -2005,7 +1990,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_runtime_spec(TempoHardfork::T9)
-            .with_consensus_epoch(20)
+            .with_block_number(20)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
