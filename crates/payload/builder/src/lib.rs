@@ -850,18 +850,20 @@ struct SsmrBalReplayOutput {
     tx: SsmrRecoveredTx,
     is_payment: bool,
     result: TempoTxResult,
+    finished_at: Instant,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 struct SsmrBalReplayTimings {
     bal_decode_elapsed: Duration,
+    wall_elapsed: Duration,
     worker_execute_elapsed: Duration,
     ordered_commit_elapsed: Duration,
 }
 
 impl SsmrBalReplayTimings {
     fn total_elapsed(self) -> Duration {
-        self.bal_decode_elapsed + self.worker_execute_elapsed + self.ordered_commit_elapsed
+        self.bal_decode_elapsed + self.wall_elapsed
     }
 }
 
@@ -977,6 +979,7 @@ where
     if tx_count == 0 {
         return Ok(SsmrBalReplayTimings {
             bal_decode_elapsed,
+            wall_elapsed: Duration::ZERO,
             worker_execute_elapsed: Duration::ZERO,
             ordered_commit_elapsed: Duration::ZERO,
         });
@@ -991,126 +994,150 @@ where
     let (result_tx, result_rx) =
         crossbeam_channel::bounded::<Result<SsmrBalReplayOutput, String>>(tx_count);
 
-    task_executor.bal_streaming_pool().in_place_scope(|scope| {
-        for _ in 0..worker_count {
-            let job_rx = job_rx.clone();
-            let result_tx = result_tx.clone();
-            let provider = provider.clone();
-            let evm_config = evm_config.clone();
-            let evm_env = evm_env.clone();
-            let ctx = ctx.clone();
-            scope.spawn(move |_| {
-                while let Ok(job) = job_rx.recv() {
-                    let result = (|| -> Result<SsmrBalReplayOutput, String> {
-                        let state_provider =
-                            provider.state_by_block_hash(parent_hash).map_err(|error| {
-                                format!("failed opening SSMR replay state: {error}")
-                            })?;
-                        let state = StateProviderDatabase::new(state_provider);
-                        let mut db = State::builder()
-                            .with_database(
-                                Box::new(state) as Box<dyn Database<Error = ProviderError>>
-                            )
-                            .with_bal(Arc::clone(&job.bal))
-                            .with_bundle_update()
-                            .build();
-                        let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
-                        let mut worker_executor = evm_config.create_executor(evm, ctx.clone());
-                        worker_executor.evm_mut().ctx_mut().block.beneficiary = beneficiary;
-                        worker_executor
-                            .evm_mut()
-                            .db_mut()
-                            .set_bal_index(BlockAccessIndex::from_tx_index(job.bal_index as u64));
-                        let is_payment = if is_t5 {
-                            job.tx.transaction.inner().is_payment_v2()
-                        } else {
-                            job.tx.transaction.inner().is_payment_v1()
-                        };
-                        let result = worker_executor
-                            .execute_transaction_without_commit(&job.tx.transaction)
-                            .map_err(|error| {
-                                format!("SSMR BAL replay transaction failed: {error}")
-                            })?;
-
-                        Ok(SsmrBalReplayOutput {
-                            output_index: job.output_index,
-                            global_index: job.global_index,
-                            tx: job.tx,
-                            is_payment,
-                            result,
-                        })
-                    })();
-
-                    if result_tx.send(result).is_err() {
-                        return;
-                    }
-                }
-            });
-        }
-        drop(result_tx);
-
-        for job in jobs {
-            if job_tx.send(job).is_err() {
-                break;
-            }
-        }
-        drop(job_tx);
-    });
-    let worker_execute_elapsed = worker_execute_start.elapsed();
-
     let mut outputs: Vec<Option<SsmrBalReplayOutput>> =
         std::iter::repeat_with(|| None).take(tx_count).collect();
-    for _ in 0..tx_count {
-        let output = result_rx.recv().map_err(|_| {
-            PayloadBuilderError::other(std::io::Error::other("SSMR BAL replay workers closed"))
-        })?;
-        let output =
-            output.map_err(|error| PayloadBuilderError::other(std::io::Error::other(error)))?;
-        let Some(slot) = outputs.get_mut(output.output_index) else {
-            return Err(PayloadBuilderError::other(std::io::Error::other(
-                "SSMR BAL replay worker returned out-of-range output",
-            )));
-        };
-        if slot.is_some() {
-            return Err(PayloadBuilderError::other(std::io::Error::other(
-                "SSMR BAL replay worker returned duplicate output",
-            )));
-        }
-        *slot = Some(output);
-    }
+    let mut next_commit_offset = 0usize;
+    let mut ordered_commit_elapsed = Duration::ZERO;
+    let mut worker_execute_elapsed = Duration::ZERO;
 
-    let ordered_commit_start = Instant::now();
-    for (commit_offset, output) in outputs.into_iter().enumerate() {
-        let output = output.ok_or_else(|| {
-            PayloadBuilderError::other(std::io::Error::other(
-                "SSMR BAL replay worker missing output",
-            ))
-        })?;
-        debug_assert_eq!(output.global_index, global_first_tx_index + commit_offset);
-        *cumulative_gas_used += output.result.block_gas_used();
-        *cumulative_state_gas_used += output.result.state_gas_used();
-        if !output.is_payment {
-            *non_payment_gas_used += output.result.block_gas_used();
-        }
-        *total_fees += output.result.validator_fee();
+    task_executor.bal_streaming_pool().in_place_scope(
+        |scope| -> Result<(), PayloadBuilderError> {
+            for _ in 0..worker_count {
+                let job_rx = job_rx.clone();
+                let result_tx = result_tx.clone();
+                let provider = provider.clone();
+                let evm_config = evm_config.clone();
+                let evm_env = evm_env.clone();
+                let ctx = ctx.clone();
+                scope.spawn(move |_| {
+                    while let Ok(job) = job_rx.recv() {
+                        let result = (|| -> Result<SsmrBalReplayOutput, String> {
+                            let state_provider =
+                                provider.state_by_block_hash(parent_hash).map_err(|error| {
+                                    format!("failed opening SSMR replay state: {error}")
+                                })?;
+                            let state = StateProviderDatabase::new(state_provider);
+                            let mut db = State::builder()
+                                .with_database(
+                                    Box::new(state) as Box<dyn Database<Error = ProviderError>>
+                                )
+                                .with_bal(Arc::clone(&job.bal))
+                                .with_bundle_update()
+                                .build();
+                            let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
+                            let mut worker_executor = evm_config.create_executor(evm, ctx.clone());
+                            worker_executor.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+                            worker_executor.evm_mut().db_mut().set_bal_index(
+                                BlockAccessIndex::from_tx_index(job.bal_index as u64),
+                            );
+                            let is_payment = if is_t5 {
+                                job.tx.transaction.inner().is_payment_v2()
+                            } else {
+                                job.tx.transaction.inner().is_payment_v1()
+                            };
+                            let result = worker_executor
+                                .execute_transaction_without_commit(&job.tx.transaction)
+                                .map_err(|error| {
+                                    format!("SSMR BAL replay transaction failed: {error}")
+                                })?;
 
-        let _ = executor.commit_transaction(output.result);
-        let receipt = executor.receipts().last().unwrap().clone();
-        if !receipt.success {
-            *reverted_transactions += 1;
-        }
-        let _ = roots_tx.send((
-            BuilderTx::Owned {
-                tx: Box::new(output.tx.transaction),
-                encoded_2718: Some(output.tx.encoded),
-            },
-            receipt,
-        ));
+                            Ok(SsmrBalReplayOutput {
+                                output_index: job.output_index,
+                                global_index: job.global_index,
+                                tx: job.tx,
+                                is_payment,
+                                result,
+                                finished_at: Instant::now(),
+                            })
+                        })();
+
+                        if result_tx.send(result).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+            drop(result_tx);
+
+            for job in jobs {
+                if job_tx.send(job).is_err() {
+                    break;
+                }
+            }
+            drop(job_tx);
+
+            for _ in 0..tx_count {
+                let output = result_rx.recv().map_err(|_| {
+                    PayloadBuilderError::other(std::io::Error::other(
+                        "SSMR BAL replay workers closed",
+                    ))
+                })?;
+                let output = output
+                    .map_err(|error| PayloadBuilderError::other(std::io::Error::other(error)))?;
+                worker_execute_elapsed = worker_execute_elapsed.max(
+                    output
+                        .finished_at
+                        .saturating_duration_since(worker_execute_start),
+                );
+                let Some(slot) = outputs.get_mut(output.output_index) else {
+                    return Err(PayloadBuilderError::other(std::io::Error::other(
+                        "SSMR BAL replay worker returned out-of-range output",
+                    )));
+                };
+                if slot.is_some() {
+                    return Err(PayloadBuilderError::other(std::io::Error::other(
+                        "SSMR BAL replay worker returned duplicate output",
+                    )));
+                }
+                *slot = Some(output);
+
+                while next_commit_offset < tx_count {
+                    let Some(output) = outputs[next_commit_offset].take() else {
+                        break;
+                    };
+                    debug_assert_eq!(
+                        output.global_index,
+                        global_first_tx_index + next_commit_offset
+                    );
+                    let ordered_commit_start = Instant::now();
+                    *cumulative_gas_used += output.result.block_gas_used();
+                    *cumulative_state_gas_used += output.result.state_gas_used();
+                    if !output.is_payment {
+                        *non_payment_gas_used += output.result.block_gas_used();
+                    }
+                    *total_fees += output.result.validator_fee();
+
+                    let _ = executor.commit_transaction(output.result);
+                    let receipt = executor.receipts().last().unwrap().clone();
+                    if !receipt.success {
+                        *reverted_transactions += 1;
+                    }
+                    let _ = roots_tx.send((
+                        BuilderTx::Owned {
+                            tx: Box::new(output.tx.transaction),
+                            encoded_2718: Some(output.tx.encoded),
+                        },
+                        receipt,
+                    ));
+                    ordered_commit_elapsed += ordered_commit_start.elapsed();
+                    next_commit_offset += 1;
+                }
+            }
+
+            Ok(())
+        },
+    )?;
+    let wall_elapsed = worker_execute_start.elapsed();
+
+    if next_commit_offset != tx_count {
+        return Err(PayloadBuilderError::other(std::io::Error::other(
+            "SSMR BAL replay did not commit all outputs",
+        )));
     }
-    let ordered_commit_elapsed = ordered_commit_start.elapsed();
 
     Ok(SsmrBalReplayTimings {
         bal_decode_elapsed,
+        wall_elapsed,
         worker_execute_elapsed,
         ordered_commit_elapsed,
     })
