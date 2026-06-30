@@ -284,35 +284,10 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
             one_multicall(vec![place(true, -60), cancel(1)]),
         ),
         workload(
-            "dex_cancel_flip_orders",
-            one_multicall(vec![place_flip(true, -60, -50), cancel(1)]),
-        ),
-        workload(
             "dex_partial_fill_asks_exact_in",
             one_multicall(vec![
                 place(false, 100),
                 swap_in(quote_token, base_token, fill),
-            ]),
-        ),
-        workload(
-            "dex_partial_fill_flip_asks_exact_in",
-            one_multicall(vec![
-                place_flip(false, 100, 90),
-                swap_in(quote_token, base_token, fill),
-            ]),
-        ),
-        workload(
-            "dex_full_fill_asks_exact_out",
-            one_multicall(vec![
-                place(false, 80),
-                swap_out(quote_token, base_token, amount),
-            ]),
-        ),
-        workload(
-            "dex_full_fill_flip_asks_exact_out",
-            one_multicall(vec![
-                place_flip(false, 80, 70),
-                swap_out(quote_token, base_token, amount),
             ]),
         ),
         workload(
@@ -321,23 +296,6 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
                 sign_dex_calls(
                     &signers[0],
                     vec![place(false, 70), place(false, 70), place(false, 70)],
-                ),
-                sign_dex_call(
-                    &signers[1],
-                    swap_out(quote_token, base_token, amount * 2 + amount / 2),
-                ),
-            ],
-        ),
-        workload(
-            "dex_three_flip_asks_fill_two_and_half",
-            vec![
-                sign_dex_calls(
-                    &signers[0],
-                    vec![
-                        place_flip(false, 70, 60),
-                        place_flip(false, 70, 60),
-                        place_flip(false, 70, 60),
-                    ],
                 ),
                 sign_dex_call(
                     &signers[1],
