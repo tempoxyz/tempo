@@ -910,10 +910,8 @@ impl StreamBuffer {
                 .as_ref()
                 .and_then(|transcript| transcript.shards.keys().next_back().copied());
             let pending_max = self.pending_shards.keys().next_back().copied();
-            match transcript_max.max(pending_max) {
-                Some(max_seen) => max_seen.saturating_add(1),
-                None => return None,
-            }
+            let max_seen = transcript_max.max(pending_max)?;
+            max_seen.saturating_add(1)
         };
 
         (0..search_limit).find(|index| !self.has_shard(*index))

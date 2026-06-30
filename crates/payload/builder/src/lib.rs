@@ -1066,6 +1066,9 @@ where
         *total_fees += output.result.validator_fee();
 
         if let Some(bal_task_handle) = bal_task_handle {
+            // Parallel BAL replay commits worker results into the canonical executor.
+            // The state hook observes commit-time state changes, so advance the rebuilt BAL
+            // index before committing this tx, matching Reth's ordered BAL commit path.
             bal_task_handle.bump_bal_index();
         }
         let _ = executor.commit_transaction(output.result);
