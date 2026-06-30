@@ -43,7 +43,7 @@ on:
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
         required: false
-        default: "tip20_ dex_"
+        default: ""
         type: string
       measurement_modes:
         description: "CodSpeed measurement mode(s), separated by commas"
@@ -83,7 +83,7 @@ jobs:
         env:
           INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
           INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution dex_execution' }}
-          INPUT_FILTERS: ${{ inputs.filters || 'tip20_ dex_' }}
+          INPUT_FILTERS: ${{ inputs.filters }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
           set -euo pipefail
