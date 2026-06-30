@@ -35,6 +35,7 @@ jobs:
         PR_NUMBER: ${{ github.event.issue.number }}
         REQUESTED_BY: ${{ github.event.comment.user.login }}
         PR_BRANCH: ${{ steps.pr.outputs.branch }}
+        PR_SHA: ${{ steps.pr.outputs.sha }}
       run: |
         set -euo pipefail
 
@@ -50,7 +51,9 @@ jobs:
             \"event\": \"build_devnet\",
             \"data\": {
               \"name\": \"devnet-pr-${PR_NUMBER}\",
+              \"pr_number\": \"${PR_NUMBER}\",
               \"branch\": \"${PR_BRANCH}\",
+              \"sha\": \"${PR_SHA}\",
               \"requested_by\": \"${REQUESTED_BY}\"
             }
           }"
