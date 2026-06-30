@@ -55,8 +55,12 @@ use reth_revm::{
     State,
     context::Block,
     database::StateProviderDatabase,
+    database_interface::bal::BalState,
     db::states::bundle_state::BundleRetention,
-    state::{EvmState, bal::Bal as RevmBal},
+    state::{
+        EvmState,
+        bal::{AccountBal, AccountInfoBal, Bal as RevmBal, BalWrites, StorageBal},
+    },
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
@@ -976,7 +980,7 @@ where
                         worker_executor
                             .evm_mut()
                             .db_mut()
-                            .set_bal_index(BlockAccessIndex::new(job.global_index as u64 + 1));
+                            .set_bal_index(BlockAccessIndex::from_tx_index(job.local_index as u64));
                         let is_payment = if is_t5 {
                             job.tx.transaction.inner().is_payment_v2()
                         } else {
@@ -2173,9 +2177,11 @@ where
             .record(total_transaction_execution_elapsed);
 
         if let Some(packer) = ssmr_packer.take() {
-            let block_access_list = bal_task_handle
-                .as_ref()
-                .and_then(BalTaskHandle::snapshot_block_access_list);
+            let block_access_list = packer.pending_range().and_then(|(first, next)| {
+                bal_task_handle
+                    .as_ref()
+                    .and_then(|handle| handle.snapshot_block_access_list(first, next))
+            });
             packer.finish(block_access_list);
         }
 
@@ -2598,18 +2604,32 @@ where
         let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
         let (bal_tx, bal_rx) = oneshot::channel();
         self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
+            let mut bal_state = BalState::new().with_bal_builder();
+            let mut shard_bal_state = BalState::new().with_bal_builder();
             for msg in task_rx {
                 match msg {
                     BalMessage::BumpIndex => {
                         bal_state.bump_bal_index();
+                        shard_bal_state.bump_bal_index();
                     }
-                    BalMessage::Snapshot(reply_tx) => {
-                        let _ = reply_tx.send(encode_bal_snapshot(&bal_state));
+                    BalMessage::Snapshot {
+                        first_tx_index,
+                        next_tx_index,
+                        reply_tx,
+                    } => {
+                        let snapshot = encode_bal_range_snapshot(
+                            &bal_state,
+                            &shard_bal_state,
+                            first_tx_index,
+                            next_tx_index,
+                        );
+                        let _ = reply_tx.send(snapshot);
+                        shard_bal_state = BalState::new().with_bal_builder();
+                        shard_bal_state.bump_bal_index();
                     }
                     BalMessage::State(state) => {
                         bal_state.commit(&state);
+                        shard_bal_state.commit(&state);
                         if let Some(state_root_task_hook) = &mut state_root_task_hook {
                             state_root_task_hook.on_state(state);
                         }
@@ -2650,9 +2670,15 @@ impl BalTaskHandle {
         let _ = self.msg_tx.send(BalMessage::BumpIndex);
     }
 
-    fn snapshot_block_access_list(&self) -> Option<Bytes> {
+    fn snapshot_block_access_list(&self, first_tx_index: u64, next_tx_index: u64) -> Option<Bytes> {
         let (reply_tx, reply_rx) = mpsc::channel();
-        self.msg_tx.send(BalMessage::Snapshot(reply_tx)).ok()?;
+        self.msg_tx
+            .send(BalMessage::Snapshot {
+                first_tx_index,
+                next_tx_index,
+                reply_tx,
+            })
+            .ok()?;
         reply_rx.recv().ok().flatten()
     }
 
@@ -2664,14 +2690,117 @@ impl BalTaskHandle {
 enum BalMessage {
     State(EvmState),
     BumpIndex,
-    Snapshot(mpsc::Sender<Option<Bytes>>),
+    Snapshot {
+        first_tx_index: u64,
+        next_tx_index: u64,
+        reply_tx: mpsc::Sender<Option<Bytes>>,
+    },
 }
 
-fn encode_bal_snapshot(bal_state: &reth_revm::database_interface::bal::BalState) -> Option<Bytes> {
-    let bal: Bal = bal_state.bal_builder()?.into_alloy_bal().into();
+fn encode_bal_range_snapshot(
+    bal_state: &BalState,
+    shard_filter_state: &BalState,
+    first_tx_index: u64,
+    next_tx_index: u64,
+) -> Option<Bytes> {
+    let full_bal = bal_state.bal_builder()?;
+    let shard_filter = shard_filter_state.bal_builder()?;
+    let bal: Bal = slice_bal_range(&full_bal, &shard_filter, first_tx_index, next_tx_index)
+        .into_alloy_bal()
+        .into();
     let mut encoded = Vec::new();
     bal.encode(&mut encoded);
     Some(encoded.into())
+}
+
+fn slice_bal_range(
+    full_bal: &RevmBal,
+    shard_filter: &RevmBal,
+    first_tx_index: u64,
+    next_tx_index: u64,
+) -> RevmBal {
+    RevmBal::from_iter(
+        shard_filter
+            .accounts
+            .iter()
+            .map(|(address, filter_account)| {
+                let sliced = full_bal
+                    .accounts
+                    .get(address)
+                    .map(|full_account| {
+                        slice_account_bal_range(
+                            full_account,
+                            filter_account,
+                            first_tx_index,
+                            next_tx_index,
+                        )
+                    })
+                    .unwrap_or_default();
+                (*address, sliced)
+            }),
+    )
+}
+
+fn slice_account_bal_range(
+    full_account: &AccountBal,
+    filter_account: &AccountBal,
+    first_tx_index: u64,
+    next_tx_index: u64,
+) -> AccountBal {
+    AccountBal {
+        account_info: AccountInfoBal {
+            nonce: slice_bal_writes_range(
+                &full_account.account_info.nonce,
+                first_tx_index,
+                next_tx_index,
+            ),
+            balance: slice_bal_writes_range(
+                &full_account.account_info.balance,
+                first_tx_index,
+                next_tx_index,
+            ),
+            code: slice_bal_writes_range(
+                &full_account.account_info.code,
+                first_tx_index,
+                next_tx_index,
+            ),
+        },
+        storage: StorageBal::from_iter(filter_account.storage.storage.keys().map(|key| {
+            let writes = full_account
+                .storage
+                .storage
+                .get(key)
+                .map(|writes| slice_bal_writes_range(writes, first_tx_index, next_tx_index))
+                .unwrap_or_default();
+            (*key, writes)
+        })),
+    }
+}
+
+fn slice_bal_writes_range<T>(
+    writes: &BalWrites<T>,
+    first_tx_index: u64,
+    next_tx_index: u64,
+) -> BalWrites<T>
+where
+    T: PartialEq + Clone,
+{
+    let mut sliced = Vec::new();
+    if let Some(value) = writes.get(BlockAccessIndex::from_tx_index(first_tx_index)) {
+        sliced.push((BlockAccessIndex::PRE_EXECUTION, value));
+    }
+
+    for (index, value) in &writes.writes {
+        let raw_index = index.get();
+        if raw_index > first_tx_index && raw_index <= next_tx_index {
+            sliced.push((
+                BlockAccessIndex::new(raw_index - first_tx_index),
+                value.clone(),
+            ));
+        }
+    }
+
+    BalWrites::new(sliced)
 }
 
 fn maybe_push_ssmr_transaction<T>(
@@ -2689,7 +2818,9 @@ fn maybe_push_ssmr_transaction<T>(
     let mut encoded = Vec::new();
     tx.encode_2718(&mut encoded);
     if packer.push(encoded.into(), gas_estimate) {
-        let block_access_list = bal_task_handle.and_then(BalTaskHandle::snapshot_block_access_list);
+        let block_access_list = packer.pending_range().and_then(|(first, next)| {
+            bal_task_handle.and_then(|handle| handle.snapshot_block_access_list(first, next))
+        });
         packer.flush(block_access_list);
     }
 }
@@ -2747,6 +2878,10 @@ impl SsmrShardPacker {
         } else {
             self.target_bytes
         }
+    }
+
+    fn pending_range(&self) -> Option<(u64, u64)> {
+        (!self.pending_transactions.is_empty()).then_some((self.first_tx_index, self.next_tx_index))
     }
 
     fn finish(mut self, block_access_list: Option<Bytes>) {
@@ -3061,6 +3196,26 @@ mod tests {
             }
             other => panic!("expected shard, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ssmr_bal_range_rebases_boundary_and_local_writes() {
+        let writes = BalWrites::new(vec![
+            (BlockAccessIndex::new(1), 10u64),
+            (BlockAccessIndex::new(3), 30),
+            (BlockAccessIndex::new(5), 50),
+            (BlockAccessIndex::new(8), 80),
+        ]);
+
+        let sliced = slice_bal_writes_range(&writes, 3, 6);
+
+        assert_eq!(
+            sliced.writes,
+            vec![
+                (BlockAccessIndex::PRE_EXECUTION, 30),
+                (BlockAccessIndex::new(2), 50),
+            ]
+        );
     }
 
     #[test]
