@@ -43,7 +43,7 @@ use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
-const DEX_SCENARIO_COUNT: usize = 256;
+const DEX_SCENARIO_TX_COUNT: usize = 256;
 const DEX_ORDER_AMOUNT: u128 = 1_000_000_000;
 const DEX_TX_GAS_LIMIT: u64 = 20_000_000;
 const DEX_BASE_TOKEN_SALT: B256 = B256::ZERO;
