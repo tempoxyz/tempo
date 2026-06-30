@@ -43,7 +43,7 @@ use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
-const DEX_BENCH_TX_COUNT: usize = 1_024;
+const DEX_SCENARIO_COUNT: usize = 256;
 const DEX_ORDER_AMOUNT: u128 = 1_000_000_000;
 const DEX_TX_GAS_LIMIT: u64 = 20_000_000;
 const DEX_BASE_TOKEN_SALT: B256 = B256::ZERO;
@@ -111,13 +111,6 @@ fn seed_dex_cache_db(
                 };
                 quote.mint(admin, mint.clone())?;
                 base.mint(admin, mint)?;
-
-                let approve = ITIP20::approveCall {
-                    spender: STABLECOIN_DEX_ADDRESS,
-                    amount: U256::MAX,
-                };
-                quote.approve(*participant, approve.clone())?;
-                base.approve(*participant, approve)?;
             }
 
             StablecoinDEX::new().initialize()?;
@@ -258,6 +251,9 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
             .abi_encode(),
         )
     };
+    let ask_tick = |idx: usize| 1_500 - idx as i16 * 10;
+    let bid_tick = |idx: usize| -1_500 + idx as i16 * 10;
+    let signer = |idx: usize| &signers[idx % signers.len()];
 
     let workload = |name, transactions| DexBenchWorkload {
         name,
@@ -267,11 +263,94 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
     let many_single_call = |call: Bytes| {
         signers
             .iter()
-            .take(DEX_BENCH_TX_COUNT)
+            .take(4 * DEX_SCENARIO_COUNT)
             .map(|signer| sign_dex_call(signer, call.clone()))
             .collect()
     };
-    let one_multicall = |calls| vec![sign_dex_calls(&signers[0], calls)];
+
+    let cancel_orders = |flip: bool| {
+        (0..DEX_SCENARIO_COUNT)
+            .map(|idx| {
+                let tick = bid_tick(idx);
+                let place_order = if flip {
+                    place_flip(true, tick, tick + 10)
+                } else {
+                    place(true, tick)
+                };
+                sign_dex_calls(signer(idx), vec![place_order, cancel(idx as u128 + 1)])
+            })
+            .collect()
+    };
+    let partial_fill_asks = |flip: bool| {
+        (0..DEX_SCENARIO_COUNT)
+            .map(|idx| {
+                let tick = ask_tick(idx);
+                let place_order = if flip {
+                    place_flip(false, tick, tick - 10)
+                } else {
+                    place(false, tick)
+                };
+                sign_dex_calls(
+                    signer(idx),
+                    vec![place_order, swap_in(quote_token, base_token, fill)],
+                )
+            })
+            .collect()
+    };
+    let full_fill_asks = |flip: bool| {
+        (0..DEX_SCENARIO_COUNT)
+            .map(|idx| {
+                let tick = ask_tick(idx);
+                let place_order = if flip {
+                    place_flip(false, tick, tick - 10)
+                } else {
+                    place(false, tick)
+                };
+                sign_dex_calls(
+                    signer(idx),
+                    vec![place_order, swap_out(quote_token, base_token, amount)],
+                )
+            })
+            .collect()
+    };
+    let three_asks_fill_two_and_half = |flip: bool| {
+        (0..DEX_SCENARIO_COUNT)
+            .flat_map(|idx| {
+                let tick = ask_tick(idx);
+                let place_order = || {
+                    if flip {
+                        place_flip(false, tick, tick - 10)
+                    } else {
+                        place(false, tick)
+                    }
+                };
+                [
+                    sign_dex_calls(
+                        signer(idx * 2),
+                        vec![place_order(), place_order(), place_order()],
+                    ),
+                    sign_dex_call(
+                        signer(idx * 2 + 1),
+                        swap_out(quote_token, base_token, amount * 2 + amount / 2),
+                    ),
+                ]
+            })
+            .collect()
+    };
+    let flip_bid_full_fill = || {
+        (0..DEX_SCENARIO_COUNT)
+            .map(|idx| {
+                let tick = bid_tick(idx);
+                sign_dex_calls(
+                    signer(idx),
+                    vec![
+                        place_flip(true, tick, tick + 10),
+                        swap_in(base_token, quote_token, amount),
+                    ],
+                )
+            })
+            .collect()
+    };
 
     vec![
         workload("dex_place_ask_orders", many_single_call(place(false, 0))),
@@ -279,37 +358,24 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
             "dex_place_flip_ask_orders",
             many_single_call(place_flip(false, 0, -10)),
         ),
+        workload("dex_cancel_orders", cancel_orders(false)),
+        workload("dex_cancel_flip_orders", cancel_orders(true)),
+        workload("dex_partial_fill_asks_exact_in", partial_fill_asks(false)),
         workload(
-            "dex_cancel_orders",
-            one_multicall(vec![place(true, -60), cancel(1)]),
+            "dex_partial_fill_flip_asks_exact_in",
+            partial_fill_asks(true),
         ),
-        workload(
-            "dex_partial_fill_asks_exact_in",
-            one_multicall(vec![
-                place(false, 100),
-                swap_in(quote_token, base_token, fill),
-            ]),
-        ),
+        workload("dex_full_fill_asks_exact_out", full_fill_asks(false)),
+        workload("dex_full_fill_flip_asks_exact_out", full_fill_asks(true)),
         workload(
             "dex_three_asks_fill_two_and_half",
-            vec![
-                sign_dex_calls(
-                    &signers[0],
-                    vec![place(false, 70), place(false, 70), place(false, 70)],
-                ),
-                sign_dex_call(
-                    &signers[1],
-                    swap_out(quote_token, base_token, amount * 2 + amount / 2),
-                ),
-            ],
+            three_asks_fill_two_and_half(false),
         ),
         workload(
-            "dex_flip_bid_full_fill",
-            one_multicall(vec![
-                place_flip(true, 20, 30),
-                swap_in(base_token, quote_token, amount),
-            ]),
+            "dex_three_flip_asks_fill_two_and_half",
+            three_asks_fill_two_and_half(true),
         ),
+        workload("dex_flip_bid_full_fill", flip_bid_full_fill()),
     ]
 }
 fn dex_order_execution(c: &mut Criterion) {
