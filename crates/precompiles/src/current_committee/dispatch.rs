@@ -1,11 +1,12 @@
 //! ABI dispatch for the [`CurrentCommittee`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch_call, mutate_void,
-    view,
+    Precompile, charge_input_cost, current_committee::CurrentCommittee, dispatch, mutate_void, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
+use tempo_contracts::precompiles::ICurrentCommittee;
+#[cfg(test)]
 use tempo_contracts::precompiles::ICurrentCommittee::ICurrentCommitteeCalls;
 
 impl Precompile for CurrentCommittee {
@@ -14,18 +15,16 @@ impl Precompile for CurrentCommittee {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[],
-            ICurrentCommitteeCalls::abi_decode,
             |call| match call {
-                ICurrentCommitteeCalls::getCommitteeMembers(call) => {
-                    view(call, |_| self.get_committee_members())
+                ICurrentCommittee::ICurrentCommitteeCalls {
+                    getCommitteeMembers(call) => view(call, |_| self.get_committee_members()),
+                    setCommitteeMembers(call) => {
+                        mutate_void(call, msg_sender, |s, c| self.set_committee_members(s, c))
+                    }
                 }
-                ICurrentCommitteeCalls::setCommitteeMembers(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_committee_members(s, c))
-                }
-            },
+            }
         )
     }
 }
