@@ -911,7 +911,7 @@ mod tests {
         let account = config.account().map_err(eyre::Report::msg)?;
         let tx = TxBuilder::new()
             .call_identity(&[])
-            .gas_limit(1_000_000)
+            .gas_limit(2_000_000)
             .build();
         let digest = multisig_digest(tx.signature_hash(), account, config_id);
         let owner_signature =
