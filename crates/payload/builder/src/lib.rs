@@ -192,7 +192,9 @@ impl SsmrReplayProgress {
         match event {
             SsmrRecoveredReplayEvent::Transactions(batch) => {
                 self.shards += batch.completed_shards;
-                if let Some(prewarmer) = prewarmer {
+                if batch.block_access_list.is_none()
+                    && let Some(prewarmer) = prewarmer
+                {
                     for tx in &batch.transactions {
                         prewarmer.prewarm(&tx.transaction);
                     }
