@@ -286,9 +286,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             }
         };
 
-        let Some((feature_head, ready)) = readiness else {
-            return None;
-        };
+        let (feature_head, ready) = readiness?;
 
         debug!(
             %feature_head,

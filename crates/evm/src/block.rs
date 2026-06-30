@@ -300,7 +300,7 @@ where
 
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
-        &mut self,
+        &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
@@ -385,7 +385,7 @@ where
     }
 
     fn validate_feature_registry_system_tx(
-        &mut self,
+        &self,
         tx: &TempoTxEnvelope,
     ) -> Result<(), BlockValidationError> {
         IFeatureRegistry::reportFeatureReadinessCall::abi_decode(tx.input()).map_err(|_| {
@@ -498,7 +498,7 @@ where
     /// the regular block gas limit checks and we need to make sure that they
     /// only perform explicitly allowed actions.
     pub(crate) fn validate_tx_pre_execution(
-        &mut self,
+        &self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
@@ -524,7 +524,7 @@ where
     }
 
     pub(crate) fn validate_tx(
-        &mut self,
+        &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
@@ -957,7 +957,7 @@ mod tests {
     fn test_validate_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
@@ -1028,7 +1028,7 @@ mod tests {
     fn test_validate_system_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
                 seen_feature_readiness_report: false,
@@ -1055,7 +1055,7 @@ mod tests {
         let proposer_key = PrivateKey::from_seed(0);
         let mut builder = TestExecutorBuilder::default().with_runtime_spec(TempoHardfork::T9);
         builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
-        let mut executor = builder.build(&mut db, &chainspec);
+        let executor = builder.build(&mut db, &chainspec);
 
         let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
             .abi_encode()
@@ -1082,7 +1082,7 @@ mod tests {
     fn test_validate_system_tx_feature_head_readiness_rejects_missing_proposer_public_key() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_runtime_spec(TempoHardfork::T9)
             .build(&mut db, &chainspec);
 
@@ -1104,7 +1104,7 @@ mod tests {
     fn test_validate_system_tx_duplicate_feature_head_readiness_report() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_runtime_spec(TempoHardfork::T9)
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
@@ -1129,7 +1129,7 @@ mod tests {
     fn test_validate_system_tx_invalid_sublocks_metadata() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
@@ -1148,7 +1148,7 @@ mod tests {
     fn test_validate_system_tx_invalid_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Create system tx with non-zero `to` address
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -1430,7 +1430,7 @@ mod tests {
     fn test_validate_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
@@ -1471,7 +1471,7 @@ mod tests {
         let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
 
         // Test with GasIncentive section
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::GasIncentive)
             .build(&mut db, &chainspec);
 
@@ -1485,7 +1485,7 @@ mod tests {
 
         // Also test with System section
         let mut db2 = State::builder().with_bundle_update().build();
-        let mut executor2 = TestExecutorBuilder::default()
+        let executor2 = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
                 seen_feature_readiness_report: false,
@@ -1513,7 +1513,7 @@ mod tests {
         let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
 
         // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::SubBlock {
                 proposer: proposer2,
             })
@@ -1536,7 +1536,7 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
 
         // Set section to System
-        let mut executor = TestExecutorBuilder::default()
+        let executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
                 seen_feature_readiness_report: false,

@@ -375,24 +375,22 @@ async fn test_block_building_reports_scheduled_feature_readiness_once() -> eyre:
     let scheduled = feature_registry.scheduledFeatureHead().call().await?;
     assert_eq!(scheduled.featureHead, expected_feature_head);
     assert_eq!(scheduled.activationEpoch, 1);
-    assert_eq!(
-        feature_registry
+    assert!(
+        !feature_registry
             .validatorConfirmedFeatureHead(validator.validatorAddress, expected_feature_head)
             .call()
-            .await?,
-        false
+            .await?
     );
 
     let first_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
     let reports = feature_readiness_reports(&first_payload)?;
     assert_eq!(reports.len(), 1);
     assert!(reports[0].ready);
-    assert_eq!(
+    assert!(
         feature_registry
             .validatorConfirmedFeatureHead(validator.validatorAddress, expected_feature_head)
             .call()
-            .await?,
-        true
+            .await?
     );
 
     let second_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
