@@ -888,7 +888,7 @@ where
     let bal_decode_start = Instant::now();
     let mut encoded_bal_ref = encoded_bal.as_ref();
     let alloy_bal = Bal::decode(&mut encoded_bal_ref).map_err(PayloadBuilderError::other)?;
-    let revm_bal = RevmBal::try_from(Vec::<_>::from(alloy_bal.clone()))
+    let revm_bal = RevmBal::try_from(Vec::<_>::from(alloy_bal))
         .map_err(|error| PayloadBuilderError::other(std::io::Error::other(format!("{error:?}"))))?;
     let revm_bal = Arc::new(revm_bal);
     let bal_decode_elapsed = bal_decode_start.elapsed();
@@ -1057,10 +1057,10 @@ where
         }
         *total_fees += output.result.validator_fee();
 
-        let _ = executor.commit_transaction(output.result);
         if let Some(bal_task_handle) = bal_task_handle {
             bal_task_handle.bump_bal_index();
         }
+        let _ = executor.commit_transaction(output.result);
         let receipt = executor.receipts().last().unwrap().clone();
         if !receipt.success {
             *reverted_transactions += 1;
@@ -2680,7 +2680,7 @@ fn maybe_push_ssmr_transaction<T>(
     tx: &T,
     gas_estimate: u64,
 ) where
-    T: Encodable2718 + ?Sized,
+    T: Encodable2718,
 {
     let Some(packer) = ssmr_packer.as_mut() else {
         return;

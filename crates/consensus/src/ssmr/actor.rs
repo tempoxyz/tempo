@@ -464,6 +464,8 @@ impl Actor {
                 "inserted SSMR stream message"
             );
         }
+        self.drive_optimistic_execution(key);
+
         if self.buffered_bytes > self.max_buffered_bytes {
             self.metrics.streams_invalid.inc();
             warn!(
@@ -478,8 +480,6 @@ impl Actor {
             }
             return;
         }
-
-        self.drive_optimistic_execution(key);
 
         if !was_complete && is_complete {
             self.metrics.streams_completed.inc();
@@ -631,7 +631,30 @@ impl Actor {
                         shard.bal_bytes = bal_bytes,
                         "feeding SSMR shard to optimistic execution"
                     );
-                    tx.send_shard(transactions, block_access_list)
+                    let sent = tx.send_shard(transactions, block_access_list);
+                    if sent && bal_bytes > 0 {
+                        let released = self
+                            .streams
+                            .get_mut(&key)
+                            .and_then(|stream| stream.release_replayed_shard_bal(shard_index))
+                            .unwrap_or_default();
+                        if released > 0 {
+                            self.buffered_bytes = self.buffered_bytes.saturating_sub(released);
+                            debug!(
+                                stream.parent = %key.parent_hash,
+                                stream.height = key.block_height,
+                                shard.index = shard_index,
+                                shard.bal_bytes = released,
+                                stream.buffered_bytes = self
+                                    .streams
+                                    .get(&key)
+                                    .map(|stream| stream.buffered_bytes)
+                                    .unwrap_or_default(),
+                                "released SSMR shard BAL after feeding optimistic execution"
+                            );
+                        }
+                    }
+                    sent
                 }
                 ReplaySend::Finish { sent_shards } => {
                     debug!(
@@ -921,6 +944,16 @@ impl StreamBuffer {
         self.transcript
             .as_ref()
             .filter(|transcript| transcript.is_complete())
+    }
+
+    fn release_replayed_shard_bal(&mut self, shard_index: u64) -> Option<usize> {
+        let bal = self
+            .transcript
+            .as_mut()?
+            .take_shard_block_access_list(shard_index)?;
+        let released = bal.len();
+        self.buffered_bytes = self.buffered_bytes.saturating_sub(released);
+        Some(released)
     }
 
     fn insert(&mut self, message: SsmrMessage) -> Result<usize, SsmrError> {

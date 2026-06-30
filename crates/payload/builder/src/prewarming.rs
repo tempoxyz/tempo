@@ -260,7 +260,7 @@ impl SsmrReplayPrewarmer {
 
         let _ = self
             .commands_tx
-            .send(SsmrReplayPrewarmingCommand::Prewarm(tx.clone()));
+            .send(SsmrReplayPrewarmingCommand::Prewarm(Box::new(tx.clone())));
     }
 
     fn start_prewarming<Provider>(
@@ -287,7 +287,7 @@ impl SsmrReplayPrewarmer {
 
                         let prewarm = prewarm.clone();
                         scope.spawn(move |_| {
-                            Self::prewarm_transaction(prewarm, tx);
+                            Self::prewarm_transaction(prewarm, *tx);
                         });
                     }
                     SsmrReplayPrewarmingCommand::Stop => {
@@ -343,7 +343,7 @@ impl Drop for SsmrReplayPrewarmer {
 }
 
 enum SsmrReplayPrewarmingCommand {
-    Prewarm(Recovered<TempoTxEnvelope>),
+    Prewarm(Box<Recovered<TempoTxEnvelope>>),
     Stop,
 }
 

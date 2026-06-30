@@ -285,6 +285,13 @@ impl SsmrTranscript {
         self.shards.get(&shard_index)
     }
 
+    pub(crate) fn take_shard_block_access_list(&mut self, shard_index: u64) -> Option<Bytes> {
+        if shard_index == 0 {
+            self.start.first_shard.block_access_list.take();
+        }
+        self.shards.get_mut(&shard_index)?.block_access_list.take()
+    }
+
     pub(crate) fn shard_count(&self) -> u64 {
         self.shards.len() as u64
     }
