@@ -193,17 +193,18 @@ where
                     continue;
                 }
 
-                if let Entry::Vacant(e) = state.entry(*address) {
-                    let account = Account::from(
-                        db.basic(*address)
-                            .map_err(BlockExecutionError::other)?
-                            .unwrap_or_default(),
-                    );
-                    e.insert(account);
-                }
-                let account = state
-                    .get_mut(address)
-                    .expect("action replay account inserted");
+                let account = match state.entry(*address) {
+                    Entry::Occupied(e) => e.into_mut(),
+                    Entry::Vacant(e) => {
+                        let mut account = Account::from(
+                            db.basic(*address)
+                                .map_err(BlockExecutionError::other)?
+                                .unwrap_or_default(),
+                        );
+                        account.mark_touch();
+                        e.insert(account)
+                    }
+                };
                 account.storage.insert(
                     *slot,
                     EvmStorageSlot::new_changed(
