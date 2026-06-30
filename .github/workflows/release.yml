@@ -221,9 +221,50 @@ jobs:
             ${{ steps.prepare.outputs.binary_name }}.sha256
           if-no-files-found: error
 
+  github-reproducible-build:
+    name: GitHub Reproducible Build
+    needs: get-version
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    uses: ./.github/workflows/reproducible-build.yml
+    with:
+      ref: ${{ github.sha }}
+
+  verify-reproducible-builds:
+    name: Verify Reproducible Builds
+    needs: [github-reproducible-build]
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    runs-on: depot-ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require Argo reproducible verifier
+        env:
+          EXPECTED_COMMIT: ${{ needs.github-reproducible-build.outputs.commit }}
+          EXPECTED_TARGET: ${{ needs.github-reproducible-build.outputs.target }}
+          EXPECTED_SHA256: ${{ needs.github-reproducible-build.outputs.binary_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/${EXPECTED_COMMIT}/status" \
+            --output commit-status.json
+
+          state=$(jq -r '.statuses[] | select(.context == "argo/repro-verify") | .state' commit-status.json | head -n 1)
+          description=$(jq -r '.statuses[] | select(.context == "argo/repro-verify") | .description' commit-status.json | head -n 1)
+
+          [[ "$state" == "success" ]] || {
+            echo "Argo reproducible verifier has not marked ${EXPECTED_COMMIT} successful; state=${state:-missing}; description=${description:-missing}" >&2
+            exit 1
+          }
+
+          echo "GitHub reproducible build produced $EXPECTED_TARGET $EXPECTED_SHA256"
+          echo "Argo reproducible verifier marked $EXPECTED_COMMIT successful"
+
   create-release:
     name: Create Release
-    needs: [get-version, build-release]
+    needs: [get-version, build-release, verify-reproducible-builds]
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:
@@ -368,7 +409,7 @@ jobs:
             --body-file "$body_file"
   upload-cloudflare:
     name: Upload to R2 bucket
-    needs: [get-version, build-release]
+    needs: [get-version, build-release, verify-reproducible-builds]
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: depot-ubuntu-latest
     permissions:

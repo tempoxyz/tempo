@@ -15,8 +15,6 @@
 # Inputs (env):
 #   VERSION       — informational tag baked into the build context (default: dev)
 #   OUT_DIR       — where the built binary lands (default: ./out)
-#   DEBIAN_SNAPSHOT — pin the Debian apt snapshot used inside the image
-#                     (default: the value baked into Dockerfile.reproducible)
 #
 # Output:
 #   $OUT_DIR/tempo   — the byte-deterministic binary
@@ -27,7 +25,6 @@ cd "$(git rev-parse --show-toplevel)"
 
 VERSION="${VERSION:-dev}"
 OUT_DIR="${OUT_DIR:-./out}"
-DEBIAN_SNAPSHOT="${DEBIAN_SNAPSHOT:-}"
 
 SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
 COMMIT="$(git rev-parse HEAD)"
@@ -39,8 +36,8 @@ printf '  commit              = %s\n' "$COMMIT"
 printf '  version             = %s\n' "$VERSION"
 printf '  SOURCE_DATE_EPOCH   = %s\n' "$SOURCE_DATE_EPOCH"
 printf '  Dockerfile          = Dockerfile.reproducible\n'
+printf '  target              = x86_64-unknown-linux-gnu\n'
 printf '  out_dir             = %s\n' "$OUT_DIR"
-[[ -n "$DEBIAN_SNAPSHOT" ]] && printf '  DEBIAN_SNAPSHOT     = %s (override)\n' "$DEBIAN_SNAPSHOT"
 echo "::endgroup::"
 
 mkdir -p "$OUT_DIR"
@@ -49,9 +46,6 @@ build_args=(
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
   --build-arg "VERSION=$VERSION"
 )
-if [[ -n "$DEBIAN_SNAPSHOT" ]]; then
-  build_args+=( --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" )
-fi
 
 docker build \
   --platform linux/amd64 \
