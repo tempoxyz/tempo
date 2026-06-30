@@ -708,6 +708,10 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
+        if policy_id == ALLOW_ALL_POLICY_ID {
+            return Ok(true);
+        }
+
         let hardfork = self.storage.spec();
 
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
@@ -1004,6 +1008,17 @@ mod tests {
             assert!(registry.is_authorized_as(1, user, AuthRole::Transfer)?);
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_allow_all_authorization_without_storage_context() -> eyre::Result<()> {
+        let registry = TIP403Registry::new();
+        assert!(registry.is_authorized_as(
+            ALLOW_ALL_POLICY_ID,
+            Address::random(),
+            AuthRole::Transfer
+        )?);
+        Ok(())
     }
 
     #[test]
