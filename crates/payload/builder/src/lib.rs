@@ -872,12 +872,6 @@ where
                             StorageActionReplayError::from_internal_block_execution_error(&err)
                         {
                             invalid_pool_transaction_execution_attempts += 1;
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
                             self.metrics.inc_pool_tx_skipped("invalid_replay");
                             trace!(
                                 target: "payload_builder",
