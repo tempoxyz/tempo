@@ -50,23 +50,6 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
     )
 }
 
-fn inactive_key_info(is_revoked: bool) -> KeyInfo {
-    KeyInfo {
-        signatureType: SignatureType::Secp256k1,
-        keyId: Address::ZERO,
-        expiry: 0,
-        enforceLimits: false,
-        isRevoked: is_revoked,
-    }
-}
-
-fn inactive_allowed_calls() -> getAllowedCallsReturn {
-    getAllowedCallsReturn {
-        isScoped: true,
-        scopes: Vec::new(),
-    }
-}
-
 /// Key information stored in the precompile
 ///
 /// Storage layout (packed into single slot, right-aligned):
@@ -522,7 +505,13 @@ impl AccountKeychain {
 
         // Key doesn't exist if expiry == 0, or key has been revoked
         if key.expiry == 0 || key.is_revoked {
-            return Ok(inactive_key_info(key.is_revoked));
+            return Ok(KeyInfo {
+                signatureType: SignatureType::Secp256k1,
+                keyId: Address::ZERO,
+                expiry: 0,
+                enforceLimits: false,
+                isRevoked: key.is_revoked,
+            });
         }
 
         Ok(KeyInfo {
@@ -647,7 +636,10 @@ impl AccountKeychain {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.keys[call.account][call.keyId].read()?;
         if key.expiry == 0 || key.is_revoked || current_timestamp >= key.expiry {
-            return Ok(inactive_allowed_calls());
+            return Ok(getAllowedCallsReturn {
+                isScoped: true,
+                scopes: Vec::new(),
+            });
         }
 
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
