@@ -780,7 +780,10 @@ impl From<Signature> for TempoSignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
+    let mut encoded_key = [0u8; 64];
+    encoded_key[..32].copy_from_slice(pub_key_x.as_slice());
+    encoded_key[32..].copy_from_slice(pub_key_y.as_slice());
+    let hash = keccak256(encoded_key);
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])
