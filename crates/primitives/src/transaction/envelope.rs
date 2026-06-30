@@ -298,7 +298,9 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::Eip7702(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
             }
-            Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
+            Self::AA(tx) => tx
+                .recover_signer_with_expiring_nonce_hash()
+                .map(|(signer, _)| signer),
         }
     }
 

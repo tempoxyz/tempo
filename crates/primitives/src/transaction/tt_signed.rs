@@ -555,6 +555,7 @@ mod serde_impl {
 mod tests {
     use super::*;
     use crate::transaction::{
+        TempoTxEnvelope,
         tempo_transaction::Call,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
         tt_signature::PrimitiveSignature,
@@ -903,6 +904,34 @@ mod tests {
             Some(signed.expiring_nonce_hash(expected_address))
         );
         assert_eq!(signed.signature_hash(), sig_hash);
+    }
+
+    #[test]
+    fn test_envelope_recover_signer_seeds_expiring_nonce_hash() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let mut tx = make_tx();
+        tx.nonce_key = U256::MAX;
+
+        let placeholder =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let sig_hash = temp_signed.signature_hash();
+
+        let signature = sign_hash(&signing_key, &sig_hash);
+        let envelope = TempoTxEnvelope::AA(AASigned::new_unhashed(tx, signature));
+
+        let recovered = envelope.recover_signer().unwrap();
+        assert_eq!(recovered, expected_address);
+
+        let aa = envelope.as_aa().unwrap();
+        assert_eq!(
+            aa.expiring_nonce_hash.get().copied(),
+            Some((
+                expected_address,
+                unique_tx_identifier_from_signable(aa.tx(), expected_address)
+            ))
+        );
     }
 
     #[test]
