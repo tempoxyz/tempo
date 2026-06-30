@@ -380,7 +380,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        mut best_txs: impl FnMut(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -404,8 +404,11 @@ where
             ..
         } = config;
 
-        // `--dev` mode does not use the shared-trie builder flow.
-        let build_once = !self.config.is_dev;
+        let build_once_with_shared_trie =
+            // When trie handle is provided, we build the payload once so the shared trie can be reused.
+            trie_handle.is_some()
+            // `--dev` mode does not use the shared-trie builder flow.
+            && !self.config.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -701,7 +704,7 @@ where
             }
 
             let Some(mut pool_tx) = best_txs.next() else {
-                if build_once
+                if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
@@ -832,66 +835,66 @@ where
                     .map(|_| ())
             };
 
-            match execution_result {
-                Ok(_) => {}
-                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                })) => {
-                    invalid_pool_transaction_execution_attempts += 1;
+            if let Err(err) = execution_result {
+                match err {
+                    BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    }) => {
+                        invalid_pool_transaction_execution_attempts += 1;
 
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                    } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        }
+                        continue;
+                    }
+                    err @ (BlockExecutionError::Validation(_)
+                    | BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
+                        ..
+                    })) => {
+                        return Err(PayloadBuilderError::evm(err));
+                    }
+                    err => {
+                        invalid_pool_transaction_execution_attempts += 1;
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
-                    }
-                    continue;
-                }
-                Err(
-                    err @ (BlockExecutionError::Validation(_)
-                    | BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
-                        ..
-                    })),
-                ) => {
-                    return Err(PayloadBuilderError::evm(err));
-                }
-                Err(err) => {
-                    invalid_pool_transaction_execution_attempts += 1;
-                    best_txs.mark_invalid(
-                        &pool_tx,
-                        InvalidPoolTransactionError::Consensus(
-                            InvalidTransactionError::TxTypeNotSupported,
-                        ),
-                    );
 
-                    if let Some(err) = StorageActionReplayFallback::from_block_execution_error(&err)
-                    {
-                        trace!(
-                            target: "payload_builder",
-                            tx_hash = ?tx.hash(),
-                            ?err,
-                            "Skipping invalid replay transaction"
-                        );
-                    } else {
-                        trace!(
-                            target: "payload_builder",
-                            tx_hash = ?tx.hash(),
-                            ?err,
-                            "Skipping invalid transaction"
-                        );
+                        if let Some(err) =
+                            StorageActionReplayFallback::from_block_execution_error(&err)
+                        {
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?tx.hash(),
+                                ?err,
+                                "Skipping invalid replay transaction"
+                            );
+                        } else {
+                            trace!(
+                                target: "payload_builder",
+                                tx_hash = ?tx.hash(),
+                                ?err,
+                                "Skipping invalid transaction"
+                            );
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
 
@@ -1351,7 +1354,7 @@ where
 
         drop(db);
         self.executor.spawn_drop(state_provider);
-        if build_once {
+        if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
             Ok(BuildOutcome::Better {
