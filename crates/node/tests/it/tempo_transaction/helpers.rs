@@ -28,7 +28,7 @@ use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
+        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -1214,6 +1214,7 @@ pub(crate) fn build_fill_request_context(
     signer_addr: Address,
     recipient: Address,
     current_timestamp: u64,
+    expiring_nonce_max_expiry_secs: u64,
 ) -> FillRequestContext {
     let valid_before_offset = test_case
         .valid_before_offset
@@ -1223,12 +1224,12 @@ pub(crate) fn build_fill_request_context(
         .map(|offset| resolve_timestamp_offset(current_timestamp, offset));
 
     let valid_before = valid_before_offset.or_else(|| match test_case.nonce_mode {
-        NonceMode::Expiring => Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS / 2),
+        NonceMode::Expiring => Some(current_timestamp + expiring_nonce_max_expiry_secs / 2),
         NonceMode::ExpiringAtBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS - 1)
+            Some(current_timestamp + expiring_nonce_max_expiry_secs - 1)
         }
         NonceMode::ExpiringExceedsBoundary => {
-            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 3600)
+            Some(current_timestamp + expiring_nonce_max_expiry_secs + 3600)
         }
         NonceMode::ExpiringInPast => Some(current_timestamp.saturating_sub(1)),
         _ => None,
@@ -1297,10 +1298,16 @@ pub(crate) async fn fill_transaction_from_case(
     test_case: &FillTestCase,
     signer_addr: Address,
     current_timestamp: u64,
+    expiring_nonce_max_expiry_secs: u64,
 ) -> eyre::Result<(TempoTransaction, FillRequestContext)> {
     let recipient = Address::random();
-    let request_context =
-        build_fill_request_context(test_case, signer_addr, recipient, current_timestamp);
+    let request_context = build_fill_request_context(
+        test_case,
+        signer_addr,
+        recipient,
+        current_timestamp,
+        expiring_nonce_max_expiry_secs,
+    );
 
     let filled: serde_json::Value =
         legacy_compat::raw_request(provider, "eth_fillTransaction", &request_context.request)

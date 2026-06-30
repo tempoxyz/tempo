@@ -15,6 +15,7 @@ use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
+use tempo_precompiles::nonce::expiring_nonce_max_expiry_secs_for_spec;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -696,6 +697,7 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
     let signer = PrivateKeySigner::random();
     let signer_addr = signer.address();
     let current_timestamp = env.current_block_timestamp().await?;
+    let expiring_nonce_max_expiry_secs = expiring_nonce_max_expiry_secs_for_spec(env.hardfork());
     let fee_payer_signer = PrivateKeySigner::random();
     let scoped_fill_case = |name, num_limits, allowed_calls| {
         let case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1).key_authorization(
@@ -757,9 +759,14 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
     for (index, test_case) in matrix.iter().enumerate() {
         println!("[{}/{}] {}", index + 1, matrix.len(), test_case.name);
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            expiring_nonce_max_expiry_secs,
+        )
+        .await;
         let (filled_tx, request_context) = match fill_result {
             Ok(pair) => {
                 if matches!(test_case.expected, ExpectedOutcome::Rejection) {
@@ -1752,10 +1759,17 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let _ = env.fund_account(fee_payer_signer.address()).await?;
 
         let current_timestamp = env.current_block_timestamp().await?;
+        let expiring_nonce_max_expiry_secs =
+            expiring_nonce_max_expiry_secs_for_spec(env.hardfork());
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            expiring_nonce_max_expiry_secs,
+        )
+        .await;
 
         let (mut tx, _request_context) = match fill_result {
             Ok(pair) => pair,
@@ -1806,11 +1820,18 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         }
 
         let current_timestamp = env.current_block_timestamp().await?;
+        let expiring_nonce_max_expiry_secs =
+            expiring_nonce_max_expiry_secs_for_spec(env.hardfork());
         let initial_protocol_nonce = env.provider().get_transaction_count(signer_addr).await?;
 
-        let fill_result =
-            fill_transaction_from_case(env.provider(), test_case, signer_addr, current_timestamp)
-                .await;
+        let fill_result = fill_transaction_from_case(
+            env.provider(),
+            test_case,
+            signer_addr,
+            current_timestamp,
+            expiring_nonce_max_expiry_secs,
+        )
+        .await;
 
         let (mut tx, request_context) = match fill_result {
             Ok(pair) => pair,

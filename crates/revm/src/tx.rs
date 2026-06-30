@@ -59,9 +59,10 @@ pub struct TempoBatchCallEnv {
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
 
-    /// Perf optimization for expiring nonce transactions.
+    /// Deprecated pre-TIP-1077 ring-buffer prewarming hint.
     ///
-    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    /// The TIP-1077 time wheel derives replay cells from the transaction hash and `valid_before`,
+    /// so this field is ignored by execution.
     pub expiring_nonce_idx: Option<usize>,
 }
 /// Tempo transaction environment.

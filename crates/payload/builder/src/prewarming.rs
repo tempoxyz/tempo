@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::B256;
@@ -18,6 +21,10 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmState> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -89,26 +96,24 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        clear_prewarm_evm_states(pool);
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce()
+                    && !ctx.prewarm.evm_env.cfg_env.spec.is_t8()
+                {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
                     Some(offset)
                 } else {
                     None
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
@@ -161,7 +166,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        clear_prewarm_evm_states(pool);
     }
 
     fn prewarm_transaction<Provider>(
@@ -175,20 +180,24 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+        PREWARM_EVM_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if state.is_none() {
+                *state = prewarm.evm_for_ctx();
+            }
+            let Some(evm) = state.as_mut() else {
                 return;
             };
-
             let tx_hash = *tx.hash();
+            let mut tx_env = tx.transaction.clone_tx_env();
+            if let Some(offset) = expiring_nonce_offset
+                && let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut()
+            {
+                tempo_tx_env.expiring_nonce_idx = Some(offset);
+            }
 
             if prewarm.is_stopped() {
                 return;
-            }
-
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
             }
 
             if let Err(err) = evm.transact_raw(tx_env) {
@@ -208,6 +217,14 @@ impl BestTransactionsPrewarming {
             );
         });
     }
+}
+
+fn clear_prewarm_evm_states(pool: &WorkerPool) {
+    pool.broadcast(pool.current_num_threads(), |_| {
+        PREWARM_EVM_STATE.with(|state| {
+            *state.borrow_mut() = None;
+        });
+    });
 }
 
 impl Drop for BestTransactionsPrewarming {

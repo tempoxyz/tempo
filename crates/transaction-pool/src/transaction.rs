@@ -28,7 +28,10 @@ use std::{
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
-    nonce::NonceManager,
+    nonce::{
+        EXPIRING_NONCE_MAX_PROBES, NonceManager, expiring_nonce_cell_contains,
+        expiring_nonce_fingerprint, expiring_nonce_probe_slots,
+    },
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
@@ -51,8 +54,10 @@ pub struct TempoPooledTransaction {
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
-    /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
-    expiring_nonce_slot: OnceLock<Option<U256>>,
+    /// Cached pre-TIP-1077 `expiring_nonce_seen` storage slot.
+    pre_tip_1077_expiring_nonce_slot: OnceLock<Option<U256>>,
+    /// Cached TIP-1077 replay-cell slots for expiring nonce transactions.
+    expiring_nonce_slots: OnceLock<Option<[U256; EXPIRING_NONCE_MAX_PROBES]>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
@@ -117,7 +122,8 @@ impl TempoPooledTransaction {
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
-            expiring_nonce_slot: OnceLock::new(),
+            pre_tip_1077_expiring_nonce_slot: OnceLock::new(),
+            expiring_nonce_slots: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
@@ -429,21 +435,50 @@ impl TempoPooledTransaction {
             .expect("expiring nonce hash must be precomputed")
     }
 
-    /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
-    pub fn expiring_nonce_slot(&self) -> Option<U256> {
-        *self.expiring_nonce_slot.get_or_init(|| {
+    /// Returns the cached TIP-1077 replay-cell storage slots for this transaction.
+    pub fn expiring_nonce_slots(&self) -> Option<[U256; EXPIRING_NONCE_MAX_PROBES]> {
+        *self.expiring_nonce_slots.get_or_init(|| {
+            let hash = self.expiring_nonce_hash()?;
+            let valid_before = self.expiring_nonce_valid_before()?;
+            Some(expiring_nonce_probe_slots(hash, valid_before))
+        })
+    }
+
+    /// Returns the pre-TIP-1077 `expiring_nonce_seen` storage slot for this transaction.
+    pub fn pre_tip_1077_expiring_nonce_slot(&self) -> Option<U256> {
+        *self.pre_tip_1077_expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
     }
 
+    /// Returns the expiring nonce transaction's `valid_before`.
+    pub fn expiring_nonce_valid_before(&self) -> Option<u64> {
+        let aa_tx = self.inner().as_aa()?;
+        aa_tx.tx().valid_before.map(core::num::NonZeroU64::get)
+    }
+
+    /// Returns the TIP-1077 replay fingerprint for this transaction.
+    pub fn expiring_nonce_fingerprint(&self) -> Option<u64> {
+        self.expiring_nonce_hash().map(expiring_nonce_fingerprint)
+    }
+
+    /// Returns whether `word` includes this transaction's TIP-1077 replay marker.
+    pub fn expiring_nonce_cell_contains(&self, word: U256) -> bool {
+        self.expiring_nonce_valid_before()
+            .zip(self.expiring_nonce_fingerprint())
+            .is_some_and(|(valid_before, fingerprint)| {
+                expiring_nonce_cell_contains(word, valid_before, fingerprint)
+            })
+    }
+
     /// Warms the global keccak cache with storage slot hashes that will be accessed
     /// during payment execution after pool validation.
     ///
-    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
-    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
-    /// EVM validation. `validator_tokens[beneficiary]` depends on the block producer,
-    /// which is unknown at validation time.
+    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`, and
+    /// `user_tokens[fee_payer]` are already cached from EVM validation.
+    /// `validator_tokens[beneficiary]` depends on the block producer, which is unknown at
+    /// validation time.
     pub fn precalculate_keccak_slots(&self) {
         if !self.is_payment {
             return;

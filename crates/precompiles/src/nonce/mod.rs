@@ -12,16 +12,131 @@ use tempo_precompiles_macros::contract;
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
 };
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, uint};
+use tempo_chainspec::hardfork::TempoHardfork;
 
-/// Capacity of the expiring nonce seen set (supports 10k TPS for 30 seconds).
-pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
+/// Maximum allowed skew for expiring nonce transactions before TIP-1077.
+pub const PRE_TIP_1077_MAX_EXPIRY_SECS: u64 = 30;
 
-/// Maximum allowed skew for expiring nonce transactions (30 seconds).
+/// Capacity of the pre-TIP-1077 expiring nonce seen set.
+pub const PRE_TIP_1077_EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
+
+/// Maximum allowed skew for expiring nonce transactions (5 minutes).
 /// Transactions must have valid_before in (now, now + MAX_EXPIRY_SECS].
-pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
+pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 300;
+
+/// Number of reusable time buckets in the expiring nonce time wheel.
+pub const EXPIRING_NONCE_BUCKET_COUNT: u64 = 301;
+
+/// Number of replay cells in each time bucket.
+pub const EXPIRING_NONCE_BUCKET_CAPACITY: u64 = 131_072;
+
+/// Number of hash bits used for each probe position.
+pub const EXPIRING_NONCE_POSITION_BITS: usize = 17;
+
+/// Maximum number of replay cells probed for one expiring nonce transaction.
+pub const EXPIRING_NONCE_MAX_PROBES: usize = 4;
+
+/// Number of replay cells reserved for the whole time wheel.
+pub const EXPIRING_NONCE_CELL_COUNT: u64 =
+    EXPIRING_NONCE_BUCKET_COUNT * EXPIRING_NONCE_BUCKET_CAPACITY;
+
+/// Base slot of the reserved direct expiring nonce replay-cell range.
+pub const EXPIRING_NONCE_CELL_BASE_SLOT: U256 =
+    uint!(0x387ee7e371ffafdf29537b927a83c9af016eb1493da1fe163fab229fa2400000_U256);
+
+/// End slot of the reserved direct expiring nonce replay-cell range.
+pub const EXPIRING_NONCE_CELL_END_SLOT: U256 =
+    uint!(0x387ee7e371ffafdf29537b927a83c9af016eb1493da1fe163fab229fa499ffff_U256);
+
+/// Number of 64-bit fingerprint lanes packed into a replay cell.
+pub const EXPIRING_NONCE_PACKED_SLOTS: usize = 3;
+
+const FINGERPRINT_MASK: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
+
+/// Returns the active expiring nonce validity window for a hardfork spec.
+pub const fn expiring_nonce_max_expiry_secs_for_spec(spec: TempoHardfork) -> u64 {
+    if spec.is_t8() {
+        EXPIRING_NONCE_MAX_EXPIRY_SECS
+    } else {
+        PRE_TIP_1077_MAX_EXPIRY_SECS
+    }
+}
+
+/// Returns the nonzero 64-bit replay fingerprint for `expiring_nonce_hash`.
+pub fn expiring_nonce_fingerprint(expiring_nonce_hash: B256) -> u64 {
+    let hash = expiring_nonce_hash.as_slice();
+    let primary = u64::from_be_bytes(hash[24..32].try_into().expect("slice length is 8"));
+    if primary != 0 {
+        return primary;
+    }
+
+    let fallback = u64::from_be_bytes(hash[16..24].try_into().expect("slice length is 8"));
+    if fallback != 0 { fallback } else { 1 }
+}
+
+/// Returns the direct replay-cell slot for one deterministic probe.
+pub fn expiring_nonce_cell_slot(
+    expiring_nonce_hash: B256,
+    valid_before: u64,
+    probe: usize,
+) -> U256 {
+    debug_assert!(probe < EXPIRING_NONCE_MAX_PROBES);
+    let bucket = valid_before % EXPIRING_NONCE_BUCKET_COUNT;
+    let position = expiring_nonce_probe_position(expiring_nonce_hash, probe);
+    let cell_id = bucket * EXPIRING_NONCE_BUCKET_CAPACITY + position;
+    EXPIRING_NONCE_CELL_BASE_SLOT + U256::from(cell_id)
+}
+
+/// Returns all deterministic replay-cell slots for an expiring nonce transaction.
+pub fn expiring_nonce_probe_slots(
+    expiring_nonce_hash: B256,
+    valid_before: u64,
+) -> [U256; EXPIRING_NONCE_MAX_PROBES] {
+    core::array::from_fn(|probe| expiring_nonce_cell_slot(expiring_nonce_hash, valid_before, probe))
+}
+
+/// Encodes a TIP-1077 replay cell.
+pub fn pack_expiring_nonce_cell(valid_before: u64, fingerprints: [u64; 3]) -> U256 {
+    (U256::from(valid_before) << 192)
+        | (U256::from(fingerprints[0]) << 128)
+        | (U256::from(fingerprints[1]) << 64)
+        | U256::from(fingerprints[2])
+}
+
+/// Returns true if a packed replay cell contains the live transaction fingerprint.
+pub fn expiring_nonce_cell_contains(word: U256, valid_before: u64, fingerprint: u64) -> bool {
+    let (stored_valid_before, fingerprints) = unpack_expiring_nonce_cell(word);
+    stored_valid_before == valid_before && fingerprints.contains(&fingerprint)
+}
+
+fn expiring_nonce_probe_position(expiring_nonce_hash: B256, probe: usize) -> u64 {
+    let hash = expiring_nonce_hash.as_slice();
+    let start_bit = probe * EXPIRING_NONCE_POSITION_BITS;
+    let mut position = 0u64;
+
+    for offset in 0..EXPIRING_NONCE_POSITION_BITS {
+        let bit_index = start_bit + offset;
+        let byte = hash[bit_index / 8];
+        let bit = (byte >> (7 - (bit_index % 8))) & 1;
+        position = (position << 1) | u64::from(bit);
+    }
+
+    position
+}
+
+fn unpack_expiring_nonce_cell(word: U256) -> (u64, [u64; 3]) {
+    let valid_before = (word >> 192usize).to::<u64>();
+    let fingerprints = [
+        ((word >> 128usize) & FINGERPRINT_MASK).to::<u64>(),
+        ((word >> 64usize) & FINGERPRINT_MASK).to::<u64>(),
+        (word & FINGERPRINT_MASK).to::<u64>(),
+    ];
+
+    (valid_before, fingerprints)
+}
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -30,17 +145,15 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
 ///
-///     // Expiring nonce storage (for hash-based replay protection)
-///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
-///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
-///     uint32 public expiringNonceRingPtr;                                // slot 3: current position (wraps at CAPACITY)
+///     // Slots 1, 2, and 3 are reserved for pre-TIP-1077 expiring nonce state.
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
-/// - Slot 1: Expiring nonce seen set - txHash => expiry timestamp
-/// - Slot 2: Expiring nonce circular buffer - index => txHash
-/// - Slot 3: Circular buffer pointer (current position, wraps at CAPACITY)
+/// - Slot 1: Reserved old expiring nonce seen set - txHash => expiry timestamp
+/// - Slot 2: Reserved old expiring nonce circular buffer - index => txHash
+/// - Slot 3: Reserved old circular buffer pointer
+/// - EXPIRING_NONCE_CELL_BASE_SLOT..=EXPIRING_NONCE_CELL_END_SLOT: TIP-1077 replay cells
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
@@ -100,34 +213,72 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    /// Checks if a hash has been seen and is still valid (not expired).
-    /// NOTE: internally used by the transaction pool.
-    pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
+    /// Checks if a hash is present in the pre-TIP-1077 seen mapping.
+    pub fn is_pre_tip_1077_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
         let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
     }
 
-    /// Validates and records an expiring nonce transaction. Uses a
-    /// circular buffer that overwrites expired entries as the pointer
-    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
-    /// invariant to fee payer changes.
-    ///
-    /// Uses a circular buffer that overwrites expired entries as the pointer advances.
-    ///
-    /// The `expiring_nonce_hash` parameter is
-    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
-    ///
-    /// This is called during transaction execution to:
-    /// 1. Validate the expiry is within the allowed window
-    /// 2. Check for replay (hash already seen and not expired)
-    /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
-    /// 4. Mark the hash as seen
+    /// Validates and records an expiring nonce transaction in the TIP-1077 time wheel.
     ///
     /// # Errors
     /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
-    /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
+    /// - `ExpiringNonceReplay` — transaction fingerprint is already recorded for `valid_before`
+    /// - `ExpiringNonceSetFull` — all cells on the deterministic probe path are full
     pub fn check_and_mark_expiring_nonce(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<()> {
+        if !self.storage.spec().is_t8() {
+            return self
+                .check_and_mark_pre_tip_1077_expiring_nonce(expiring_nonce_hash, valid_before);
+        }
+
+        self.check_and_mark_timewheel_expiring_nonce(expiring_nonce_hash, valid_before)
+    }
+
+    fn check_and_mark_pre_tip_1077_expiring_nonce(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<()> {
+        let now: u64 = self.storage.timestamp().saturating_to();
+
+        if valid_before <= now || valid_before > now.saturating_add(PRE_TIP_1077_MAX_EXPIRY_SECS) {
+            return Err(NonceError::invalid_expiring_nonce_expiry().into());
+        }
+
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        if seen_expiry != 0 && seen_expiry > now {
+            return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        let old_hash = self.expiring_nonce_ring[ptr].read()?;
+
+        if old_hash != B256::ZERO {
+            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            if old_expiry != 0 && old_expiry > now {
+                return Err(NonceError::expiring_nonce_set_full().into());
+            }
+            self.expiring_nonce_seen[old_hash].write(0)?;
+        }
+
+        self.expiring_nonce_ring[ptr].write(expiring_nonce_hash)?;
+        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+
+        let next = if ptr + 1 >= PRE_TIP_1077_EXPIRING_NONCE_SET_CAPACITY {
+            0
+        } else {
+            ptr + 1
+        };
+        self.expiring_nonce_ring_ptr.write(next)?;
+
+        Ok(())
+    }
+
+    fn check_and_mark_timewheel_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,
         valid_before: u64,
@@ -140,43 +291,33 @@ impl NonceManager {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
 
-        // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
-        if seen_expiry != 0 && seen_expiry > now {
-            return Err(NonceError::expiring_nonce_replay().into());
-        }
+        let fingerprint = expiring_nonce_fingerprint(expiring_nonce_hash);
 
-        // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
-        let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
-        let old_hash = self.expiring_nonce_ring[idx].read()?;
+        for slot in expiring_nonce_probe_slots(expiring_nonce_hash, valid_before) {
+            let mut cell = Slot::<U256>::new(slot, NONCE_PRECOMPILE_ADDRESS);
+            let word = cell.read()?;
+            let (stored_valid_before, mut fingerprints) = unpack_expiring_nonce_cell(word);
 
-        // 4. If there's an existing entry, check if it's expired (can be evicted)
-        // Safety check: buffer is sized so entries should always be expired, but verify
-        // in case TPS exceeds expectations.
-        if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
-            if old_expiry != 0 && old_expiry > now {
-                // Entry is still valid, cannot evict - buffer is full
-                return Err(NonceError::expiring_nonce_set_full().into());
+            if stored_valid_before != valid_before {
+                cell.write(pack_expiring_nonce_cell(valid_before, [fingerprint, 0, 0]))?;
+                return Ok(());
             }
-            // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+
+            if fingerprints.contains(&fingerprint) {
+                return Err(NonceError::expiring_nonce_replay().into());
+            }
+
+            if let Some(empty) = fingerprints
+                .iter_mut()
+                .find(|fingerprint| **fingerprint == 0)
+            {
+                *empty = fingerprint;
+                cell.write(pack_expiring_nonce_cell(valid_before, fingerprints))?;
+                return Ok(());
+            }
         }
 
-        // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
-        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
-
-        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
-            0
-        } else {
-            ptr + 1
-        };
-        self.expiring_nonce_ring_ptr.write(next)?;
-
-        Ok(())
+        Err(NonceError::expiring_nonce_set_full().into())
     }
 }
 
@@ -189,6 +330,7 @@ mod tests {
 
     use super::*;
     use alloy::primitives::address;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {
@@ -293,21 +435,46 @@ mod tests {
 
     // ========== Expiring Nonce Tests ==========
 
+    fn hash_with_fingerprint(fingerprint: u64) -> B256 {
+        hash_with_probe_path_and_fingerprint([0, 0, 0, 0], fingerprint)
+    }
+
+    fn hash_with_probe_path_and_fingerprint(positions: [u64; 4], fingerprint: u64) -> B256 {
+        let mut hash = [0u8; 32];
+
+        for (probe, position) in positions.into_iter().enumerate() {
+            for offset in 0..EXPIRING_NONCE_POSITION_BITS {
+                let bit = (position >> (EXPIRING_NONCE_POSITION_BITS - 1 - offset)) & 1;
+                if bit == 0 {
+                    continue;
+                }
+
+                let bit_index = probe * EXPIRING_NONCE_POSITION_BITS + offset;
+                hash[bit_index / 8] |= 1 << (7 - (bit_index % 8));
+            }
+        }
+
+        hash[24..32].copy_from_slice(&fingerprint.to_be_bytes());
+        B256::from(hash)
+    }
+
+    fn t8_storage() -> HashMapStorageProvider {
+        HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8)
+    }
+
     #[test]
     fn test_expiring_nonce_basic_flow() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = t8_storage();
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let tx_hash = B256::repeat_byte(0x11);
-            let valid_before = now + 20; // 20s in future, within 30s window
+            let tx_hash = hash_with_fingerprint(0x11);
+            let valid_before = now + 200;
 
-            // First tx should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
 
-            // Same tx hash should fail (replay)
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
             assert_eq!(
                 result.unwrap_err(),
@@ -320,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_expiring_nonce_expiry_validation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = t8_storage();
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
@@ -342,90 +509,145 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before too far in future should fail (uses EXPIRING_NONCE_MAX_EXPIRY_SECS = 30)
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
+            let result = mgr
+                .check_and_mark_expiring_nonce(tx_hash, now + EXPIRING_NONCE_MAX_EXPIRY_SECS + 1);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
             // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
-            mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
+            mgr.check_and_mark_expiring_nonce(tx_hash, now + EXPIRING_NONCE_MAX_EXPIRY_SECS)?;
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_expiring_nonce_expired_entry_eviction() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_expiring_nonce_packs_three_fingerprints_per_cell() -> eyre::Result<()> {
+        let mut storage = t8_storage();
         let now = 1000u64;
-        let valid_before = now + 20;
+        let valid_before = now + 100;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let tx_hash1 = B256::repeat_byte(0x33);
+            for fingerprint in 1..=3 {
+                mgr.check_and_mark_expiring_nonce(
+                    hash_with_fingerprint(fingerprint),
+                    valid_before,
+                )?;
+            }
 
-            // Insert first tx
-            mgr.check_and_mark_expiring_nonce(tx_hash1, valid_before)?;
+            let slot = expiring_nonce_cell_slot(hash_with_fingerprint(1), valid_before, 0);
+            let word = Slot::<U256>::new(slot, NONCE_PRECOMPILE_ADDRESS).read()?;
 
-            // Verify it's seen
-            assert!(mgr.is_expiring_nonce_seen(tx_hash1, now)?);
+            for fingerprint in 1..=3 {
+                assert!(expiring_nonce_cell_contains(
+                    word,
+                    valid_before,
+                    fingerprint
+                ));
+            }
 
-            // After expiry, it should no longer be "seen" (expired)
-            assert!(!mgr.is_expiring_nonce_seen(tx_hash1, valid_before + 1)?);
+            Ok::<_, eyre::Report>(())
+        })
+    }
 
+    #[test]
+    fn test_expiring_nonce_probe_exhaustion_rejects() -> eyre::Result<()> {
+        let mut storage = t8_storage();
+        let now = 1000u64;
+        let valid_before = now + 100;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            for fingerprint in 1..=(EXPIRING_NONCE_MAX_PROBES * EXPIRING_NONCE_PACKED_SLOTS) {
+                mgr.check_and_mark_expiring_nonce(
+                    hash_with_probe_path_and_fingerprint([0, 1, 2, 3], fingerprint as u64),
+                    valid_before,
+                )?;
+            }
+
+            let result = mgr.check_and_mark_expiring_nonce(
+                hash_with_probe_path_and_fingerprint([0, 1, 2, 3], 13),
+                valid_before,
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expiring_nonce_reuses_same_bucket_after_expiry_window() -> eyre::Result<()> {
+        let mut storage = t8_storage();
+        let now = 1000u64;
+        let valid_before = now + 100;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(hash_with_fingerprint(1), valid_before)?;
             Ok::<_, eyre::Report>(())
         })?;
 
-        // Insert second tx after first has expired - should evict first
         let new_now = valid_before + 1;
-        let new_valid_before = new_now + 20;
+        let new_valid_before = valid_before + EXPIRING_NONCE_BUCKET_COUNT;
+        assert_eq!(
+            valid_before % EXPIRING_NONCE_BUCKET_COUNT,
+            new_valid_before % EXPIRING_NONCE_BUCKET_COUNT
+        );
+        assert!(new_valid_before <= new_now + EXPIRING_NONCE_MAX_EXPIRY_SECS);
+
         storage.set_timestamp(U256::from(new_now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
+            mgr.check_and_mark_expiring_nonce(hash_with_fingerprint(2), new_valid_before)?;
 
-            let tx_hash2 = B256::repeat_byte(0x44);
-            mgr.check_and_mark_expiring_nonce(tx_hash2, new_valid_before)?;
+            let slot = expiring_nonce_cell_slot(hash_with_fingerprint(2), new_valid_before, 0);
+            let word = Slot::<U256>::new(slot, NONCE_PRECOMPILE_ADDRESS).read()?;
+            assert!(expiring_nonce_cell_contains(
+                word,
+                new_valid_before,
+                expiring_nonce_fingerprint(hash_with_fingerprint(2))
+            ));
 
-            // tx_hash1 should now be fully evicted (since it was at ring position 0)
-            // and tx_hash2 replaces it
-            assert!(mgr.is_expiring_nonce_seen(tx_hash2, new_now)?);
-
-            Ok(())
+            Ok::<_, eyre::Report>(())
         })
     }
 
     #[test]
-    fn test_ring_buffer_pointer_wraps_at_capacity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_pre_tip_1077_expiring_nonce_uses_legacy_ring_window() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
+            let tx_hash = B256::repeat_byte(0x42);
 
-            // Manually set pointer to just before capacity to test wrap
-            mgr.expiring_nonce_ring_ptr
-                .write(EXPIRING_NONCE_SET_CAPACITY - 1)?;
+            let too_far =
+                mgr.check_and_mark_expiring_nonce(tx_hash, now + PRE_TIP_1077_MAX_EXPIRY_SECS + 1);
+            assert_eq!(
+                too_far.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
+            );
 
-            // Insert a tx - pointer should wrap to 0
-            let tx_hash = B256::repeat_byte(0x77);
-            let valid_before = now + 20;
-            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+            mgr.check_and_mark_expiring_nonce(tx_hash, now + PRE_TIP_1077_MAX_EXPIRY_SECS)?;
+            assert!(mgr.is_pre_tip_1077_expiring_nonce_seen(tx_hash, now)?);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 1);
 
-            // Pointer should now be 0 (wrapped at capacity)
-            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
-            assert_eq!(ptr, 0, "Pointer should wrap to 0 at capacity");
+            let timewheel_slot =
+                expiring_nonce_cell_slot(tx_hash, now + PRE_TIP_1077_MAX_EXPIRY_SECS, 0);
+            assert_eq!(
+                Slot::<U256>::new(timewheel_slot, NONCE_PRECOMPILE_ADDRESS).read()?,
+                U256::ZERO
+            );
 
-            // Insert another tx - pointer should be 1
-            let tx_hash2 = B256::repeat_byte(0x88);
-            mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before)?;
-
-            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
-            assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
-
-            Ok(())
+            Ok::<_, eyre::Report>(())
         })
     }
 

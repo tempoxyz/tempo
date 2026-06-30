@@ -80,10 +80,14 @@ pub struct AA2dPool {
     /// the expiring nonce transaction that should be evicted next:
     /// lowest priority first, then newest submission first when priorities tie.
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
-    /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
+    /// A mapping of pre-TIP-1077 `expiring_nonce_seen` slot to expiring nonce hash.
+    ///
+    /// Used to track inclusion of expiring nonce transactions before the TIP-1077 time wheel.
+    slot_to_pre_tip_1077_expiring_nonce_hash: U256Map<B256>,
+    /// A mapping of TIP-1077 replay-cell slot to expiring nonce hashes watching it.
     ///
     /// Used to track inclusion of expiring nonce transactions.
-    slot_to_expiring_nonce_hash: U256Map<B256>,
+    slot_to_expiring_nonce_hashes: U256Map<Vec<B256>>,
     /// Scratch buffer reused while processing nonce state updates.
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
     /// Scratch buffer reused while processing included expiring nonce transactions.
@@ -139,7 +143,8 @@ impl AA2dPool {
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
-            slot_to_expiring_nonce_hash: Default::default(),
+            slot_to_pre_tip_1077_expiring_nonce_hash: Default::default(),
+            slot_to_expiring_nonce_hashes: Default::default(),
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
@@ -221,7 +226,7 @@ impl AA2dPool {
         // No `by_hash` duplicate check needed here: a duplicate transaction maps to the same
         // expiring nonce hash, which `add_expiring_nonce_transaction` rejects.
         if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
-            return self.add_expiring_nonce_transaction(transaction);
+            return self.add_expiring_nonce_transaction(transaction, hardfork);
         }
 
         if self.contains(transaction.hash()) {
@@ -424,6 +429,7 @@ impl AA2dPool {
     fn add_expiring_nonce_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
@@ -478,8 +484,17 @@ impl AA2dPool {
         // Insert into expiring nonce map and by_hash
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
-        if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash
+        if hardfork.is_t8() {
+            if let Some(slots) = transaction.transaction.expiring_nonce_slots() {
+                for slot in slots {
+                    self.slot_to_expiring_nonce_hashes
+                        .entry(slot)
+                        .or_default()
+                        .push(expiring_nonce_hash);
+                }
+            }
+        } else if let Some(slot) = transaction.transaction.pre_tip_1077_expiring_nonce_slot() {
+            self.slot_to_pre_tip_1077_expiring_nonce_hash
                 .insert(slot, expiring_nonce_hash);
         }
         self.by_hash.insert(tx_hash, transaction.clone());
@@ -1252,8 +1267,28 @@ impl AA2dPool {
         pending_tx: AA2dStoredTransaction,
     ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         self.by_hash.remove(pending_tx.transaction.hash());
-        if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash.remove(&slot);
+        if let Some(slots) = pending_tx.transaction.transaction.expiring_nonce_slots() {
+            let expiring_hash = pending_tx
+                .transaction
+                .transaction
+                .precomputed_expiring_nonce_hash();
+            for slot in slots {
+                if let hash_map::Entry::Occupied(mut entry) =
+                    self.slot_to_expiring_nonce_hashes.entry(slot)
+                {
+                    entry.get_mut().retain(|hash| *hash != expiring_hash);
+                    if entry.get().is_empty() {
+                        entry.remove();
+                    }
+                }
+            }
+        }
+        if let Some(slot) = pending_tx
+            .transaction
+            .transaction
+            .pre_tip_1077_expiring_nonce_slot()
+        {
+            self.slot_to_pre_tip_1077_expiring_nonce_hash.remove(&slot);
         }
         self.decrement_sender_count(pending_tx.transaction.sender());
         self.pending_count -= 1;
@@ -1336,12 +1371,29 @@ impl AA2dPool {
             if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
                 changes.insert(*seq_id, value.present_value.saturating_to());
             }
-            // Detect included expiring nonce transactions via their
+            // Detect pre-TIP-1077 included expiring nonce transactions via their
             // `expiring_nonce_seen` slot being set to a non-zero value.
             if !value.present_value.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
+                && let Some(expiring_nonce_hash) =
+                    self.slot_to_pre_tip_1077_expiring_nonce_hash.get(slot)
             {
                 included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            }
+            // Detect included expiring nonce transactions via their fingerprint appearing in a
+            // watched TIP-1077 replay cell.
+            if !value.present_value.is_zero()
+                && let Some(expiring_nonce_hashes) = self.slot_to_expiring_nonce_hashes.get(slot)
+            {
+                for expiring_nonce_hash in expiring_nonce_hashes {
+                    if let Some(pending_tx) = self.expiring_nonce_txs.get(expiring_nonce_hash)
+                        && pending_tx
+                            .transaction
+                            .transaction
+                            .expiring_nonce_cell_contains(value.present_value)
+                    {
+                        included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+                    }
+                }
             }
         }
 
@@ -3922,7 +3974,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
             0,
-            TempoHardfork::T1,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -4394,7 +4446,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
             0,
-            TempoHardfork::T1,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -6519,6 +6571,7 @@ mod tests {
     #[test]
     fn on_state_updates_removes_included_expiring_nonce_from_eviction_index() {
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use tempo_precompiles::nonce::pack_expiring_nonce_cell;
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
@@ -6532,14 +6585,20 @@ mod tests {
         let expiring_hash = tx
             .expiring_nonce_hash()
             .expect("expiring nonce tx must have expiring hash");
+        let valid_before = tx
+            .expiring_nonce_valid_before()
+            .expect("expiring nonce tx must have valid_before");
+        let fingerprint = tx
+            .expiring_nonce_fingerprint()
+            .expect("expiring nonce tx must have fingerprint");
         let slot = tx
-            .expiring_nonce_slot()
-            .expect("expiring nonce tx must have storage slot");
+            .expiring_nonce_slots()
+            .expect("expiring nonce tx must have storage slots")[0];
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
             0,
-            TempoHardfork::T1,
+            TempoHardfork::T8,
         )
         .unwrap();
 
@@ -6549,7 +6608,10 @@ mod tests {
         let mut storage = HashMap::default();
         storage.insert(
             slot,
-            StorageSlot::new_changed(U256::ZERO, U256::from(123u64)),
+            StorageSlot::new_changed(
+                U256::ZERO,
+                pack_expiring_nonce_cell(valid_before, [fingerprint, 0, 0]),
+            ),
         );
         let mut state = AddressMap::default();
         state.insert(
@@ -6564,11 +6626,67 @@ mod tests {
         assert_eq!(mined[0].hash(), &tx_hash);
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());
-        assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        assert!(pool.slot_to_expiring_nonce_hashes.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
         assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
+    }
+
+    #[test]
+    fn on_state_updates_ignores_unmatched_expiring_nonce_fingerprint() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use tempo_precompiles::nonce::pack_expiring_nonce_cell;
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_before(123)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_hash = *tx.hash();
+        let valid_before = tx
+            .expiring_nonce_valid_before()
+            .expect("expiring nonce tx must have valid_before");
+        let fingerprint = tx
+            .expiring_nonce_fingerprint()
+            .expect("expiring nonce tx must have fingerprint");
+        let other_fingerprint = if fingerprint == 1 { 2 } else { 1 };
+        let slot = tx
+            .expiring_nonce_slots()
+            .expect("expiring nonce tx must have storage slots")[0];
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T8,
+        )
+        .unwrap();
+
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            StorageSlot::new_changed(
+                U256::ZERO,
+                pack_expiring_nonce_cell(valid_before, [other_fingerprint, 0, 0]),
+            ),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+
+        let (promoted, mined) = pool.on_state_updates(&state);
+
+        assert!(promoted.is_empty());
+        assert!(mined.is_empty());
+        assert!(pool.contains(&tx_hash));
+        assert_eq!(pool.expiring_nonce_txs.len(), 1);
+        assert!(!pool.slot_to_expiring_nonce_hashes.is_empty());
+        pool.assert_invariants();
     }
 
     /// Pool with pending limit of 2 for eviction tests.

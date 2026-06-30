@@ -644,7 +644,11 @@ where
                 transaction.transaction().fee_balance_slot();
 
                 // Precompute nonce storage slots for this transaction.
-                let _ = transaction.transaction().expiring_nonce_slot();
+                if spec.is_t8() {
+                    let _ = transaction.transaction().expiring_nonce_slots();
+                } else {
+                    let _ = transaction.transaction().pre_tip_1077_expiring_nonce_slot();
+                }
                 let _ = transaction.transaction().nonce_key_slot();
 
                 // Warm the global keccak cache with storage slot hashes for this transaction.
@@ -1683,7 +1687,8 @@ mod tests {
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
-        // Expiring nonce tx should only need ~35k gas (base + EXPIRING_NONCE_GAS of 13k)
+        // Expiring nonce tx should only need ~37k gas on the pre-T8 path
+        // (base + legacy expiring nonce gas of 13k)
         // NOT 250k+ which would be required for new account creation
         // Test: 50k gas should pass for expiring nonce (would fail if 250k was required)
         let tx = create_expiring_nonce_tx(50_000);

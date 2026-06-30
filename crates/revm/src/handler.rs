@@ -47,8 +47,8 @@ use tempo_precompiles::{
     },
     error::TempoPrecompileError,
     nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
+        EXPIRING_NONCE_MAX_PROBES, INonce::getNonceCall, NonceManager,
+        PRE_TIP_1077_EXPIRING_NONCE_SET_CAPACITY, expiring_nonce_max_expiry_secs_for_spec,
     },
     storage::{
         Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
@@ -89,28 +89,22 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
-/// Gas cost for expiring nonce transactions (replay check + insert).
+/// Pre-TIP-1077 gas cost for expiring nonce transactions.
+const PRE_TIP_1077_EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+
+/// Gas cost for expiring nonce transactions (TIP-1077 replay check + insert).
 ///
-/// See [TIP-1009] for full specification.
+/// See [TIP-1077] for full specification.
 ///
-/// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
+/// [TIP-1077]: <https://docs.tempo.xyz/protocol/tips/tip-1077>
 ///
 /// Operations charged:
-/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
-/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
-/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
+/// - 4 cold SLOADs: worst-case deterministic replay-cell probe path
+/// - 1 SSTORE at RESET price: accepted replay-cell write
 ///
-/// Excluded from gas calculation:
-/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
-///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
-///
-/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
-/// - SSTORE_SET cost exists to penalize permanent state growth
-/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
-/// - No permanent state growth, so the 20k penalty doesn't apply
-///
-/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+/// Total: 4*2100 + 2900 = 11,300 gas
+pub const EXPIRING_NONCE_GAS: u64 =
+    EXPIRING_NONCE_MAX_PROBES as u64 * COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -1088,49 +1082,48 @@ where
                 actions.clone(),
                 || {
                     let mut nonce_manager = NonceManager::new();
-
-                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
+                    let prev_ptr = if !spec.is_t8()
+                        && let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
                     {
                         let ptr = nonce_manager
                             .expiring_nonce_ring_ptr
                             .read()
                             .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                        let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
+                        let next = (ptr + expiring_nonce_idx as u32)
+                            % PRE_TIP_1077_EXPIRING_NONCE_SET_CAPACITY;
                         nonce_manager
                             .expiring_nonce_ring_ptr
                             .write(next)
                             .map_err(|err| EVMError::Custom(err.to_string()))?;
-
                         Some(ptr)
                     } else {
                         None
                     };
 
                     nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
+                        .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            TempoPrecompileError::NonceError(
+                                tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+                            ) => {
+                                let max_expiry_secs =
+                                    expiring_nonce_max_expiry_secs_for_spec(*spec);
+                                let max_allowed = block_timestamp.saturating_add(max_expiry_secs);
+                                if valid_before <= block_timestamp {
+                                    TempoInvalidTransaction::NonceManagerError(format!(
+                                        "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                                    ))
+                                    .into()
+                                } else {
+                                    TempoInvalidTransaction::NonceManagerError(format!(
+                                        "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                                    ))
+                                    .into()
+                                }
                             }
-                        }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
+                            err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                        })?;
 
                     if let Some(prev_ptr) = prev_ptr {
                         nonce_manager
@@ -2353,10 +2346,14 @@ where
     if spec.is_t1() {
         if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+            // - Expiring nonce (nonce_key == MAX, T1 active): replay bookkeeping
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
-            batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
+            batch_gas.initial_regular_gas += if spec.is_t8() {
+                EXPIRING_NONCE_GAS
+            } else {
+                PRE_TIP_1077_EXPIRING_NONCE_GAS
+            };
         } else if tx.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
