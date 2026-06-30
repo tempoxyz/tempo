@@ -798,9 +798,9 @@ mod tests {
             let nonce_key = U256::from(42);
             let sender_nonce_key_slot = nonce_key
                 .mapping_slot(sender.mapping_slot(tempo_precompiles::nonce::slots::NONCES));
-            let sender_multisig_account_slot = NativeMultisig::account_marker_storage_slot(sender);
-            let recipient_multisig_account_slot =
-                NativeMultisig::account_marker_storage_slot(recipient);
+            let sender_multisig_config_id_slot = NativeMultisig::config_id_storage_slot(sender);
+            let recipient_multisig_config_id_slot =
+                NativeMultisig::config_id_storage_slot(recipient);
 
             #[rustfmt::skip]
             let labels = StorageActionSnapshotLabels {
@@ -845,8 +845,8 @@ mod tests {
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
                     ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
-                    ((NATIVE_MULTISIG_ADDRESS, sender_multisig_account_slot), "accounts[sender]"),
-                    ((NATIVE_MULTISIG_ADDRESS, recipient_multisig_account_slot), "accounts[recipient]"),
+                    ((NATIVE_MULTISIG_ADDRESS, sender_multisig_config_id_slot), "configIds[sender]"),
+                    ((NATIVE_MULTISIG_ADDRESS, recipient_multisig_config_id_slot), "configIds[recipient]"),
                 ]),
             };
 
