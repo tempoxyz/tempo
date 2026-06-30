@@ -23,293 +23,6 @@ use tempo_precompiles::{
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
 
-/// Precomputed transaction execution result plus semantic precompile storage actions.
-#[derive(Debug)]
-pub struct StorageActionReplay {
-    /// Precomputed transaction execution result that can be reused if actions are applied without conflicts.
-    pub result: ExecutionResult<TempoHaltReason>,
-    /// Actions to replay in order to get to the state after the transaction execution.
-    pub actions: Vec<StorageAction>,
-    /// Semantic replay data for expiring nonce transactions.
-    pub expiring_nonce: Option<ExpiringNonceReplay>,
-    /// Validator-credited fee amount
-    pub validator_fee: U256,
-}
-
-/// Replay data for expiring nonce transactions.
-#[derive(Debug, Clone, Copy)]
-pub struct ExpiringNonceReplay {
-    pub hash: B256,
-    pub valid_before: u64,
-}
-
-/// Result of replaying storage actions.
-#[derive(Debug)]
-pub struct StorageActionReplayOutcome {
-    /// Empty actions buffer that can be reused for future executions.
-    pub actions: Vec<StorageAction>,
-    /// Result of the replay execution.
-    pub result: Result<(), StorageActionReplayExecutionError>,
-}
-
-/// Reason a precomputed storage-action replay cannot be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageActionReplayFallback {
-    ActionExecutionFailed,
-    ActionConflict,
-    Overflow,
-    Underflow,
-}
-
-/// Error returned by the storage-action replay execution API.
-#[derive(Debug)]
-pub enum StorageActionReplayExecutionError {
-    /// The precomputed replay cannot be used; no state was committed.
-    Fallback(StorageActionReplayFallback),
-    /// Synthetic validation rejected a transaction.
-    Validation {
-        /// Index of the failed transaction in the streaming sequence.
-        transaction_index: usize,
-        /// Execution error returned by synthetic result construction or block validation.
-        error: BlockExecutionError,
-    },
-    /// Preflight failed while reading state; no state was committed.
-    Database(BlockExecutionError),
-}
-
-impl From<StorageActionReplayFallback> for StorageActionReplayExecutionError {
-    fn from(reason: StorageActionReplayFallback) -> Self {
-        Self::Fallback(reason)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct StorageActionReplayState {
-    /// Writes recorded for all transactions.
-    writes: AddressMap<U256Map<WriteKind>>,
-    /// Changes for the current transaction.
-    tx_changes: AddressMap<U256Map<SlotChange>>,
-    /// Expiring nonce replay state.
-    expiring_nonce: ExpiringNonceReplayState,
-}
-
-impl StorageActionReplayState {
-    /// Clears cached expiring-nonce state after execution that did not go through action replay.
-    pub fn invalidate_expiring_nonce_cache(&mut self) {
-        self.expiring_nonce.invalidate_cache();
-    }
-
-    /// Returns whether the state has any write at the given address and slot.
-    fn has_write(&self, address: Address, slot: U256) -> bool {
-        self.writes
-            .get(&address)
-            .is_some_and(|slots| slots.contains_key(&slot))
-    }
-
-    /// Returns whether the state has a [store](`WriteKind::Store`) write at the given address and slot.
-    fn has_store(&self, address: Address, slot: U256) -> bool {
-        self.writes
-            .get(&address)
-            .and_then(|slots| slots.get(&slot))
-            .is_some_and(|kind| *kind == WriteKind::Store)
-    }
-
-    /// Stores the value of a slot that has already been loaded for this transaction.
-    fn sstore(
-        &mut self,
-        address: Address,
-        slot: U256,
-        value: U256,
-        kind: WriteKind,
-    ) -> Result<(), StorageActionReplayExecutionError> {
-        // `Sstore` actions record only the new value. The transaction-start
-        // value must already be established by a load, otherwise replay would
-        // invent `original` from current state and reuse gas/refund data from a
-        // different storage transition.
-        let change = self
-            .tx_changes
-            .get_mut(&address)
-            .and_then(|slots| slots.get_mut(&slot))
-            .ok_or(StorageActionReplayFallback::ActionConflict)?;
-        change.current = value;
-
-        // Absolute stores are non-commutative, so they dominate deltas when
-        // recording cross-transaction conflict state.
-        if change.write_kind.is_none() || kind == WriteKind::Store {
-            change.write_kind = Some(kind);
-        }
-
-        Ok(())
-    }
-
-    /// Records a storage slot write with a known transaction-start value.
-    fn record_sstore(
-        &mut self,
-        address: Address,
-        slot: U256,
-        original: U256,
-        current: U256,
-        kind: WriteKind,
-    ) {
-        self.tx_changes
-            .entry(address)
-            .or_default()
-            .entry(slot)
-            .and_modify(|change| {
-                change.current = current;
-                if change.write_kind.is_none() || kind == WriteKind::Store {
-                    change.write_kind = Some(kind);
-                }
-            })
-            .or_insert(SlotChange {
-                original,
-                current,
-                write_kind: Some(kind),
-            });
-    }
-
-    /// Returns the current value for a slot and validates that it matches the expected value.
-    fn sload_exact<DB: Database>(
-        &mut self,
-        db: &mut State<DB>,
-        address: Address,
-        slot: U256,
-        expected: U256,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
-        match self.tx_changes.entry(address).or_default().entry(slot) {
-            Entry::Occupied(change) => {
-                if change.get().current != expected {
-                    return Err(StorageActionReplayFallback::ActionConflict.into());
-                }
-                Ok(change.get().current)
-            }
-            Entry::Vacant(change) => {
-                let current = state_storage(db, address, slot)?;
-                if current != expected {
-                    return Err(StorageActionReplayFallback::ActionConflict.into());
-                }
-
-                change.insert(SlotChange {
-                    original: current,
-                    current,
-                    write_kind: None,
-                });
-                Ok(current)
-            }
-        }
-    }
-
-    /// Returns the current value for a slot.
-    ///
-    /// If it was previously written, returns the value from the transaction change.
-    /// Otherwise, returns the value from the database.
-    fn sload_current<DB: Database>(
-        &mut self,
-        db: &mut State<DB>,
-        address: Address,
-        slot: U256,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
-        match self.tx_changes.entry(address).or_default().entry(slot) {
-            Entry::Occupied(change) => Ok(change.get().current),
-            Entry::Vacant(change) => {
-                let current = state_storage(db, address, slot)?;
-                change.insert(SlotChange {
-                    original: current,
-                    current,
-                    write_kind: None,
-                });
-                Ok(current)
-            }
-        }
-    }
-
-    /// Resets the accumulated transaction changes.
-    fn reset_tx_changes(&mut self) {
-        self.tx_changes.clear();
-        self.expiring_nonce.reset_pending_ring_ptr();
-    }
-
-    /// Commits the accumulated transaction changes to the state.
-    fn commit_tx_changes(&mut self) {
-        for (address, slots) in self.tx_changes.drain() {
-            let account_writes = self.writes.entry(address).or_default();
-            for (slot, change) in slots {
-                if let Some(kind) = change.write_kind {
-                    account_writes
-                        .entry(slot)
-                        .and_modify(|existing| {
-                            if kind == WriteKind::Store {
-                                *existing = WriteKind::Store;
-                            }
-                        })
-                        .or_insert(kind);
-                }
-            }
-        }
-        self.expiring_nonce.commit_pending_ring_ptr();
-    }
-}
-
-#[derive(Debug)]
-struct SlotChange {
-    original: U256,
-    current: U256,
-    write_kind: Option<WriteKind>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WriteKind {
-    Store,
-    Delta,
-}
-
-#[derive(Debug, Default)]
-struct ExpiringNonceReplayState {
-    /// Current cached ring pointer.
-    ring_ptr: Option<U256>,
-    /// Pending ring pointer to be committed by current transaction.
-    pending_ring_ptr: Option<U256>,
-}
-
-impl ExpiringNonceReplayState {
-    fn invalidate_cache(&mut self) {
-        self.ring_ptr = None;
-        self.reset_pending_ring_ptr();
-    }
-
-    fn reset_pending_ring_ptr(&mut self) {
-        self.pending_ring_ptr = None;
-    }
-
-    fn commit_pending_ring_ptr(&mut self) {
-        if let Some(ptr) = self.pending_ring_ptr.take() {
-            self.ring_ptr = Some(ptr);
-        }
-    }
-
-    fn ring_ptr<DB: Database>(
-        &mut self,
-        db: &mut State<DB>,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
-        Ok(match self.ring_ptr {
-            Some(ptr) => ptr,
-            None => {
-                let ptr = state_storage(
-                    db,
-                    NONCE_PRECOMPILE_ADDRESS,
-                    NonceManager::new().expiring_nonce_ring_ptr.slot(),
-                )?;
-                self.ring_ptr = Some(ptr);
-                ptr
-            }
-        })
-    }
-
-    fn set_next_ring_ptr(&mut self, next: U256) {
-        self.pending_ring_ptr = Some(next);
-    }
-}
-
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
     DB: Database,
@@ -580,6 +293,293 @@ where
         replay_state.expiring_nonce.set_next_ring_ptr(next);
 
         Ok(())
+    }
+}
+
+/// Result of replaying storage actions.
+#[derive(Debug)]
+pub struct StorageActionReplayOutcome {
+    /// Empty actions buffer that can be reused for future executions.
+    pub actions: Vec<StorageAction>,
+    /// Result of the replay execution.
+    pub result: Result<(), StorageActionReplayExecutionError>,
+}
+
+/// Error returned by the storage-action replay execution API.
+#[derive(Debug)]
+pub enum StorageActionReplayExecutionError {
+    /// The precomputed replay cannot be used; no state was committed.
+    Fallback(StorageActionReplayFallback),
+    /// Synthetic validation rejected a transaction.
+    Validation {
+        /// Index of the failed transaction in the streaming sequence.
+        transaction_index: usize,
+        /// Execution error returned by synthetic result construction or block validation.
+        error: BlockExecutionError,
+    },
+    /// Preflight failed while reading state; no state was committed.
+    Database(BlockExecutionError),
+}
+
+impl From<StorageActionReplayFallback> for StorageActionReplayExecutionError {
+    fn from(reason: StorageActionReplayFallback) -> Self {
+        Self::Fallback(reason)
+    }
+}
+
+/// Precomputed transaction execution result plus semantic precompile storage actions.
+#[derive(Debug)]
+pub struct StorageActionReplay {
+    /// Precomputed transaction execution result that can be reused if actions are applied without conflicts.
+    pub result: ExecutionResult<TempoHaltReason>,
+    /// Actions to replay in order to get to the state after the transaction execution.
+    pub actions: Vec<StorageAction>,
+    /// Semantic replay data for expiring nonce transactions.
+    pub expiring_nonce: Option<ExpiringNonceReplay>,
+    /// Validator-credited fee amount
+    pub validator_fee: U256,
+}
+
+/// Replay data for expiring nonce transactions.
+#[derive(Debug, Clone, Copy)]
+pub struct ExpiringNonceReplay {
+    pub hash: B256,
+    pub valid_before: u64,
+}
+
+/// Reason a precomputed storage-action replay cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageActionReplayFallback {
+    ActionExecutionFailed,
+    ActionConflict,
+    Overflow,
+    Underflow,
+}
+
+#[derive(Debug, Default)]
+pub struct StorageActionReplayState {
+    /// Writes recorded for all transactions.
+    writes: AddressMap<U256Map<WriteKind>>,
+    /// Changes for the current transaction.
+    tx_changes: AddressMap<U256Map<SlotChange>>,
+    /// Expiring nonce replay state.
+    expiring_nonce: ExpiringNonceReplayState,
+}
+
+impl StorageActionReplayState {
+    /// Clears cached expiring-nonce state after execution that did not go through action replay.
+    pub fn invalidate_expiring_nonce_cache(&mut self) {
+        self.expiring_nonce.invalidate_cache();
+    }
+
+    /// Returns whether the state has any write at the given address and slot.
+    fn has_write(&self, address: Address, slot: U256) -> bool {
+        self.writes
+            .get(&address)
+            .is_some_and(|slots| slots.contains_key(&slot))
+    }
+
+    /// Returns whether the state has a [store](`WriteKind::Store`) write at the given address and slot.
+    fn has_store(&self, address: Address, slot: U256) -> bool {
+        self.writes
+            .get(&address)
+            .and_then(|slots| slots.get(&slot))
+            .is_some_and(|kind| *kind == WriteKind::Store)
+    }
+
+    /// Stores the value of a slot that has already been loaded for this transaction.
+    fn sstore(
+        &mut self,
+        address: Address,
+        slot: U256,
+        value: U256,
+        kind: WriteKind,
+    ) -> Result<(), StorageActionReplayExecutionError> {
+        // `Sstore` actions record only the new value. The transaction-start
+        // value must already be established by a load, otherwise replay would
+        // invent `original` from current state and reuse gas/refund data from a
+        // different storage transition.
+        let change = self
+            .tx_changes
+            .get_mut(&address)
+            .and_then(|slots| slots.get_mut(&slot))
+            .ok_or(StorageActionReplayFallback::ActionConflict)?;
+        change.current = value;
+
+        // Absolute stores are non-commutative, so they dominate deltas when
+        // recording cross-transaction conflict state.
+        if change.write_kind.is_none() || kind == WriteKind::Store {
+            change.write_kind = Some(kind);
+        }
+
+        Ok(())
+    }
+
+    /// Records a storage slot write with a known transaction-start value.
+    fn record_sstore(
+        &mut self,
+        address: Address,
+        slot: U256,
+        original: U256,
+        current: U256,
+        kind: WriteKind,
+    ) {
+        self.tx_changes
+            .entry(address)
+            .or_default()
+            .entry(slot)
+            .and_modify(|change| {
+                change.current = current;
+                if change.write_kind.is_none() || kind == WriteKind::Store {
+                    change.write_kind = Some(kind);
+                }
+            })
+            .or_insert(SlotChange {
+                original,
+                current,
+                write_kind: Some(kind),
+            });
+    }
+
+    /// Returns the current value for a slot and validates that it matches the expected value.
+    fn sload_exact<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+        address: Address,
+        slot: U256,
+        expected: U256,
+    ) -> Result<U256, StorageActionReplayExecutionError> {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(change) => {
+                if change.get().current != expected {
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                }
+                Ok(change.get().current)
+            }
+            Entry::Vacant(change) => {
+                let current = state_storage(db, address, slot)?;
+                if current != expected {
+                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                }
+
+                change.insert(SlotChange {
+                    original: current,
+                    current,
+                    write_kind: None,
+                });
+                Ok(current)
+            }
+        }
+    }
+
+    /// Returns the current value for a slot.
+    ///
+    /// If it was previously written, returns the value from the transaction change.
+    /// Otherwise, returns the value from the database.
+    fn sload_current<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+        address: Address,
+        slot: U256,
+    ) -> Result<U256, StorageActionReplayExecutionError> {
+        match self.tx_changes.entry(address).or_default().entry(slot) {
+            Entry::Occupied(change) => Ok(change.get().current),
+            Entry::Vacant(change) => {
+                let current = state_storage(db, address, slot)?;
+                change.insert(SlotChange {
+                    original: current,
+                    current,
+                    write_kind: None,
+                });
+                Ok(current)
+            }
+        }
+    }
+
+    /// Resets the accumulated transaction changes.
+    fn reset_tx_changes(&mut self) {
+        self.tx_changes.clear();
+        self.expiring_nonce.reset_pending_ring_ptr();
+    }
+
+    /// Commits the accumulated transaction changes to the state.
+    fn commit_tx_changes(&mut self) {
+        for (address, slots) in self.tx_changes.drain() {
+            let account_writes = self.writes.entry(address).or_default();
+            for (slot, change) in slots {
+                if let Some(kind) = change.write_kind {
+                    account_writes
+                        .entry(slot)
+                        .and_modify(|existing| {
+                            if kind == WriteKind::Store {
+                                *existing = WriteKind::Store;
+                            }
+                        })
+                        .or_insert(kind);
+                }
+            }
+        }
+        self.expiring_nonce.commit_pending_ring_ptr();
+    }
+}
+
+#[derive(Debug)]
+struct SlotChange {
+    original: U256,
+    current: U256,
+    write_kind: Option<WriteKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteKind {
+    Store,
+    Delta,
+}
+
+#[derive(Debug, Default)]
+struct ExpiringNonceReplayState {
+    /// Current cached ring pointer.
+    ring_ptr: Option<U256>,
+    /// Pending ring pointer to be committed by current transaction.
+    pending_ring_ptr: Option<U256>,
+}
+
+impl ExpiringNonceReplayState {
+    fn invalidate_cache(&mut self) {
+        self.ring_ptr = None;
+        self.reset_pending_ring_ptr();
+    }
+
+    fn reset_pending_ring_ptr(&mut self) {
+        self.pending_ring_ptr = None;
+    }
+
+    fn commit_pending_ring_ptr(&mut self) {
+        if let Some(ptr) = self.pending_ring_ptr.take() {
+            self.ring_ptr = Some(ptr);
+        }
+    }
+
+    fn ring_ptr<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+    ) -> Result<U256, StorageActionReplayExecutionError> {
+        Ok(match self.ring_ptr {
+            Some(ptr) => ptr,
+            None => {
+                let ptr = state_storage(
+                    db,
+                    NONCE_PRECOMPILE_ADDRESS,
+                    NonceManager::new().expiring_nonce_ring_ptr.slot(),
+                )?;
+                self.ring_ptr = Some(ptr);
+                ptr
+            }
+        })
+    }
+
+    fn set_next_ring_ptr(&mut self, next: U256) {
+        self.pending_ring_ptr = Some(next);
     }
 }
 
