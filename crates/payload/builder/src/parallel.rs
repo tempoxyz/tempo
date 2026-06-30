@@ -7,7 +7,7 @@ use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-use crate::prewarming::{PrewarmEvmState, PrewarmedTransaction, PrewarmingExecutionContext};
+use crate::prewarming::{PrewarmedTransaction, PrewarmingExecutionContext};
 
 pub(crate) fn plan_transaction_replay<Provider>(
     prewarm: PrewarmingExecutionContext<Provider>,
@@ -27,9 +27,7 @@ where
     }
 
     let replay = WorkerPool::with_worker_mut(|worker| {
-        let Some(evm) = worker
-            .get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx().map(TempoEvm::with_actions))
-        else {
+        let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx_parallel()) else {
             return None;
         };
 

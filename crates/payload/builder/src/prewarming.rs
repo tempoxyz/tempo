@@ -198,7 +198,7 @@ impl BestTransactionsPrewarming {
         }
 
         WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+            let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()) else {
                 return;
             };
 
@@ -381,6 +381,10 @@ where
         }
 
         Some(evm)
+    }
+
+    pub(crate) fn evm_for_ctx_parallel(&self) -> PrewarmEvmState {
+        self.evm_for_ctx().map(TempoEvm::with_actions)
     }
 
     pub(crate) fn executor(&self) -> TaskExecutor {
