@@ -337,7 +337,7 @@ impl Actor {
         };
         let metadata = SsmrMessageMetadata::from_message(&message);
         let encoded = message.encode();
-        let bytes = encoded.len();
+        let byte_len = encoded.len();
         debug!(
             stream.parent = %stream.stream_key.parent_hash,
             stream.height = stream.stream_key.block_height,
@@ -347,14 +347,14 @@ impl Actor {
             shard.tx_count = ?metadata.tx_count,
             stream.total_shards = ?metadata.total_shards,
             stream.total_transactions = ?metadata.total_transactions,
-            bytes,
+            bytes = byte_len,
             "queued SSMR side-channel message"
         );
         let _ = outbound_tx.unbounded_send(OutboundMessage {
             key: stream.stream_key,
             metadata,
-            bytes: bytes::Bytes::copy_from_slice(encoded.as_ref()),
-            byte_len: bytes,
+            bytes: encoded.into(),
+            byte_len,
         });
     }
 
