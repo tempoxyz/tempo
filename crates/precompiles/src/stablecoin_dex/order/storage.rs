@@ -330,44 +330,49 @@ impl Handler<Order> for OrderHandler {
     }
 }
 
-/// Specialized `Mapping<u128, Order>` wrapper for DEX `orders`, whose handlers retain the order ID.
+/// Specialized `Mapping<u128, Order>` wrapper for stablecoin DEX `orders`.
 ///
-/// It preserves the original mapping base slot and key type while returning handlers that retain
-/// the `order_id` key. Version 1 order values no longer store `order_id`, so reads synthesize it
-/// from this key.
+/// Unlike generic storage mappings, this wrapper is tied to the stablecoin DEX storage layout and
+/// address. Handlers retain the `order_id` key because V1 order values no longer store it, so reads
+/// synthesize it from this key.
 #[derive(Debug)]
 pub(crate) struct OrderMapping {
-    /// Base slot of the `orders` mapping.
-    base_slot: U256,
-    /// Contract address whose storage contains the mapping.
-    address: Address,
     /// Per-order handler cache keyed by order ID.
     cache: HandlerCache<u128, OrderHandler>,
 }
 
 impl OrderMapping {
     #[inline]
-    fn new(base_slot: U256, address: Address) -> Self {
+    fn new() -> Self {
         Self {
-            base_slot,
-            address,
             cache: HandlerCache::new(),
         }
     }
 
+    #[inline]
+    fn base_slot() -> U256 {
+        crate::stablecoin_dex::slots::ORDERS
+    }
+
     /// Returns a cached handler for `order_id`.
     pub(crate) fn at(&self, order_id: u128) -> &OrderHandler {
-        let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert(&order_id, || {
-            OrderHandler::new(order_id.mapping_slot(base_slot), order_id, address)
+            OrderHandler::new(
+                order_id.mapping_slot(Self::base_slot()),
+                order_id,
+                crate::STABLECOIN_DEX_ADDRESS,
+            )
         })
     }
 
     /// Returns a mutable cached handler for `order_id`.
     pub(crate) fn at_mut(&mut self, order_id: u128) -> &mut OrderHandler {
-        let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert_mut(&order_id, || {
-            OrderHandler::new(order_id.mapping_slot(base_slot), order_id, address)
+            OrderHandler::new(
+                order_id.mapping_slot(Self::base_slot()),
+                order_id,
+                crate::STABLECOIN_DEX_ADDRESS,
+            )
         })
     }
 }
@@ -390,13 +395,13 @@ impl IndexMut<u128> for OrderMapping {
 
 impl Clone for OrderMapping {
     fn clone(&self) -> Self {
-        Self::new(self.base_slot, self.address)
+        Self::new()
     }
 }
 
 impl Default for OrderMapping {
     fn default() -> Self {
-        Self::new(U256::ZERO, Address::ZERO)
+        Self::new()
     }
 }
 
@@ -405,8 +410,8 @@ impl StorableType for OrderMapping {
 
     type Handler = Self;
 
-    fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
-        Self::new(slot, address)
+    fn handle(_slot: U256, _ctx: LayoutCtx, _address: Address) -> Self::Handler {
+        Self::new()
     }
 }
 
