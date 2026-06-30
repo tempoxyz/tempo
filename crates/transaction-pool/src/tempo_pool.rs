@@ -623,6 +623,7 @@ where
         let (pending, queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
         size.pending += pending;
         size.queued += queued;
+        size.total += pending + queued;
         size
     }
 
