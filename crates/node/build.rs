@@ -1,28 +1,25 @@
 #![allow(missing_docs)]
 
 use std::{env, error::Error};
-use vergen::{BuildBuilder, CargoBuilder, Emitter};
-use vergen_git2::Git2Builder;
+use vergen::{Build, Cargo, Emitter};
+use vergen_git2::Git2;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut emitter = Emitter::default();
 
-    let build_builder = BuildBuilder::default().build_timestamp(true).build()?;
+    let build_builder = Build::builder().build_timestamp(true).build();
 
     emitter.add_instructions(&build_builder)?;
 
-    let cargo_builder = CargoBuilder::default()
-        .features(true)
-        .target_triple(true)
-        .build()?;
+    let cargo_builder = Cargo::builder().features(true).target_triple(true).build();
 
     emitter.add_instructions(&cargo_builder)?;
 
-    let git_builder = Git2Builder::default()
+    let git_builder = Git2::builder()
         .describe(false, true, None)
         .dirty(true)
         .sha(false)
-        .build()?;
+        .build();
 
     emitter.add_instructions(&git_builder)?;
 
@@ -30,11 +27,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sha = env::var("VERGEN_GIT_SHA")?;
     let sha_short = &sha[0..7];
 
-    let is_dirty = env::var("VERGEN_GIT_DIRTY")? == "true";
+    let is_dirty = env::var("VERGEN_GIT_DIRTY").is_ok_and(|dirty| dirty == "true");
     // > git describe --always --tags
     // if not on a tag: v0.2.0-beta.3-82-g1939939b
     // if on a tag: v0.2.0-beta.3
-    let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")?.ends_with(&format!("-g{sha_short}"));
+    let not_on_tag = env::var("VERGEN_GIT_DESCRIBE")
+        .map(|describe| describe.ends_with(&format!("-g{sha_short}")))
+        .unwrap_or(true);
     let version_suffix = if is_dirty || not_on_tag { "-dev" } else { "" };
     println!("cargo:rustc-env=RETH_VERSION_SUFFIX={version_suffix}");
 

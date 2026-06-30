@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -286,6 +286,9 @@ impl TipFeeManager {
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
+        // collect_fee_pre_tx creates FeeManager balance slots for free; do not convert them into storage credits.
+        StorageCtx.set_tip1060_storage_credit_minting(false);
+
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
             return Ok(());

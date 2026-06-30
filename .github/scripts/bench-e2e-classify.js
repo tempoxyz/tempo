@@ -71,6 +71,7 @@ const BUILDER_DETAIL_ROWS = [
   ['Invalid Tx Attempts P50', 'builder_invalid_tx_execution_attempts_p50', v => fmtVal(v, 1)],
   ['Invalid Tx Attempts P90', 'builder_invalid_tx_execution_attempts_p90', v => fmtVal(v, 1)],
   ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1)],
+  ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0)],
   ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
   ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
   ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],
@@ -214,11 +215,12 @@ function buildMarkdown(summary) {
   const derekCommand = summary.config?.derek_command || '';
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
+  const featureOnly = summary.config?.run_side === 'feature';
   const lines = [
-    `# ${c.emoji} Bench Comparison: ${c.label}`,
+    featureOnly ? `# ${c.emoji} Feature Bench: ${c.label}` : `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
     `**Refs:** ${summary.baseline_ref} vs ${summary.feature_ref}`,
-    `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
+    featureOnly ? `**Criteria:** Feature-only run; baseline columns are intentionally empty.` : `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
     '',
     '## Configuration',
     ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
@@ -228,6 +230,7 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
+    ...(featureOnly ? [`- Run side: feature`] : []),
     ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
     ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,

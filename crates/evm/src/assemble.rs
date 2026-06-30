@@ -159,6 +159,7 @@ mod tests {
                     ..Default::default()
                 },
                 timestamp_millis_part,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -272,6 +273,7 @@ mod tests {
                     ..Default::default()
                 },
                 timestamp_millis_part: 0,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -353,6 +355,7 @@ mod tests {
                     ..Default::default()
                 },
                 timestamp_millis_part: 0,
+                ..Default::default()
             },
             ..Default::default()
         };

@@ -7,6 +7,10 @@ pub use error::{IntoPrecompileResult, Result};
 
 pub mod storage;
 
+mod dispatch;
+pub use dispatch::StaticCallNotAllowed;
+pub(crate) use dispatch::*;
+
 pub(crate) mod ip_validation;
 
 pub mod account_keychain;
@@ -50,16 +54,12 @@ use tempo_primitives::TempoAddressExt;
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
-use alloy::{
-    primitives::{Address, Bytes},
-    sol,
-    sol_types::{SolCall, SolError},
-};
+use alloy::{primitives::Address, sol, sol_types::SolError};
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
-    precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
 };
 
@@ -73,32 +73,6 @@ pub use tempo_contracts::precompiles::{
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
-
-/// Fixed system precompile addresses and corresponding activation hardfork
-pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
-    (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
-    (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
-    (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),
-    (NONCE_PRECOMPILE_ADDRESS, TempoHardfork::Genesis),
-    (ACCOUNT_KEYCHAIN_ADDRESS, TempoHardfork::Genesis),
-    (VALIDATOR_CONFIG_ADDRESS, TempoHardfork::Genesis),
-    (VALIDATOR_CONFIG_V2_ADDRESS, TempoHardfork::Genesis),
-    (TIP20_FACTORY_ADDRESS, TempoHardfork::Genesis),
-    (ADDRESS_REGISTRY_ADDRESS, TempoHardfork::T3),
-    (SIGNATURE_VERIFIER_ADDRESS, TempoHardfork::T3),
-    (TIP20_CHANNEL_RESERVE_ADDRESS, TempoHardfork::T5),
-    (RECEIVE_POLICY_GUARD_ADDRESS, TempoHardfork::T6),
-    (STORAGE_CREDITS_ADDRESS, TempoHardfork::T7),
-];
-
-/// Returns `true` if `addr` is any precompile active at `spec`: a TIP-20 token (matched by prefix)
-/// or a fixed system precompile.
-pub fn is_precompile_address(addr: Address, spec: TempoHardfork) -> bool {
-    addr.is_tip20()
-        || SYSTEM_PRECOMPILES
-            .iter()
-            .any(|&(a, activated)| a == addr && spec >= activated)
-}
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -155,10 +129,19 @@ impl PrecompileEnv {
     }
 }
 
-/// Returns the full Tempo precompiles for the given config.
+/// Returns the full Tempo precompile set for the given EVM config.
 ///
-/// Pre-T1C hardforks use Prague precompiles, T1C+ uses Osaka precompiles.
-/// Tempo-specific precompiles are also registered via [`extend_tempo_precompiles`].
+/// Pre-T1C hardforks use Prague built-in precompiles; T1C+ uses Osaka built-ins. Tempo-specific
+/// precompiles are then registered via [`extend_tempo_precompiles`].
+///
+/// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
+/// `SDEC`, and domain-specific actions such as `FeeAmmSwap`) for node/validator/builder
+/// integrations that use the trace for performance; tooling can pass [`StorageActions::disabled`].
+///
+/// [`NonCreditableSlots`] identifies transaction-local protocol slots whose clears must not mint
+/// TIP-1060 storage credits: the fee payer's fee-token balance and, when applicable, the keychain
+/// fee key's spending limit. They are part of credit/gas accounting, so gas estimation should pass
+/// values derived from the real transaction context rather than mocks.
 pub fn tempo_precompiles(
     cfg: &CfgEnv<TempoHardfork>,
     actions: StorageActions,
@@ -179,6 +162,8 @@ pub fn tempo_precompiles(
 /// TIP20Factory, TIP403Registry, TipFeeManager, StablecoinDEX, NonceManager, ValidatorConfig,
 /// AccountKeychain, and ValidatorConfigV2. Each precompile is wrapped via the `tempo_precompile!`
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
+///
+/// `actions` and `non_creditable_slots` are shared across all wrappers; see [`tempo_precompiles`].
 pub fn extend_tempo_precompiles(
     precompiles: &mut PrecompilesMap,
     cfg: &CfgEnv<TempoHardfork>,
@@ -224,7 +209,6 @@ pub fn extend_tempo_precompiles(
 
 sol! {
     error DelegateCallNotAllowed();
-    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
@@ -368,198 +352,7 @@ impl ReceivePolicyGuard {
 impl StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
-        tempo_precompile!("TIP1060StorageCredits", env: env, |input| { Self::new() })
-    }
-}
-
-/// Dispatches a parameterless view call, encoding the return via `T`.
-#[inline]
-fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
-    f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
-#[inline]
-fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a state-mutating call that returns ABI-encoded data.
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-fn mutate<T: SolCall>(
-    call: T,
-    sender: Address,
-    f: impl FnOnce(Address, T) -> Result<T::Return>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-    f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).
-///
-/// Rejects static calls with [`StaticCallNotAllowed`].
-#[inline]
-fn mutate_void<T: SolCall>(
-    call: T,
-    sender: Address,
-    f: impl FnOnce(Address, T) -> Result<()>,
-) -> PrecompileResult {
-    if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
-    }
-    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
-}
-
-/// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
-#[inline]
-pub(crate) fn charge_input_cost(
-    storage: &mut StorageCtx,
-    calldata: &[u8],
-) -> Option<PrecompileResult> {
-    if storage.deduct_gas(input_cost(calldata.len())).is_err() {
-        return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
-    }
-    None
-}
-
-/// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
-///
-/// State gas / reservoir tracking is only set when TIP-1016 (EIP-8037) is enabled.
-/// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
-/// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
-///
-/// SSTORE refund propagation is activated unconditionally at T4 so the
-/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
-/// blocks were executed without refund propagation, so we cannot change their gas
-/// accounting.
-#[inline]
-fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
-        output.gas_refunded = storage.gas_refunded();
-    }
-
-    if storage.amsterdam_eip8037_enabled() {
-        if output.is_success() {
-            // On success: parent takes the child's final reservoir.
-            output.reservoir = storage.reservoir();
-            output.state_gas_used = storage.state_gas_used();
-        } else {
-            // On revert or halt: state changes are undone, so ALL state gas returns
-            // to the parent's reservoir.
-            output.reservoir = storage.state_gas_used() + storage.reservoir();
-            output.state_gas_used = 0;
-        }
-    }
-}
-
-/// A selector schedule at a given hardfork boundary.
-///
-/// Before the hardfork activates, selectors in `added` are treated as unknown.
-/// After it activates, selectors in `dropped` are treated as unknown.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SelectorSchedule<'a> {
-    hardfork: TempoHardfork,
-    added: &'a [[u8; 4]],
-    dropped: &'a [[u8; 4]],
-}
-
-impl<'a> SelectorSchedule<'a> {
-    /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
-    pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
-        Self {
-            hardfork,
-            added: &[],
-            dropped: &[],
-        }
-    }
-
-    /// Registers selectors that are introduced at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown BEFORE `hardfork` activates.
-    pub(crate) const fn with_added(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.added = selectors;
-        self
-    }
-
-    /// Registers selectors that are removed at this hardfork boundary.
-    ///
-    /// These selectors are treated as unknown ONCE `hardfork` activates.
-    pub(crate) const fn with_dropped(mut self, selectors: &'a [[u8; 4]]) -> Self {
-        self.dropped = selectors;
-        self
-    }
-
-    /// Returns `true` if this schedule gates out `selector` under the `active` hardfork.
-    #[inline]
-    fn rejects(self, selector: [u8; 4], active: TempoHardfork) -> bool {
-        if self.hardfork <= active {
-            self.dropped
-        } else {
-            self.added
-        }
-        .contains(&selector)
-    }
-}
-
-/// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
-///
-/// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
-/// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
-/// revert).
-#[inline]
-pub(crate) fn dispatch_call<T>(
-    calldata: &[u8],
-    hardforks: &[SelectorSchedule<'_>],
-    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
-    f: impl FnOnce(T) -> PrecompileResult,
-) -> PrecompileResult {
-    let storage = StorageCtx::default();
-
-    if calldata.len() < 4 {
-        if storage.spec().is_t1() {
-            return Ok(storage.revert_output(Bytes::new()));
-        } else {
-            return Ok(storage.halt_output(PrecompileHalt::Other(
-                "Invalid input: missing function selector".into(),
-            )));
-        }
-    }
-
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-    if hardforks
-        .iter()
-        .any(|schedule| schedule.rejects(selector, storage.spec()))
-    {
-        return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
-            selector,
-        ));
-    }
-
-    let result = decode(calldata);
-
-    match result {
-        Ok(call) => f(call).map(|mut res| {
-            // TODO: fix this, each precompile handler should either return output with proper gas values or don't return any gas values at all.
-            res.gas_used = storage.gas_used();
-            fill_state_gas(&mut res, &storage);
-            res
-        }),
-        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
-            error::TempoPrecompileError::UnknownFunctionSelector(*selector),
-        ),
-        Err(_) => Ok(storage.revert_output(Bytes::new())),
+        tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
     }
 }
 
@@ -588,7 +381,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         tip20::TIP20Token,
     };
-    use alloy::primitives::{Address, Bytes, U256, bytes};
+    use alloy::{
+        primitives::{Address, Bytes, U256, bytes},
+        sol_types::SolCall,
+    };
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -1093,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_call_applies_hardfork_selector_gates() -> eyre::Result<()> {
+    fn test_dispatch_macro_applies_hardfork_selector_gates() -> eyre::Result<()> {
         alloy::sol! {
             interface ISelectorGatedTest {
                 function stable() external;
@@ -1102,31 +898,20 @@ mod tests {
             }
         }
 
-        const SELECTOR_SCHEDULE: &[SelectorSchedule<'static>] = &[
-            SelectorSchedule::new(TempoHardfork::T2)
-                .with_added(&[ISelectorGatedTest::t2AddedCall::SELECTOR]),
-            SelectorSchedule::new(TempoHardfork::T3)
-                .with_dropped(&[ISelectorGatedTest::t3RemovedCall::SELECTOR]),
-        ];
-
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                dispatch_call(
+                dispatch!(
                     calldata,
-                    SELECTOR_SCHEDULE,
-                    ISelectorGatedTest::ISelectorGatedTestCalls::abi_decode,
                     |call| match call {
-                        ISelectorGatedTest::ISelectorGatedTestCalls::stable(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0))
+                        ISelectorGatedTest::ISelectorGatedTestCalls {
+                            stable(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"stable"), 0)),
+                            #[schedule(since = T2)]
+                            t2Added(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0)),
+                            #[schedule(until = T3)]
+                            t3Removed(_) => Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0)),
                         }
-                        ISelectorGatedTest::ISelectorGatedTestCalls::t2Added(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"added"), 0))
-                        }
-                        ISelectorGatedTest::ISelectorGatedTestCalls::t3Removed(_) => {
-                            Ok(PrecompileOutput::new(0, Bytes::from_static(b"removed"), 0))
-                        }
-                    },
+                    }
                 )
             })
         };
@@ -1313,25 +1098,6 @@ mod tests {
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
         );
-    }
-
-    #[test]
-    fn test_is_precompile_address() {
-        for &(address, activated) in SYSTEM_PRECOMPILES {
-            assert!(is_precompile_address(address, activated));
-            assert!(is_precompile_address(address, TempoHardfork::T7));
-
-            if activated != TempoHardfork::Genesis {
-                assert!(!is_precompile_address(address, TempoHardfork::Genesis));
-            }
-        }
-
-        // Assert TIP20 prefixed addresses are classified as precompiles
-        assert!(PATH_USD_ADDRESS.is_tip20());
-        assert!(is_precompile_address(
-            PATH_USD_ADDRESS,
-            TempoHardfork::Genesis
-        ));
     }
 
     #[test]

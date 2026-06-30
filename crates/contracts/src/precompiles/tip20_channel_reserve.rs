@@ -139,6 +139,9 @@ crate::sol! {
         /// Returns the EIP-712 domain separator for the current chain.
         function domainSeparator() external view returns (bytes32);
 
+        /// Returns the number of reusable channel storage credits owned by `payer`.
+        function storageCredits(address payer) external view returns (uint64 credits);
+
         /// Emitted after a channel is opened and funded.
         event ChannelOpened(
             bytes32 indexed channelId,

@@ -1,4 +1,8 @@
-//! Storage credits precompile (TIP-1060).
+//! TIP-1060 storage credits precompile and accounting types.
+//!
+//! Storage credits let accounts reuse storage they previously freed: clearing a non-exempt slot
+//! mints a credit, and creating a slot can spend or refund against available credits according to
+//! the account's transaction-local [`CreditMode`].
 
 pub mod accounting;
 pub mod dispatch;
@@ -9,30 +13,75 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType},
+    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
-use std::cell::OnceCell;
+use std::{cell::OnceCell, collections::BTreeMap};
 use tempo_contracts::precompiles::{IStorageCredits::Mode, StorageCreditsError};
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Transaction-local TIP-1060 policy for storage creations (`0→x`).
+///
+/// All storage clears (`x→0`) always mint credits, except for [`NonCreditableSlots`].
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub enum CreditMode {
     #[default]
+    /// Charge creation gas upfront; settle eligible refunds at end-of-transaction.
     Refund,
+    /// Charge creation gas and keep existing credits intact.
     Preserve,
+    /// Spend available credits directly, up to the transaction-local budget.
     Direct,
 }
 
-// NOTE: Can't leverage `Storable` because `StorageCtx` only exists during precompile execution.
+impl TryFrom<u8> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Refund),
+            1 => Ok(Self::Preserve),
+            2 => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl TryFrom<Mode> for CreditMode {
+    type Error = TempoPrecompileError;
+
+    fn try_from(mode: Mode) -> Result<Self> {
+        match mode {
+            Mode::Refund => Ok(Self::Refund),
+            Mode::Preserve => Ok(Self::Preserve),
+            Mode::Direct => Ok(Self::Direct),
+            _ => Err(StorageCreditsError::invalid_mode().into()),
+        }
+    }
+}
+
+impl From<CreditMode> for Mode {
+    fn from(mode: CreditMode) -> Self {
+        match mode {
+            CreditMode::Refund => Self::Refund,
+            CreditMode::Preserve => Self::Preserve,
+            CreditMode::Direct => Self::Direct,
+        }
+    }
+}
+
+// NOTE: Encoded manually as a U256 instead of deriving `Storable` because precompile methods
+// access it through `StorageCtx`, while the opcode-level SSTORE hook and end-of-tx refund
+// settlement read the same transient words directly from revm, where `StorageCtx` handlers are
+// not available.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransientState {
-    /// Remaining number of credits that may be spent directly in `Direct` mode.
-    pub budget: u64,
     /// Current storage creation mode for this account within the transaction.
     pub mode: CreditMode,
+    /// Remaining number of credits that may be spent directly in `Direct` mode.
+    pub budget: u64,
     /// Number of Refund-mode storage creations pending end-of-transaction settlement.
     pub pending_refunds: u64,
 }
@@ -44,9 +93,9 @@ impl TryFrom<U256> for TransientState {
     fn try_from(value: U256) -> Result<Self> {
         let limbs = value.as_limbs();
         Ok(Self {
-            budget: limbs[0],
-            mode: (limbs[1] as u8).try_into()?,
-            pending_refunds: limbs[2],
+            mode: (limbs[0] as u8).try_into()?,
+            budget: limbs[1],
+            pending_refunds: limbs[3],
         })
     }
 }
@@ -54,7 +103,157 @@ impl TryFrom<U256> for TransientState {
 impl From<TransientState> for U256 {
     #[inline]
     fn from(value: TransientState) -> Self {
-        Self::from_limbs([value.budget, value.mode as u64, value.pending_refunds, 0])
+        Self::from_limbs([value.mode as u64, value.budget, 0, value.pending_refunds])
+    }
+}
+
+/// TIP-1060 storage credits precompile, which tracks per-account storage credit state.
+///
+/// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, persistent account state is
+/// stored directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and
+/// used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
+///
+/// ```text
+/// storage_credit_slot = uint256(bytes32(account))
+/// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
+/// ```
+///
+/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
+/// transient state at the same account-derived slot.
+#[contract(addr = STORAGE_CREDITS_ADDRESS)]
+pub struct StorageCredits {}
+
+impl StorageCredits {
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
+    }
+
+    pub fn balance_of(&self, account: Address) -> Result<u64> {
+        self.handler::<u64>(account).read()
+    }
+
+    /// Runs `f` and returns its value plus the number of credits minted for `account`.
+    ///
+    /// A negative delta means the operation consumed credits where the caller expected
+    /// a mint-only/no-op operation, so it is treated as a fatal bookkeeping error.
+    pub fn track_minted_credits<T>(
+        &self,
+        account: Address,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, u64)> {
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
+
+        let before = self.balance_of(account)?;
+        let value = f()?;
+        let after = self.balance_of(account)?;
+        if after < before {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "storage credit operation for owner {account} consumed credits (before: {before}, after: {after})"
+            )));
+        }
+
+        Ok((value, after - before))
+    }
+
+    pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
+        self.credit_state_of(account).map(|state| state.mode)
+    }
+
+    pub fn budget_of(&self, account: Address) -> Result<u64> {
+        self.credit_state_of(account).map(|state| state.budget)
+    }
+
+    /// Sets the transaction-local storage-creation mode for the caller.
+    pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
+        let mode = CreditMode::try_from(mode)?;
+        let budget = if matches!(mode, CreditMode::Direct) {
+            u64::MAX
+        } else {
+            0
+        };
+
+        self.write_mode_with_budget(msg_sender, mode, budget)
+    }
+
+    pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
+        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
+    }
+
+    fn write_mode_with_budget(
+        &mut self,
+        msg_sender: Address,
+        mode: CreditMode,
+        budget: u64,
+    ) -> Result<()> {
+        let mut state = self.credit_state_of(msg_sender)?;
+        state.mode = mode;
+        state.budget = budget;
+        self.write_credit_state_of(msg_sender, state)
+    }
+
+    /// Returns the storage credit balance/state key for `account`.
+    #[inline]
+    pub fn slot(account: Address) -> U256 {
+        U256::from_be_bytes(account.into_word().0)
+    }
+
+    /// Returns a full-slot handler for the account's storage-credit balance/state.
+    #[inline]
+    fn handler<T: StorableType>(&self, account: Address) -> T::Handler {
+        T::handle(Self::slot(account), LayoutCtx::FULL, self.address)
+    }
+
+    #[inline]
+    fn credit_state_of(&self, account: Address) -> Result<TransientState> {
+        self.handler::<U256>(account).t_read()?.try_into()
+    }
+
+    #[inline]
+    fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
+        self.handler::<U256>(account).t_write(state.into())
+    }
+
+    /// Runs `f` while allowing at most `limit` synchronous TIP-1060 storage-credit consumptions
+    /// from `credit_owner`'s balance, returning the signed persistent credit-balance delta.
+    ///
+    /// Assumes callers enter with `credit_owner` in `Preserve` mode. Any unspent budget is cleared
+    /// before this returns so later storage writes cannot consume the remaining allowance.
+    pub fn with_budget<T>(
+        &mut self,
+        credit_owner: Address,
+        limit: u64,
+        f: impl FnOnce() -> Result<T>,
+    ) -> Result<(T, i128)> {
+        if !StorageCtx.spec().is_t7() {
+            return f().map(|value| (value, 0));
+        }
+
+        if limit == 0 {
+            let before = self.balance_of(credit_owner)?;
+            let value = f()?;
+            let after = self.balance_of(credit_owner)?;
+            return Ok((value, i128::from(after) - i128::from(before)));
+        }
+
+        self.set_budget(credit_owner, limit)?;
+
+        let before = self.balance_of(credit_owner)?;
+        let result = f();
+        let after = self.balance_of(credit_owner)?;
+        let delta = i128::from(after) - i128::from(before);
+
+        // After `f` has been applied and accounting is done, reset to `Preserve`.
+        let current_state = self.credit_state_of(credit_owner)?;
+        let state = TransientState {
+            budget: 0,
+            mode: CreditMode::Preserve,
+            pending_refunds: current_state.pending_refunds,
+        };
+        self.write_credit_state_of(credit_owner, state)?;
+
+        result.map(|value| (value, delta))
     }
 }
 
@@ -140,122 +339,35 @@ impl NonCreditableSlots {
     }
 }
 
-/// TIP-1060 storage credits precompile, which tracks per-account storage credit state.
-///
-/// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, persistent account state is
-/// stored directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and
-/// used as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
-///
-/// ```text
-/// storage_credit_slot = uint256(bytes32(account))
-/// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
-/// ```
-///
-/// Storage creation mode, direct-spend budget, and pending refund counters are transaction-local
-/// transient state at the same account-derived slot.
-#[contract(addr = STORAGE_CREDITS_ADDRESS)]
-pub struct StorageCredits {}
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StorageCreditDeltas(BTreeMap<Address, u64>);
 
-impl StorageCredits {
-    pub fn initialize(&mut self) -> Result<()> {
-        self.__initialize()
+impl StorageCreditDeltas {
+    pub fn new() -> Self {
+        Self(BTreeMap::default())
     }
 
-    pub fn balance_of(&self, account: Address) -> Result<u64> {
-        self.handler::<u64>(account).read()
-    }
-
-    pub fn mode_of(&self, account: Address) -> Result<CreditMode> {
-        self.credit_state_of(account).map(|state| state.mode)
-    }
-
-    pub fn budget_of(&self, account: Address) -> Result<u64> {
-        self.credit_state_of(account).map(|state| state.budget)
-    }
-
-    pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
-        let mode = CreditMode::try_from(mode)?;
-        let budget = if matches!(mode, CreditMode::Direct) {
-            u64::MAX
-        } else {
-            0
-        };
-
-        self.write_mode_with_budget(msg_sender, mode, budget)
-    }
-
-    pub fn set_budget(&mut self, msg_sender: Address, credit_budget: u64) -> Result<()> {
-        self.write_mode_with_budget(msg_sender, CreditMode::Direct, credit_budget)
-    }
-
-    fn write_mode_with_budget(
-        &mut self,
-        msg_sender: Address,
-        mode: CreditMode,
-        budget: u64,
-    ) -> Result<()> {
-        let mut state = self.credit_state_of(msg_sender)?;
-        state.mode = mode;
-        state.budget = budget;
-        self.write_credit_state_of(msg_sender, state)
-    }
-
-    /// Returns the storage credit balance/state key for `account`.
-    #[inline]
-    pub fn slot(account: Address) -> U256 {
-        U256::from_be_bytes(account.into_word().0)
-    }
-
-    /// Returns a full-slot handler for the account's storage-credit balance/state.
-    #[inline]
-    fn handler<T: StorableType>(&self, account: Address) -> T::Handler {
-        T::handle(Self::slot(account), LayoutCtx::FULL, self.address)
-    }
-
-    #[inline]
-    fn credit_state_of(&self, account: Address) -> Result<TransientState> {
-        self.handler::<U256>(account).t_read()?.try_into()
-    }
-
-    #[inline]
-    fn write_credit_state_of(&mut self, account: Address, state: TransientState) -> Result<()> {
-        self.handler::<U256>(account).t_write(state.into())
-    }
-}
-
-impl TryFrom<u8> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(value: u8) -> Result<Self> {
-        match value {
-            0 => Ok(Self::Refund),
-            1 => Ok(Self::Preserve),
-            2 => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
+    /// Adds `slots` reusable-storage credits earned by `user`.
+    ///
+    /// This intentionally records only a delta. The persisted counter is loaded once during
+    /// [`Self::flush`], outside the fill loop and only if the enclosing DEX operation succeeds.
+    pub fn credit_slots(&mut self, user: Address, slots: u64) {
+        if slots == 0 {
+            return;
         }
+
+        self.0
+            .entry(user)
+            .and_modify(|total| *total = total.saturating_add(slots))
+            .or_insert(slots);
     }
-}
 
-impl TryFrom<Mode> for CreditMode {
-    type Error = TempoPrecompileError;
-
-    fn try_from(mode: Mode) -> Result<Self> {
-        match mode {
-            Mode::Refund => Ok(Self::Refund),
-            Mode::Preserve => Ok(Self::Preserve),
-            Mode::Direct => Ok(Self::Direct),
-            _ => Err(StorageCreditsError::invalid_mode().into()),
+    pub fn flush(self, mut apply: impl FnMut(Address, u64) -> Result<()>) -> Result<()> {
+        for (user, slots) in self.0 {
+            apply(user, slots)?;
         }
-    }
-}
 
-impl From<CreditMode> for Mode {
-    fn from(mode: CreditMode) -> Self {
-        match mode {
-            CreditMode::Refund => Self::Refund,
-            CreditMode::Preserve => Self::Preserve,
-            CreditMode::Direct => Self::Direct,
-        }
+        Ok(())
     }
 }
 

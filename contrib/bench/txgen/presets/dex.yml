@@ -1,0 +1,202 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  StablecoinDEX: ../stablecoin-dex.abi.json
+
+setup:
+  steps:
+    - id: dex_wall_bid_token1
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - 10000000000
+            - true
+            - -100
+            - 100
+    - id: dex_wall_ask_token1
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - 10000000000
+            - false
+            - 100
+            - -100
+    - id: dex_wall_bid_token2
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000002"
+            - 10000000000
+            - true
+            - -100
+            - 100
+    - id: dex_wall_ask_token2
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000002"
+            - 10000000000
+            - false
+            - 100
+            - -100
+    - id: dex_wall_bid_token3
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000003"
+            - 10000000000
+            - true
+            - -100
+            - 100
+    - id: dex_wall_ask_token3
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000003"
+            - 10000000000
+            - false
+            - 100
+            - -100
+
+templates:
+  dex_place:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: placeFlip
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          is_bid:
+            choice: [true, false]
+          tick:
+            if:
+              cond: { var: is_bid }
+              then: { uniform: { min: -90, max: -10, step: 10 } }
+              else: { uniform: { min: 10, max: 90, step: 10 } }
+        values:
+          - { var: base_token }
+          - { uniform: [100000000, 120000000] }
+          - { var: is_bid }
+          - { var: tick }
+          - if:
+              cond: { var: is_bid }
+              then: { uniform: { min: 10, max: 90, step: 10 } }
+              else: { uniform: { min: -90, max: -10, step: 10 } }
+
+  dex_swap:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0xdec0000000000000000000000000000000000000"
+      abi: StablecoinDEX
+      function: swapExactAmountIn
+      args:
+        vars:
+          base_token:
+            choice:
+              - "0x20c0000000000000000000000000000000000001"
+              - "0x20c0000000000000000000000000000000000002"
+              - "0x20c0000000000000000000000000000000000003"
+          base_to_quote:
+            choice: [true, false]
+        values:
+          - if:
+              cond: { var: base_to_quote }
+              then: { var: base_token }
+              else: "0x20c0000000000000000000000000000000000000"
+          - if:
+              cond: { var: base_to_quote }
+              then: "0x20c0000000000000000000000000000000000000"
+              else: { var: base_token }
+          - uniform: [40000000, 180000000]
+          - 0
+
+mix:
+  - template: dex_swap
+    weight: 60
+  - template: dex_place
+    weight: 40
