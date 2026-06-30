@@ -83,6 +83,28 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Number of times the budgeted builder saw no immediately available normal transaction.
+    pub(crate) normal_transaction_fill_idle_polls: Histogram,
+    /// Number of budgeted pool-empty polls in the last payload.
+    pub(crate) normal_transaction_fill_idle_polls_last: Gauge,
+    /// Pending pool transactions when the last normal pool iterator was created.
+    pub(crate) normal_transaction_fill_pool_pending_at_start_last: Gauge,
+    /// Queued pool transactions when the last normal pool iterator was created.
+    pub(crate) normal_transaction_fill_pool_queued_at_start_last: Gauge,
+    /// Total pool transactions when the last normal pool iterator was created.
+    pub(crate) normal_transaction_fill_pool_total_at_start_last: Gauge,
+    /// Pending pool transactions at the first budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_pending_at_first_idle_last: Gauge,
+    /// Queued pool transactions at the first budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_queued_at_first_idle_last: Gauge,
+    /// Total pool transactions at the first budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_total_at_first_idle_last: Gauge,
+    /// Pending pool transactions at the last budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_pending_at_last_idle_last: Gauge,
+    /// Queued pool transactions at the last budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_queued_at_last_idle_last: Gauge,
+    /// Total pool transactions at the last budgeted pool-empty poll in the last payload.
+    pub(crate) normal_transaction_fill_pool_total_at_last_idle_last: Gauge,
     /// Total wall-clock time spent in transaction execution phases.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.

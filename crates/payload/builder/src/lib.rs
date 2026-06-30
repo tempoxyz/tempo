@@ -153,6 +153,23 @@ struct SsmrRecoveredBatch {
     completed_shards: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PoolSizeSnapshot {
+    pending: usize,
+    queued: usize,
+    total: usize,
+}
+
+impl PoolSizeSnapshot {
+    fn from_pool_size(size: reth_transaction_pool::PoolSize) -> Self {
+        Self {
+            pending: size.pending,
+            queued: size.queued,
+            total: size.total,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum SsmrRecoveredReplayEvent {
     Transactions(SsmrRecoveredBatch),
@@ -1681,6 +1698,10 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_idle_polls = 0u64;
+        let mut normal_transaction_fill_pool_at_start = PoolSizeSnapshot::default();
+        let mut normal_transaction_fill_pool_at_first_idle = PoolSizeSnapshot::default();
+        let mut normal_transaction_fill_pool_at_last_idle = PoolSizeSnapshot::default();
         let mut validation_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_wait_elapsed = Duration::ZERO;
         let ssmr_replay_pool_lookup_elapsed = Duration::ZERO;
@@ -1959,6 +1980,8 @@ where
         } else {
             let base_fee = executor.evm().block().basefee;
             let pool_fetch_start = Instant::now();
+            normal_transaction_fill_pool_at_start =
+                PoolSizeSnapshot::from_pool_size(self.pool.pool_size());
             let best_txs = best_txs(BestTransactionsAttributes::new(
                 base_fee,
                 executor
@@ -2009,6 +2032,10 @@ where
                             target: "payload_builder",
                             ?elapsed,
                             ?normal_transaction_fill_idle_elapsed,
+                            normal_transaction_fill_idle_polls,
+                            ?normal_transaction_fill_pool_at_start,
+                            ?normal_transaction_fill_pool_at_first_idle,
+                            ?normal_transaction_fill_pool_at_last_idle,
                             ?build_budget,
                             predicted_builder_work = ?budget_decision.predicted_builder_work,
                             predicted_validator_work = ?budget_decision.predicted_validator_work,
@@ -2032,6 +2059,12 @@ where
                         && payload_build_budget.is_some()
                         && cumulative_gas_used < non_shared_gas_limit
                     {
+                        let pool_snapshot = PoolSizeSnapshot::from_pool_size(self.pool.pool_size());
+                        if normal_transaction_fill_idle_polls == 0 {
+                            normal_transaction_fill_pool_at_first_idle = pool_snapshot;
+                        }
+                        normal_transaction_fill_pool_at_last_idle = pool_snapshot;
+                        normal_transaction_fill_idle_polls += 1;
                         std::thread::sleep(Duration::from_millis(1));
                         normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                         validation_wait_elapsed += Duration::from_millis(1);
@@ -2207,6 +2240,39 @@ where
             self.metrics
                 .normal_transaction_fill_idle_duration_seconds
                 .record(normal_transaction_fill_idle_elapsed);
+            self.metrics
+                .normal_transaction_fill_idle_polls
+                .record(normal_transaction_fill_idle_polls as f64);
+            self.metrics
+                .normal_transaction_fill_idle_polls_last
+                .set(normal_transaction_fill_idle_polls as f64);
+            self.metrics
+                .normal_transaction_fill_pool_pending_at_start_last
+                .set(normal_transaction_fill_pool_at_start.pending as f64);
+            self.metrics
+                .normal_transaction_fill_pool_queued_at_start_last
+                .set(normal_transaction_fill_pool_at_start.queued as f64);
+            self.metrics
+                .normal_transaction_fill_pool_total_at_start_last
+                .set(normal_transaction_fill_pool_at_start.total as f64);
+            self.metrics
+                .normal_transaction_fill_pool_pending_at_first_idle_last
+                .set(normal_transaction_fill_pool_at_first_idle.pending as f64);
+            self.metrics
+                .normal_transaction_fill_pool_queued_at_first_idle_last
+                .set(normal_transaction_fill_pool_at_first_idle.queued as f64);
+            self.metrics
+                .normal_transaction_fill_pool_total_at_first_idle_last
+                .set(normal_transaction_fill_pool_at_first_idle.total as f64);
+            self.metrics
+                .normal_transaction_fill_pool_pending_at_last_idle_last
+                .set(normal_transaction_fill_pool_at_last_idle.pending as f64);
+            self.metrics
+                .normal_transaction_fill_pool_queued_at_last_idle_last
+                .set(normal_transaction_fill_pool_at_last_idle.queued as f64);
+            self.metrics
+                .normal_transaction_fill_pool_total_at_last_idle_last
+                .set(normal_transaction_fill_pool_at_last_idle.total as f64);
         }
         self.metrics
             .payment_transactions
@@ -2623,6 +2689,10 @@ where
             ?validation_latency_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            normal_transaction_fill_idle_polls,
+            ?normal_transaction_fill_pool_at_start,
+            ?normal_transaction_fill_pool_at_first_idle,
+            ?normal_transaction_fill_pool_at_last_idle,
             ?validation_wait_elapsed,
             ssmr_replay_enabled = is_ssmr_replay,
             ?ssmr_replay_wait_elapsed,
