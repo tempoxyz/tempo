@@ -38,12 +38,12 @@ on:
       benchmarks:
         description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
         required: false
-        default: "tip20_execution"
+        default: "tip20_execution dex_execution"
         type: string
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
         required: false
-        default: "tip20_"
+        default: "tip20_ dex_"
         type: string
       measurement_modes:
         description: "CodSpeed measurement mode(s), separated by commas"
@@ -82,8 +82,8 @@ jobs:
         id: args
         env:
           INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
-          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
-          INPUT_FILTERS: ${{ inputs.filters || 'tip20_' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution dex_execution' }}
+          INPUT_FILTERS: ${{ inputs.filters || 'tip20_ dex_' }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
           set -euo pipefail
