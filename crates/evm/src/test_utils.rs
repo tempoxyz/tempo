@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
 
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes};
@@ -47,6 +47,7 @@ use tempo_primitives::TempoTxEnvelope;
 
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
+    pub(crate) epoch_length: NonZeroU64,
     pub(crate) parent_hash: B256,
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
@@ -67,6 +68,7 @@ impl Default for TestExecutorBuilder {
     fn default() -> Self {
         Self {
             block_number: 1,
+            epoch_length: NonZeroU64::MIN,
             parent_hash: B256::ZERO,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
@@ -86,6 +88,11 @@ impl Default for TestExecutorBuilder {
 impl TestExecutorBuilder {
     pub(crate) fn with_block_number(mut self, block_number: u64) -> Self {
         self.block_number = block_number;
+        self
+    }
+
+    pub(crate) fn with_epoch_length(mut self, epoch_length: NonZeroU64) -> Self {
+        self.epoch_length = epoch_length;
         self
     }
 
@@ -168,6 +175,7 @@ impl TestExecutorBuilder {
                         gas_limit: 30_000_000,
                         ..Default::default()
                     },
+                    epoch_length: self.epoch_length,
                     proposer_public_key: self.consensus_context.map(|ctx| ctx.proposer),
                     ..Default::default()
                 },

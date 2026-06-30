@@ -298,6 +298,12 @@ where
         Ok(())
     }
 
+    fn is_first_block_of_epoch(&self) -> bool {
+        let epoch_length = self.evm().block().epoch_length.get();
+        let block_number = self.evm().block().number.saturating_to::<u64>();
+        block_number.is_multiple_of(epoch_length)
+    }
+
     /// Validates a system transaction.
     pub(crate) fn validate_system_tx(
         &self,
@@ -630,8 +636,11 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
         }
-        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
+        let t9_active_at_timestamp = self.inner.spec.is_t9_active_at_timestamp(timestamp);
+        if t9_active_at_timestamp {
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
+        }
+        if t9_active_at_timestamp && self.evm().cfg.spec.is_t9() && self.is_first_block_of_epoch() {
             self.activate_scheduled_feature_head()?;
         }
 
@@ -844,7 +853,10 @@ mod tests {
         context::result::{ExecutionResult, ResultGas},
         database::{EmptyDB, states::plain_account::PlainStorage},
     };
-    use std::sync::{Arc, Mutex};
+    use std::{
+        num::NonZeroU64,
+        sync::{Arc, Mutex},
+    };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
@@ -1958,13 +1970,14 @@ mod tests {
         db.insert_account_with_storage(
             FEATURE_REGISTRY_ADDRESS,
             AccountInfo::default(),
-            feature_registry_storage(B256::ZERO, test_feature_head(), 21),
+            feature_registry_storage(B256::ZERO, test_feature_head(), 2),
         );
 
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
             .with_runtime_spec(TempoHardfork::T9)
-            .with_block_number(21)
+            .with_epoch_length(NonZeroU64::new(10).expect("non-zero epoch length"))
+            .with_block_number(20)
             .build(&mut db, &chainspec);
 
         executor.apply_pre_execution_changes().unwrap();
@@ -2006,6 +2019,39 @@ mod tests {
             word_from_b256(test_feature_head())
         );
         assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(21));
+    }
+
+    #[test]
+    fn test_apply_pre_execution_waits_for_first_block_of_epoch_to_activate_feature_head() {
+        // Dev chainspec has t9Time: 0, so T9 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(B256::ZERO, test_feature_head(), 2),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_runtime_spec(TempoHardfork::T9)
+            .with_epoch_length(NonZeroU64::new(10).expect("non-zero epoch length"))
+            .with_block_number(21)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+
+        let acc = db.load_cache_account(FEATURE_REGISTRY_ADDRESS).unwrap();
+        assert_eq!(
+            acc.storage_slot(U256::ZERO).unwrap(),
+            word_from_b256(B256::ZERO)
+        );
+        assert_eq!(
+            acc.storage_slot(U256::from(1)).unwrap(),
+            word_from_b256(test_feature_head())
+        );
+        assert_eq!(acc.storage_slot(U256::from(2)).unwrap(), U256::from(2));
     }
 
     #[test]
