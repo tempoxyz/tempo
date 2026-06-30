@@ -33,14 +33,14 @@ crate::sol! {
         /// @notice Cancels the scheduled feature head before activation.
         function cancelScheduledFeatureHead() external;
 
-        /// @notice Returns whether a validator reported readiness for a feature head.
-        function validatorConfirmedFeatureHead(address validator, bytes32 featureHead) external view returns (bool);
+        /// @notice Returns whether a validator reported readiness for the scheduled feature head.
+        function validatorConfirmedScheduledFeatureReadiness(address validator) external view returns (bool);
 
-        /// @notice Returns current active-validator readiness for a feature head.
-        function featureHeadSupport(bytes32 featureHead) external view returns (uint256 support, uint256 required);
+        /// @notice Returns current active-validator readiness for the scheduled feature head.
+        function scheduledFeatureSupport() external view returns (uint256 support, uint256 required);
 
-        /// @notice Returns whether a feature head has quorum readiness from the active validator set.
-        function hasFeatureHeadQuorum(bytes32 featureHead) external view returns (bool);
+        /// @notice Returns whether the scheduled feature head has quorum readiness from the active validator set.
+        function hasScheduledFeatureQuorum() external view returns (bool);
 
         /// @notice Emitted when a validator reports readiness for a feature head.
         event FeatureReadinessReported(address indexed validator, bytes32 indexed featureHead, bool ready);

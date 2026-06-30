@@ -42,17 +42,14 @@ impl Precompile for FeatureRegistry {
                             self.cancel_scheduled_feature_head(sender)
                         })
                     },
-                    validatorConfirmedFeatureHead(call) => view(call, |call| {
-                        self.validator_confirmed_feature_head(
-                            call.validator,
-                            call.featureHead,
-                        )
+                    validatorConfirmedScheduledFeatureReadiness(call) => view(call, |call| {
+                        self.validator_confirmed_scheduled_feature_readiness(call.validator)
                     }),
-                    featureHeadSupport(call) => {
-                        view(call, |call| self.feature_head_support(call.featureHead))
+                    scheduledFeatureSupport(call) => {
+                        view(call, |_| self.scheduled_feature_support())
                     },
-                    hasFeatureHeadQuorum(call) => {
-                        view(call, |call| self.has_feature_head_quorum(call.featureHead))
+                    hasScheduledFeatureQuorum(call) => {
+                        view(call, |_| self.has_scheduled_feature_quorum())
                     }
                 }
             }
@@ -516,14 +513,14 @@ mod tests {
                 registry.report_feature_readiness(Address::ZERO, true)?;
             }
 
-            let support = registry.feature_head_support(FEATURE_HEAD)?;
+            let support = registry.scheduled_feature_support()?;
             assert_eq!(support.support, U256::from(3));
             assert_eq!(support.required, U256::from(4));
-            assert!(!registry.has_feature_head_quorum(FEATURE_HEAD)?);
+            assert!(!registry.has_scheduled_feature_quorum()?);
 
             set_proposer_public_key(&mut registry, validators[3].1);
             registry.report_feature_readiness(Address::ZERO, true)?;
-            assert!(registry.has_feature_head_quorum(FEATURE_HEAD)?);
+            assert!(registry.has_scheduled_feature_quorum()?);
 
             Ok(())
         })
@@ -644,17 +641,16 @@ mod tests {
     }
 
     #[test]
-    fn validator_confirmed_feature_head_dispatch_returns_encoded_readiness() -> eyre::Result<()> {
+    fn scheduled_readiness_dispatch_returns_encoded_readiness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
+            registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.validator_confirmed_feature_head[validator].write(FEATURE_HEAD)?;
 
-            let call = IFeatureRegistry::validatorConfirmedFeatureHeadCall {
-                validator,
-                featureHead: FEATURE_HEAD,
-            };
+            let call =
+                IFeatureRegistry::validatorConfirmedScheduledFeatureReadinessCall { validator };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert!(bool::abi_decode(&result.bytes)?);

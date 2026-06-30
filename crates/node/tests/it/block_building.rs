@@ -377,7 +377,7 @@ async fn test_block_building_reports_scheduled_feature_readiness_once() -> eyre:
     assert_eq!(scheduled.activationEpoch, 1);
     assert!(
         !feature_registry
-            .validatorConfirmedFeatureHead(validator.validatorAddress, expected_feature_head)
+            .validatorConfirmedScheduledFeatureReadiness(validator.validatorAddress)
             .call()
             .await?
     );
@@ -388,7 +388,7 @@ async fn test_block_building_reports_scheduled_feature_readiness_once() -> eyre:
     assert!(reports[0].ready);
     assert!(
         feature_registry
-            .validatorConfirmedFeatureHead(validator.validatorAddress, expected_feature_head)
+            .validatorConfirmedScheduledFeatureReadiness(validator.validatorAddress)
             .call()
             .await?
     );

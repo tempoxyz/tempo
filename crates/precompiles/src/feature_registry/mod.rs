@@ -76,8 +76,16 @@ impl FeatureRegistry {
             .into())
     }
 
-    /// Returns whether `validator` reported readiness for `feature_head`.
-    pub fn validator_confirmed_feature_head(
+    /// Returns whether `validator` reported readiness for the scheduled feature head.
+    pub fn validator_confirmed_scheduled_feature_readiness(
+        &self,
+        validator: Address,
+    ) -> Result<bool> {
+        let feature_head = self.scheduled_feature_head.read()?;
+        self.validator_confirmed_feature_head(validator, feature_head)
+    }
+
+    fn validator_confirmed_feature_head(
         &self,
         validator: Address,
         feature_head: B256,
@@ -86,13 +94,12 @@ impl FeatureRegistry {
             && self.validator_confirmed_feature_head[validator].read()? == feature_head)
     }
 
-    pub fn validator_confirmed_feature_head_by_public_key(
+    pub fn validator_confirmed_scheduled_feature_readiness_by_public_key(
         &self,
         public_key: B256,
-        feature_head: B256,
     ) -> Result<bool> {
         let validator = self.validator_address_by_public_key(public_key)?;
-        self.validator_confirmed_feature_head(validator, feature_head)
+        self.validator_confirmed_scheduled_feature_readiness(validator)
     }
 
     fn validator_address_by_public_key(&self, public_key: B256) -> Result<Address> {
@@ -201,21 +208,25 @@ impl FeatureRegistry {
         Ok(())
     }
 
-    /// Returns current active-validator readiness for a feature head.
-    pub fn feature_head_support(
+    /// Returns current active-validator readiness for the scheduled feature head.
+    pub fn scheduled_feature_support(
         &self,
-        feature_head: B256,
-    ) -> Result<IFeatureRegistry::featureHeadSupportReturn> {
+    ) -> Result<IFeatureRegistry::scheduledFeatureSupportReturn> {
+        let scheduled_feature_head = self.scheduled_feature_head.read()?;
+        if scheduled_feature_head == B256::ZERO {
+            return Ok((U256::ZERO, U256::ZERO).into());
+        }
+
         let public_keys = self.current_committee_public_keys()?;
         let (support, required) =
-            self.feature_head_support_for_public_keys(feature_head, &public_keys)?;
+            self.feature_head_support_for_public_keys(scheduled_feature_head, &public_keys)?;
 
         Ok((U256::from(support), U256::from(required)).into())
     }
 
-    /// Returns whether a feature head has enough active-validator readiness.
-    pub fn has_feature_head_quorum(&self, feature_head: B256) -> Result<bool> {
-        let support = self.feature_head_support(feature_head)?;
+    /// Returns whether the scheduled feature head has enough active-validator readiness.
+    pub fn has_scheduled_feature_quorum(&self) -> Result<bool> {
+        let support = self.scheduled_feature_support()?;
         Ok(!support.required.is_zero() && support.support >= support.required)
     }
 
