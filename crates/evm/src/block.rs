@@ -215,7 +215,7 @@ where
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
-        let block_number = block.number.to_be_bytes_vec();
+        let block_number = block.number.to_be_bytes::<32>();
         let to = tx.to().unwrap_or_default();
 
         // Handle end-of-block system transactions (subblocks signatures only)
@@ -237,15 +237,20 @@ where
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
 
-            if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block_number
-            {
+            let Some((metadata_input, input_block_number)) = tx.input().split_last_chunk::<32>()
+            else {
+                return Err(BlockValidationError::msg(
+                    "invalid subblocks metadata system transaction",
+                ));
+            };
+
+            if input_block_number != &block_number {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
                 ));
             }
 
-            let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
+            let mut buf = metadata_input;
             let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
