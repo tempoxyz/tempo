@@ -137,17 +137,18 @@ fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelo
         .collect()
 }
 
-fn feature_head_readiness_confirmations(
+fn feature_readiness_reports(
     payload: &TempoBuiltPayload,
-) -> eyre::Result<Vec<IFeatureRegistry::confirmFeatureHeadReadinessCall>> {
-    let mut confirmations = Vec::new();
+) -> eyre::Result<Vec<IFeatureRegistry::reportFeatureReadinessCall>> {
+    let mut reports = Vec::new();
     for tx in payload.block().body().transactions() {
         if tx.is_system_tx() && tx.to() == Some(FEATURE_REGISTRY_ADDRESS) {
-            confirmations
-                .push(IFeatureRegistry::confirmFeatureHeadReadinessCall::abi_decode(tx.input())?);
+            reports.push(IFeatureRegistry::reportFeatureReadinessCall::abi_decode(
+                tx.input(),
+            )?);
         }
     }
-    Ok(confirmations)
+    Ok(reports)
 }
 
 async fn advance_block_with_proposer(
@@ -314,7 +315,7 @@ fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_block_building_confirms_scheduled_feature_head_readiness_once() -> eyre::Result<()> {
+async fn test_block_building_reports_scheduled_feature_readiness_once() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let validator_private_key = Ed25519PrivateKey::from_seed(0);
@@ -383,8 +384,9 @@ async fn test_block_building_confirms_scheduled_feature_head_readiness_once() ->
     );
 
     let first_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
-    let confirmations = feature_head_readiness_confirmations(&first_payload)?;
-    assert_eq!(confirmations.len(), 1);
+    let reports = feature_readiness_reports(&first_payload)?;
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].ready);
     assert_eq!(
         feature_registry
             .validatorConfirmedFeatureHead(validator.validatorAddress, expected_feature_head)
@@ -394,7 +396,7 @@ async fn test_block_building_confirms_scheduled_feature_head_readiness_once() ->
     );
 
     let second_payload = advance_block_with_proposer(&mut setup.node, validator.publicKey).await?;
-    assert!(feature_head_readiness_confirmations(&second_payload)?.is_empty());
+    assert!(feature_readiness_reports(&second_payload)?.is_empty());
 
     Ok(())
 }

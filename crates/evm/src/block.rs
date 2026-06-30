@@ -54,7 +54,7 @@ pub(crate) enum BlockSection {
     /// End of block system transactions.
     System {
         seen_subblocks_signatures: bool,
-        seen_feature_head_readiness_confirmation: bool,
+        seen_feature_readiness_report: bool,
     },
 }
 
@@ -315,11 +315,11 @@ where
             } => seen_subblocks_signatures,
             _ => false,
         };
-        let mut seen_feature_head_readiness_confirmation = match self.section {
+        let mut seen_feature_readiness_report = match self.section {
             BlockSection::System {
-                seen_feature_head_readiness_confirmation,
+                seen_feature_readiness_report,
                 ..
-            } => seen_feature_head_readiness_confirmation,
+            } => seen_feature_readiness_report,
             _ => false,
         };
 
@@ -359,7 +359,7 @@ where
 
             seen_subblocks_signatures = true;
         } else if to == FEATURE_REGISTRY_ADDRESS {
-            if seen_feature_head_readiness_confirmation {
+            if seen_feature_readiness_report {
                 return Err(BlockValidationError::msg(
                     "duplicate feature head readiness system transaction",
                 ));
@@ -373,14 +373,14 @@ where
 
             self.validate_feature_registry_system_tx(tx)?;
 
-            seen_feature_head_readiness_confirmation = true;
+            seen_feature_readiness_report = true;
         } else {
             return Err(BlockValidationError::msg("invalid system transaction"));
         }
 
         Ok(BlockSection::System {
             seen_subblocks_signatures,
-            seen_feature_head_readiness_confirmation,
+            seen_feature_readiness_report,
         })
     }
 
@@ -388,9 +388,9 @@ where
         &mut self,
         tx: &TempoTxEnvelope,
     ) -> Result<(), BlockValidationError> {
-        IFeatureRegistry::confirmFeatureHeadReadinessCall::abi_decode(tx.input()).map_err(
-            |_| BlockValidationError::msg("invalid feature head readiness system transaction"),
-        )?;
+        IFeatureRegistry::reportFeatureReadinessCall::abi_decode(tx.input()).map_err(|_| {
+            BlockValidationError::msg("invalid feature head readiness system transaction")
+        })?;
         if self.evm().block().proposer_public_key.is_none() {
             return Err(BlockValidationError::msg(
                 "invalid feature head readiness system transaction",
@@ -974,7 +974,7 @@ mod tests {
             result.unwrap(),
             BlockSection::System {
                 seen_subblocks_signatures: true,
-                seen_feature_head_readiness_confirmation: false,
+                seen_feature_readiness_report: false,
             }
         );
     }
@@ -1031,7 +1031,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: true,
-                seen_feature_head_readiness_confirmation: false,
+                seen_feature_readiness_report: false,
             })
             .build(&mut db, &chainspec);
 
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_system_tx_feature_head_readiness_confirmation() {
+    fn test_validate_system_tx_feature_head_readiness_report() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let proposer_key = PrivateKey::from_seed(0);
@@ -1057,7 +1057,7 @@ mod tests {
         builder.consensus_context = Some(consensus_context_from_proposer(&proposer_key));
         let mut executor = builder.build(&mut db, &chainspec);
 
-        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+        let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
             .abi_encode()
             .into();
         let system_tx =
@@ -1073,7 +1073,7 @@ mod tests {
             result.unwrap(),
             BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_head_readiness_confirmation: true,
+                seen_feature_readiness_report: true,
             }
         );
     }
@@ -1086,7 +1086,7 @@ mod tests {
             .with_runtime_spec(TempoHardfork::T9)
             .build(&mut db, &chainspec);
 
-        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+        let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
             .abi_encode()
             .into();
         let system_tx =
@@ -1101,17 +1101,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_system_tx_duplicate_feature_head_readiness_confirmation() {
+    fn test_validate_system_tx_duplicate_feature_head_readiness_report() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_runtime_spec(TempoHardfork::T9)
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_head_readiness_confirmation: true,
+                seen_feature_readiness_report: true,
             })
             .build(&mut db, &chainspec);
-        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+        let input = IFeatureRegistry::reportFeatureReadinessCall { ready: true }
             .abi_encode()
             .into();
         let system_tx =
@@ -1488,7 +1488,7 @@ mod tests {
         let mut executor2 = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_head_readiness_confirmation: false,
+                seen_feature_readiness_report: false,
             })
             .build(&mut db2, &chainspec);
 
@@ -1539,7 +1539,7 @@ mod tests {
         let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
-                seen_feature_head_readiness_confirmation: false,
+                seen_feature_readiness_report: false,
             })
             .build(&mut db, &chainspec);
 

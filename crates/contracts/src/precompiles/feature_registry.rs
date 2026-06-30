@@ -21,8 +21,8 @@ crate::sol! {
         /// @notice Returns the scheduled feature head and earliest activation epoch.
         function scheduledFeatureHead() external view returns (bytes32 featureHead, uint64 activationEpoch);
 
-        /// @notice Confirms the proposer validator is ready for the currently scheduled feature head. System caller only.
-        function confirmFeatureHeadReadiness() external;
+        /// @notice Reports whether the proposer validator is ready for the currently scheduled feature head. System caller only.
+        function reportFeatureReadiness(bool ready) external;
 
         /// @notice Schedules a feature head for activation at the target epoch.
         function scheduleFeatureHead(bytes32 featureHead, uint64 activationEpoch) external;
@@ -33,7 +33,7 @@ crate::sol! {
         /// @notice Cancels the scheduled feature head before activation.
         function cancelScheduledFeatureHead() external;
 
-        /// @notice Returns whether a validator confirmed readiness for a feature head.
+        /// @notice Returns whether a validator reported readiness for a feature head.
         function validatorConfirmedFeatureHead(address validator, bytes32 featureHead) external view returns (bool);
 
         /// @notice Returns current active-validator readiness for a feature head.
@@ -42,8 +42,8 @@ crate::sol! {
         /// @notice Returns whether a feature head has quorum readiness from the active validator set.
         function hasFeatureHeadQuorum(bytes32 featureHead) external view returns (bool);
 
-        /// @notice Emitted when a validator confirms readiness for a feature head.
-        event FeatureHeadReadinessConfirmed(address indexed validator, bytes32 indexed featureHead);
+        /// @notice Emitted when a validator reports readiness for a feature head.
+        event FeatureReadinessReported(address indexed validator, bytes32 indexed featureHead, bool ready);
 
         /// @notice Emitted when a feature head is scheduled for activation.
         event FeatureHeadScheduled(bytes32 indexed featureHead, uint64 activationEpoch);

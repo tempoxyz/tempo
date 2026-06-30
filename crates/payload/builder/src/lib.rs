@@ -220,7 +220,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         let chain_id = Some(chain_spec.chain().id());
         let mut txs = Vec::new();
 
-        if let Some(tx) = self.build_feature_head_readiness_confirmation_tx(evm, chain_id) {
+        if let Some(tx) = self.build_feature_readiness_report_tx(evm, chain_id) {
             txs.push(tx);
         }
 
@@ -242,7 +242,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         txs
     }
 
-    fn build_feature_head_readiness_confirmation_tx(
+    fn build_feature_readiness_report_tx(
         &self,
         evm: &mut TempoEvm<impl Database>,
         chain_id: Option<u64>,
@@ -261,43 +261,43 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .with_read_only_storage_ctx(
                 spec,
                 StorageActions::disabled(),
-                || -> Result<Option<B256>, PayloadBuilderError> {
+                || -> Result<Option<(B256, bool)>, PayloadBuilderError> {
                     let scheduled = FeatureRegistry::new()
                         .scheduled_feature_head()
                         .map_err(PayloadBuilderError::other)?;
-                    if scheduled.featureHead == B256::ZERO
-                        || !supports_feature_head(scheduled.featureHead)
-                    {
+                    if scheduled.featureHead == B256::ZERO {
                         return Ok(None);
                     }
 
-                    let already_confirmed = FeatureRegistry::new()
+                    let ready = supports_feature_head(scheduled.featureHead);
+                    let already_reported_ready = FeatureRegistry::new()
                         .validator_confirmed_feature_head_by_public_key(
                             public_key,
                             scheduled.featureHead,
                         )
                         .map_err(PayloadBuilderError::other)?;
-                    Ok((!already_confirmed).then_some(scheduled.featureHead))
+                    Ok((ready != already_reported_ready).then_some((scheduled.featureHead, ready)))
                 },
             ) {
             Ok(readiness) => readiness,
             Err(err) => {
-                debug!(%err, "skipping feature head readiness confirmation");
+                debug!(%err, "skipping feature readiness report");
                 None
             }
         };
 
-        let Some(feature_head) = readiness else {
+        let Some((feature_head, ready)) = readiness else {
             return None;
         };
 
         debug!(
             %feature_head,
+            ready,
             supported_feature_head = %highest_supported_feature_head(),
-            "confirming scheduled feature head readiness"
+            "reporting scheduled feature readiness"
         );
 
-        let input = IFeatureRegistry::confirmFeatureHeadReadinessCall {}
+        let input = IFeatureRegistry::reportFeatureReadinessCall { ready }
             .abi_encode()
             .into();
         Some(Self::system_tx(chain_id, FEATURE_REGISTRY_ADDRESS, input))

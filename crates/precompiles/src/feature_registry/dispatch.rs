@@ -22,9 +22,9 @@ impl Precompile for FeatureRegistry {
                     scheduledFeatureHead(call) => {
                         view(call, |_| self.scheduled_feature_head())
                     },
-                    confirmFeatureHeadReadiness(call) => {
-                        mutate_void(call, msg_sender, |sender, _| {
-                            self.confirm_feature_head_readiness(sender)
+                    reportFeatureReadiness(call) => {
+                        mutate_void(call, msg_sender, |sender, call| {
+                            self.report_feature_readiness(sender, call.ready)
                         })
                     },
                     scheduleFeatureHead(call) => {
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_feature_head_readiness_stores_latest_validator_head() -> eyre::Result<()> {
+    fn report_feature_readiness_stores_latest_validator_head() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::repeat_byte(0xaa);
         let validator = Address::repeat_byte(0x01);
@@ -387,13 +387,13 @@ mod tests {
             registry.scheduled_activation_epoch.write(21)?;
             set_proposer_public_key(&mut registry, public_key);
 
-            registry.confirm_feature_head_readiness(Address::ZERO)?;
+            registry.report_feature_readiness(Address::ZERO, true)?;
 
             assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
             assert!(!registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
 
             registry.scheduled_feature_head.write(NEXT_FEATURE_HEAD)?;
-            registry.confirm_feature_head_readiness(Address::ZERO)?;
+            registry.report_feature_readiness(Address::ZERO, true)?;
 
             assert!(!registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
             assert!(registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
@@ -403,15 +403,42 @@ mod tests {
     }
 
     #[test]
-    fn confirm_feature_head_readiness_rejects_non_system_or_missing_schedule() -> eyre::Result<()> {
+    fn report_feature_readiness_can_cancel_current_scheduled_head() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::repeat_byte(0xaa);
+        let validator = Address::repeat_byte(0x01);
+        StorageCtx::enter(&mut storage, || {
+            initialize_validator_config_owner(owner)?;
+            let public_key = add_test_validator(owner, validator, 1)?;
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_feature_head.write(FEATURE_HEAD)?;
+            registry.scheduled_activation_epoch.write(21)?;
+            set_proposer_public_key(&mut registry, public_key);
+
+            registry.report_feature_readiness(Address::ZERO, true)?;
+            assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+
+            registry.report_feature_readiness(Address::ZERO, false)?;
+            assert!(!registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
+
+            registry.validator_confirmed_feature_head[validator].write(NEXT_FEATURE_HEAD)?;
+            registry.report_feature_readiness(Address::ZERO, false)?;
+            assert!(registry.validator_confirmed_feature_head(validator, NEXT_FEATURE_HEAD)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn report_feature_readiness_rejects_non_system_or_missing_schedule() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
 
-            let result = registry.confirm_feature_head_readiness(Address::repeat_byte(0x02));
+            let result = registry.report_feature_readiness(Address::repeat_byte(0x02), true);
             assert_eq!(result, Err(FeatureRegistryError::unauthorized().into()));
 
-            let result = registry.confirm_feature_head_readiness(Address::ZERO);
+            let result = registry.report_feature_readiness(Address::ZERO, true);
             assert_eq!(
                 result,
                 Err(FeatureRegistryError::feature_head_not_scheduled().into())
@@ -422,14 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn confirm_feature_head_readiness_rejects_missing_proposer_public_key() -> eyre::Result<()> {
+    fn report_feature_readiness_rejects_missing_proposer_public_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut registry = FeatureRegistry::new();
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
 
-            let result = registry.confirm_feature_head_readiness(Address::ZERO);
+            let result = registry.report_feature_readiness(Address::ZERO, true);
             assert_eq!(
                 result,
                 Err(FeatureRegistryError::proposer_public_key_unavailable().into())
@@ -440,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_feature_head_readiness_dispatch_allows_system_caller() -> eyre::Result<()> {
+    fn report_feature_readiness_dispatch_allows_system_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::repeat_byte(0xaa);
         let validator = Address::repeat_byte(0x01);
@@ -452,7 +479,7 @@ mod tests {
             registry.scheduled_activation_epoch.write(21)?;
             set_proposer_public_key(&mut registry, public_key);
 
-            let call = IFeatureRegistry::confirmFeatureHeadReadinessCall {};
+            let call = IFeatureRegistry::reportFeatureReadinessCall { ready: true };
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert!(registry.validator_confirmed_feature_head(validator, FEATURE_HEAD)?);
@@ -486,7 +513,7 @@ mod tests {
 
             for (_, public_key) in validators.iter().take(3) {
                 set_proposer_public_key(&mut registry, *public_key);
-                registry.confirm_feature_head_readiness(Address::ZERO)?;
+                registry.report_feature_readiness(Address::ZERO, true)?;
             }
 
             let support = registry.feature_head_support(FEATURE_HEAD)?;
@@ -495,7 +522,7 @@ mod tests {
             assert!(!registry.has_feature_head_quorum(FEATURE_HEAD)?);
 
             set_proposer_public_key(&mut registry, validators[3].1);
-            registry.confirm_feature_head_readiness(Address::ZERO)?;
+            registry.report_feature_readiness(Address::ZERO, true)?;
             assert!(registry.has_feature_head_quorum(FEATURE_HEAD)?);
 
             Ok(())
@@ -557,7 +584,7 @@ mod tests {
             registry.scheduled_feature_head.write(FEATURE_HEAD)?;
             registry.scheduled_activation_epoch.write(21)?;
             set_proposer_public_key(&mut registry, public_key);
-            registry.confirm_feature_head_readiness(Address::ZERO)?;
+            registry.report_feature_readiness(Address::ZERO, true)?;
 
             assert!(registry.activate_scheduled_feature_head()?);
             assert_eq!(registry.active_feature_head()?, FEATURE_HEAD);

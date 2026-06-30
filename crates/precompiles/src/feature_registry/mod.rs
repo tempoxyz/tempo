@@ -31,7 +31,7 @@ pub struct FeatureRegistry {
     scheduled_feature_head: B256,
     /// Earliest activation epoch for the scheduled feature head, or zero when none is scheduled.
     scheduled_activation_epoch: u64,
-    /// Latest feature head confirmed by each validator address.
+    /// Latest feature head reported ready by each validator address.
     validator_confirmed_feature_head: Mapping<Address, B256>,
 }
 
@@ -76,7 +76,7 @@ impl FeatureRegistry {
             .into())
     }
 
-    /// Returns whether `validator` confirmed readiness for `feature_head`.
+    /// Returns whether `validator` reported readiness for `feature_head`.
     pub fn validator_confirmed_feature_head(
         &self,
         validator: Address,
@@ -110,7 +110,7 @@ impl FeatureRegistry {
             .validatorAddress)
     }
 
-    pub fn confirm_feature_head_readiness(&mut self, msg_sender: Address) -> Result<()> {
+    pub fn report_feature_readiness(&mut self, msg_sender: Address, ready: bool) -> Result<()> {
         if !msg_sender.is_zero() {
             return Err(FeatureRegistryError::unauthorized().into());
         }
@@ -127,11 +127,16 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::proposer_public_key_unavailable().into());
         };
         let validator = self.validator_address_by_public_key(B256::from(public_key))?;
-        self.validator_confirmed_feature_head[validator].write(feature_head)?;
+        if ready {
+            self.validator_confirmed_feature_head[validator].write(feature_head)?;
+        } else if self.validator_confirmed_feature_head[validator].read()? == feature_head {
+            self.validator_confirmed_feature_head[validator].write(B256::ZERO)?;
+        }
 
-        self.emit_event(FeatureRegistryEvent::feature_head_readiness_confirmed(
+        self.emit_event(FeatureRegistryEvent::feature_readiness_reported(
             validator,
             feature_head,
+            ready,
         ))
     }
 
