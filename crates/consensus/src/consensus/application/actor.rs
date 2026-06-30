@@ -17,7 +17,7 @@ use std::{
 
 use alloy_consensus::BlockHeader;
 use alloy_eips::Encodable2718;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, keccak256};
 use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
@@ -1117,14 +1117,8 @@ impl Inner<Init> {
                                 Err(mismatch) => {
                                     ssmr_fallback_validation = true;
                                     self.metrics.ssmr_fallback_validation_count.inc();
-                                    warn!(
-                                        ?mismatch,
-                                        block.digest = %block.digest(),
-                                        block.height = %block.height(),
-                                        proposal.has_required_sidecars = !block.missing_required_sidecars(),
-                                        proposal.has_block_access_list = block.block_access_list().is_some(),
-                                        optimistic.has_block_access_list = payload.block_access_list().is_some(),
-                                        "SSMR optimistic artifact does not match final proposal; falling back to normal validation"
+                                    log_ssmr_optimistic_payload_mismatch(
+                                        &block, &payload, &mismatch,
                                     );
                                 }
                             }
@@ -1461,6 +1455,53 @@ fn reconcile_ssmr_optimistic_payload(
         return Err(SsmrOptimisticPayloadMismatch::BlockAccessList);
     }
     Ok(())
+}
+
+fn log_ssmr_optimistic_payload_mismatch(
+    block: &Block,
+    payload: &TempoBuiltPayload,
+    mismatch: &SsmrOptimisticPayloadMismatch,
+) {
+    let proposal = block.block();
+    let optimistic = payload.block();
+    let proposal_header = proposal.header();
+    let optimistic_header = optimistic.header();
+    let proposal_block_access_list = block.block_access_list();
+    let optimistic_block_access_list = payload.block_access_list();
+    let proposal_block_access_list_hash =
+        proposal_block_access_list.map(|bytes| keccak256(bytes.as_ref()));
+    let optimistic_block_access_list_hash =
+        optimistic_block_access_list.map(|bytes| keccak256(bytes.as_ref()));
+
+    warn!(
+        ?mismatch,
+        block.digest = %block.digest(),
+        block.height = %block.height(),
+        proposal.has_required_sidecars = !block.missing_required_sidecars(),
+        proposal.hash = %proposal.hash(),
+        optimistic.hash = %optimistic.hash(),
+        proposal.tx_count = proposal.body().transaction_count(),
+        optimistic.tx_count = optimistic.body().transaction_count(),
+        proposal.gas_used = proposal_header.gas_used(),
+        optimistic.gas_used = optimistic_header.gas_used(),
+        proposal.state_root = %proposal_header.state_root(),
+        optimistic.state_root = %optimistic_header.state_root(),
+        proposal.receipts_root = %proposal_header.receipts_root(),
+        optimistic.receipts_root = %optimistic_header.receipts_root(),
+        proposal.transactions_root = %proposal_header.transactions_root(),
+        optimistic.transactions_root = %optimistic_header.transactions_root(),
+        proposal.block_access_list_header_hash = ?proposal_header.block_access_list_hash(),
+        optimistic.block_access_list_header_hash = ?optimistic_header.block_access_list_hash(),
+        proposal.block_access_list_bytes_hash = ?proposal_block_access_list_hash,
+        optimistic.block_access_list_bytes_hash = ?optimistic_block_access_list_hash,
+        proposal.block_access_list_size_bytes =
+            proposal_block_access_list.map_or(0, |bytes| bytes.as_ref().len()),
+        optimistic.block_access_list_size_bytes =
+            optimistic_block_access_list.map_or(0, |bytes| bytes.as_ref().len()),
+        logs_bloom_matches = proposal_header.logs_bloom() == optimistic_header.logs_bloom(),
+        requests_hash_matches = proposal_header.requests_hash() == optimistic_header.requests_hash(),
+        "SSMR optimistic artifact does not match final proposal; falling back to normal validation"
+    );
 }
 
 fn block_from_ssmr_optimistic_payload(payload: &TempoBuiltPayload) -> eyre::Result<Block> {
