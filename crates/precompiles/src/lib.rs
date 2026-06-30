@@ -489,6 +489,7 @@ pub(crate) struct SelectorSchedule<'a> {
 }
 
 impl<'a> SelectorSchedule<'a> {
+    #[allow(dead_code)]
     /// Creates a new schedule anchored at `hardfork` with no selectors registered yet.
     pub(crate) const fn new(hardfork: TempoHardfork) -> Self {
         Self {
@@ -498,6 +499,7 @@ impl<'a> SelectorSchedule<'a> {
         }
     }
 
+    #[allow(dead_code)]
     /// Registers selectors that are introduced at this hardfork boundary.
     ///
     /// These selectors are treated as unknown BEFORE `hardfork` activates.
@@ -506,6 +508,7 @@ impl<'a> SelectorSchedule<'a> {
         self
     }
 
+    #[allow(dead_code)]
     /// Registers selectors that are removed at this hardfork boundary.
     ///
     /// These selectors are treated as unknown ONCE `hardfork` activates.
@@ -1328,6 +1331,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn test_p256verify_availability_across_t1c_boundary() {
         let has_p256 = |spec: TempoHardfork| -> bool {
             // P256VERIFY lives at address 0x100 (256), added in Osaka

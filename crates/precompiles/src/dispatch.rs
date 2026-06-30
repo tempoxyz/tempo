@@ -17,12 +17,14 @@ sol! {
 
 /// Dispatches a parameterless view call, encoding the return via `T`.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResult {
     f().into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 /// Dispatches a read-only call with decoded arguments, encoding the return via `T`.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn view<T: SolCall>(
     call: T,
     f: impl FnOnce(T) -> Result<T::Return>,
@@ -34,6 +36,7 @@ pub(crate) fn view<T: SolCall>(
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn mutate<T: SolCall>(
     call: T,
     sender: Address,
@@ -53,6 +56,7 @@ pub(crate) fn mutate<T: SolCall>(
 ///
 /// Rejects static calls with [`StaticCallNotAllowed`].
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn mutate_void<T: SolCall>(
     call: T,
     sender: Address,
@@ -70,6 +74,7 @@ pub(crate) fn mutate_void<T: SolCall>(
 
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
     if StorageCtx.spec().is_t7() {
         StorageCredits::new().set_mode(
@@ -82,6 +87,7 @@ pub(crate) fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn charge_input_cost(
     storage: &mut StorageCtx,
     calldata: &[u8],
