@@ -18,7 +18,7 @@ macro_rules! tempo_features {
     (
         $(
             $(#[$meta:meta])*
-            $variant:ident = $name:literal,
+            $variant:ident = $name:literal => $supports:ident,
         )+
     ) => {
         /// A feature supported by this binary.
@@ -32,22 +32,16 @@ macro_rules! tempo_features {
         }
 
         impl Feature {
-            /// Returns this feature's activation cursor index.
-            ///
-            /// Index `0` is reserved for [`NO_ACTIVE_FEATURE_HEAD`], so the first
-            /// real feature has index `1`.
-            pub const fn index(self) -> usize {
-                self as usize + 1
-            }
-
-            /// Returns the canonical dotted feature name used for hashing and tooling.
-            pub const fn name(self) -> &'static str {
-                match self {
-                    $(
-                        Self::$variant => $name,
-                    )+
+            $(
+                #[doc = concat!(
+                    "Returns true if this active feature tip includes `",
+                    $name,
+                    "`."
+                )]
+                pub const fn $supports(self) -> bool {
+                    self.supports(Self::$variant)
                 }
-            }
+            )+
         }
 
         /// Features supported by this binary, in activation-cursor order.
@@ -56,33 +50,83 @@ macro_rules! tempo_features {
                 Feature::$variant,
             )+
         ];
+
+        const FEATURE_NAMES: &[&str] = &[
+            $(
+                $name,
+            )+
+        ];
     };
 }
 
 tempo_features! {
     /// TIP-1063 feature registry and feature-head activation.
-    Tip1063FeatureRegistry = "tip-1063.feature-registry",
+    Tip1063FeatureRegistry = "tip-1063.feature-registry" => is_tip1063_active,
 }
 
-const FEATURE_HEADS_COUNT: usize = FEATURE_REGISTRY.len() + 1;
+const FEATURE_DIGESTS_COUNT: usize = FEATURE_REGISTRY.len() + 1;
 
-/// Cached feature hash-chain heads.
+impl Feature {
+    const fn registry_index(self) -> usize {
+        self as usize
+    }
+
+    /// Returns this feature's activation cursor index.
+    ///
+    /// Index `0` is reserved for [`NO_ACTIVE_FEATURE_HEAD`], so the first
+    /// real feature has index `1`.
+    pub const fn index(self) -> usize {
+        self.registry_index() + 1
+    }
+
+    /// Returns the canonical dotted feature name used for hashing and tooling.
+    pub const fn name(self) -> &'static str {
+        FEATURE_NAMES[self.registry_index()]
+    }
+
+    /// Returns this feature's hash-chain digest.
+    pub fn digest(self) -> B256 {
+        FEATURE_DIGESTS[self.index()]
+    }
+
+    /// Resolves `digest` into the active feature tip known by this binary.
+    ///
+    /// Returns `None` for [`NO_ACTIVE_FEATURE_HEAD`] and unknown digests.
+    pub fn from_digest(digest: B256) -> Option<Self> {
+        let index = FEATURE_DIGESTS
+            .iter()
+            .position(|supported_digest| *supported_digest == digest)?;
+
+        if index == 0 {
+            return None;
+        }
+
+        Some(FEATURE_REGISTRY[index - 1])
+    }
+
+    /// Returns true if this active feature tip includes `feature`.
+    pub const fn supports(self, feature: Self) -> bool {
+        self.index() >= feature.index()
+    }
+}
+
+/// Cached feature hash-chain digests.
 ///
-/// Index `0` is [`NO_ACTIVE_FEATURE_HEAD`], and index `N > 0` is the head for
-/// feature IDs `1..=N`.
-pub static FEATURE_HEADS: LazyLock<[B256; FEATURE_HEADS_COUNT]> =
-    LazyLock::new(build_feature_heads);
+/// Index `0` is [`NO_ACTIVE_FEATURE_HEAD`], and index `N > 0` is the digest
+/// for features `1..=N`.
+pub static FEATURE_DIGESTS: LazyLock<[B256; FEATURE_DIGESTS_COUNT]> =
+    LazyLock::new(build_feature_digests);
 
-fn build_feature_heads() -> [B256; FEATURE_HEADS_COUNT] {
-    let mut heads = [NO_ACTIVE_FEATURE_HEAD; FEATURE_HEADS_COUNT];
+fn build_feature_digests() -> [B256; FEATURE_DIGESTS_COUNT] {
+    let mut digests = [NO_ACTIVE_FEATURE_HEAD; FEATURE_DIGESTS_COUNT];
     let mut head = NO_ACTIVE_FEATURE_HEAD;
 
     for (index, feature) in FEATURE_REGISTRY.iter().copied().enumerate() {
         head = extend_feature_head(head, feature);
-        heads[index + 1] = head;
+        digests[index + 1] = head;
     }
 
-    heads
+    digests
 }
 
 /// Returns the head produced by appending `feature` to `parent_head`.
@@ -101,84 +145,15 @@ fn update_len_prefixed(hasher: &mut Keccak256, bytes: &[u8]) {
 
 /// Highest feature head supported by this binary.
 pub fn highest_supported_feature_head() -> B256 {
-    *FEATURE_HEADS
+    *FEATURE_DIGESTS
         .last()
-        .expect("feature head cache always includes zero head")
-}
-
-/// Returns the feature head for `feature`.
-pub fn feature_head(feature: Feature) -> B256 {
-    FEATURE_HEADS[feature.index()]
-}
-
-/// Returns the activation cursor index for `feature_head`, if it belongs to this binary's chain.
-pub fn feature_head_index(feature_head: B256) -> Option<usize> {
-    FEATURE_HEADS
-        .iter()
-        .position(|supported_head| *supported_head == feature_head)
+        .expect("feature digest cache always includes zero head")
 }
 
 /// Returns true if this binary's feature hash chain contains `feature_head`.
 pub fn supports_feature_head(feature_head: B256) -> bool {
-    feature_head_index(feature_head).is_some()
+    FEATURE_DIGESTS.contains(&feature_head)
 }
-
-/// An active feature stack resolved against this binary's local feature chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActiveFeatures {
-    head: B256,
-    active_index: usize,
-}
-
-impl ActiveFeatures {
-    /// Resolves `head` into an active feature stack.
-    pub fn new(head: B256) -> Result<Self, UnknownFeatureHead> {
-        let Some(active_index) = feature_head_index(head) else {
-            return Err(UnknownFeatureHead { head });
-        };
-
-        Ok(Self { head, active_index })
-    }
-
-    /// Returns an active feature stack with no active features.
-    pub const fn none() -> Self {
-        Self {
-            head: NO_ACTIVE_FEATURE_HEAD,
-            active_index: 0,
-        }
-    }
-
-    /// Returns the active feature head used to build this stack.
-    pub const fn head(self) -> B256 {
-        self.head
-    }
-
-    /// Returns the active feature cursor index.
-    pub const fn active_index(self) -> usize {
-        self.active_index
-    }
-
-    /// Returns true if `feature` is active in this stack.
-    pub fn is_active(self, feature: Feature) -> bool {
-        self.active_index >= feature.index()
-    }
-}
-
-/// Error returned when a feature head is not in this binary's local feature chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownFeatureHead {
-    /// Unknown active feature head.
-    pub head: B256,
-}
-
-impl core::fmt::Display for UnknownFeatureHead {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown feature head {:?}", self.head)
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for UnknownFeatureHead {}
 
 #[cfg(test)]
 mod tests {
@@ -187,70 +162,62 @@ mod tests {
     #[test]
     fn zero_means_no_active_feature() {
         assert_eq!(NO_ACTIVE_FEATURE_HEAD, B256::ZERO);
-        assert_eq!(FEATURE_HEADS[0], B256::ZERO);
+        assert_eq!(FEATURE_DIGESTS[0], B256::ZERO);
         assert!(supports_feature_head(B256::ZERO));
+        assert_eq!(Feature::from_digest(B256::ZERO), None);
     }
 
     #[test]
-    fn feature_head_hash_chain_includes_supported_prefixes() {
-        for head in FEATURE_HEADS.iter().copied() {
-            assert!(supports_feature_head(head));
+    fn feature_digest_hash_chain_includes_supported_prefixes() {
+        for digest in FEATURE_DIGESTS.iter().copied() {
+            assert!(supports_feature_head(digest));
         }
         assert_ne!(highest_supported_feature_head(), NO_ACTIVE_FEATURE_HEAD);
     }
 
     #[test]
-    fn feature_head_cache_matches_registry_prefixes() {
-        assert_eq!(FEATURE_HEADS.len(), FEATURE_REGISTRY.len() + 1);
-        assert_eq!(FEATURE_HEADS[0], NO_ACTIVE_FEATURE_HEAD);
-        for head in FEATURE_HEADS.iter().copied() {
-            assert!(supports_feature_head(head));
+    fn feature_digest_cache_matches_registry_prefixes() {
+        assert_eq!(FEATURE_DIGESTS.len(), FEATURE_REGISTRY.len() + 1);
+        assert_eq!(FEATURE_DIGESTS[0], NO_ACTIVE_FEATURE_HEAD);
+        for digest in FEATURE_DIGESTS.iter().copied() {
+            assert!(supports_feature_head(digest));
         }
     }
 
     #[test]
-    fn macro_generated_features_have_names_and_indexes() {
-        assert_eq!(
-            Feature::Tip1063FeatureRegistry.name(),
-            "tip-1063.feature-registry"
-        );
-        assert_eq!(Feature::Tip1063FeatureRegistry.index(), 1);
-        assert_eq!(FEATURE_REGISTRY, &[Feature::Tip1063FeatureRegistry]);
+    fn macro_generated_features_have_names_indexes_and_helpers() {
+        let feature = Feature::Tip1063FeatureRegistry;
+
+        assert_eq!(feature.name(), "tip-1063.feature-registry");
+        assert_eq!(feature.index(), 1);
+        assert_eq!(FEATURE_REGISTRY, &[feature]);
+        assert!(feature.supports(Feature::Tip1063FeatureRegistry));
+        assert!(feature.is_tip1063_active());
     }
 
     #[test]
-    fn feature_head_lookup_returns_typed_feature_head() {
-        let head = feature_head(Feature::Tip1063FeatureRegistry);
+    fn feature_digest_resolves_to_typed_feature() {
+        let head = Feature::Tip1063FeatureRegistry.digest();
         assert_eq!(head, highest_supported_feature_head());
         assert_eq!(
-            feature_head_index(head),
-            Some(Feature::Tip1063FeatureRegistry.index())
+            Feature::from_digest(head),
+            Some(Feature::Tip1063FeatureRegistry)
         );
     }
 
     #[test]
-    fn active_features_resolve_known_heads() {
-        let no_active =
-            ActiveFeatures::new(NO_ACTIVE_FEATURE_HEAD).expect("zero feature head is always known");
-        assert_eq!(no_active, ActiveFeatures::none());
-        assert!(!no_active.is_active(Feature::Tip1063FeatureRegistry));
-
-        let active = ActiveFeatures::new(feature_head(Feature::Tip1063FeatureRegistry))
-            .expect("typed feature head is known");
-        assert_eq!(active.head(), feature_head(Feature::Tip1063FeatureRegistry));
+    fn feature_from_digest_resolves_known_heads() {
+        assert_eq!(Feature::from_digest(NO_ACTIVE_FEATURE_HEAD), None);
         assert_eq!(
-            active.active_index(),
-            Feature::Tip1063FeatureRegistry.index()
+            Feature::from_digest(Feature::Tip1063FeatureRegistry.digest()),
+            Some(Feature::Tip1063FeatureRegistry)
         );
-        assert!(active.is_active(Feature::Tip1063FeatureRegistry));
     }
 
     #[test]
-    fn active_features_reject_unknown_head() {
+    fn feature_from_digest_returns_none_for_unknown_head() {
         let unknown = B256::repeat_byte(0xff);
-        assert_eq!(
-            ActiveFeatures::new(unknown),
-            Err(UnknownFeatureHead { head: unknown })
-        );
+        assert_eq!(Feature::from_digest(unknown), None);
+        assert!(!supports_feature_head(unknown));
     }
 }
