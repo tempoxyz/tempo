@@ -157,10 +157,6 @@ where
         }
     }
 
-    pub fn inner(&self) -> &I {
-        &self.inner
-    }
-
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {

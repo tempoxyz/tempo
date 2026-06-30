@@ -108,6 +108,7 @@ enum PayloadTransactions {
 }
 
 impl PayloadTransactions {
+    /// Returns the next transaction, if available.
     fn next(&mut self) -> Option<PrewarmedTransaction> {
         match self {
             Self::Sequential(txs) => txs.next().map(PrewarmedTransaction::without_replay),
@@ -116,6 +117,7 @@ impl PayloadTransactions {
         }
     }
 
+    /// Mark the transaction as invalid.
     fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
         match self {
             Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
@@ -124,20 +126,24 @@ impl PayloadTransactions {
         }
     }
 
+    /// Recycle storage actions for future reuse to avoid allocations.
     fn recycle_actions(&mut self, actions: Vec<StorageAction>) {
         match self {
-            Self::Sequential(_) => {}
-            Self::Prewarming(txs) => txs.inner().recycle_actions(actions),
+            Self::Sequential(_) | Self::Prewarming(_) => {}
             Self::Parallel(prewarming) => prewarming.recycle_actions(actions),
         }
     }
 
+    /// Recycle replay data for future reuse to avoid allocations.
     fn recycle_replay(&mut self, replay: Option<Box<StorageActionReplay>>) {
         if let Some(replay) = replay {
             self.recycle_actions(replay.actions);
         }
     }
 
+    /// Notify the iterator of a new result.
+    ///
+    /// Noop for [`Self::Parallel`], as it doesn't use the [`StateAwareBestTransactions`] iterator.
     fn on_new_result(&mut self, result: &TempoTxResult) {
         match self {
             Self::Sequential(txs) => txs.on_new_result(result),
