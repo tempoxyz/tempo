@@ -289,7 +289,7 @@ impl Decodable for MultisigSignature {
             config_id: Decodable::decode(&mut payload)?,
             signatures: Decodable::decode(&mut payload)?,
             init: if payload.is_empty() {
-                None
+                return Err(alloy_rlp::Error::InputTooShort);
             } else if payload[0] == EMPTY_STRING_CODE {
                 payload.advance(1);
                 None
