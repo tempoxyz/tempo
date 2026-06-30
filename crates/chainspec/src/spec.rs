@@ -1,8 +1,7 @@
-pub use crate::constants::gas::*;
+pub use tempo_hardfork::constants::gas::*;
 
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
-    hardfork::{TempoHardfork, TempoHardforks},
     network_identity::NetworkIdentity,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -10,6 +9,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
+use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
 use once_cell::sync::Lazy as LazyLock;
@@ -21,6 +21,7 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
+use tempo_hardfork::TempoHardfork;
 use tempo_primitives::TempoHeader;
 
 // End-of-block system transactions
@@ -33,7 +34,10 @@ pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 pub struct TempoGenesisInfo {
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
-    epoch_length: Option<u64>,
+    epoch_length: Option<NonZeroU64>,
+    /// Optional override for the general (non-payment) gas limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    general_gas_limit: Option<u64>,
     /// Activation timestamp for T0 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t0_time: Option<u64>,
@@ -82,27 +86,31 @@ impl TempoGenesisInfo {
             .unwrap_or_default()
     }
 
-    pub fn epoch_length(&self) -> Option<u64> {
+    pub fn epoch_length(&self) -> Option<NonZeroU64> {
         self.epoch_length
+    }
+
+    pub fn general_gas_limit(&self) -> Option<u64> {
+        self.general_gas_limit
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
     pub fn fork_time(&self, fork: TempoHardfork) -> Option<u64> {
-        match fork {
-            TempoHardfork::Genesis => Some(0),
-            TempoHardfork::T0 => self.t0_time,
-            TempoHardfork::T1 => self.t1_time,
-            TempoHardfork::T1A => self.t1a_time,
-            TempoHardfork::T1B => self.t1b_time,
-            TempoHardfork::T1C => self.t1c_time,
-            TempoHardfork::T2 => self.t2_time,
-            TempoHardfork::T3 => self.t3_time,
-            TempoHardfork::T4 => self.t4_time,
-            TempoHardfork::T5 => self.t5_time,
-            TempoHardfork::T6 => self.t6_time,
-            TempoHardfork::T7 => self.t7_time,
-            TempoHardfork::T8 => self.t8_time,
+        macro_rules! fork_time_match {
+            ($($variant:ident),* $(,)?) => {
+                paste::paste! {
+                    match fork {
+                        TempoHardfork::Genesis => Some(0),
+                        $(TempoHardfork::$variant => self.[<$variant:lower _time>],)*
+                        // Required because `TempoHardfork` is non-exhaustive across crates.
+                        // Missing `TempoGenesisInfo` fields fail via generated `self.<fork>_time`.
+                        _ => None,
+                    }
+                }
+            };
         }
+
+        tempo_hardfork::tempo_post_genesis_hardforks!(fork_time_match)
     }
 }
 
@@ -195,6 +203,22 @@ impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
+    }
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and block.
+    /// - Genesis override: fixed at the configured value
+    /// - T1+: fixed at 30M gas
+    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    pub fn general_gas_limit_at(
+        &self,
+        timestamp: u64,
+        gas_limit: u64,
+        shared_gas_limit: u64,
+    ) -> u64 {
+        self.info
+            .general_gas_limit()
+            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -392,6 +416,50 @@ impl EthExecutorSpec for TempoChainSpec {
     }
 }
 
+/// Generates the Tempo hardfork query trait for all post-Genesis hardforks.
+macro_rules! tempo_hardforks_trait {
+    ($($variant:ident),* $(,)?) => {
+        /// Trait for querying Tempo-specific hardfork activations.
+        pub trait TempoHardforks: EthereumHardforks {
+            /// Retrieves activation condition for a Tempo-specific hardfork.
+            fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
+
+            /// Retrieves the Tempo hardfork active at a given timestamp.
+            fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+                for &fork in TempoHardfork::VARIANTS.iter().rev() {
+                    if self
+                        .tempo_fork_activation(fork)
+                        .active_at_timestamp(timestamp)
+                    {
+                        return fork;
+                    }
+                }
+                TempoHardfork::Genesis
+            }
+
+            paste::paste! {
+                $(
+                    #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
+                    fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
+                        self.tempo_fork_activation(TempoHardfork::$variant)
+                            .active_at_timestamp(timestamp)
+                    }
+                )*
+            }
+
+            /// Returns the shared gas limit for the given timestamp and block.
+            /// - T4+: 0 gas
+            /// - Pre-T4: block_gas_limit / 10
+            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+                self.tempo_hardfork_at(timestamp)
+                    .shared_gas_limit(gas_limit)
+            }
+        }
+    };
+}
+
+tempo_hardfork::tempo_post_genesis_hardforks!(tempo_hardforks_trait);
+
 impl TempoHardforks for TempoChainSpec {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition {
         self.fork(fork)
@@ -401,8 +469,8 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::{
-        hardfork::{TempoHardfork, TempoHardforks},
-        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR},
+        TempoHardfork,
+        spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
@@ -563,6 +631,24 @@ mod tests {
         assert_eq!(chainspec.tempo_hardfork_at(0), latest);
         assert_eq!(chainspec.tempo_hardfork_at(1000), latest);
         assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), latest);
+    }
+
+    #[test]
+    fn test_general_gas_limit_at_uses_genesis_override() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "t1Time": 0,
+                "generalGasLimit": 123456789
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert_eq!(chainspec.info.general_gas_limit(), Some(123456789));
+        assert_eq!(chainspec.general_gas_limit_at(0, 500_000_000, 0), 123456789);
     }
 
     fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {
@@ -736,7 +822,15 @@ mod tests {
             // At and after T6 activation
             assert!(cs.is_t6_active_at_timestamp(1782223200));
             assert_eq!(cs.tempo_hardfork_at(1782223200), TempoHardfork::T6);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
+
+            // Before T7 activation (1783605600 = Jul 9th 2026 16:00 CEST)
+            assert!(!cs.is_t7_active_at_timestamp(1783605599));
+            assert_eq!(cs.tempo_hardfork_at(1783605599), TempoHardfork::T6);
+
+            // At and after T7 activation
+            assert!(cs.is_t7_active_at_timestamp(1783605600));
+            assert_eq!(cs.tempo_hardfork_at(1783605600), TempoHardfork::T7);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
         }
 
         #[test]
@@ -808,7 +902,15 @@ mod tests {
             // At and after T6 activation
             assert!(cs.is_t6_active_at_timestamp(1781791200));
             assert_eq!(cs.tempo_hardfork_at(1781791200), TempoHardfork::T6);
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T6);
+
+            // Before T7 activation (1783000800 = Jul 2nd 2026 16:00 CEST)
+            assert!(!cs.is_t7_active_at_timestamp(1783000799));
+            assert_eq!(cs.tempo_hardfork_at(1783000799), TempoHardfork::T6);
+
+            // At and after T7 activation
+            assert!(cs.is_t7_active_at_timestamp(1783000800));
+            assert_eq!(cs.tempo_hardfork_at(1783000800), TempoHardfork::T7);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
         }
 
         #[test]

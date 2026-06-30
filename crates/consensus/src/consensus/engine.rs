@@ -19,7 +19,7 @@ use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
 };
-use commonware_utils::{NZU64, NZUsize};
+use commonware_utils::NZUsize;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand_08::{CryptoRng, Rng};
@@ -125,7 +125,7 @@ where
             .epoch_length()
             .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_strategy = FixedEpocher::new(epoch_length);
 
         info!(
             identity = %self.signer.public_key(),

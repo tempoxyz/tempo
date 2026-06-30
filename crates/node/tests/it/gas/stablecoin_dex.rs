@@ -6,17 +6,28 @@ use alloy::{
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinDEX,
+    IRolesAuth, IStablecoinDEX, IStorageCredits,
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_FACTORY_ADDRESS,
     stablecoin_dex::MIN_ORDER_AMOUNT, tip20::ISSUER_ROLE,
 };
+use test_case::test_case;
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, await_receipts, make_genesis_at};
+
+const USER_COUNT: usize = 14;
+
+#[derive(Debug, serde::Serialize)]
+struct DexGasRow {
+    gas: u64,
+    storage_credits: String,
+    pooled_storage_credits: String,
+}
 
 fn signer(index: u32) -> eyre::Result<PrivateKeySigner> {
     Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
@@ -83,141 +94,354 @@ where
     Ok(token)
 }
 
+#[test_case(TempoHardfork::T6 ; "t6_without_tip1060")]
+#[test_case(TempoHardfork::T7 ; "t7_with_tip1060")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_stablecoin_dex_order_gas_snapshots() -> eyre::Result<()> {
+async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
-    let admin = signer(0)?;
-    let alice = signer(1)?;
-    let bob = signer(2)?;
-    let carol = signer(3)?;
-    let dave = signer(4)?;
+    let signers = (0..=USER_COUNT as u32)
+        .map(signer)
+        .collect::<eyre::Result<Vec<_>>>()?;
+    let providers = signers
+        .iter()
+        .map(|signer| {
+            ProviderBuilder::new()
+                .wallet(signer.clone())
+                .connect_http(http_url.clone())
+        })
+        .collect::<Vec<_>>();
 
-    let admin_provider = ProviderBuilder::new()
-        .wallet(admin.clone())
-        .connect_http(http_url.clone());
-    let alice_provider = ProviderBuilder::new()
-        .wallet(alice.clone())
-        .connect_http(http_url.clone());
-    let bob_provider = ProviderBuilder::new()
-        .wallet(bob.clone())
-        .connect_http(http_url.clone());
-    let carol_provider = ProviderBuilder::new()
-        .wallet(carol.clone())
-        .connect_http(http_url.clone());
-    let dave_provider = ProviderBuilder::new()
-        .wallet(dave.clone())
-        .connect_http(http_url);
+    let admin_provider = providers[0].clone();
+    let admin = signers[0].address();
 
-    let base = setup_deterministic_test_token(admin_provider.clone(), admin.address()).await?;
+    let base = setup_deterministic_test_token(admin_provider.clone(), admin).await?;
     let quote = ITIP20Instance::new(PATH_USD_ADDRESS, admin_provider.clone());
     let base_addr = *base.address();
     let quote_addr = *quote.address();
 
-    let mint_amount = U256::from(10_000_000_000u128);
+    let mint_amount = U256::from(MIN_ORDER_AMOUNT * 1_000);
     let mut pending = vec![];
-    for account in [
-        alice.address(),
-        bob.address(),
-        carol.address(),
-        dave.address(),
-    ] {
+    for account in signers.iter().skip(1).map(|signer| signer.address()) {
         pending.push(base.mint(account, mint_amount).send().await?);
         pending.push(quote.mint(account, mint_amount).send().await?);
     }
     await_receipts(&mut pending).await?;
 
-    for provider in [
-        alice_provider.clone(),
-        bob_provider.clone(),
-        carol_provider.clone(),
-        dave_provider.clone(),
-    ] {
+    for provider in providers.iter().skip(1) {
         approve(provider.clone(), base_addr, STABLECOIN_DEX_ADDRESS).await?;
-        approve(provider, quote_addr, STABLECOIN_DEX_ADDRESS).await?;
+        approve(provider.clone(), quote_addr, STABLECOIN_DEX_ADDRESS).await?;
     }
 
-    let admin_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, admin_provider);
-    let receipt = admin_exchange
-        .createPair(base_addr)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "createPair failed");
-
-    let alice_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, alice_provider);
-    let bob_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, bob_provider);
-    let carol_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, carol_provider);
-    let dave_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, dave_provider);
-
-    let amount = MIN_ORDER_AMOUNT * 4;
+    let exchange =
+        |index: usize| IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, providers[index].clone());
+    let tip1060_credits =
+        |index: usize| IStorageCredits::new(STORAGE_CREDITS_ADDRESS, providers[index].clone());
     let mut gas = BTreeMap::new();
 
-    let receipt = alice_exchange
-        .place(base_addr, amount, true, 0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "place bid failed");
-    gas.insert("place_bid_empty_level", receipt.gas_used);
-
-    let receipt = bob_exchange
-        .place(base_addr, amount, true, 0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "place bid tail failed");
-    gas.insert("place_bid_append_same_level", receipt.gas_used);
-
-    let receipt = alice_exchange
-        .placeFlip(base_addr, amount, false, 10, 0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "place flip ask failed");
-    gas.insert("place_flip_ask_empty_level", receipt.gas_used);
-
-    let receipt = bob_exchange.cancel(2).send().await?.get_receipt().await?;
-    assert!(receipt.status(), "cancel failed");
-    gas.insert("cancel_tail_bid_order", receipt.gas_used);
-
-    let partial_fill = amount / 2;
-    let quote_out = alice_exchange
-        .quoteSwapExactAmountIn(base_addr, quote_addr, partial_fill)
-        .call()
-        .await?;
-    assert!(quote_out > 0);
-    let receipt = carol_exchange
-        .swapExactAmountIn(base_addr, quote_addr, partial_fill, 0)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "partial swapExactAmountIn failed");
-    gas.insert("swap_exact_in_partial_bid_fill", receipt.gas_used);
-
-    let receipt = dave_exchange
-        .swapExactAmountOut(quote_addr, base_addr, amount, u128::MAX)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(receipt.status(), "full flip swapExactAmountOut failed");
-    gas.insert("swap_exact_out_full_flip_ask_fill", receipt.gas_used);
-
-    eprintln!("\nStablecoinDEX order gas snapshot:");
-    for (name, gas_used) in &gas {
-        eprintln!("{name}: {gas_used}");
+    macro_rules! credits {
+        ($index:expr) => {{
+            if hardfork.is_t7() {
+                exchange($index)
+                    .storageCredits(signers[$index].address())
+                    .call()
+                    .await?
+            } else {
+                0
+            }
+        }};
     }
 
-    insta::assert_yaml_snapshot!(gas);
+    macro_rules! pooled_credits {
+        () => {{
+            if hardfork.is_t7() {
+                tip1060_credits(0)
+                    .balanceOf(STABLECOIN_DEX_ADDRESS)
+                    .call()
+                    .await?
+            } else {
+                0
+            }
+        }};
+    }
+
+    macro_rules! record_tx {
+        ($name:literal, $call:expr, $message:literal) => {{
+            let pooled_before = pooled_credits!();
+            let receipt = $call.send().await?.get_receipt().await?;
+            assert!(receipt.status(), $message);
+            let pooled_after = pooled_credits!();
+            gas.insert(
+                $name,
+                DexGasRow {
+                    gas: receipt.gas_used,
+                    storage_credits: "n/a".to_string(),
+                    pooled_storage_credits: format!(
+                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            receipt
+        }};
+    }
+
+    macro_rules! record_tx_with_credits {
+        ($name:literal, $credit_user:expr, $call:expr, $message:literal) => {{
+            let before = credits!($credit_user);
+            let pooled_before = pooled_credits!();
+            let receipt = $call.send().await?.get_receipt().await?;
+            assert!(receipt.status(), $message);
+            let after = credits!($credit_user);
+            let pooled_after = pooled_credits!();
+            gas.insert(
+                $name,
+                DexGasRow {
+                    gas: receipt.gas_used,
+                    storage_credits: format!("user{}: {before} -> {after}", $credit_user),
+                    pooled_storage_credits: format!(
+                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            receipt
+        }};
+    }
+
+    macro_rules! record_tx_with_cross_user_credits {
+        ($name:literal, $credit_user:expr, $owner:expr, $call:expr, $message:literal) => {{
+            let before = credits!($credit_user);
+            let owner_before = credits!($owner);
+            let pooled_before = pooled_credits!();
+            let receipt = $call.send().await?.get_receipt().await?;
+            assert!(receipt.status(), $message);
+            let after = credits!($credit_user);
+            let owner_after = credits!($owner);
+            let pooled_after = pooled_credits!();
+            gas.insert(
+                $name,
+                DexGasRow {
+                    gas: receipt.gas_used,
+                    storage_credits: format!(
+                        "user{}: {before} -> {after}; user{}: {owner_before} -> {owner_after}",
+                        $credit_user, $owner
+                    ),
+                    pooled_storage_credits: format!(
+                        "DEX TIP-1060: {pooled_before} -> {pooled_after}"
+                    ),
+                },
+            );
+            receipt
+        }};
+    }
+
+    macro_rules! send_tx {
+        ($call:expr, $message:literal) => {{
+            let receipt = $call.send().await?.get_receipt().await?;
+            assert!(receipt.status(), $message);
+            receipt
+        }};
+    }
+
+    let amount = MIN_ORDER_AMOUNT * 4;
+    let fill = MIN_ORDER_AMOUNT;
+
+    record_tx!(
+        "create_pair",
+        exchange(0).createPair(base_addr),
+        "createPair failed"
+    );
+
+    let cancel_order = exchange(1).nextOrderId().call().await?;
+    record_tx_with_credits!(
+        "place_bid_wallet",
+        1,
+        exchange(1).place(base_addr, amount, true, 0),
+        "place bid failed"
+    );
+    record_tx_with_credits!(
+        "cancel_bid_earn_credits",
+        1,
+        exchange(1).cancel(cancel_order),
+        "cancel bid failed"
+    );
+    record_tx_with_credits!(
+        "place_bid_reuse_cancel_credits",
+        1,
+        exchange(1).place(base_addr, fill, true, -60),
+        "place bid reusing cancel credits failed"
+    );
+
+    let cross_user_cancel_order = exchange(6).nextOrderId().call().await?;
+    send_tx!(
+        exchange(6).place(base_addr, fill, true, -10),
+        "setup cross-user cancel credit bid failed"
+    );
+    send_tx!(
+        exchange(6).cancel(cross_user_cancel_order),
+        "setup cross-user cancel credits failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "place_bid_cross_user_after_cancel_credits",
+        7,
+        6,
+        exchange(7).place(base_addr, fill, true, -70),
+        "place bid after another user cancelled failed"
+    );
+
+    record_tx_with_credits!(
+        "place_ask_wallet",
+        2,
+        exchange(2).place(base_addr, amount, false, 100),
+        "place ask failed"
+    );
+    record_tx_with_credits!(
+        "swap_exact_in_partial_ask_no_credits",
+        2,
+        exchange(8).swapExactAmountIn(quote_addr, base_addr, fill, 0),
+        "partial ask exact-in swap failed"
+    );
+    let quote_balance = exchange(2)
+        .balanceOf(signers[2].address(), quote_addr)
+        .call()
+        .await?;
+    assert!(quote_balance > 0, "expected quote internal balance");
+    record_tx_with_credits!(
+        "withdraw_internal_balance",
+        2,
+        exchange(2).withdraw(quote_addr, quote_balance),
+        "withdraw quote balance failed"
+    );
+
+    send_tx!(
+        exchange(3).place(base_addr, fill, false, 90),
+        "setup full ask exact-in failed"
+    );
+    let quote_for_full_ask = exchange(8)
+        .quoteSwapExactAmountOut(quote_addr, base_addr, fill)
+        .call()
+        .await?;
+    record_tx_with_credits!(
+        "swap_exact_in_full_ask_earn_credits",
+        3,
+        exchange(8).swapExactAmountIn(quote_addr, base_addr, quote_for_full_ask, 0),
+        "full ask exact-in swap failed"
+    );
+    record_tx_with_credits!(
+        "place_bid_reuse_swap_credits",
+        3,
+        exchange(3).place(base_addr, fill, true, -40),
+        "place bid reusing swap credits failed"
+    );
+
+    send_tx!(
+        exchange(4).place(base_addr, fill, false, 80),
+        "setup full ask exact-out failed"
+    );
+    record_tx_with_credits!(
+        "swap_exact_out_full_ask_earn_credits",
+        4,
+        exchange(8).swapExactAmountOut(quote_addr, base_addr, fill, u128::MAX),
+        "full ask exact-out swap failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "place_bid_cross_user_after_fill_credits",
+        7,
+        4,
+        exchange(7).place(base_addr, fill, true, -80),
+        "place bid after another user's order filled failed"
+    );
+
+    record_tx_with_credits!(
+        "place_flip_bid_wallet",
+        5,
+        exchange(5).placeFlip(base_addr, fill, true, 20, 30),
+        "place flip bid failed"
+    );
+    record_tx_with_credits!(
+        "swap_exact_in_full_flip_bid",
+        5,
+        exchange(8).swapExactAmountIn(base_addr, quote_addr, fill, 0),
+        "full flip bid exact-in swap failed"
+    );
+
+    send_tx!(
+        exchange(9).place(base_addr, fill, true, -90),
+        "setup predecessor bid for tail cancel failed"
+    );
+    let tail_cancel_order = exchange(10).nextOrderId().call().await?;
+    send_tx!(
+        exchange(10).place(base_addr, fill, true, -90),
+        "setup tail bid cancel failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "cancel_tail_bid_credits_predecessor_next",
+        10,
+        9,
+        exchange(10).cancel(tail_cancel_order),
+        "tail bid cancel failed"
+    );
+    record_tx_with_credits!(
+        "place_bid_reuse_predecessor_next_credit",
+        9,
+        exchange(9).place(base_addr, fill, true, -100),
+        "place bid reusing predecessor next credit failed"
+    );
+
+    send_tx!(
+        exchange(13).place(base_addr, fill, true, 120),
+        "setup head bid for successor-prev fill failed"
+    );
+    send_tx!(
+        exchange(14).place(base_addr, fill, true, 120),
+        "setup successor bid for successor-prev fill failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "swap_exact_in_full_head_bid_tracks_successor_prev",
+        13,
+        14,
+        exchange(8).swapExactAmountIn(base_addr, quote_addr, fill, 0),
+        "full head bid exact-in swap failed"
+    );
+
+    let head_cancel_order = exchange(11).nextOrderId().call().await?;
+    send_tx!(
+        exchange(11).place(base_addr, fill, true, 110),
+        "setup head bid for successor-prev cancel failed"
+    );
+    send_tx!(
+        exchange(12).place(base_addr, fill, true, 110),
+        "setup successor bid for successor-prev cancel failed"
+    );
+    record_tx_with_cross_user_credits!(
+        "cancel_head_bid_tracks_successor_prev",
+        11,
+        12,
+        exchange(11).cancel(head_cancel_order),
+        "head bid cancel failed"
+    );
+
+    eprintln!(
+        "\nStablecoinDEX {} lifecycle gas snapshot:",
+        hardfork.name()
+    );
+    for (name, row) in &gas {
+        eprintln!(
+            "{name}: {} ({}, {})",
+            row.gas, row.storage_credits, row.pooled_storage_credits
+        );
+    }
+
+    let snapshot_name = format!(
+        "stablecoin_dex_lifecycle_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }

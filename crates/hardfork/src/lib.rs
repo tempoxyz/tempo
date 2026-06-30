@@ -1,27 +1,37 @@
-//! Tempo-specific hardfork definitions and traits.
+//! Tempo-specific hardfork definitions, activation schedules, and protocol constants.
 //!
-//! This module provides the infrastructure for managing hardfork transitions in Tempo.
+//! This crate is the lightweight source of truth for Tempo hardfork identifiers. It intentionally
+//! does not depend on `tempo-chainspec` or Reth, so SDK crates can use [`TempoHardfork`] without
+//! pulling in chain-spec/node integration.
 //!
 //! ## Adding a New Hardfork
 //!
 //! When a new hardfork is needed (e.g., `Vivace`):
 //!
-//! ### In `hardfork.rs`:
+//! ### In `tempo-hardfork`
 //! 1. Append a `Vivace` variant to `tempo_hardfork!` — automatically:
 //!    * defines the enum variant via [`hardfork!`]
-//!    * implements trait `TempoHardforks` by adding `is_vivace()`, `is_vivace_active_at_timestamp()`,
-//!      and updating `tempo_hardfork_at()`
-//!    * adds tests for each of the `TempoHardfork` methods
-//! 2. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum `SpecId`
+//!    * adds the variant to [`TempoHardfork::VARIANTS`]
+//!    * generates the `is_vivace()` inherent helper
+//!    * exports the variant through [`tempo_post_genesis_hardforks!`] for downstream generated APIs
+//!    * adds tests for the generated hardfork helpers
+//! 2. Update activation schedule methods/constants for the new fork.
+//! 3. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum
+//!    `SpecId`.
 //!
-//! ### In `spec.rs`:
-//! 3. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
-//! 4. Add `TempoHardfork::Vivace => self.vivace_time` arm to `TempoGenesisInfo::fork_time()`
+//! ### In `tempo-chainspec`
+//! 4. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo` if the fork is configurable in
+//!    genesis. `fork_time()` is generated through [`tempo_post_genesis_hardforks!`], so missing
+//!    fields for new hardfork variants fail at compile time.
 //!
-//! ### In genesis files and generator:
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
-//! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
+//! ### In genesis files and generator
+//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
+//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
+//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+pub mod constants;
 
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
@@ -39,7 +49,7 @@ use alloy_hardforks::hardfork;
 ///   - `tempo_fork_activation()` (required — the only method implementors provide)
 ///   - `tempo_hardfork_at()` — walks `VARIANTS` in reverse to find the latest active fork
 ///   - `is_<fork>_active_at_timestamp()` — per-fork convenience helpers
-///   - `general_gas_limit_at()` — gas limit lookup by timestamp
+///   - `shared_gas_limit_at()` — shared gas limit lookup by timestamp
 /// * Generates a `#[cfg(test)] mod tests` with activation, naming, trait, and serde tests
 ///
 /// `Genesis` (first variant) is treated as the baseline and does not get `is_*()` methods.
@@ -73,55 +83,22 @@ macro_rules! tempo_hardfork {
             }
         }
 
-        /// Trait for querying Tempo-specific hardfork activations.
-        #[cfg(feature = "reth")]
-        pub trait TempoHardforks: reth_chainspec::EthereumHardforks {
-            /// Retrieves activation condition for a Tempo-specific hardfork.
-            fn tempo_fork_activation(&self, fork: TempoHardfork) -> reth_chainspec::ForkCondition;
-
-            /// Retrieves the Tempo hardfork active at a given timestamp.
-            fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-                for &fork in TempoHardfork::VARIANTS.iter().rev() {
-                    if self.tempo_fork_activation(fork).active_at_timestamp(timestamp) {
-                        return fork;
-                    }
-                }
-                TempoHardfork::Genesis
-            }
-
-            paste::paste! {
-                $(
-                    #[doc = concat!("Returns true if ", stringify!($variant), " is active at the given timestamp.")]
-                    fn [<is_ $variant:lower _active_at_timestamp>](&self, timestamp: u64) -> bool {
-                        self.tempo_fork_activation(TempoHardfork::$variant)
-                            .active_at_timestamp(timestamp)
-                    }
-                )*
-            }
-
-            /// Returns the general (non-payment) gas limit for the given timestamp and block.
-            /// - T1+: fixed at 30M gas
-            /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
-            fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
-                self.tempo_hardfork_at(timestamp)
-                    .general_gas_limit()
-                    .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
-            }
-
-            /// Returns the shared gas limit for the given timestamp and block.
-            /// - T4+: 0 gas
-            /// - Pre-T4: block_gas_limit / 10
-            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-                self.tempo_hardfork_at(timestamp)
-                    .shared_gas_limit(gas_limit)
-            }
+        /// Invokes the given macro with all post-Genesis Tempo hardfork variants.
+        ///
+        /// This lets downstream crates generate per-hardfork APIs from the same variant list as
+        /// [`TempoHardfork`] without depending on Tempo's chainspec implementation.
+        #[macro_export]
+        macro_rules! tempo_post_genesis_hardforks {
+            ($callback:ident) => {
+                $callback!($($variant),*);
+            };
         }
 
-        #[cfg(all(test, feature = "reth"))]
+        #[cfg(test)]
         mod tests {
             use super::*;
             use TempoHardfork::*;
-            use reth_chainspec::Hardfork;
+            use alloy_hardforks::Hardfork;
 
             #[test]
             fn test_hardfork_name() {
@@ -189,34 +166,46 @@ tempo_hardfork! (
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// Genesis hardfork
+        /// Genesis hardfork.
         Genesis,
         #[default]
-        /// T0 hardfork (default until T1 activates on mainnet)
+        /// T0 hardfork.
         T0,
-        /// T1 hardfork - adds expiring nonce transactions
+        /// T1 hardfork.
         T1,
-        /// T1.A hardfork - removes EIP-7825 per-transaction gas limit
+        /// T1.A hardfork.
         T1A,
-        /// T1.B hardfork
+        /// T1.B hardfork.
         T1B,
-        /// T1.C hardfork
+        /// T1.C hardfork.
         T1C,
-        /// T2 hardfork - adds compound transfer policies ([TIP-1015])
+        /// T2 hardfork.
         ///
-        /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t2>.
         T2,
-        /// T3 hardfork
+        /// T3 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t3>.
         T3,
-        /// T4 hardfork
+        /// T4 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t4>.
         T4,
-        /// T5 hardfork
+        /// T5 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t5>.
         T5,
-        /// T6 hardfork
+        /// T6 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t6>.
         T6,
-        /// T7 hardfork
+        /// T7 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t7>.
         T7,
-        /// T8 hardfork
+        /// T8 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t8>.
         T8,
     }
 );
@@ -349,7 +338,7 @@ impl TempoHardfork {
             Self::T4 => Some(MAINNET_T4_TIMESTAMP),
             Self::T5 => Some(MAINNET_T5_TIMESTAMP),
             Self::T6 => Some(MAINNET_T6_TIMESTAMP),
-            Self::T7 => None,
+            Self::T7 => Some(MAINNET_T7_TIMESTAMP),
             Self::T8 => None,
         }
     }
@@ -389,7 +378,7 @@ impl TempoHardfork {
             Self::T4 => Some(MODERATO_T4_TIMESTAMP),
             Self::T5 => Some(MODERATO_T5_TIMESTAMP),
             Self::T6 => Some(MODERATO_T6_TIMESTAMP),
-            Self::T7 => None,
+            Self::T7 => Some(MODERATO_T7_TIMESTAMP),
             Self::T8 => None,
         }
     }

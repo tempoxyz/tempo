@@ -15,7 +15,7 @@ pub mod follow;
 pub mod metrics;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
-pub(crate) mod storage;
+pub mod storage;
 pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
@@ -26,7 +26,6 @@ use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
-use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -40,7 +39,6 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PositiveDuration};
-pub use storage::find_last_finalized_marker;
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
@@ -196,7 +194,8 @@ pub async fn run_follow_stack(
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.with_label("upstream"),
         crate::follow::upstream::Config { upstream_url },
-    );
+    )
+    .wrap_err("failed to initialize client to upstream node")?;
 
     let config = follow::Config {
         execution_node,
@@ -205,7 +204,7 @@ pub async fn run_follow_stack(
         upstream_mailbox,
         network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
-        epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
+        epoch_strategy: FixedEpocher::new(epoch_length),
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,

@@ -1,12 +1,11 @@
 //! ABI dispatch for the storage credits precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, mutate_void, storage_credits::StorageCredits,
-    view,
+    Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IStorageCredits::IStorageCreditsCalls;
+use tempo_contracts::precompiles::IStorageCredits;
 
 impl Precompile for StorageCredits {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -14,27 +13,21 @@ impl Precompile for StorageCredits {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[],
-            IStorageCreditsCalls::abi_decode,
             |call| match call {
-                IStorageCreditsCalls::balanceOf(call) => view(call, |c| self.balance_of(c.account)),
-                IStorageCreditsCalls::modeOf(call) => {
-                    view(call, |c| self.mode_of(c.account).map(Into::into))
-                }
-                IStorageCreditsCalls::budgetOf(call) => view(call, |c| self.budget_of(c.account)),
-                IStorageCreditsCalls::setMode(call) => {
-                    mutate_void(call, msg_sender, |sender, c| {
+                IStorageCredits::IStorageCreditsCalls {
+                    balanceOf(call) => view(call, |c| self.balance_of(c.account)),
+                    modeOf(call) => view(call, |c| self.mode_of(c.account).map(Into::into)),
+                    budgetOf(call) => view(call, |c| self.budget_of(c.account)),
+                    setMode(call) => mutate_void(call, msg_sender, |sender, c| {
                         self.set_mode(sender, c.newMode)
+                    }),
+                    setBudget(call) => mutate_void(call, msg_sender, |sender, c| {
+                        self.set_budget(sender, c.credits)
                     })
                 }
-                IStorageCreditsCalls::setBudget(call) => {
-                    mutate_void(call, msg_sender, |sender, c| {
-                        self.set_budget(sender, c.creditBudget)
-                    })
-                }
-            },
+            }
         )
     }
 }
@@ -46,8 +39,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::SolCall;
-    use tempo_contracts::precompiles::{IStorageCredits, StorageCreditsError};
+    use alloy::sol_types::{SolCall, SolInterface};
+    use tempo_contracts::precompiles::{
+        IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
+    };
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
@@ -75,7 +70,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut storage_credits_precompile = StorageCredits::new();
 
-            let set_budget = IStorageCredits::setBudgetCall { creditBudget: 7 };
+            let set_budget = IStorageCredits::setBudgetCall { credits: 7 };
             let output = storage_credits_precompile.call(&set_budget.abi_encode(), caller)?;
             assert!(!output.is_revert());
 
@@ -97,7 +92,7 @@ mod tests {
                 7
             );
 
-            let zero_budget = IStorageCredits::setBudgetCall { creditBudget: 0 };
+            let zero_budget = IStorageCredits::setBudgetCall { credits: 0 };
             let output = storage_credits_precompile.call(&zero_budget.abi_encode(), caller)?;
             assert!(!output.is_revert());
 

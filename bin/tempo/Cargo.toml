@@ -19,7 +19,10 @@ workspace = true
 
 [dependencies]
 base64.workspace = true
+blake3.workspace = true
+tar.workspace = true
 url.workspace = true
+zstd.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
@@ -43,6 +46,7 @@ alloy = { workspace = true, default-features = false, features = [
 	"reqwest-rustls-tls",
 ] }
 alloy-consensus.workspace = true
+alloy-genesis.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = [
@@ -90,6 +94,7 @@ reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
+reth-prune-types.workspace = true
 reth-rpc-server-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
@@ -97,18 +102,16 @@ reth-trie.workspace = true
 reth-trie-db.workspace = true
 clap.workspace = true
 eyre.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
+tempfile.workspace = true
 opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [[bin]]
 name = "tempo"

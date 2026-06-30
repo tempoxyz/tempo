@@ -23,7 +23,7 @@ use crate::{
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction as _, TxLegacy, TxReceipt};
 use alloy_eip7928::bal::Bal;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
@@ -96,6 +96,7 @@ pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
     executor: TaskExecutor,
+    config: TempoPayloadBuilderConfig,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
@@ -109,12 +110,6 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
-    /// Whether the node is configured in `--dev` miner mode.
-    is_dev: bool,
-    /// Whether to enable state provider metrics.
-    state_provider_metrics: bool,
-    /// Whether to enable prewarming of best transactions.
-    enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
@@ -127,12 +122,18 @@ pub struct TempoPayloadBuilder<Provider> {
 /// Runtime settings for the Tempo payload builder.
 #[derive(Debug, Clone, Copy)]
 pub struct TempoPayloadBuilderConfig {
+    /// Desired gas limit.
+    ///
+    /// If not set, the parent gas limit is used.
+    pub desired_gas_limit: Option<u64>,
     /// Whether the node is configured in `--dev` miner mode.
     pub is_dev: bool,
     /// Whether to enable state provider metrics.
     pub state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     pub enable_prewarming: bool,
+    /// Whether payload builds should skip state-root computation.
+    pub skip_state_root: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
@@ -141,14 +142,22 @@ pub struct TempoPayloadBuilderConfig {
     pub build_time_multiplier: f64,
 }
 
-impl Default for TempoPayloadBuilderConfig {
-    fn default() -> Self {
-        Self {
-            is_dev: false,
-            state_provider_metrics: false,
-            enable_prewarming: true,
-            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-        }
+impl TempoPayloadBuilderConfig {
+    /// Returns the gas limit for the next block based on the parent gas limit and an optional
+    /// target from payload attributes.
+    ///
+    /// If [`TempoPayloadBuilderConfig::desired_gas_limit`] is [`None`], the parent gas limit is used.
+    pub fn gas_limit_with_target(
+        &self,
+        parent_gas_limit: u64,
+        target_gas_limit: Option<u64>,
+    ) -> u64 {
+        calculate_block_gas_limit(
+            parent_gas_limit,
+            target_gas_limit
+                .or(self.desired_gas_limit)
+                .unwrap_or(parent_gas_limit),
+        )
     }
 }
 
@@ -164,13 +173,11 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             pool,
             provider,
             executor,
+            config,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
-            is_dev: config.is_dev,
-            state_provider_metrics: config.state_provider_metrics,
-            enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
@@ -333,7 +340,7 @@ where
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
-            && !self.is_dev;
+            && !self.config.is_dev;
 
         macro_rules! check_cancel {
             () => {
@@ -362,7 +369,7 @@ where
                 Some(self.cache_metrics.clone()),
             ));
         }
-        if self.state_provider_metrics {
+        if self.config.state_provider_metrics {
             state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
         }
 
@@ -384,7 +391,9 @@ where
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp);
 
-        let block_gas_limit: u64 = parent_header.gas_limit();
+        let block_gas_limit = self
+            .config
+            .gas_limit_with_target(parent_header.gas_limit(), attributes.target_gas_limit);
         let shared_gas_limit =
             chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
@@ -408,6 +417,7 @@ where
             + NON_TRANSACTION_SIZE_ESTIMATE
             + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
+        let mut reverted_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut total_fees = U256::ZERO;
@@ -548,7 +558,7 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+        let mut best_txs = StateAwareBestTransactions::new(if self.config.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
@@ -757,10 +767,11 @@ where
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+            let receipt = executor.receipts().last().unwrap().clone();
+            if !receipt.success {
+                reverted_transactions += 1;
+            }
+            let _ = roots_tx.send((BuilderTx::Pooled(pool_tx), receipt));
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -835,10 +846,11 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                let _ = roots_tx.send((
-                    BuilderTx::Owned(Box::new(tx)),
-                    executor.receipts().last().unwrap().clone(),
-                ));
+                let receipt = executor.receipts().last().unwrap().clone();
+                if !receipt.success {
+                    reverted_transactions += 1;
+                }
+                let _ = roots_tx.send((BuilderTx::Owned(Box::new(tx)), receipt));
             }
 
             self.metrics
@@ -930,7 +942,15 @@ where
         };
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
+            if self.config.skip_state_root {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    state_root = ?parent_header.state_root(),
+                    "skipping payload state-root computation"
+                );
+                None
+            } else if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
                 match handle.state_root() {
@@ -969,7 +989,9 @@ where
             (None, None)
         };
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
+        let (state_root, trie_updates) = if self.config.skip_state_root {
+            (parent_header.state_root(), Arc::new(Default::default()))
+        } else if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
             let (state_root, trie_updates) = finish_provider
@@ -1026,6 +1048,12 @@ where
         self.metrics
             .total_transactions_last
             .set(total_transactions as f64);
+        self.metrics
+            .reverted_transactions
+            .record(reverted_transactions as f64);
+        self.metrics
+            .reverted_transactions_last
+            .set(reverted_transactions as f64);
 
         let gas_used = block.gas_used();
         self.metrics.gas_used.record(gas_used as f64);

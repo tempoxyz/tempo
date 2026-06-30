@@ -50,6 +50,7 @@ static INTERFACE_SPECS: &[InterfaceSpec] = &[
     interface_spec!(IRolesAuth).with_name("ITIP20RolesAuth"),
     interface_spec!(ITIP403Registry),
     interface_spec!(IReceivePolicyGuard),
+    interface_spec!(IStorageCredits),
     interface_spec!(ITIPFeeAMM).with_name("IFeeAMM"),
     interface_spec!(IFeeManager).inherits(&["IFeeAMM"]),
     interface_spec!(IStablecoinDEX),

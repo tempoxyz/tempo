@@ -1,9 +1,8 @@
 //! This module defines consensus archive formats.
 //!
-//! Finalized blocks are stored in a [`Hybrid`] store which
-//! merges a prunable archive (holding the most recently finalized blocks) with
-//! a lookup into the execution layer (used for blocks below the prunable
-//! retention window).
+//! Finalized blocks are stored in a Hybrid store which merges a prunable
+//! archive (holding the most recently finalized blocks) with a lookup into the
+//! execution layer (used for blocks below the prunable retention window).
 
 use std::time::Instant;
 
@@ -28,6 +27,7 @@ use crate::{
 };
 
 pub(crate) mod hybrid;
+pub mod snapshot;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 

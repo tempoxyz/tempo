@@ -683,7 +683,7 @@ mod tests {
         use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let parent_ts = current_timestamp_millis() - 1;
+        let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(parent_ts)
@@ -712,7 +712,7 @@ mod tests {
         use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let parent_ts = current_timestamp_millis();
+        let parent_ts = TempoHardfork::T6.moderato_activation_timestamp().unwrap();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(parent_ts)

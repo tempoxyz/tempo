@@ -26,7 +26,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::{NZU64, ordered};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
@@ -1113,7 +1113,7 @@ impl ValidatorInfo {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
             .containing(current_height)
@@ -1250,7 +1250,7 @@ impl Info {
             .await
             .wrap_err("failed to get latest block number")?;
 
-        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        let epoch_strategy = FixedEpocher::new(epoch_length);
         let current_height = Height::new(latest_block_number);
         let current_epoch_info = epoch_strategy
             .containing(current_height)
@@ -1376,7 +1376,7 @@ impl Info {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
-            epoch_length,
+            epoch_length: epoch_length.get(),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch,
         };

@@ -4,15 +4,14 @@ use alloy::{
 };
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{
-        Block, CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint,
-    },
+    context::{CfgEnv, ContextTr, JournalTr, Transaction, journaled_state::JournalCheckpoint},
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
 use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 use crate::{
     Precompile,
@@ -124,17 +123,27 @@ impl StorageCtx {
 
     /// Returns the current block timestamp.
     pub fn timestamp(&self) -> U256 {
-        Self::with_storage(|s| s.timestamp())
+        self.with_block_env(|block_env| block_env.timestamp)
     }
 
     /// Returns the current block beneficiary (coinbase).
     pub fn beneficiary(&self) -> Address {
-        Self::with_storage(|s| s.beneficiary())
+        self.with_block_env(|block_env| block_env.beneficiary)
     }
 
     /// Returns the current block number.
     pub fn block_number(&self) -> u64 {
-        Self::with_storage(|s| s.block_number())
+        self.with_block_env(|block_env| block_env.number.saturating_to::<u64>())
+    }
+
+    /// Executes a closure with access to the current Tempo block environment.
+    pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
+        Self::with_storage(|s| f(s.block_env()))
+    }
+
+    /// Returns the epoch containing `height`.
+    pub fn epoch(&self, height: u64) -> u64 {
+        self.with_block_env(|block_env| block_env.epoch(height))
     }
 
     /// Sets the bytecode at the given address.
@@ -210,6 +219,11 @@ impl StorageCtx {
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
+    }
+
+    /// Returns the shared storage-actions recorder for the current storage context.
+    pub fn actions(&self) -> StorageActions {
+        Self::with_storage(|s| s.storage_actions())
     }
 
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
@@ -352,7 +366,7 @@ impl<'evm> StorageCtx {
     /// Sets up the storage provider and executes a closure within that context.
     pub fn enter_evm<J, R>(
         journal: &'evm mut J,
-        block_env: &'evm dyn Block,
+        block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
         actions: StorageActions,
@@ -376,7 +390,7 @@ impl<'evm> StorageCtx {
     /// external charge must include `STORAGE_CREDIT_VALUE` unless exempt.
     pub fn enter_evm_without_tip1060_accounting<J, R>(
         journal: &'evm mut J,
-        block_env: &'evm dyn Block,
+        block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
         actions: StorageActions,
@@ -397,7 +411,12 @@ impl<'evm> StorageCtx {
     /// directly instead of requiring the caller to destructure the context.
     pub fn enter_ctx<C, R>(ctx: &mut C, actions: StorageActions, f: impl FnOnce() -> R) -> R
     where
-        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C: ContextTr<
+                Block = TempoBlockEnv,
+                Cfg = CfgEnv<TempoHardfork>,
+                Journal: Debug,
+                Db: Database,
+            >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         Self::enter_evm(journal, block, cfg, tx, actions, f)
@@ -413,7 +432,12 @@ impl<'evm> StorageCtx {
         f: impl FnOnce() -> R,
     ) -> (R, u64)
     where
-        C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
+        C: ContextTr<
+                Block = TempoBlockEnv,
+                Cfg = CfgEnv<TempoHardfork>,
+                Journal: Debug,
+                Db: Database,
+            >,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
         let internals = EvmInternals::new(journal, block, cfg, tx);
@@ -428,7 +452,7 @@ impl<'evm> StorageCtx {
     /// Entry point for a "canonical" precompile (with unique known address).
     pub fn enter_precompile<J, P, R>(
         journal: &'evm mut J,
-        block_env: &'evm dyn Block,
+        block_env: &'evm TempoBlockEnv,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
         actions: StorageActions,

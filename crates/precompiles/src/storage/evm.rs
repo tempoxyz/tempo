@@ -1,17 +1,19 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
-    storage_credits::sstore_storage_credits,
+    storage_credits::{NonCreditableSlots, sstore_storage_credits},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
-    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
+    context::{CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     state::{AccountInfo, Bytecode},
 };
+use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_primitives::TempoBlockEnv;
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -25,6 +27,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
+    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -52,6 +55,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
+            non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -92,6 +96,12 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Sets the transaction-local non-creditable clear-slot context for this provider.
+    pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
+        self.non_creditable_slots = slots;
         self
     }
 
@@ -204,7 +214,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         if self.tip1060_storage_credits_enabled {
-            sstore_storage_credits(self, address, &result)?
+            sstore_storage_credits(self, address, Some(key), &result)?
         }
 
         // dynamic gas
@@ -245,7 +255,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     ) -> Result<StateLoad<U256>, Self::Error> {
         let val = self.sload_journal(address, key, skip_cold_load)?;
         self.actions
-            .record(StorageAction::Sload(address, key, val.data));
+            .record_always(StorageAction::Sload(address, key, val.data));
         Ok(val)
     }
 
@@ -259,7 +269,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions
-            .record(StorageAction::Sstore(address, key, value));
+            .record_always(StorageAction::Sstore(address, key, value));
         Ok(val)
     }
 
@@ -274,6 +284,13 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     }
 
     #[inline]
+    fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
+        self.non_creditable_slots
+            .borrow()
+            .is_non_creditable_slot(owner, key)
+    }
+
+    #[inline]
     fn tip1060_storage_credit_minting_enabled(&self) -> bool {
         self.tip1060_storage_credit_minting_enabled
     }
@@ -284,16 +301,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.chain_id()
     }
 
-    fn timestamp(&self) -> U256 {
-        self.internals.block_timestamp()
-    }
-
-    fn beneficiary(&self) -> Address {
-        self.internals.block_env().beneficiary()
-    }
-
-    fn block_number(&self) -> u64 {
-        self.internals.block_env().number().to::<u64>()
+    fn block_env(&self) -> &TempoBlockEnv {
+        self.internals
+            .block_env_downcast_ref::<TempoBlockEnv>()
+            .expect("EvmPrecompileStorageProvider requires TempoBlockEnv")
     }
 
     #[inline]
@@ -500,6 +511,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    #[inline]
+    fn storage_actions(&self) -> StorageActions {
+        self.actions.clone()
     }
 
     #[inline]

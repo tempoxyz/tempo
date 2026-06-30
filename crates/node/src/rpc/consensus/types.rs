@@ -7,6 +7,7 @@ use futures::Future;
 use reth_primitives_traits::SealedOrRecoveredBlock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_payload_types::serde_sealed_or_recovered_block;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
@@ -22,6 +23,7 @@ pub struct CertifiedBlock {
     pub certificate: String,
 
     /// The Tempo block.
+    #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
 }
 
@@ -206,4 +208,51 @@ pub trait ConsensusFeed: Send + Sync + 'static {
         from_epoch: Option<u64>,
         full: bool,
     ) -> impl Future<Output = Result<IdentityTransitionResponse, IdentityProofError>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn certified_block_roundtrips_legacy_plain_block_json() {
+        let fixture = serde_json::json!({
+            "epoch": 7,
+            "view": 11,
+            "digest": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "certificate": "0x1234",
+            "block": {
+                "body": {
+                    "ommers": [],
+                    "transactions": [],
+                    "withdrawals": null
+                },
+                "header": {
+                    "difficulty": "0x0",
+                    "extraData": "0x",
+                    "gasLimit": "0x0",
+                    "gasUsed": "0x0",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "mainBlockGeneralGasLimit": "0x0",
+                    "miner": "0x0000000000000000000000000000000000000000",
+                    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "nonce": "0x0000000000000000",
+                    "number": "0x0",
+                    "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "sharedGasLimit": "0x0",
+                    "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "timestamp": "0x0",
+                    "timestampMillisPart": "0x0",
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+                }
+            }
+        });
+
+        let certified: CertifiedBlock = serde_json::from_value(fixture.clone()).unwrap();
+        let roundtripped = serde_json::to_value(certified).unwrap();
+
+        assert_eq!(roundtripped, fixture);
+    }
 }
