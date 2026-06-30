@@ -223,6 +223,7 @@ pub(crate) struct Validator {
     pub(crate) addr: SocketAddr,
     pub(crate) signing_key: SigningKey,
     pub(crate) signing_share: SigningShare,
+    pub(crate) fee_recipient: Address,
 }
 
 impl Validator {
@@ -395,29 +396,20 @@ impl GenesisArgs {
             "generating consensus config for validators: {:?}",
             self.validators
         );
-        let consensus_config =
-            generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
-
-        let validator_onchain_addresses = if self.validator_addresses.is_empty() {
-            if addresses.len() < self.validators.len() + 1 {
-                return Err(eyre!("not enough accounts created for validators"));
-            }
-
-            &addresses[1..self.validators.len() + 1]
-        } else {
-            if self.validator_addresses.len() < self.validators.len() {
-                return Err(eyre!("not enough addresses provided for validators"));
-            }
-
-            &self.validator_addresses[0..self.validators.len()]
-        };
+        let validator_onchain_addresses = self.validator_onchain_addresses()?;
+        let consensus_config = generate_consensus_config(
+            &self.validators,
+            &validator_onchain_addresses,
+            self.seed,
+            self.no_dkg_in_genesis,
+        );
 
         println!("Initializing validator config v2");
         initialize_validator_config_v2(
             validator_admin,
             &mut evm,
             &consensus_config,
-            validator_onchain_addresses,
+            &validator_onchain_addresses,
             self.no_dkg_in_genesis,
             self.chain_id,
         )?;
@@ -1106,6 +1098,7 @@ fn initialize_validator_config_v2(
 /// Generates the consensus configs of the validators.
 fn generate_consensus_config(
     validators: &[SocketAddr],
+    validator_fee_recipients: &[Address],
     seed: Option<u64>,
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
@@ -1123,6 +1116,12 @@ fn generate_consensus_config(
         }
         _ => {}
     }
+
+    assert_eq!(
+        validators.len(),
+        validator_fee_recipients.len(),
+        "validator fee recipient count must match validator count",
+    );
 
     let mut rng = rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
 
@@ -1143,14 +1142,18 @@ fn generate_consensus_config(
         .copied()
         .zip_eq(signer_keys)
         .zip_eq(shares)
-        .map(|((addr, signing_key), (verifying_key, signing_share))| {
-            assert_eq!(signing_key.public_key(), verifying_key);
-            Validator {
-                addr,
-                signing_key: SigningKey::from(signing_key),
-                signing_share: SigningShare::from(signing_share),
-            }
-        })
+        .zip_eq(validator_fee_recipients.iter().copied())
+        .map(
+            |(((addr, signing_key), (verifying_key, signing_share)), fee_recipient)| {
+                assert_eq!(signing_key.public_key(), verifying_key);
+                Validator {
+                    addr,
+                    signing_key: SigningKey::from(signing_key),
+                    signing_share: SigningShare::from(signing_share),
+                    fee_recipient,
+                }
+            },
+        )
         .collect();
 
     Some(ConsensusConfig { output, validators })
@@ -1180,4 +1183,37 @@ fn mint_pairwise_liquidity(
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_consensus_config_preserves_validator_fee_recipients() {
+        let validators = [
+            "127.0.0.1:8000".parse().unwrap(),
+            "127.0.0.1:8010".parse().unwrap(),
+            "127.0.0.1:8020".parse().unwrap(),
+            "127.0.0.1:8030".parse().unwrap(),
+        ];
+        let fee_recipients = [
+            address!("0000000000000000000000000000000000000001"),
+            address!("0000000000000000000000000000000000000002"),
+            address!("0000000000000000000000000000000000000003"),
+            address!("0000000000000000000000000000000000000004"),
+        ];
+
+        let consensus_config =
+            generate_consensus_config(&validators, &fee_recipients, Some(1), false).unwrap();
+
+        assert_eq!(
+            consensus_config
+                .validators
+                .iter()
+                .map(|validator| validator.fee_recipient)
+                .collect::<Vec<_>>(),
+            fee_recipients,
+        );
+    }
 }

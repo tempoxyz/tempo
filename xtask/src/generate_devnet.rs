@@ -121,8 +121,7 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
-                    // FIXME(janis): this should not be zero
-                    consensus_fee_recipient: Address::ZERO,
+                    consensus_fee_recipient: validator.fee_recipient,
 
                     consensus_p2p_port,
                     consensus_metrics_port,
