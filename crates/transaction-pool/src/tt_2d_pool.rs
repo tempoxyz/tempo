@@ -652,12 +652,19 @@ impl AA2dPool {
                 .collect()
         };
 
+        let snapshot_len = self
+            .independent_transactions
+            .len()
+            .saturating_add(expiring_nonce_order.len());
+        let new_transaction_receiver = (snapshot_len < LIVE_AA2D_UPDATE_SNAPSHOT_LIMIT)
+            .then(|| self.new_transaction_notifier.subscribe());
+
         BestAA2dTransactions {
             independent: self.independent_transactions.eviction_order_for(base_fee),
             by_id: self.by_id.clone(),
             expiring_nonce_order,
             invalid: Default::default(),
-            new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            new_transaction_receiver,
             last_priority: None,
             base_fee,
         }
@@ -2043,6 +2050,7 @@ impl PartialOrd for EvictionKey {
 
 /// Maximum number of new transactions to drain from the channel per `next()` call.
 const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
+const LIVE_AA2D_UPDATE_SNAPSHOT_LIMIT: usize = 8192;
 
 /// Determines how a newly received transaction should be handled based on its priority
 /// relative to transactions already yielded by the iterator.
