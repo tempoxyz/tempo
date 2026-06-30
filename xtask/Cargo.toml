@@ -16,7 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-consensus-config.workspace = true
@@ -29,6 +29,7 @@ tempo-revm.workspace = true
 alloy = { workspace = true, features = [
   "genesis",
   "providers",
+  "provider-ws",
   "reqwest",
   "reqwest-rustls-tls",
   "signers",
