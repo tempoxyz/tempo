@@ -255,7 +255,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     ) -> Result<StateLoad<U256>, Self::Error> {
         let val = self.sload_journal(address, key, skip_cold_load)?;
         self.actions
-            .record(StorageAction::Sload(address, key, val.data));
+            .record_always(StorageAction::Sload(address, key, val.data));
         Ok(val)
     }
 
@@ -269,7 +269,7 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         let val = self.sstore_journal(address, key, value, skip_cold_load)?;
         self.actions
-            .record(StorageAction::Sstore(address, key, value));
+            .record_always(StorageAction::Sstore(address, key, value));
         Ok(val)
     }
 
@@ -511,6 +511,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    #[inline]
+    fn storage_actions(&self) -> StorageActions {
+        self.actions.clone()
     }
 
     #[inline]

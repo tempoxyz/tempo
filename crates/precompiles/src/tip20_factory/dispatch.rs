@@ -1,19 +1,9 @@
 //! ABI dispatch for the [`TIP20Factory`] precompile.
 
-use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, mutate,
-    tip20_factory::TIP20Factory, view,
-};
-use alloy::{
-    primitives::Address,
-    sol_types::{SolCall, SolInterface},
-};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP20Factory, view};
+use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{ITIP20Factory::ITIP20FactoryCalls, createTokenWithLogoCall};
-
-/// Selectors added at T5: TIP-1026 Token Logo URI factory overload.
-const T5_ADDED: &[[u8; 4]] = &[createTokenWithLogoCall::SELECTOR];
+use tempo_contracts::precompiles::ITIP20Factory;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -21,20 +11,15 @@ impl Precompile for TIP20Factory {
             return err;
         }
 
-        dispatch_call(
+        dispatch!(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED)],
-            ITIP20FactoryCalls::abi_decode,
             |call| match call {
-                ITIP20FactoryCalls::createToken_0(call) => {
-                    mutate(call, msg_sender, |s, c| self.create_token(s, c))
-                }
-                ITIP20FactoryCalls::createToken_1(call) => {
-                    mutate(call, msg_sender, |s, c| self.create_token_with_logo(s, c))
-                }
-                ITIP20FactoryCalls::isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
-                ITIP20FactoryCalls::getTokenAddress(call) => {
-                    view(call, |c| self.get_token_address(c))
+                ITIP20Factory::ITIP20FactoryCalls {
+                    createToken_0(call) => mutate(call, msg_sender, |s, c| self.create_token(s, c)),
+                    #[schedule(since = T5)]
+                    createToken_1(call) => mutate(call, msg_sender, |s, c| self.create_token_with_logo(s, c)),
+                    isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
+                    getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
                 }
             },
         )
@@ -54,7 +39,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector,
+        ITIP20Factory::ITIP20FactoryCalls, UnknownFunctionSelector, createTokenWithLogoCall,
     };
 
     #[test]

@@ -71,6 +71,7 @@ const BUILDER_DETAIL_ROWS = [
   ['Invalid Tx Attempts P50', 'builder_invalid_tx_execution_attempts_p50', v => fmtVal(v, 1)],
   ['Invalid Tx Attempts P90', 'builder_invalid_tx_execution_attempts_p90', v => fmtVal(v, 1)],
   ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1)],
+  ['Reverted Txs', 'builder_reverted_txs', v => fmtVal(v, 0)],
   ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
   ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
   ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],

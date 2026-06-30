@@ -284,7 +284,7 @@ def sanitize_chainspec(chainspec_dir):
     delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\nextern crate alloc;\n', expected=1)
 
     # Delete #[cfg(feature = "reth")] gated mod/pub declarations and re-exports.
-    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=5)
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "reth")]', expected=6)
 
     print(f"  chainspec/src/lib.rs: stripped reth-gated code", file=sys.stderr)
 

@@ -949,6 +949,8 @@ def generate-summary [
     mut feature_builder_pool_fetch_samples = []
     mut baseline_builder_invalid_tx_execution_attempts_samples = []
     mut feature_builder_invalid_tx_execution_attempts_samples = []
+    mut baseline_builder_reverted_txs = []
+    mut feature_builder_reverted_txs = []
     mut baseline_builder_invalid_tx_skips = []
     mut feature_builder_invalid_tx_skips = []
     mut baseline_builder_nonce_too_low_skips = []
@@ -1088,6 +1090,34 @@ def generate-summary [
         }
     }
 
+    let histogram_delta_sum_total = { |samples: list<any>, metric: string|
+        let sum_name = $"($metric)_sum"
+        let sum_samples = ($samples | where name == $sum_name)
+        if ($sum_samples | length) == 0 {
+            0.0
+        } else {
+            let deltas = (
+                $sum_samples
+                    | group-by { |sample| $sample.labels | to json --raw }
+                    | transpose labels samples
+                    | each { |series|
+                        let points = (
+                            $series.samples
+                                | where { |sample| ($sample | get -o value | default null) != null }
+                                | sort-by unix_ms
+                        )
+                        if ($points | length) > 1 {
+                            let first = ($points | first)
+                            let last = ($points | last)
+                            let delta = ($last.value - $first.value)
+                            if $delta >= 0 { $delta } else { $last.value }
+                        } else { 0.0 }
+                    }
+            )
+            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
+        }
+    }
+
     let metric_sample_names = [
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
@@ -1095,6 +1125,8 @@ def generate-summary [
         "reth_tempo_payload_builder_pool_fetch_duration_seconds_count"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
+        "reth_tempo_payload_builder_reverted_transactions_sum"
+        "reth_tempo_payload_builder_reverted_transactions_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
@@ -1215,6 +1247,7 @@ def generate-summary [
         let builder_finish_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
         let builder_pool_fetch_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_pool_fetch_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
+        let builder_reverted_txs = do $histogram_delta_sum_total $metric_samples "reth_tempo_payload_builder_reverted_transactions"
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
             let samples = (
@@ -1243,6 +1276,7 @@ def generate-summary [
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
             $baseline_builder_pool_fetch_samples = ($baseline_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $baseline_builder_reverted_txs = ($baseline_builder_reverted_txs | append $builder_reverted_txs)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1258,6 +1292,7 @@ def generate-summary [
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
             $feature_builder_pool_fetch_samples = ($feature_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $feature_builder_reverted_txs = ($feature_builder_reverted_txs | append $builder_reverted_txs)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
@@ -1310,6 +1345,7 @@ def generate-summary [
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
+            builder_reverted_txs: $builder_reverted_txs
             tps: $actual_tps
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
@@ -1357,6 +1393,8 @@ def generate-summary [
     let f_builder_pool_fetch = do $compute_value_stats $feature_builder_pool_fetch_samples
     let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
     let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
+    let b_builder_reverted_txs = if ($baseline_builder_reverted_txs | length) > 0 { $baseline_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_reverted_txs = if ($feature_builder_reverted_txs | length) > 0 { $feature_builder_reverted_txs | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
@@ -1428,6 +1466,9 @@ def generate-summary [
         if $base > 0.0 or $feature > 0.0 {
             $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
         } else { null }
+    }
+    let count_row = { |label: string, base: float, feature: float|
+        $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
     }
     let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
     let b_builder_mgas = do $to_mgas_s $b_builder_gas
@@ -1525,6 +1566,7 @@ def generate-summary [
         $"| Pool Fetch P99 [ms] | (do $fmt_stat $b_builder_pool_fetch p99) | (do $fmt_stat $f_builder_pool_fetch p99) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p99) |"
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
+        (do $count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
         (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
@@ -1592,6 +1634,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
+                builder_reverted_txs: $b_builder_reverted_txs
                 builder_invalid_tx_skips: $b_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $b_builder_fill_idle.p50
@@ -1629,6 +1672,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
+                builder_reverted_txs: $f_builder_reverted_txs
                 builder_invalid_tx_skips: $f_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
                 builder_fill_idle_p50: $f_builder_fill_idle.p50
@@ -1666,6 +1710,7 @@ def generate-summary [
                 builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
+                builder_reverted_txs: (do $delta $b_builder_reverted_txs $f_builder_reverted_txs)
                 builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
                 builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
                 builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)
@@ -1868,6 +1913,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
 # Build base node arguments shared between dev and consensus modes
 def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
     let ipc_path = $"($datadir)/reth.ipc"
+    let faucet_token_args = ($TIP20_TOKEN_IDS | each { |id| ["--faucet.address" (txgen-tip20-token-address $id)] } | flatten)
 
     [
         "node"
@@ -1887,8 +1933,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         "--faucet.amount" "1000000000000"
-        "--faucet.address" "0x20c0000000000000000000000000000000000000"
-        "--faucet.address" "0x20c0000000000000000000000000000000000001"
+        ...$faucet_token_args
     ]
 }
 
@@ -3308,10 +3353,6 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
                 | append (build-dev-args)
                 | append ["--log.stdout.filter" "warn"]
-                | append [
-                    "--faucet.address" "0x20c0000000000000000000000000000000000002"
-                    "--faucet.address" "0x20c0000000000000000000000000000000000003"
-                ]
 
             # Build + run instrumented binary via cargo llvm-cov run (backgrounds itself)
             print "Building and starting instrumented tempo node..."
