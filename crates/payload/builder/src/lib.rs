@@ -802,9 +802,55 @@ fn spawn_ssmr_replay_recovery(
 
 struct SsmrBalReplayJob {
     output_index: usize,
+    bal_start_index: usize,
     global_index: usize,
     transactions: Vec<SsmrRecoveredTx>,
     bal: Arc<RevmBal>,
+}
+
+impl SsmrBalReplayJob {
+    fn split_into(self, target_tx_count: usize, jobs: &mut Vec<Self>) {
+        let target_tx_count = target_tx_count.max(1);
+        if self.transactions.len() <= target_tx_count {
+            jobs.push(self);
+            return;
+        }
+
+        let Self {
+            output_index,
+            bal_start_index,
+            global_index,
+            transactions,
+            bal,
+        } = self;
+        let mut chunk_start = 0usize;
+        let mut chunk = Vec::with_capacity(target_tx_count);
+        for tx in transactions {
+            chunk.push(tx);
+            if chunk.len() == target_tx_count {
+                let chunk_len = chunk.len();
+                jobs.push(Self {
+                    output_index: output_index + chunk_start,
+                    bal_start_index: bal_start_index + chunk_start,
+                    global_index: global_index + chunk_start,
+                    transactions: std::mem::take(&mut chunk),
+                    bal: Arc::clone(&bal),
+                });
+                chunk_start += chunk_len;
+                chunk = Vec::with_capacity(target_tx_count);
+            }
+        }
+
+        if !chunk.is_empty() {
+            jobs.push(Self {
+                output_index: output_index + chunk_start,
+                bal_start_index: bal_start_index + chunk_start,
+                global_index: global_index + chunk_start,
+                transactions: chunk,
+                bal,
+            });
+        }
+    }
 }
 
 struct SsmrBalReplayOutput {
@@ -828,6 +874,11 @@ impl SsmrBalReplayTimings {
     fn total_elapsed(self) -> Duration {
         self.bal_decode_elapsed + self.wall_elapsed
     }
+}
+
+fn ssmr_bal_replay_target_job_tx_count(tx_count: usize, worker_limit: usize) -> usize {
+    let target_job_count = worker_limit.max(1).min(tx_count.max(1));
+    tx_count.div_ceil(target_job_count).max(1)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -871,7 +922,11 @@ where
     }
 
     let bal_decode_start = Instant::now();
-    let mut jobs = Vec::new();
+    let worker_limit = task_executor
+        .bal_streaming_pool()
+        .current_num_threads()
+        .max(1);
+    let mut shard_jobs = Vec::new();
     let mut tx_count = 0usize;
     let mut projected_gas_used = *cumulative_gas_used;
     let mut projected_non_payment_gas_used = *non_payment_gas_used;
@@ -935,8 +990,9 @@ where
         }
 
         if !transactions.is_empty() {
-            jobs.push(SsmrBalReplayJob {
+            shard_jobs.push(SsmrBalReplayJob {
                 output_index,
+                bal_start_index: 0,
                 global_index: global_first_tx_index + output_index,
                 transactions,
                 bal: revm_bal,
@@ -953,12 +1009,13 @@ where
             ordered_commit_elapsed: Duration::ZERO,
         });
     }
+    let target_job_tx_count = ssmr_bal_replay_target_job_tx_count(tx_count, worker_limit);
+    let mut jobs = Vec::with_capacity(worker_limit.min(tx_count));
+    for job in shard_jobs {
+        job.split_into(target_job_tx_count, &mut jobs);
+    }
     let worker_execute_start = Instant::now();
-    let worker_count = task_executor
-        .bal_streaming_pool()
-        .current_num_threads()
-        .max(1)
-        .min(jobs.len());
+    let worker_count = worker_limit.min(jobs.len());
     let (job_tx, job_rx) = crossbeam_channel::unbounded::<SsmrBalReplayJob>();
     let (result_tx, result_rx) =
         crossbeam_channel::bounded::<Result<SsmrBalReplayOutput, String>>(tx_count);
@@ -1017,7 +1074,9 @@ where
 
                             for (bal_index, tx) in job.transactions.into_iter().enumerate() {
                                 worker_executor.evm_mut().db_mut().set_bal_index(
-                                    BlockAccessIndex::from_tx_index(bal_index as u64),
+                                    BlockAccessIndex::from_tx_index(
+                                        (job.bal_start_index + bal_index) as u64,
+                                    ),
                                 );
                                 let is_payment = if is_t5 {
                                     tx.transaction.inner().is_payment_v2()
