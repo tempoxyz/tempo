@@ -76,3 +76,7 @@ engine = ["dep:tempo-payload-types", "dep:rayon"]
 [[bench]]
 name = "tip20_execution"
 harness = false
+
+[[bench]]
+name = "dex_execution"
+harness = false
