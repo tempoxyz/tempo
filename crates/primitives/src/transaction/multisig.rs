@@ -289,7 +289,7 @@ impl Decodable for MultisigSignature {
             config_id: Decodable::decode(&mut payload)?,
             signatures: Decodable::decode(&mut payload)?,
             init: if payload.is_empty() {
-                None
+                return Err(alloy_rlp::Error::InputTooShort);
             } else if payload[0] == EMPTY_STRING_CODE {
                 payload.advance(1);
                 None
@@ -590,6 +590,9 @@ mod tests {
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
+    use alloy_rlp::{Decodable, Encodable};
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
     fn sorted_secp_config(owners: &[(Address, u32)], threshold: u32) -> InitMultisig {
         let mut owners = owners
@@ -733,5 +736,43 @@ mod tests {
             decoded.recover_signer(&signature_hash).unwrap(),
             signature.account
         );
+    }
+
+    #[test]
+    fn multisig_signature_decode_rejects_missing_init_slot() {
+        let signature = MultisigSignature::new(
+            Address::from([0x11; 20]),
+            B256::repeat_byte(0x22),
+            vec![Bytes::from_static(&[0x33])],
+            None,
+        );
+
+        let payload_length = signature.account.length()
+            + signature.config_id.length()
+            + signature.signatures.length();
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        signature.account.encode(&mut encoded);
+        signature.config_id.encode(&mut encoded);
+        signature.signatures.encode(&mut encoded);
+
+        assert_eq!(
+            MultisigSignature::decode(&mut encoded.as_slice()),
+            Err(alloy_rlp::Error::InputTooShort)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_multisig_signature_rlp_reencoding_preserves_bytes(signature in arb::<MultisigSignature>()) {
+            let encoded = alloy_rlp::encode(&signature);
+            let decoded = MultisigSignature::decode(&mut encoded.as_slice()).unwrap();
+
+            prop_assert_eq!(alloy_rlp::encode(&decoded), encoded);
+        }
     }
 }
