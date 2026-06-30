@@ -170,7 +170,7 @@ impl TipFeeManager {
 
         // TIP-1042: T8 fee collection exempts FeeManager recipient authorization.
         if self.storage.spec().is_t8() {
-            tip20_token.ensure_authorized_as(fee_payer, AuthRole::sender())?;
+            tip20_token.ensure_authorized_as(&[(fee_payer, AuthRole::sender())])?;
         } else {
             tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         }
