@@ -315,31 +315,36 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
-    use alloy_primitives::U256;
+    use alloy_primitives::{B256, U256};
     use alloy_sol_types::SolCall;
+    use indexmap::IndexMap;
     use revm::{
-        DatabaseCommit,
+        DatabaseCommit, DatabaseRef,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
         state::EvmState,
     };
-    use std::collections::BTreeMap;
+    use std::{assert_matches, collections::BTreeMap};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-        TIP403_REGISTRY_ADDRESS,
-        storage::{StorageAction, StorageActions, StorageCtx, StorageKey},
+        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+        TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
         test_util::TIP20Setup,
-        tip_fee_manager::slots as fee_manager_slots,
+        tip_fee_manager::{
+            IFeeManager, TipFeeManager,
+            amm::{Pool, PoolKey, compute_amount_out},
+            slots as fee_manager_slots,
+        },
         tip20::{
             ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
         },
         tip403_registry::slots as tip403_registry_slots,
     };
-    use tempo_primitives::transaction::calc_gas_balance_spending;
-    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
+    use tempo_primitives::transaction::Call;
+    use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
 
@@ -496,83 +501,101 @@ mod tests {
         assert!(result.result.is_success());
     }
 
+    #[derive(Default)]
+    struct StorageState {
+        reconstructed: BTreeMap<(Address, U256), U256>,
+        original_values: BTreeMap<(Address, U256), U256>,
+        first_loads: BTreeMap<(Address, U256), U256>,
+    }
+
+    impl StorageState {
+        fn get_or_init_storage(&mut self, key: (Address, U256)) -> U256 {
+            match self.reconstructed.get(&key) {
+                Some(current) => *current,
+                None => {
+                    let (address, slot) = key;
+
+                    let original = *self
+                        .original_values
+                        .get(&key)
+                        .unwrap_or_else(|| panic!("No prior SLOAD for {address:?}:{slot:?}",));
+
+                    self.first_loads.insert(key, original);
+                    self.reconstructed.insert(key, original);
+
+                    original
+                }
+            }
+        }
+    }
+
     fn assert_storage_actions_reconstruct_evm_state(
         actions: &[StorageAction],
         state: &EvmState,
         hardfork: TempoHardfork,
     ) {
-        let mut original_values = BTreeMap::<(Address, U256), U256>::new();
+        let mut storage_state = StorageState::default();
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
-                original_values.insert((*address, *slot), storage_slot.original_value());
+                storage_state
+                    .original_values
+                    .insert((*address, *slot), storage_slot.original_value());
             }
         }
-
-        let mut first_loads = BTreeMap::<(Address, U256), U256>::new();
-        let mut reconstructed = BTreeMap::<(Address, U256), U256>::new();
 
         for action in actions {
             match *action {
                 StorageAction::Sload(address, slot, value) => {
                     let key = (address, slot);
-                    match reconstructed.get(&key) {
+                    match storage_state.reconstructed.get(&key) {
                         Some(previous) => assert_eq!(
                             *previous, value,
                             "SLOAD must match reconstructed current value for {address:?}:{slot:?} on {hardfork:?}",
                         ),
                         None => {
-                            first_loads.insert(key, value);
-                            reconstructed.insert(key, value);
+                            storage_state.first_loads.insert(key, value);
+                            storage_state.reconstructed.insert(key, value);
                         }
                     }
                 }
                 StorageAction::Sstore(address, slot, value) => {
                     let key = (address, slot);
                     assert!(
-                        reconstructed.contains_key(&key),
+                        storage_state.reconstructed.contains_key(&key),
                         "SSTORE without prior SLOAD for {address:?}:{slot:?} on {hardfork:?}",
                     );
-                    reconstructed.insert(key, value);
+                    storage_state.reconstructed.insert(key, value);
                 }
                 StorageAction::Sinc(address, slot, delta) => {
                     let key = (address, slot);
-                    let current = match reconstructed.get(&key) {
-                        Some(current) => *current,
-                        None => {
-                            let original = *original_values.get(&key).unwrap_or_else(|| {
-                                panic!(
-                                    "SINC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
-                                )
-                            });
-                            first_loads.insert(key, original);
-                            reconstructed.insert(key, original);
-                            original
-                        }
-                    };
+                    let current = storage_state.get_or_init_storage(key);
                     let value = current.checked_add(delta).unwrap_or_else(|| {
                         panic!("SINC overflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
-                    reconstructed.insert(key, value);
+                    storage_state.reconstructed.insert(key, value);
                 }
                 StorageAction::Sdec(address, slot, delta) => {
                     let key = (address, slot);
-                    let current = match reconstructed.get(&key) {
-                        Some(current) => *current,
-                        None => {
-                            let original = *original_values.get(&key).unwrap_or_else(|| {
-                                panic!(
-                                    "SDEC without prior SLOAD for unknown EVM output storage cell {address:?}:{slot:?} on {hardfork:?}",
-                                )
-                            });
-                            first_loads.insert(key, original);
-                            reconstructed.insert(key, original);
-                            original
-                        }
-                    };
+                    let current = storage_state.get_or_init_storage(key);
                     let value = current.checked_sub(delta).unwrap_or_else(|| {
                         panic!("SDEC underflow for {address:?}:{slot:?} on {hardfork:?}")
                     });
-                    reconstructed.insert(key, value);
+                    storage_state.reconstructed.insert(key, value);
+                }
+                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                    let key = (address, slot);
+                    let current = storage_state.get_or_init_storage(key);
+                    let mut pool = Pool::decode_from_slot(current);
+                    pool.apply_swap(
+                        amount_in,
+                        compute_amount_out(amount_in).expect("compute_amount_out should not fail"),
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!("FeeAmmSwap invalid for {address:?}:{slot:?} on {hardfork:?}: {err}")
+                    });
+                    storage_state
+                        .reconstructed
+                        .insert(key, pool.encode_to_slot().unwrap());
                 }
             }
         }
@@ -580,7 +603,7 @@ mod tests {
         for (address, account) in state {
             for (slot, storage_slot) in &account.storage {
                 let key = (*address, *slot);
-                let original_value = first_loads.get(&key).unwrap_or_else(|| {
+                let original_value = storage_state.first_loads.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not loaded in StorageActions on {hardfork:?}",
                     )
@@ -591,7 +614,7 @@ mod tests {
                     "reconstructed original value mismatch for {address:?}:{slot:?} on {hardfork:?}",
                 );
 
-                let reconstructed_value = reconstructed.get(&key).unwrap_or_else(|| {
+                let reconstructed_value = storage_state.reconstructed.get(&key).unwrap_or_else(|| {
                     panic!(
                         "EVM output storage cell {address:?}:{slot:?} was not reconstructed from StorageActions on {hardfork:?}",
                     )
@@ -645,6 +668,13 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
+                StorageAction::FeeAmmSwap(address, slot, amount_in) => {
+                    format!(
+                        "FeeAmmSwap({}, {}, {amount_in})",
+                        labels.address(address),
+                        labels.slot(address, slot),
+                    )
+                }
             })
             .collect()
     }
@@ -668,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tip20_full_evm_records_storage_actions_with_fees() {
+    fn test_tip20_full_evm_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
             // skip pre-T5 hardforks to avoid clutter
             if !hardfork.is_t5() {
@@ -702,72 +732,81 @@ mod tests {
                 },
             );
 
-            StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-                TIP20Setup::path_usd(sender)
-                    .with_issuer(sender)
-                    .with_mint(sender, starting_balance)
-                    .apply()
-            })
-            .expect("TIP20 setup should succeed");
+            let fee_token =
+                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                    TIP20Setup::path_usd(sender)
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
+                        .apply()?;
+                    let fee_token = TIP20Setup::create("FeeToken", "FEE", sender)
+                        .with_salt(B256::ZERO)
+                        .with_issuer(sender)
+                        .with_mint(sender, starting_balance)
+                        .with_mint(recipient, starting_balance)
+                        .apply()?;
+
+                    let mut fee_manager = TipFeeManager::new();
+                    fee_manager.set_user_token(
+                        sender,
+                        IFeeManager::setUserTokenCall {
+                            token: fee_token.address(),
+                        },
+                    )?;
+                    fee_manager.mint(
+                        sender,
+                        fee_token.address(),
+                        PATH_USD_ADDRESS,
+                        U256::from(500_000),
+                        sender,
+                    )?;
+
+                    Ok::<Address, tempo_precompiles::error::TempoPrecompileError>(
+                        fee_token.address(),
+                    )
+                })
+                .expect("TIP20 setup should succeed");
             let setup_state = evm.ctx_mut().journaled_state.finalize();
             evm.db_mut().commit(setup_state);
 
             let mut evm = evm.with_actions();
             assert_eq!(evm.take_actions(), Some(vec![]));
 
-            let calldata: Bytes = ITIP20::transferCall {
-                to: recipient,
-                amount: transfer_amount,
-            }
-            .abi_encode()
-            .into();
-            let tx = TempoTxEnv {
-                inner: TxEnv {
-                    caller: sender,
-                    gas_price: u128::from(gas_price),
-                    gas_limit,
-                    kind: TxKind::Call(PATH_USD_ADDRESS),
-                    data: calldata.clone(),
-                    ..Default::default()
-                },
-                fee_token: Some(PATH_USD_ADDRESS),
-                ..Default::default()
-            };
-            let result = evm.transact_raw(tx).expect("transfer should execute");
-            assert!(result.result.is_success(), "hardfork: {hardfork:?}");
-
-            let max_fee_spending = calc_gas_balance_spending(gas_limit, u128::from(gas_price));
-            let actual_spending =
-                calc_gas_balance_spending(result.result.tx_gas_used(), u128::from(gas_price));
-            assert!(
-                !actual_spending.is_zero(),
-                "test must exercise post-tx fee settlement"
-            );
-            assert!(
-                max_fee_spending > actual_spending,
-                "test must exercise post-tx fee refund"
-            );
-
             let sender_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
+            let sender_fee_token_balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
             let fee_manager_balance_slot =
+                TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
+            let fee_manager_fee_token_balance_slot =
                 TIP_FEE_MANAGER_ADDRESS.mapping_slot(tip20_slots::BALANCES);
             let recipient_balance_slot = recipient.mapping_slot(tip20_slots::BALANCES);
             let sender_reward_info_slot = sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            let sender_fee_token_reward_info_slot =
+                sender.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let recipient_reward_info_slot = recipient.mapping_slot(tip20_slots::USER_REWARD_INFO);
             let validator_token_slot =
                 beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
+            let user_token_slot = sender.mapping_slot(fee_manager_slots::USER_TOKENS);
             let collected_fees_slot = PATH_USD_ADDRESS
                 .mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+            let pool_id = PoolKey::new(fee_token, PATH_USD_ADDRESS).get_id();
+            let pool_slot =
+                U256::from_be_bytes::<32>(pool_id.into()).mapping_slot(fee_manager_slots::POOLS);
+            let pending_pool_reservation_slot = U256::from_be_bytes::<32>(pool_id.into())
+                .mapping_slot(fee_manager_slots::PENDING_FEE_SWAP_RESERVATION);
             let receive_policy_config_slot =
                 recipient.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+            let nonce_key = U256::from(42);
+            let sender_nonce_key_slot = nonce_key
+                .mapping_slot(sender.mapping_slot(tempo_precompiles::nonce::slots::NONCES));
 
             #[rustfmt::skip]
             let labels = StorageActionSnapshotLabels {
                 addresses: BTreeMap::from([
                     (PATH_USD_ADDRESS, "PATH_USD"),
+                    (fee_token, "FEE_TOKEN"),
                     (TIP_FEE_MANAGER_ADDRESS, "TIP_FEE_MANAGER"),
                     (TIP403_REGISTRY_ADDRESS, "TIP403_REGISTRY"),
                     (STORAGE_CREDITS_ADDRESS, "STORAGE_CREDITS"),
+                    (NONCE_PRECOMPILE_ADDRESS, "NONCE_MANAGER"),
                 ]),
                 slots: BTreeMap::from([
                     ((PATH_USD_ADDRESS, tip20_slots::CURRENCY), "currency"),
@@ -783,46 +822,107 @@ mod tests {
                     ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[recipient].rewardRecipient"),
                     ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[recipient].rewardPerToken"),
                     ((PATH_USD_ADDRESS, recipient_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[recipient].rewardBalance"),
+                    ((fee_token, tip20_slots::CURRENCY), "currency"),
+                    ((fee_token, tip20_slots::TRANSFER_POLICY_ID), "transferPolicyId"),
+                    ((fee_token, tip20_slots::PAUSED), "paused"),
+                    ((fee_token, tip20_slots::GLOBAL_REWARD_PER_TOKEN), "globalRewardPerToken"),
+                    ((fee_token, sender_fee_token_balance_slot), "balances[sender]"),
+                    ((fee_token, fee_manager_fee_token_balance_slot), "balances[FeeManager]"),
+                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_RECIPIENT), "userRewardInfo[sender].rewardRecipient"),
+                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_PER_TOKEN), "userRewardInfo[sender].rewardPerToken"),
+                    ((fee_token, sender_fee_token_reward_info_slot + user_reward_info_slots::REWARD_BALANCE), "userRewardInfo[sender].rewardBalance"),
                     ((TIP_FEE_MANAGER_ADDRESS, validator_token_slot), "validatorTokens[beneficiary]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, user_token_slot), "userTokens[sender]"),
                     ((TIP_FEE_MANAGER_ADDRESS, collected_fees_slot), "collectedFees[beneficiary][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, pool_slot), "pools[FEE_TOKEN][PATH_USD]"),
+                    ((TIP_FEE_MANAGER_ADDRESS, pending_pool_reservation_slot), "pendingFeeSwapReservation[FEE_TOKEN][PATH_USD]"),
                     ((TIP403_REGISTRY_ADDRESS, receive_policy_config_slot), "receivePolicies[recipient]"),
                     ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(PATH_USD_ADDRESS)), "storageCredits[PATH_USD]"),
+                    ((STORAGE_CREDITS_ADDRESS, StorageCredits::slot(fee_token)), "storageCredits[FEE_TOKEN]"),
+                    ((NONCE_PRECOMPILE_ADDRESS, sender_nonce_key_slot), "nonces[sender][42]"),
                 ]),
             };
 
-            let actions = evm
-                .take_actions()
-                .expect("storage action recording should be enabled");
-            assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
-            let first_transfer = snapshot_storage_actions(&actions, &labels);
-            evm.db_mut().commit(result.state);
-
-            let tx = TempoTxEnv {
-                inner: TxEnv {
-                    caller: sender,
-                    gas_price: u128::from(gas_price),
-                    gas_limit,
-                    kind: TxKind::Call(PATH_USD_ADDRESS),
-                    data: calldata,
-                    nonce: 1,
+            let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+                                caller: Address,
+                                to: Address,
+                                amount: U256,
+                                nonce: u64,
+                                nonce_key: U256|
+             -> eyre::Result<Vec<String>> {
+                let calldata: Bytes = ITIP20::transferCall { to, amount }.abi_encode().into();
+                let tx = TempoTxEnv {
+                    inner: TxEnv {
+                        caller,
+                        gas_price: u128::from(gas_price),
+                        gas_limit,
+                        kind: TxKind::Call(PATH_USD_ADDRESS),
+                        data: calldata.clone(),
+                        nonce,
+                        ..Default::default()
+                    },
+                    fee_token: Some(fee_token),
+                    tempo_tx_env: (!nonce_key.is_zero()).then(|| {
+                        Box::new(TempoBatchCallEnv {
+                            aa_calls: vec![Call {
+                                to: TxKind::Call(PATH_USD_ADDRESS),
+                                value: U256::ZERO,
+                                input: calldata.clone(),
+                            }],
+                            nonce_key,
+                            ..Default::default()
+                        })
+                    }),
                     ..Default::default()
-                },
-                fee_token: Some(PATH_USD_ADDRESS),
-                ..Default::default()
+                };
+                let result = evm.transact_raw(tx)?;
+                assert_matches!(
+                    result.result,
+                    ExecutionResult::Success { .. },
+                    "hardfork: {hardfork:?}"
+                );
+                let actions = evm
+                    .take_actions()
+                    .expect("storage action recording should be enabled");
+                assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
+                evm.db_mut().commit(result.state);
+                Ok(snapshot_storage_actions(&actions, &labels))
             };
-            let result = evm.transact_raw(tx).expect("transfer should execute");
-            assert!(result.result.is_success(), "hardfork: {hardfork:?}");
 
-            let actions = evm
-                .take_actions()
-                .expect("storage action recording should be enabled");
-            assert_storage_actions_reconstruct_evm_state(&actions, &result.state, *hardfork);
-
-            let snapshot = BTreeMap::from([
-                ("first_transfer", first_transfer),
+            let snapshot = IndexMap::from([
+                // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
+                (
+                    "first_transfer",
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, U256::ZERO)
+                        .unwrap(),
+                ),
+                // Same as first transfer. Now we expect a lot of storage actions to change from SLOAD+SSTORE into SINC/SDEC, because recipient
+                // and fee balances are no longer zero.
                 (
                     "second_transfer",
-                    snapshot_storage_actions(&actions, &labels),
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 1, U256::ZERO)
+                        .unwrap(),
+                ),
+                // TIP-20 transfer with a 2D nonce and a fee token that requires going through feeAMM to pay fees.
+                (
+                    "2d_nonce_transfer",
+                    run_transfer(&mut evm, sender, recipient, transfer_amount, 0, nonce_key)
+                        .unwrap(),
+                ),
+                // Clear sender balance, minting a storage credit for PATH_USD.
+                ("clear_balance", {
+                    let sender_balance = evm
+                        .db()
+                        .storage_ref(PATH_USD_ADDRESS, sender_balance_slot)
+                        .expect("sender balance slot should be available");
+                    run_transfer(&mut evm, sender, recipient, sender_balance, 2, U256::ZERO)
+                        .unwrap()
+                }),
+                // Recreate sender balance, consuming the PATH_USD storage credit through an SSTORE.
+                (
+                    "recreate_balance",
+                    run_transfer(&mut evm, recipient, sender, transfer_amount, 0, U256::ZERO)
+                        .unwrap(),
                 ),
             ]);
             insta::assert_yaml_snapshot!(

@@ -1982,6 +1982,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
 # Build base node arguments shared between dev and consensus modes
 def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
     let ipc_path = $"($datadir)/reth.ipc"
+    let faucet_token_args = ($TIP20_TOKEN_IDS | each { |id| ["--faucet.address" (txgen-tip20-token-address $id)] } | flatten)
 
     [
         "node"
@@ -2001,8 +2002,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         "--faucet.amount" "1000000000000"
-        "--faucet.address" "0x20c0000000000000000000000000000000000000"
-        "--faucet.address" "0x20c0000000000000000000000000000000000001"
+        ...$faucet_token_args
     ]
 }
 
@@ -3422,10 +3422,6 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             let args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
                 | append (build-dev-args)
                 | append ["--log.stdout.filter" "warn"]
-                | append [
-                    "--faucet.address" "0x20c0000000000000000000000000000000000002"
-                    "--faucet.address" "0x20c0000000000000000000000000000000000003"
-                ]
 
             # Build + run instrumented binary via cargo llvm-cov run (backgrounds itself)
             print "Building and starting instrumented tempo node..."

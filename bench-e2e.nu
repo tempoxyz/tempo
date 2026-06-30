@@ -21,6 +21,7 @@ const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
+const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 7
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
@@ -221,13 +222,46 @@ def ensure-bloat-space [bloat: int] {
     if $bloat <= 0 {
         return
     }
-    let required_mib = $bloat + $E2E_BLOAT_FREE_MARGIN_MIB
-    for mount in [$E2E_A_MOUNT $E2E_B_MOUNT] {
-        let available_mib = (df-available-mib $mount)
-        if $available_mib < $required_mib {
-            print $"Error: ($mount) has ($available_mib) MiB free, needs at least ($required_mib) MiB for ($bloat) MiB bloat plus margin"
-            exit 1
+
+    let import_working_set_mib = $bloat * $E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER
+    let a_required_mib = $bloat + $import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB
+    let b_required_mib = $import_working_set_mib + $E2E_BLOAT_FREE_MARGIN_MIB
+    let requirements = [
+        {
+            mount: $E2E_A_MOUNT
+            required_mib: $a_required_mib
+            components: $"dump=($bloat) MiB, import-working-set=($import_working_set_mib) MiB, margin=($E2E_BLOAT_FREE_MARGIN_MIB) MiB"
         }
+        {
+            mount: $E2E_B_MOUNT
+            required_mib: $b_required_mib
+            components: $"import-working-set=($import_working_set_mib) MiB, margin=($E2E_BLOAT_FREE_MARGIN_MIB) MiB"
+        }
+    ]
+
+    print "Checking e2e bloat rebuild free space..."
+    print $"  Bloat dump: ($bloat) MiB on ($E2E_A_MOUNT)"
+    print $"  Import working set: ($import_working_set_mib) MiB per side; multiplier=($E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER)x bloat for DB, ETL, static file, and trie writes"
+    print $"  Free-space margin: ($E2E_BLOAT_FREE_MARGIN_MIB) MiB per side"
+
+    mut failed = false
+    for requirement in $requirements {
+        let available_mib = (df-available-mib $requirement.mount)
+        print $"  ($requirement.mount): available=($available_mib) MiB required=($requirement.required_mib) MiB \(($requirement.components)\)"
+        if $available_mib < $requirement.required_mib {
+            $failed = true
+        }
+    }
+
+    if $failed {
+        print "Error: insufficient free space for e2e bloat snapshot rebuild"
+        for requirement in $requirements {
+            let available_mib = (df-available-mib $requirement.mount)
+            if $available_mib < $requirement.required_mib {
+                print $"  ($requirement.mount) needs at least ($requirement.required_mib) MiB, has ($available_mib) MiB"
+            }
+        }
+        exit 1
     }
 }
 
@@ -1360,6 +1394,11 @@ def "main e2e" [
 ] {
     let preset_path = (txgen-preset-path $preset)
     txgen-validate-bench-args $bench_args
+    let general_gas_limit = if $general_gas_limit == "" and (txgen-spec-has-keychain-setup $preset_path) {
+        $gas_limit
+    } else {
+        $general_gas_limit
+    }
     if $tracy not-in ["off" "tracy"] {
         print $"Error: --tracy must be one of: off, tracy \(got '($tracy)'\)"
         exit 1
@@ -1487,6 +1526,9 @@ def "main e2e" [
             exit 1
         }
         if $bloat_mib > 0 {
+            print "Cleaning restored e2e datadirs before bloat snapshot rebuild..."
+            bench-clean-datadir $a_db
+            bench-clean-datadir $b_db
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
