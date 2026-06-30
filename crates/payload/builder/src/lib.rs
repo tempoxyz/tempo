@@ -109,6 +109,7 @@ const SSMR_REPLAY_SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 // Keep recovery bounded; replay execution, BAL, and sparse-trie work also consume CPU.
 const SSMR_REPLAY_RECOVERY_WORKERS: usize = 4;
 const SSMR_REPLAY_RECOVERY_EVENT_QUEUE_CAPACITY: usize = 1024;
+const SSMR_REPLAY_BAL_BATCH_MAX_TXS: usize = 2048;
 
 #[derive(Debug)]
 struct SsmrReplayRecoveryJob {
@@ -289,6 +290,33 @@ impl SsmrReplayProgress {
         PayloadBuilderError::other(std::io::Error::other(
             "SSMR replay recovery closed before finish",
         ))
+    }
+
+    fn collect_ready_bal_batches(
+        &mut self,
+        first_batch: SsmrRecoveredBatch,
+    ) -> Vec<SsmrRecoveredBatch> {
+        let mut tx_count = first_batch.transactions.len();
+        let mut batches = vec![first_batch];
+        while tx_count < SSMR_REPLAY_BAL_BATCH_MAX_TXS {
+            let Some(next_batch) = self.pending_batches.front() else {
+                break;
+            };
+            if next_batch.block_access_list.is_none() {
+                break;
+            }
+            if tx_count > 0
+                && tx_count + next_batch.transactions.len() > SSMR_REPLAY_BAL_BATCH_MAX_TXS
+            {
+                break;
+            }
+            let Some(next_batch) = self.pending_batches.pop_front() else {
+                break;
+            };
+            tx_count += next_batch.transactions.len();
+            batches.push(next_batch);
+        }
+        batches
     }
 }
 
@@ -809,13 +837,15 @@ where
 }
 
 struct SsmrBalReplayJob {
-    local_index: usize,
+    output_index: usize,
+    bal_index: usize,
     global_index: usize,
     tx: SsmrRecoveredTx,
+    bal: Arc<RevmBal>,
 }
 
 struct SsmrBalReplayOutput {
-    local_index: usize,
+    output_index: usize,
     global_index: usize,
     tx: SsmrRecoveredTx,
     is_payment: bool,
@@ -836,7 +866,7 @@ impl SsmrBalReplayTimings {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_ssmr_bal_replay_batch<Provider, E>(
+fn execute_ssmr_bal_replay_batches<Provider, E>(
     task_executor: &TaskExecutor,
     evm_config: &TempoEvmConfig,
     provider: Provider,
@@ -847,7 +877,7 @@ fn execute_ssmr_bal_replay_batch<Provider, E>(
     executor: &mut E,
     roots_tx: &Sender<(BuilderTx, TempoReceipt)>,
     bal_task_handle: Option<&BalTaskHandle>,
-    batch: SsmrRecoveredBatch,
+    batches: Vec<SsmrRecoveredBatch>,
     global_first_tx_index: usize,
     is_t5: bool,
     tx_gas_limit_cap: u64,
@@ -871,66 +901,87 @@ where
         + 'static,
     E: BlockExecutor<Transaction = TempoTxEnvelope, Receipt = TempoReceipt, Result = TempoTxResult>,
 {
-    if batch.transactions.is_empty() {
+    if batches.is_empty() {
         return Ok(SsmrBalReplayTimings::default());
     }
 
-    let Some(encoded_bal) = batch.block_access_list else {
-        return Err(PayloadBuilderError::other(std::io::Error::other(
-            "SSMR BAL replay shard missing BAL data",
-        )));
-    };
     let bal_decode_start = Instant::now();
-    let mut encoded_bal_ref = encoded_bal.as_ref();
-    let alloy_bal = Bal::decode(&mut encoded_bal_ref).map_err(PayloadBuilderError::other)?;
-    let revm_bal = RevmBal::try_from(Vec::<_>::from(alloy_bal))
-        .map_err(|error| PayloadBuilderError::other(std::io::Error::other(format!("{error:?}"))))?;
-    let revm_bal = Arc::new(revm_bal);
-    let bal_decode_elapsed = bal_decode_start.elapsed();
-
+    let mut jobs = Vec::new();
     let mut projected_gas_used = *cumulative_gas_used;
     let mut projected_non_payment_gas_used = *non_payment_gas_used;
-    for tx in &batch.transactions {
-        let max_regular_gas_used =
-            core::cmp::min(tx.transaction.inner().gas_limit(), tx_gas_limit_cap);
-        if projected_gas_used + max_regular_gas_used > non_shared_gas_limit {
-            return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
-                BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                    transaction_gas_limit: tx.transaction.inner().gas_limit(),
-                    block_available_gas: non_shared_gas_limit - projected_gas_used,
-                },
+    for batch in batches {
+        let Some(encoded_bal) = batch.block_access_list else {
+            return Err(PayloadBuilderError::other(std::io::Error::other(
+                "SSMR BAL replay shard missing BAL data",
             )));
-        }
-
-        let is_payment = if is_t5 {
-            tx.transaction.inner().is_payment_v2()
-        } else {
-            tx.transaction.inner().is_payment_v1()
         };
-        if !is_payment && projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
-        {
-            return Err(PayloadBuilderError::other(
-                TempoPoolTransactionError::ExceedsNonPaymentLimit,
-            ));
-        }
-        if is_payment {
-            *payment_transactions += 1;
-        } else {
-            projected_non_payment_gas_used += max_regular_gas_used;
-        }
-        projected_gas_used += max_regular_gas_used;
+        let mut encoded_bal_ref = encoded_bal.as_ref();
+        let alloy_bal = Bal::decode(&mut encoded_bal_ref).map_err(PayloadBuilderError::other)?;
+        let revm_bal = RevmBal::try_from(Vec::<_>::from(alloy_bal)).map_err(|error| {
+            PayloadBuilderError::other(std::io::Error::other(format!("{error:?}")))
+        })?;
+        let revm_bal = Arc::new(revm_bal);
 
-        let estimated_block_size_with_tx = *estimated_rlp_block_size + tx.tx_rlp_length;
-        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length: estimated_block_size_with_tx,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
+        for (bal_index, tx) in batch.transactions.into_iter().enumerate() {
+            let max_regular_gas_used =
+                core::cmp::min(tx.transaction.inner().gas_limit(), tx_gas_limit_cap);
+            if projected_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                return Err(PayloadBuilderError::evm(BlockExecutionError::Validation(
+                    BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                        transaction_gas_limit: tx.transaction.inner().gas_limit(),
+                        block_available_gas: non_shared_gas_limit - projected_gas_used,
+                    },
+                )));
+            }
+
+            let is_payment = if is_t5 {
+                tx.transaction.inner().is_payment_v2()
+            } else {
+                tx.transaction.inner().is_payment_v1()
+            };
+            if !is_payment
+                && projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
+            {
+                return Err(PayloadBuilderError::other(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                ));
+            }
+            if is_payment {
+                *payment_transactions += 1;
+            } else {
+                projected_non_payment_gas_used += max_regular_gas_used;
+            }
+            projected_gas_used += max_regular_gas_used;
+
+            let estimated_block_size_with_tx = *estimated_rlp_block_size + tx.tx_rlp_length;
+            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                    rlp_length: estimated_block_size_with_tx,
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                }));
+            }
+            *estimated_rlp_block_size = estimated_block_size_with_tx;
+
+            let output_index = jobs.len();
+            jobs.push(SsmrBalReplayJob {
+                output_index,
+                bal_index,
+                global_index: global_first_tx_index + output_index,
+                tx,
+                bal: Arc::clone(&revm_bal),
+            });
         }
-        *estimated_rlp_block_size = estimated_block_size_with_tx;
     }
+    let bal_decode_elapsed = bal_decode_start.elapsed();
 
-    let tx_count = batch.transactions.len();
+    let tx_count = jobs.len();
+    if tx_count == 0 {
+        return Ok(SsmrBalReplayTimings {
+            bal_decode_elapsed,
+            worker_execute_elapsed: Duration::ZERO,
+            ordered_commit_elapsed: Duration::ZERO,
+        });
+    }
     let worker_execute_start = Instant::now();
     let worker_count = task_executor
         .bal_streaming_pool()
@@ -949,7 +1000,6 @@ where
             let evm_config = evm_config.clone();
             let evm_env = evm_env.clone();
             let ctx = ctx.clone();
-            let revm_bal = Arc::clone(&revm_bal);
             scope.spawn(move |_| {
                 while let Ok(job) = job_rx.recv() {
                     let result = (|| -> Result<SsmrBalReplayOutput, String> {
@@ -962,7 +1012,7 @@ where
                             .with_database(
                                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
                             )
-                            .with_bal(Arc::clone(&revm_bal))
+                            .with_bal(Arc::clone(&job.bal))
                             .with_bundle_update()
                             .build();
                         let evm = evm_config.evm_with_env(&mut db, evm_env.clone());
@@ -971,7 +1021,7 @@ where
                         worker_executor
                             .evm_mut()
                             .db_mut()
-                            .set_bal_index(BlockAccessIndex::from_tx_index(job.local_index as u64));
+                            .set_bal_index(BlockAccessIndex::from_tx_index(job.bal_index as u64));
                         let is_payment = if is_t5 {
                             job.tx.transaction.inner().is_payment_v2()
                         } else {
@@ -984,7 +1034,7 @@ where
                             })?;
 
                         Ok(SsmrBalReplayOutput {
-                            local_index: job.local_index,
+                            output_index: job.output_index,
                             global_index: job.global_index,
                             tx: job.tx,
                             is_payment,
@@ -1000,15 +1050,8 @@ where
         }
         drop(result_tx);
 
-        for (local_index, tx) in batch.transactions.into_iter().enumerate() {
-            if job_tx
-                .send(SsmrBalReplayJob {
-                    local_index,
-                    global_index: global_first_tx_index + local_index,
-                    tx,
-                })
-                .is_err()
-            {
+        for job in jobs {
+            if job_tx.send(job).is_err() {
                 break;
             }
         }
@@ -1024,7 +1067,7 @@ where
         })?;
         let output =
             output.map_err(|error| PayloadBuilderError::other(std::io::Error::other(error)))?;
-        let Some(slot) = outputs.get_mut(output.local_index) else {
+        let Some(slot) = outputs.get_mut(output.output_index) else {
             return Err(PayloadBuilderError::other(std::io::Error::other(
                 "SSMR BAL replay worker returned out-of-range output",
             )));
@@ -1617,41 +1660,51 @@ where
                     .drain_ready_events(&recovered_events, ssmr_replay_prewarmer.as_ref())?;
 
                 if let Some(batch) = replay_progress.pending_batches.pop_front() {
-                    for tx in &batch.transactions {
-                        ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
-                        if tx.pool_hit {
-                            ssmr_replay_pool_hits += 1;
-                        } else {
-                            ssmr_replay_pool_misses += 1;
-                        }
-                    }
-                    ssmr_replay_decode_elapsed += batch.decode_elapsed;
-                    ssmr_replay_recover_elapsed += batch.recover_elapsed;
-                    ssmr_replay_decode_recover_elapsed +=
-                        batch.decode_elapsed + batch.recover_elapsed;
-
-                    let shard_bal_bytes = batch
-                        .block_access_list
-                        .as_ref()
-                        .map(|bal| bal.len())
-                        .unwrap_or_default();
-                    ssmr_replay_shard_bal_bytes_total += shard_bal_bytes;
-                    ssmr_replay_shard_bal_bytes_last = shard_bal_bytes;
-                    self.metrics
-                        .ssmr_replay_shard_bal_bytes
-                        .record(shard_bal_bytes as f64);
-                    self.metrics
-                        .ssmr_replay_shard_bal_bytes_last
-                        .set(shard_bal_bytes as f64);
-
                     if batch.block_access_list.is_some() {
-                        ssmr_replay_bal_shards += 1;
-                        let tx_count = batch.transactions.len();
+                        replay_progress.drain_ready_events(
+                            &recovered_events,
+                            ssmr_replay_prewarmer.as_ref(),
+                        )?;
+                        let batches = replay_progress.collect_ready_bal_batches(batch);
+                        let tx_count = batches
+                            .iter()
+                            .map(|batch| batch.transactions.len())
+                            .sum::<usize>();
+
+                        for batch in &batches {
+                            for tx in &batch.transactions {
+                                ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
+                                if tx.pool_hit {
+                                    ssmr_replay_pool_hits += 1;
+                                } else {
+                                    ssmr_replay_pool_misses += 1;
+                                }
+                            }
+                            ssmr_replay_decode_elapsed += batch.decode_elapsed;
+                            ssmr_replay_recover_elapsed += batch.recover_elapsed;
+                            ssmr_replay_decode_recover_elapsed +=
+                                batch.decode_elapsed + batch.recover_elapsed;
+
+                            let shard_bal_bytes = batch
+                                .block_access_list
+                                .as_ref()
+                                .map(|bal| bal.len())
+                                .unwrap_or_default();
+                            ssmr_replay_shard_bal_bytes_total += shard_bal_bytes;
+                            ssmr_replay_shard_bal_bytes_last = shard_bal_bytes;
+                            self.metrics
+                                .ssmr_replay_shard_bal_bytes
+                                .record(shard_bal_bytes as f64);
+                            self.metrics
+                                .ssmr_replay_shard_bal_bytes_last
+                                .set(shard_bal_bytes as f64);
+                        }
+                        ssmr_replay_bal_shards += batches.len() as u64;
                         let replay_evm_env = executor.evm().evm_env();
                         let replay_beneficiary = executor.evm().block().beneficiary;
                         let replay_tx_gas_limit_cap =
                             executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX);
-                        let timings = execute_ssmr_bal_replay_batch(
+                        let timings = execute_ssmr_bal_replay_batches(
                             &self.executor,
                             &self.evm_config,
                             self.provider.clone(),
@@ -1662,7 +1715,7 @@ where
                             &mut executor,
                             &roots_tx,
                             bal_task_handle.as_ref(),
-                            batch,
+                            batches,
                             replay_progress.transactions as usize,
                             hardfork.is_t5(),
                             replay_tx_gas_limit_cap,
@@ -1685,11 +1738,38 @@ where
                         pool_transactions_included += tx_count as u64;
                         replay_progress.transactions += tx_count as u64;
                         trace!(
-                            ssmr_replay_shard_transactions = tx_count,
+                            ssmr_replay_batch_transactions = tx_count,
                             ?timings,
-                            "SSMR BAL replay shard executed"
+                            "SSMR BAL replay batch executed"
                         );
                     } else {
+                        for tx in &batch.transactions {
+                            ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
+                            if tx.pool_hit {
+                                ssmr_replay_pool_hits += 1;
+                            } else {
+                                ssmr_replay_pool_misses += 1;
+                            }
+                        }
+                        ssmr_replay_decode_elapsed += batch.decode_elapsed;
+                        ssmr_replay_recover_elapsed += batch.recover_elapsed;
+                        ssmr_replay_decode_recover_elapsed +=
+                            batch.decode_elapsed + batch.recover_elapsed;
+
+                        let shard_bal_bytes = batch
+                            .block_access_list
+                            .as_ref()
+                            .map(|bal| bal.len())
+                            .unwrap_or_default();
+                        ssmr_replay_shard_bal_bytes_total += shard_bal_bytes;
+                        ssmr_replay_shard_bal_bytes_last = shard_bal_bytes;
+                        self.metrics
+                            .ssmr_replay_shard_bal_bytes
+                            .record(shard_bal_bytes as f64);
+                        self.metrics
+                            .ssmr_replay_shard_bal_bytes_last
+                            .set(shard_bal_bytes as f64);
+
                         ssmr_replay_serial_shards += 1;
                         ssmr_replay_missing_bal_shards += 1;
                         for tx in batch.transactions {
@@ -3246,6 +3326,22 @@ mod tests {
         }
     }
 
+    fn ssmr_test_recovered_batch(
+        tx_count: usize,
+        block_access_list: Option<Bytes>,
+    ) -> SsmrRecoveredBatch {
+        SsmrRecoveredBatch {
+            transactions: (0..tx_count)
+                .map(|tx_index| ssmr_test_recovered_transaction(0, tx_index).tx)
+                .collect(),
+            block_access_list,
+            decode_elapsed: Duration::ZERO,
+            recover_elapsed: Duration::ZERO,
+            queue_wait_elapsed: Duration::ZERO,
+            completed_shards: 1,
+        }
+    }
+
     #[test]
     fn ssmr_replay_recovery_waits_for_complete_shard_before_drain() {
         let mut state = SsmrReplayRecoveryState::default();
@@ -3349,6 +3445,31 @@ mod tests {
                 (vec![10, 11], Some(Bytes::from_static(b"c")), 1),
             ]
         );
+    }
+
+    #[test]
+    fn ssmr_replay_collects_only_ready_bal_batches() {
+        let mut progress = SsmrReplayProgress::default();
+        progress
+            .pending_batches
+            .push_back(ssmr_test_recovered_batch(1, Some(Bytes::from_static(b"b"))));
+        progress
+            .pending_batches
+            .push_back(ssmr_test_recovered_batch(1, None));
+        progress
+            .pending_batches
+            .push_back(ssmr_test_recovered_batch(1, Some(Bytes::from_static(b"c"))));
+
+        let batches = progress.collect_ready_bal_batches(ssmr_test_recovered_batch(
+            1,
+            Some(Bytes::from_static(b"a")),
+        ));
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].block_access_list, Some(Bytes::from_static(b"a")));
+        assert_eq!(batches[1].block_access_list, Some(Bytes::from_static(b"b")));
+        assert_eq!(progress.pending_batches.len(), 2);
+        assert!(progress.pending_batches[0].block_access_list.is_none());
     }
 
     #[test]
