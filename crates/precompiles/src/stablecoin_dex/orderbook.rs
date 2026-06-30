@@ -29,6 +29,20 @@ pub enum RoundingDirection {
     Up,
 }
 
+/// Per-order result of stepping a trade across one resting order. Shared by the
+/// swap settlement and the per-order quote so both walk the book identically.
+pub struct OrderStep {
+    /// Base amount filled from this order (`<= order.remaining()`). A value
+    /// strictly below `remaining` means this order terminates the trade.
+    pub fill_amount: u128,
+    /// Amount accumulated into the running total for this fill: taker output for
+    /// exact-in trades, taker input for exact-out trades.
+    pub accumulate: u128,
+    /// Input (exact-in) or output (exact-out) left after fully consuming this
+    /// order. Only meaningful on a full fill.
+    pub next_amount: u128,
+}
+
 /// Convert base token amount to quote token amount at a given tick.
 ///
 /// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
@@ -83,6 +97,96 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     };
 
     result.try_into().ok()
+}
+
+/// Amount the taker receives for filling `fill_amount` base of a resting order
+/// (zero-sum with the maker): selling base into a bid yields quote rounded down,
+/// buying base from an ask yields the base amount exactly.
+///
+/// Shared by the swap settlement (`partial_fill_order`/`fill_order`) and the
+/// per-order quote so both compute the taker output identically.
+pub fn taker_output(fill_amount: u128, tick: i16, bid: bool) -> Option<u128> {
+    if bid {
+        base_to_quote(fill_amount, tick, RoundingDirection::Down)
+    } else {
+        Some(fill_amount)
+    }
+}
+
+/// Per-order arithmetic for an exact-input trade. Pure: depends only on the
+/// order's `remaining`, `tick`, and side. The caller compares `fill_amount`
+/// against `remaining` to decide whether the order is partially or fully consumed.
+pub fn step_exact_in(amount_in: u128, remaining: u128, tick: i16, bid: bool) -> Option<OrderStep> {
+    let fill_amount = if bid {
+        // Selling base: input is base, fill in base.
+        amount_in.min(remaining)
+    } else {
+        // Buying base: input is quote, convert to base (round down, favors protocol).
+        quote_to_base(amount_in, tick, RoundingDirection::Down)?.min(remaining)
+    };
+
+    let accumulate = taker_output(fill_amount, tick, bid)?;
+
+    let next_amount = if bid {
+        amount_in.saturating_sub(remaining)
+    } else {
+        let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
+        if base_out > remaining {
+            // Quote consumed = what the maker receives, rounded up (zero-sum with maker).
+            let quote_needed = base_to_quote(remaining, tick, RoundingDirection::Up)?;
+            amount_in.checked_sub(quote_needed)?
+        } else {
+            0
+        }
+    };
+
+    Some(OrderStep {
+        fill_amount,
+        accumulate,
+        next_amount,
+    })
+}
+
+/// Per-order arithmetic for an exact-output trade. Pure: depends only on the
+/// order's `remaining`, `tick`, and side.
+pub fn step_exact_out(
+    amount_out: u128,
+    remaining: u128,
+    tick: i16,
+    bid: bool,
+) -> Option<OrderStep> {
+    let (fill_amount, accumulate) = if bid {
+        // Receiving quote: round up the base needed to cover the exact output.
+        let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
+        let fill_amount = base_needed.min(remaining);
+        (fill_amount, fill_amount)
+    } else {
+        // Receiving base: input is quote the maker receives, rounded up (zero-sum).
+        let fill_amount = amount_out.min(remaining);
+        let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)?;
+        (fill_amount, amount_in)
+    };
+
+    // The trade carries over only when demand strictly exceeds this order: for a
+    // bid that is the base needed to cover the output, for an ask the output
+    // itself. The carried amount is the output still owed after this full fill.
+    let demand = if bid {
+        quote_to_base(amount_out, tick, RoundingDirection::Up)?
+    } else {
+        amount_out
+    };
+    let next_amount = if demand > remaining {
+        let amount_out_received = taker_output(remaining, tick, bid)?;
+        amount_out.checked_sub(amount_out_received)?
+    } else {
+        0
+    };
+
+    Some(OrderStep {
+        fill_amount,
+        accumulate,
+        next_amount,
+    })
 }
 
 /// Lowest representable scaled price (`PRICE_SCALE + MIN_TICK`).
