@@ -124,8 +124,6 @@ struct SsmrRecoveredTx {
     transaction: Recovered<TempoTxEnvelope>,
     encoded: Bytes,
     tx_rlp_length: usize,
-    pool_lookup_elapsed: Duration,
-    pool_hit: bool,
     decode_elapsed: Duration,
     recover_elapsed: Duration,
     queue_wait_elapsed: Duration,
@@ -453,13 +451,9 @@ impl SsmrReplayRecoveryState {
     }
 }
 
-fn recover_ssmr_replay_transaction<Pool>(
+fn recover_ssmr_replay_transaction(
     job: SsmrReplayRecoveryJob,
-    pool: &Pool,
-) -> Result<SsmrRecoveredTransaction, String>
-where
-    Pool: TransactionPool<Transaction = TempoPooledTransaction>,
-{
+) -> Result<SsmrRecoveredTransaction, String> {
     let SsmrReplayRecoveryJob {
         shard_index,
         tx_index,
@@ -468,31 +462,6 @@ where
     } = job;
     let queue_wait_elapsed = queued_at.elapsed();
     let tx_rlp_length = encoded.len();
-
-    let pool_lookup_start = Instant::now();
-    let tx_hash = keccak256(encoded.as_ref());
-    if let Some(pool_tx) = pool
-        .get(&tx_hash)
-        .filter(|pool_tx| pool_tx.encoded_length() == tx_rlp_length)
-    {
-        let transaction = pool_tx.transaction.clone_into_consensus();
-        let pool_lookup_elapsed = pool_lookup_start.elapsed();
-        return Ok(SsmrRecoveredTransaction {
-            shard_index,
-            tx_index,
-            tx: SsmrRecoveredTx {
-                transaction,
-                encoded,
-                tx_rlp_length,
-                pool_lookup_elapsed,
-                pool_hit: true,
-                decode_elapsed: Duration::ZERO,
-                recover_elapsed: Duration::ZERO,
-                queue_wait_elapsed,
-            },
-        });
-    }
-    let pool_lookup_elapsed = pool_lookup_start.elapsed();
 
     let decode_start = Instant::now();
     let tx = TempoTxEnvelope::decode_2718_exact(encoded.as_ref())
@@ -512,8 +481,6 @@ where
             transaction: Recovered::new_unchecked(tx, sender),
             encoded,
             tx_rlp_length,
-            pool_lookup_elapsed,
-            pool_hit: false,
             decode_elapsed,
             recover_elapsed,
             queue_wait_elapsed,
@@ -624,14 +591,10 @@ fn insert_ssmr_replay_shard(
     true
 }
 
-fn spawn_ssmr_replay_recovery<Pool>(
+fn spawn_ssmr_replay_recovery(
     executor: TaskExecutor,
     replay_source: SsmrReplaySource,
-    pool: Pool,
-) -> Receiver<SsmrRecoveredReplayEvent>
-where
-    Pool: TransactionPool<Transaction = TempoPooledTransaction> + 'static,
-{
+) -> Receiver<SsmrRecoveredReplayEvent> {
     let recovery_worker_count = ssmr_replay_recovery_worker_count();
     let (ready_tx, ready_rx) =
         crossbeam_channel::bounded(SSMR_REPLAY_RECOVERY_EVENT_QUEUE_CAPACITY);
@@ -643,12 +606,11 @@ where
         for worker_index in 0..recovery_worker_count {
             let job_rx = job_rx.clone();
             let recovered_tx = recovered_tx.clone();
-            let pool = pool.clone();
             if let Err(error) = std::thread::Builder::new()
                 .name(format!("ssmr-replay-recovery-worker-{worker_index}"))
                 .spawn(move || {
                     while let Ok(job) = job_rx.recv() {
-                        let event = recover_ssmr_replay_transaction(job, &pool);
+                        let event = recover_ssmr_replay_transaction(job);
                         if recovered_tx.send(event).is_err() {
                             return;
                         }
@@ -1634,9 +1596,9 @@ where
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut validation_wait_elapsed = Duration::ZERO;
         let mut ssmr_replay_wait_elapsed = Duration::ZERO;
-        let mut ssmr_replay_pool_lookup_elapsed = Duration::ZERO;
-        let mut ssmr_replay_pool_hits = 0u64;
-        let mut ssmr_replay_pool_misses = 0u64;
+        let ssmr_replay_pool_lookup_elapsed = Duration::ZERO;
+        let ssmr_replay_pool_hits = 0u64;
+        let ssmr_replay_pool_misses = 0u64;
         let mut ssmr_replay_decode_recover_elapsed = Duration::ZERO;
         let mut ssmr_replay_decode_elapsed = Duration::ZERO;
         let mut ssmr_replay_recover_elapsed = Duration::ZERO;
@@ -1676,8 +1638,7 @@ where
             self.build_time_multiplier()
         };
         let block_build_stop_reason = if let Some(replay_source) = ssmr_replay_source {
-            let recovered_events =
-                spawn_ssmr_replay_recovery(self.executor.clone(), replay_source, self.pool.clone());
+            let recovered_events = spawn_ssmr_replay_recovery(self.executor.clone(), replay_source);
             let ssmr_replay_prewarmer = self.config.enable_prewarming.then(|| {
                 SsmrReplayPrewarmer::new(
                     self.executor.clone(),
@@ -1708,14 +1669,6 @@ where
                             .sum::<usize>();
 
                         for batch in &batches {
-                            for tx in &batch.transactions {
-                                ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
-                                if tx.pool_hit {
-                                    ssmr_replay_pool_hits += 1;
-                                } else {
-                                    ssmr_replay_pool_misses += 1;
-                                }
-                            }
                             ssmr_replay_decode_elapsed += batch.decode_elapsed;
                             ssmr_replay_recover_elapsed += batch.recover_elapsed;
                             ssmr_replay_decode_recover_elapsed +=
@@ -1778,14 +1731,6 @@ where
                             "SSMR BAL replay batch executed"
                         );
                     } else {
-                        for tx in &batch.transactions {
-                            ssmr_replay_pool_lookup_elapsed += tx.pool_lookup_elapsed;
-                            if tx.pool_hit {
-                                ssmr_replay_pool_hits += 1;
-                            } else {
-                                ssmr_replay_pool_misses += 1;
-                            }
-                        }
                         ssmr_replay_decode_elapsed += batch.decode_elapsed;
                         ssmr_replay_recover_elapsed += batch.recover_elapsed;
                         ssmr_replay_decode_recover_elapsed +=
@@ -1812,8 +1757,6 @@ where
                                 transaction: recovered,
                                 encoded,
                                 tx_rlp_length,
-                                pool_lookup_elapsed: _,
-                                pool_hit: _,
                                 decode_elapsed: _,
                                 recover_elapsed: _,
                                 queue_wait_elapsed: _,
@@ -3355,8 +3298,6 @@ mod tests {
                 transaction: Recovered::new_unchecked(tx, TEMPO_SYSTEM_TX_SENDER),
                 encoded: Bytes::from(vec![0; tx_index + 10]),
                 tx_rlp_length: tx_index + 10,
-                pool_lookup_elapsed: Duration::ZERO,
-                pool_hit: false,
                 decode_elapsed: Duration::ZERO,
                 recover_elapsed: Duration::ZERO,
                 queue_wait_elapsed: Duration::ZERO,
