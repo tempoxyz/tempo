@@ -9,6 +9,7 @@ use alloy_primitives::{
     Address, B256, U256,
     map::{AddressMap, U256Map},
 };
+use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
@@ -49,8 +50,9 @@ where
         replay_state.reset_tx_changes();
 
         let result = (|| {
+            // TODO: handle reverted transactions
             if !result.is_success() {
-                return Err(StorageActionReplayFallback::TransactionExecutionFailed.into());
+                return Err(StorageActionReplayError::TransactionExecutionFailed.into());
             }
 
             let state = self
@@ -120,41 +122,41 @@ where
             match action {
                 StorageAction::Sload(address, key, value) => {
                     if replay_state.has_store(address, key) {
-                        return Err(StorageActionReplayFallback::ActionConflict.into());
+                        return Err(StorageActionReplayError::ActionConflict.into());
                     }
                     let _ = replay_state.sload_exact(db, address, key, value)?;
                 }
                 StorageAction::Sstore(address, key, value) => {
                     if replay_state.has_write(address, key) {
-                        return Err(StorageActionReplayFallback::ActionConflict.into());
+                        return Err(StorageActionReplayError::ActionConflict.into());
                     }
                     replay_state.sstore(address, key, value, WriteKind::Store)?;
                 }
                 StorageAction::Sinc(address, key, delta) => {
                     if replay_state.has_store(address, key) {
-                        return Err(StorageActionReplayFallback::ActionConflict.into());
+                        return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
                     let value = replay_state
                         .sload_current(db, address, key)?
                         .checked_add(delta)
-                        .ok_or(StorageActionReplayFallback::Overflow)?;
+                        .ok_or(StorageActionReplayError::Overflow)?;
                     replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::Sdec(address, key, delta) => {
                     if replay_state.has_store(address, key) {
-                        return Err(StorageActionReplayFallback::ActionConflict.into());
+                        return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
                     let value = replay_state
                         .sload_current(db, address, key)?
                         .checked_sub(delta)
-                        .ok_or(StorageActionReplayFallback::Underflow)?;
+                        .ok_or(StorageActionReplayError::Underflow)?;
                     replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
                 StorageAction::FeeAmmSwap(address, key, amount_in) => {
                     if replay_state.has_store(address, key) {
-                        return Err(StorageActionReplayFallback::ActionConflict.into());
+                        return Err(StorageActionReplayError::ActionConflict.into());
                     }
 
                     let pool_slot = replay_state.sload_current(db, address, key)?;
@@ -162,12 +164,12 @@ where
                     pool.apply_swap(
                         amount_in,
                         compute_amount_out(amount_in)
-                            .map_err(|_| StorageActionReplayFallback::ActionConflict)?,
+                            .map_err(|_| StorageActionReplayError::ActionConflict)?,
                     )
-                    .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+                    .map_err(|_| StorageActionReplayError::ActionConflict)?;
                     let value = pool
                         .encode_to_slot()
-                        .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+                        .map_err(|_| StorageActionReplayError::ActionConflict)?;
                     replay_state.sstore(address, key, value, WriteKind::Delta)?;
                 }
             }
@@ -226,7 +228,7 @@ where
             || expiring_nonce.valid_before
                 > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
-            return Err(StorageActionReplayFallback::ActionConflict.into());
+            return Err(StorageActionReplayError::ActionConflict.into());
         }
 
         let db = self.evm_mut().db_mut();
@@ -240,12 +242,12 @@ where
             .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)
             .map_err(BlockExecutionError::other)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
-            return Err(StorageActionReplayFallback::ActionConflict.into());
+            return Err(StorageActionReplayError::ActionConflict.into());
         }
 
         let ptr_u32 = ptr
             .try_into()
-            .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
+            .map_err(|_| StorageActionReplayError::ActionConflict)?;
         let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
         let old_hash = db
             .storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)
@@ -256,7 +258,7 @@ where
                 .storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)
                 .map_err(BlockExecutionError::other)?;
             if !old_expiry.is_zero() && old_expiry > now {
-                return Err(StorageActionReplayFallback::ActionConflict.into());
+                return Err(StorageActionReplayError::ActionConflict.into());
             }
             replay_state.record_sstore(
                 NONCE_PRECOMPILE_ADDRESS,
@@ -330,7 +332,7 @@ pub struct ExpiringNonceReplay {
 
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum StorageActionReplayFallback {
+pub enum StorageActionReplayError {
     #[error("transaction execution failed")]
     TransactionExecutionFailed,
     #[error("storage action conflict")]
@@ -341,18 +343,27 @@ pub enum StorageActionReplayFallback {
     Underflow,
 }
 
-impl StorageActionReplayFallback {
+impl StorageActionReplayError {
     /// Returns the replay fallback reason carried by a [`BlockExecutionError`], if any.
     pub fn from_block_execution_error(error: &BlockExecutionError) -> Option<Self> {
         match error {
-            BlockExecutionError::Internal(error) => error.downcast_other::<Self>().copied(),
+            BlockExecutionError::Internal(error) => {
+                Self::from_internal_block_execution_error(error)
+            }
             _ => None,
         }
     }
+
+    /// Returns the replay fallback reason carried by an [`InternalBlockExecutionError`], if any.
+    pub fn from_internal_block_execution_error(
+        error: &InternalBlockExecutionError,
+    ) -> Option<Self> {
+        error.downcast_other::<Self>().copied()
+    }
 }
 
-impl From<StorageActionReplayFallback> for BlockExecutionError {
-    fn from(reason: StorageActionReplayFallback) -> Self {
+impl From<StorageActionReplayError> for BlockExecutionError {
+    fn from(reason: StorageActionReplayError) -> Self {
         Self::other(reason)
     }
 }
@@ -404,7 +415,7 @@ impl StorageActionReplayState {
             .tx_changes
             .get_mut(&address)
             .and_then(|slots| slots.get_mut(&slot))
-            .ok_or(StorageActionReplayFallback::ActionConflict)?;
+            .ok_or(StorageActionReplayError::ActionConflict)?;
         change.current = value;
 
         // Absolute stores are non-commutative, so they dominate deltas when
@@ -453,7 +464,7 @@ impl StorageActionReplayState {
         match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => {
                 if change.get().current != expected {
-                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                    return Err(StorageActionReplayError::ActionConflict.into());
                 }
                 Ok(change.get().current)
             }
@@ -462,7 +473,7 @@ impl StorageActionReplayState {
                     .storage(address, slot)
                     .map_err(BlockExecutionError::other)?;
                 if current != expected {
-                    return Err(StorageActionReplayFallback::ActionConflict.into());
+                    return Err(StorageActionReplayError::ActionConflict.into());
                 }
 
                 change.insert(SlotChange {
@@ -612,8 +623,8 @@ mod tests {
             .sload_exact(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
-            StorageActionReplayFallback::from_block_execution_error(&err),
-            Some(StorageActionReplayFallback::ActionConflict)
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
         );
     }
 
@@ -638,8 +649,8 @@ mod tests {
             .sload_exact(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
-            StorageActionReplayFallback::from_block_execution_error(&err),
-            Some(StorageActionReplayFallback::ActionConflict)
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
         );
     }
 
@@ -659,8 +670,8 @@ mod tests {
             .sload_exact(&mut db, address, slot, U256::from(10))
             .unwrap_err();
         assert_eq!(
-            StorageActionReplayFallback::from_block_execution_error(&err),
-            Some(StorageActionReplayFallback::ActionConflict)
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
         );
     }
 
@@ -674,8 +685,8 @@ mod tests {
             .sstore(address, slot, U256::from(11), WriteKind::Store)
             .unwrap_err();
         assert_eq!(
-            StorageActionReplayFallback::from_block_execution_error(&err),
-            Some(StorageActionReplayFallback::ActionConflict)
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
         );
     }
 

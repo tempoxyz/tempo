@@ -71,7 +71,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplay, StorageActionReplayFallback, StorageActionReplayState, TempoEvmConfig,
+    StorageActionReplay, StorageActionReplayError, StorageActionReplayState, TempoEvmConfig,
     TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
@@ -867,33 +867,28 @@ where
                     })) => {
                         return Err(PayloadBuilderError::evm(err));
                     }
-                    err => {
-                        invalid_pool_transaction_execution_attempts += 1;
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-
+                    BlockExecutionError::Internal(err) => {
                         if let Some(err) =
-                            StorageActionReplayFallback::from_block_execution_error(&err)
+                            StorageActionReplayError::from_internal_block_execution_error(&err)
                         {
+                            invalid_pool_transaction_execution_attempts += 1;
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_replay");
                             trace!(
                                 target: "payload_builder",
                                 tx_hash = ?tx.hash(),
                                 ?err,
                                 "Skipping invalid replay transaction"
                             );
+                            continue;
                         } else {
-                            trace!(
-                                target: "payload_builder",
-                                tx_hash = ?tx.hash(),
-                                ?err,
-                                "Skipping invalid transaction"
-                            );
+                            return Err(PayloadBuilderError::evm(err));
                         }
-                        continue;
                     }
                 }
             }
