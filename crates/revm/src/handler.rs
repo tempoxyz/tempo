@@ -3996,6 +3996,35 @@ mod tests {
     }
 
     #[test]
+    fn test_pre_t0_2d_nonce_gas_underflow_does_not_panic() {
+        let gas_limit = 22_000;
+        let mut aa_env = make_aa_env(vec![Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }]);
+        aa_env.nonce_key = U256::ONE;
+
+        let mut test = TestHandlerEvm::aa(TempoHardfork::Genesis, aa_env, |tx_env| {
+            tx_env.inner.gas_limit = gas_limit;
+        });
+        let init_gas = test.validate_initial_tx_gas();
+
+        assert!(
+            init_gas.initial_total_gas() > gas_limit,
+            "test setup should exercise the pre-T0 path where 2D nonce gas exceeds the tx gas limit"
+        );
+
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test.execute(&init_gas)));
+
+        assert!(
+            result.is_ok(),
+            "pre-T0 AA execution with post-validation 2D nonce gas should not panic"
+        );
+    }
+
+    #[test]
     fn test_t3_scope_validation_moves_to_execution() {
         const CALL_SCOPE_SELECTOR: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
