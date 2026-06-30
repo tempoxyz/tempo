@@ -141,20 +141,31 @@ impl PrimitiveSignature {
             return Err("Signature data too short: expected type identifier + signature data");
         }
 
-        let type_id = data[0];
-        let sig_data = &data[1..];
+        let (&type_id, sig_data) = data.split_first().expect("signature data length checked");
 
         match type_id {
             SIGNATURE_TYPE_P256 => {
                 if sig_data.len() != P256_SIGNATURE_LENGTH {
                     return Err("Invalid P256 signature length");
                 }
+                let (r, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("P256 signature length checked");
+                let (s, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("P256 signature length checked");
+                let (pub_key_x, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("P256 signature length checked");
+                let (pub_key_y, pre_hash) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("P256 signature length checked");
                 Ok(Self::P256(P256SignatureWithPreHash {
-                    r: B256::from_slice(&sig_data[0..32]),
-                    s: B256::from_slice(&sig_data[32..64]),
-                    pub_key_x: B256::from_slice(&sig_data[64..96]),
-                    pub_key_y: B256::from_slice(&sig_data[96..128]),
-                    pre_hash: sig_data[128] != 0,
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    pre_hash: pre_hash[0] != 0,
                 }))
             }
             SIGNATURE_TYPE_WEBAUTHN => {
@@ -162,12 +173,22 @@ impl PrimitiveSignature {
                 if !(128..=MAX_WEBAUTHN_SIGNATURE_LENGTH).contains(&len) {
                     return Err("Invalid WebAuthn signature length");
                 }
+                let (webauthn_data, sig_data) = sig_data.split_at(len - 128);
+                let (r, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (s, sig_data) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
+                let (pub_key_x, pub_key_y) = sig_data
+                    .split_first_chunk::<32>()
+                    .expect("WebAuthn signature length checked");
                 Ok(Self::WebAuthn(WebAuthnSignature {
-                    r: B256::from_slice(&sig_data[len - 128..len - 96]),
-                    s: B256::from_slice(&sig_data[len - 96..len - 64]),
-                    pub_key_x: B256::from_slice(&sig_data[len - 64..len - 32]),
-                    pub_key_y: B256::from_slice(&sig_data[len - 32..]),
-                    webauthn_data: Bytes::copy_from_slice(&sig_data[..len - 128]),
+                    r: B256::from_slice(r),
+                    s: B256::from_slice(s),
+                    pub_key_x: B256::from_slice(pub_key_x),
+                    pub_key_y: B256::from_slice(pub_key_y),
+                    webauthn_data: Bytes::copy_from_slice(webauthn_data),
                 }))
             }
 
