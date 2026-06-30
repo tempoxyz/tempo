@@ -74,6 +74,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T8 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t8_time: Option<u64>,
+    /// Activation timestamp for T9 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t9_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -830,6 +833,8 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783605600));
             assert_eq!(cs.tempo_hardfork_at(1783605600), TempoHardfork::T7);
+            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
         }
 
@@ -910,6 +915,8 @@ mod tests {
             // At and after T7 activation
             assert!(cs.is_t7_active_at_timestamp(1783000800));
             assert_eq!(cs.tempo_hardfork_at(1783000800), TempoHardfork::T7);
+            assert!(!cs.is_t8_active_at_timestamp(u64::MAX));
+            assert!(!cs.is_t9_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T7);
         }
 
