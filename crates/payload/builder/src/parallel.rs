@@ -21,6 +21,10 @@ where
     }
 
     let replay = WorkerPool::with_worker_mut(|worker| {
+        if !is_replay_candidate(&tx) {
+            return None;
+        }
+
         let Some(evm) = worker.get_or_init(|| prewarm.evm_for_ctx()) else {
             return None;
         };
@@ -28,11 +32,6 @@ where
         let tx_hash = *tx.hash();
 
         if prewarm.is_stopped() {
-            return None;
-        }
-
-        if !is_replay_candidate(&tx) {
-            evm.clear_actions();
             return None;
         }
 
@@ -72,22 +71,9 @@ where
         }
         .result;
 
-        if !result.is_success() {
-            evm.clear_actions();
-            trace!(
-                target: "payload_builder",
-                ?tx_hash,
-                result = ?result,
-                "Prewarm action collection produced non-success result"
-            );
-            return None;
-        }
-
-        let actions = evm.take_actions()?;
-
         Some(Box::new(StorageActionReplay {
             result,
-            actions,
+            actions: evm.take_actions()?,
             validator_fee: evm.validator_fee(),
             expiring_nonce,
         }))

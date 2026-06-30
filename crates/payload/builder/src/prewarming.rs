@@ -352,7 +352,15 @@ where
         }
 
         let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm = TempoEvm::new(state_provider, self.evm_env.clone());
+
+        let mut evm_env = self.evm_env.clone();
+
+        if !self.parallel {
+            evm_env.cfg_env.disable_nonce_check = true;
+            evm_env.cfg_env.disable_balance_check = true;
+        }
+
+        let mut evm = TempoEvm::new(state_provider, evm_env);
 
         // Record storage actions for future replay
         if self.parallel {

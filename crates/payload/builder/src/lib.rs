@@ -40,9 +40,7 @@ use reth_engine_tree::tree::{
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{
-        BlockExecutionError, BlockExecutor, BlockValidationError, InternalBlockExecutionError,
-    },
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -788,16 +786,14 @@ where
             };
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
-                let execution_outcome = executor.execute_transaction_with_actions(
+                parallel_transactions_executed += 1;
+                executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
                     &mut action_replay_state,
                     result_closure,
                     bal_task_handle.is_some(),
-                );
-
-                parallel_transactions_executed += 1;
-                execution_outcome.result
+                )
             } else {
                 action_replay_state.invalidate_expiring_nonce_cache();
                 executor
@@ -834,12 +830,6 @@ where
                         }
                         continue;
                     }
-                    err @ (BlockExecutionError::Validation(_)
-                    | BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
-                        ..
-                    })) => {
-                        return Err(PayloadBuilderError::evm(err));
-                    }
                     BlockExecutionError::Internal(err) => {
                         if let Some(err) =
                             StorageActionReplayError::from_internal_block_execution_error(&err)
@@ -863,6 +853,7 @@ where
                             return Err(PayloadBuilderError::evm(err));
                         }
                     }
+                    _ => return Err(PayloadBuilderError::evm(err)),
                 }
             }
 

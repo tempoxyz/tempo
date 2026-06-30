@@ -38,7 +38,7 @@ where
         replay_state: &mut StorageActionReplayState,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
-    ) -> StorageActionReplayOutcome {
+    ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
@@ -49,52 +49,49 @@ where
         } = replay;
         replay_state.reset_tx_changes();
 
-        let result = (|| {
-            // TODO: handle reverted transactions
-            if !result.is_success() {
-                return Err(StorageActionReplayError::TransactionExecutionFailed.into());
-            }
+        // TODO: handle reverted transactions
+        if !result.is_success() {
+            return Err(StorageActionReplayError::TransactionExecutionFailed.into());
+        }
 
-            let state = self
-                .replay_actions(
-                    tx_env.caller(),
-                    actions.drain(..),
-                    replay_state,
-                    commit_reads,
-                    expiring_nonce,
-                )
-                .inspect_err(|_| {
-                    replay_state.reset_tx_changes();
-                })?;
+        let state = self
+            .replay_actions(
+                tx_env.caller(),
+                actions.drain(..),
+                replay_state,
+                commit_reads,
+                expiring_nonce,
+            )
+            .inspect_err(|_| {
+                replay_state.reset_tx_changes();
+            })?;
 
-            let cfg = self.inner.evm.cfg_env().clone();
-            let gas = result.gas();
-            let block_gas_used = if cfg.enable_amsterdam_eip8037 {
-                gas.block_regular_gas_used()
-            } else {
-                gas.tx_gas_used()
-            };
-            let next_section = self
-                .validate_tx(recovered.tx(), block_gas_used)
-                .map_err(BlockExecutionError::from)?;
+        let cfg = self.inner.evm.cfg_env().clone();
+        let gas = result.gas();
+        let block_gas_used = if cfg.enable_amsterdam_eip8037 {
+            gas.block_regular_gas_used()
+        } else {
+            gas.tx_gas_used()
+        };
+        let next_section = self
+            .validate_tx(recovered.tx(), block_gas_used)
+            .map_err(BlockExecutionError::from)?;
 
-            let result = TempoTxResult::new_precomputed(
-                recovered.tx(),
-                result,
-                state,
-                next_section,
-                self.is_payment(recovered.tx()),
-                block_gas_used,
-                validator_fee,
-            );
-            result_closure(&result);
+        let result = TempoTxResult::new_precomputed(
+            recovered.tx(),
+            result,
+            state,
+            next_section,
+            self.is_payment(recovered.tx()),
+            block_gas_used,
+            validator_fee,
+        );
+        result_closure(&result);
 
-            self.commit_transaction(result);
-            replay_state.commit_tx_changes();
-            Ok(())
-        })();
+        self.commit_transaction(result);
+        replay_state.commit_tx_changes();
 
-        StorageActionReplayOutcome { actions, result }
+        Ok(())
     }
 
     fn replay_actions(
@@ -121,9 +118,8 @@ where
 
             match action {
                 StorageAction::Sload(address, key, value) => {
-                    if replay_state.has_store(address, key) {
-                        return Err(StorageActionReplayError::ActionConflict.into());
-                    }
+                    // We don't need to check `replay_state.has_store` here,
+                    // as `sload_exact` is already checking it
                     let _ = replay_state.sload_exact(db, address, key, value)?;
                 }
                 StorageAction::Sstore(address, key, value) => {
