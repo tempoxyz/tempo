@@ -14,7 +14,6 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::trace;
 
@@ -63,19 +62,11 @@ impl BestTransactionsPrewarming {
                         commands_tx,
                         prewarm,
                         next_expiring_nonce_offset: 0,
-                        action_buffers: Vec::new(),
                     },
                 );
             });
 
         this
-    }
-
-    pub(crate) fn recycle_actions(&self, mut actions: Vec<StorageAction>) {
-        actions.clear();
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::RecycleActions(actions));
     }
 
     /// Runs the coordinator side of prewarming for a payload build.
@@ -113,7 +104,6 @@ impl BestTransactionsPrewarming {
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
-                let action_buffer = parallel.then(|| ctx.action_buffers.pop()).flatten();
 
                 if !parallel {
                     let _ = ctx
@@ -123,12 +113,8 @@ impl BestTransactionsPrewarming {
 
                 scope.spawn(move |_| {
                     if parallel {
-                        let tx = parallel::plan_transaction_replay(
-                            prewarm,
-                            tx,
-                            action_buffer,
-                            expiring_nonce_offset,
-                        );
+                        let tx =
+                            parallel::plan_transaction_replay(prewarm, tx, expiring_nonce_offset);
                         let _ = transactions_tx.send(Some(tx));
                     } else {
                         Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
@@ -175,10 +161,6 @@ impl BestTransactionsPrewarming {
                         ctx.prewarm.stop();
                         drop(drain_rx);
                         return;
-                    }
-                    BestTransactionsCommand::RecycleActions(mut actions) => {
-                        actions.clear();
-                        ctx.action_buffers.push(actions);
                     }
                 }
             }
@@ -292,7 +274,6 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_expiring_nonce_offset: usize,
-    action_buffers: Vec<Vec<StorageAction>>,
 }
 
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
@@ -300,16 +281,11 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 pub(crate) struct PrewarmedTransaction {
     pub(crate) tx: BestTransaction,
     pub(crate) replay: Option<Box<StorageActionReplay>>,
-    pub(crate) action_buffer: Option<Vec<StorageAction>>,
 }
 
 impl PrewarmedTransaction {
     pub(crate) fn without_replay(tx: BestTransaction) -> Self {
-        Self {
-            tx,
-            replay: None,
-            action_buffer: None,
-        }
+        Self { tx, replay: None }
     }
 }
 
@@ -416,7 +392,6 @@ enum BestTransactionsCommand {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
     },
-    RecycleActions(Vec<StorageAction>),
 }
 
 /// Invalid transaction encountered during execution.

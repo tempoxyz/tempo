@@ -3,7 +3,6 @@ use reth_revm::ExecuteEvm;
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::WorkerPool;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay};
-use tempo_precompiles::storage::StorageAction;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
@@ -12,18 +11,13 @@ use crate::prewarming::{PrewarmedTransaction, PrewarmingExecutionContext};
 pub(crate) fn plan_transaction_replay<Provider>(
     prewarm: PrewarmingExecutionContext<Provider>,
     tx: BestTransaction,
-    mut action_buffer: Option<Vec<StorageAction>>,
     expiring_nonce_offset: Option<usize>,
 ) -> PrewarmedTransaction
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
     if prewarm.is_stopped() {
-        return PrewarmedTransaction {
-            tx,
-            replay: None,
-            action_buffer,
-        };
+        return PrewarmedTransaction { tx, replay: None };
     }
 
     let replay = WorkerPool::with_worker_mut(|worker| {
@@ -89,7 +83,7 @@ where
             return None;
         }
 
-        let actions = evm.replace_actions(action_buffer.take().unwrap_or_default())?;
+        let actions = evm.take_actions()?;
 
         Some(Box::new(StorageActionReplay {
             result,
@@ -99,11 +93,7 @@ where
         }))
     });
 
-    PrewarmedTransaction {
-        tx,
-        replay,
-        action_buffer,
-    }
+    PrewarmedTransaction { tx, replay }
 }
 
 fn is_replay_candidate(tx: &BestTransaction) -> bool {

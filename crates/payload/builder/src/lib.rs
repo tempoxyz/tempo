@@ -71,16 +71,13 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplay, StorageActionReplayError, StorageActionReplayState, TempoEvmConfig,
+    StorageActionReplayError, StorageActionReplayState, TempoEvmConfig,
     TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
 };
-use tempo_precompiles::{
-    storage::{StorageAction, StorageActions},
-    validator_config_v2::ValidatorConfigV2,
-};
+use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -124,21 +121,6 @@ impl PayloadTransactions {
             Self::Sequential(txs) => txs.mark_invalid(&tx.tx, kind),
             Self::Prewarming(txs) => txs.mark_invalid(tx, kind),
             Self::Parallel(prewarming) => prewarming.mark_invalid(tx, kind),
-        }
-    }
-
-    /// Recycle storage actions for future reuse to avoid allocations.
-    fn recycle_actions(&mut self, actions: Vec<StorageAction>) {
-        match self {
-            Self::Sequential(_) | Self::Prewarming(_) => {}
-            Self::Parallel(prewarming) => prewarming.recycle_actions(actions),
-        }
-    }
-
-    /// Recycle replay data for future reuse to avoid allocations.
-    fn recycle_replay(&mut self, replay: Option<Box<StorageActionReplay>>) {
-        if let Some(replay) = replay {
-            self.recycle_actions(replay.actions);
         }
     }
 
@@ -719,9 +701,6 @@ where
                 };
                 break stop_reason;
             };
-            if let Some(actions) = pool_tx.action_buffer.take() {
-                best_txs.recycle_actions(actions);
-            }
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
 
@@ -745,7 +724,6 @@ where
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
@@ -766,7 +744,6 @@ where
                 );
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
@@ -788,7 +765,6 @@ where
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
-                best_txs.recycle_replay(pool_tx.replay);
                 continue;
             }
 
@@ -819,7 +795,6 @@ where
                     result_closure,
                     bal_task_handle.is_some(),
                 );
-                best_txs.recycle_actions(execution_outcome.actions);
 
                 parallel_transactions_executed += 1;
                 execution_outcome.result
