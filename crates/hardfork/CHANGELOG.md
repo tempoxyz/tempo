@@ -1,5 +1,11 @@
 # Changelog
 
+## `tempo-hardfork@1.10.0`
+
+### Minor Changes
+
+- Bump the Tempo SDK crate set to the `1.10` minor release. (by @DerekCofausper, [#6610](https://github.com/tempoxyz/tempo/pull/6610))
+
 ## `tempo-hardfork@1.9.1`
 
 
