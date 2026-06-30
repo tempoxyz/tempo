@@ -22,7 +22,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::{ExecutionResult, ResultAndState},
+    context::result::ResultAndState,
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -259,41 +259,24 @@ where
         Ok(())
     }
 
-    fn transact_precompile_system_call(
-        &mut self,
-        contract: Address,
-        data: Bytes,
-        context: &str,
-    ) -> Result<(), BlockExecutionError> {
-        let result_and_state = self
-            .evm_mut()
-            .transact_system_call(Address::ZERO, contract, data)
-            .map_err(|err| {
-                BlockExecutionError::msg(format!("{context} system call failed: {err}"))
-            })?;
-
-        match result_and_state.result {
-            ExecutionResult::Success { .. } => {
-                self.evm_mut().db_mut().commit(result_and_state.state);
-                Ok(())
-            }
-            ExecutionResult::Revert { output, .. } => Err(BlockExecutionError::msg(format!(
-                "{context} system call reverted: {output}"
-            ))),
-            ExecutionResult::Halt { reason, .. } => Err(BlockExecutionError::msg(format!(
-                "{context} system call halted: {reason:?}"
-            ))),
-        }
-    }
-
     /// Activates a scheduled feature head once the consensus epoch reaches the target epoch.
-    fn activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
-        let call = IFeatureRegistry::activateScheduledFeatureHeadCall {};
-        self.transact_precompile_system_call(
-            FEATURE_REGISTRY_ADDRESS,
-            call.abi_encode().into(),
-            "feature head activation",
-        )?;
+    fn maybe_activate_scheduled_feature_head(&mut self) -> Result<(), BlockExecutionError> {
+        let calldata = IFeatureRegistry::activateScheduledFeatureHeadCall {}
+            .abi_encode()
+            .into();
+
+        let result = self
+            .evm_mut()
+            .transact_system_call(Address::ZERO, FEATURE_REGISTRY_ADDRESS, calldata)
+            .map_err(BlockExecutionError::other)?;
+
+        if !result.result.is_success() {
+            return Err(
+                BlockValidationError::msg("feature head activation system call failed").into(),
+            );
+        }
+
+        self.evm_mut().db_mut().commit(result.state);
 
         Ok(())
     }
@@ -636,12 +619,11 @@ where
         if self.inner.spec.is_t8_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS)?;
         }
-        let t9_active_at_timestamp = self.inner.spec.is_t9_active_at_timestamp(timestamp);
-        if t9_active_at_timestamp {
+        if self.inner.spec.is_t9_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
-        }
-        if t9_active_at_timestamp && self.evm().cfg.spec.is_t9() && self.is_first_block_of_epoch() {
-            self.activate_scheduled_feature_head()?;
+            if self.is_first_block_of_epoch() {
+                self.maybe_activate_scheduled_feature_head()?;
+            }
         }
 
         Ok(())
