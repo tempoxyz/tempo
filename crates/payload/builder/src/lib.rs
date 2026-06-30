@@ -876,7 +876,6 @@ fn execute_ssmr_bal_replay_batches<Provider, E>(
     beneficiary: Address,
     executor: &mut E,
     roots_tx: &Sender<(BuilderTx, TempoReceipt)>,
-    bal_task_handle: Option<&BalTaskHandle>,
     batches: Vec<SsmrRecoveredBatch>,
     global_first_tx_index: usize,
     is_t5: bool,
@@ -1096,9 +1095,6 @@ where
         *total_fees += output.result.validator_fee();
 
         let _ = executor.commit_transaction(output.result);
-        if let Some(bal_task_handle) = bal_task_handle {
-            bal_task_handle.bump_bal_index();
-        }
         let receipt = executor.receipts().last().unwrap().clone();
         if !receipt.success {
             *reverted_transactions += 1;
@@ -1554,6 +1550,10 @@ where
         })?;
         if let Some(bal_task_handle) = &bal_task_handle {
             bal_task_handle.bump_bal_index();
+            executor
+                .evm_mut()
+                .db_mut()
+                .set_state_hook(Some(Box::new(bal_task_handle.transaction_state_hook())));
         }
 
         check_cancel!();
@@ -1714,7 +1714,6 @@ where
                             replay_beneficiary,
                             &mut executor,
                             &roots_tx,
-                            bal_task_handle.as_ref(),
                             batches,
                             replay_progress.transactions as usize,
                             hardfork.is_t5(),
@@ -1837,9 +1836,6 @@ where
                                 })
                                 .map_err(PayloadBuilderError::evm)?;
                             ssmr_replay_execute_elapsed += execute_start.elapsed();
-                            if let Some(bal_task_handle) = &bal_task_handle {
-                                bal_task_handle.bump_bal_index();
-                            }
 
                             pool_transactions_yielded += 1;
                             pool_transactions_included += 1;
@@ -2098,9 +2094,6 @@ where
                     }
                 };
                 trace!("Transaction executed");
-                if let Some(bal_task_handle) = &bal_task_handle {
-                    bal_task_handle.bump_bal_index();
-                }
 
                 pool_transactions_included += 1;
                 estimated_rlp_block_size += tx_rlp_length;
@@ -2198,9 +2191,6 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
-                if let Some(bal_task_handle) = &bal_task_handle {
-                    bal_task_handle.bump_bal_index();
-                }
 
                 subblock_tx_count += 1.0;
                 let receipt = executor.receipts().last().unwrap().clone();
@@ -2252,9 +2242,6 @@ where
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
 
             let encoded_2718 = maybe_push_ssmr_transaction(
                 &mut ssmr_packer,
@@ -2731,6 +2718,13 @@ where
                             state_root_task_hook.on_state(state);
                         }
                     }
+                    BalMessage::TransactionState(state) => {
+                        bal_state.commit(&state);
+                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
+                            state_root_task_hook.on_state(state);
+                        }
+                        bal_state.bump_index();
+                    }
                 }
             }
 
@@ -2755,6 +2749,13 @@ impl BalTaskHandle {
         let msg_tx = self.msg_tx.clone();
         move |state: EvmState| {
             let _ = msg_tx.send(BalMessage::State(state));
+        }
+    }
+
+    fn transaction_state_hook(&self) -> impl OnStateHook {
+        let msg_tx = self.msg_tx.clone();
+        move |state: EvmState| {
+            let _ = msg_tx.send(BalMessage::TransactionState(state));
         }
     }
 
@@ -2785,6 +2786,7 @@ impl BalTaskHandle {
 
 enum BalMessage {
     State(EvmState),
+    TransactionState(EvmState),
     BumpIndex,
     Snapshot {
         first_tx_index: u64,
