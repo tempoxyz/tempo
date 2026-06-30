@@ -9,11 +9,10 @@ use alloy_primitives::{
     Address, B256, U256,
     map::{AddressMap, U256Map},
 };
-use reth_evm::block::StateDB;
 use reth_revm::{
     Database as _, Inspector, State,
     context::{Transaction as _, result::ExecutionResult},
-    state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
+    state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
@@ -28,17 +27,14 @@ where
     DB: Database,
     I: Inspector<TempoContext<&'a mut State<DB>>>,
 {
-    /// Commits one precomputed transaction by replaying recorded storage actions.
+    /// Commits a precomputed transaction by replaying recorded storage actions.
     ///
-    /// `should_commit` observes the result before state mutation. Returning `false` leaves
-    /// executor state unchanged, allowing the payload builder to stop at the exact block gas
-    /// boundary.
+    /// `result_closure` observes the synthesized result before the replayed state is committed.
     pub fn execute_transaction_with_actions(
         &mut self,
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
         replay_state: &mut StorageActionReplayState,
-        transaction_index: usize,
         result_closure: impl FnOnce(&TempoTxResult),
         commit_reads: bool,
     ) -> StorageActionReplayOutcome {
@@ -54,9 +50,7 @@ where
 
         let result = (|| {
             if !result.is_success() {
-                return Err(StorageActionReplayExecutionError::Fallback(
-                    StorageActionReplayFallback::ActionExecutionFailed,
-                ));
+                return Err(StorageActionReplayFallback::TransactionExecutionFailed.into());
             }
 
             let state = self
@@ -78,12 +72,9 @@ where
             } else {
                 gas.tx_gas_used()
             };
-            let next_section =
-                self.validate_tx(recovered.tx(), block_gas_used)
-                    .map_err(|error| StorageActionReplayExecutionError::Validation {
-                        transaction_index,
-                        error: error.into(),
-                    })?;
+            let next_section = self
+                .validate_tx(recovered.tx(), block_gas_used)
+                .map_err(BlockExecutionError::from)?;
 
             let result = TempoTxResult::new_precomputed(
                 recovered.tx(),
@@ -111,7 +102,7 @@ where
         replay_state: &mut StorageActionReplayState,
         commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
-    ) -> Result<EvmState, StorageActionReplayExecutionError> {
+    ) -> Result<EvmState, BlockExecutionError> {
         let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
         let is_expiring_nonce = expiring_nonce.is_some();
 
@@ -185,7 +176,10 @@ where
         let mut state = EvmState::default();
 
         if commit_reads {
-            let account = state_account_info(db, sender)?;
+            let account = db
+                .basic(sender)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
             let mut account = Account::from(account);
             account.mark_touch();
             state.insert(sender, account);
@@ -198,8 +192,11 @@ where
                 }
 
                 if let Entry::Vacant(e) = state.entry(*address) {
-                    let mut account = Account::from(state_account_info(db, *address)?);
-                    account.mark_touch();
+                    let account = Account::from(
+                        db.basic(*address)
+                            .map_err(BlockExecutionError::other)?
+                            .unwrap_or_default(),
+                    );
                     e.insert(account);
                 }
                 let account = state
@@ -224,7 +221,7 @@ where
         replay_state: &mut StorageActionReplayState,
         expiring_nonce: ExpiringNonceReplay,
         block_timestamp: u64,
-    ) -> Result<(), StorageActionReplayExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         if expiring_nonce.valid_before <= block_timestamp
             || expiring_nonce.valid_before
                 > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
@@ -239,7 +236,9 @@ where
         let ptr = replay_state.expiring_nonce.ring_ptr(db)?;
 
         let seen_slot = nonce_manager.expiring_nonce_seen[expiring_nonce.hash].slot();
-        let seen_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
+        let seen_expiry = db
+            .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot)
+            .map_err(BlockExecutionError::other)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
             return Err(StorageActionReplayFallback::ActionConflict.into());
         }
@@ -248,10 +247,14 @@ where
             .try_into()
             .map_err(|_| StorageActionReplayFallback::ActionConflict)?;
         let ring_slot = nonce_manager.expiring_nonce_ring[ptr_u32].slot();
-        let old_hash = state_storage(db, NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
+        let old_hash = db
+            .storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)
+            .map_err(BlockExecutionError::other)?;
         if !old_hash.is_zero() {
             let old_seen_slot = nonce_manager.expiring_nonce_seen[B256::from(old_hash)].slot();
-            let old_expiry = state_storage(db, NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
+            let old_expiry = db
+                .storage(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)
+                .map_err(BlockExecutionError::other)?;
             if !old_expiry.is_zero() && old_expiry > now {
                 return Err(StorageActionReplayFallback::ActionConflict.into());
             }
@@ -302,29 +305,7 @@ pub struct StorageActionReplayOutcome {
     /// Empty actions buffer that can be reused for future executions.
     pub actions: Vec<StorageAction>,
     /// Result of the replay execution.
-    pub result: Result<(), StorageActionReplayExecutionError>,
-}
-
-/// Error returned by the storage-action replay execution API.
-#[derive(Debug)]
-pub enum StorageActionReplayExecutionError {
-    /// The precomputed replay cannot be used; no state was committed.
-    Fallback(StorageActionReplayFallback),
-    /// Synthetic validation rejected a transaction.
-    Validation {
-        /// Index of the failed transaction in the streaming sequence.
-        transaction_index: usize,
-        /// Execution error returned by synthetic result construction or block validation.
-        error: BlockExecutionError,
-    },
-    /// Preflight failed while reading state; no state was committed.
-    Database(BlockExecutionError),
-}
-
-impl From<StorageActionReplayFallback> for StorageActionReplayExecutionError {
-    fn from(reason: StorageActionReplayFallback) -> Self {
-        Self::Fallback(reason)
-    }
+    pub result: Result<(), BlockExecutionError>,
 }
 
 /// Precomputed transaction execution result plus semantic precompile storage actions.
@@ -348,12 +329,32 @@ pub struct ExpiringNonceReplay {
 }
 
 /// Reason a precomputed storage-action replay cannot be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageActionReplayFallback {
-    ActionExecutionFailed,
+    #[error("transaction execution failed")]
+    TransactionExecutionFailed,
+    #[error("storage action conflict")]
     ActionConflict,
+    #[error("storage action overflow")]
     Overflow,
+    #[error("storage action underflow")]
     Underflow,
+}
+
+impl StorageActionReplayFallback {
+    /// Returns the replay fallback reason carried by a [`BlockExecutionError`], if any.
+    pub fn from_block_execution_error(error: &BlockExecutionError) -> Option<Self> {
+        match error {
+            BlockExecutionError::Internal(error) => error.downcast_other::<Self>().copied(),
+            _ => None,
+        }
+    }
+}
+
+impl From<StorageActionReplayFallback> for BlockExecutionError {
+    fn from(reason: StorageActionReplayFallback) -> Self {
+        Self::other(reason)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -394,7 +395,7 @@ impl StorageActionReplayState {
         slot: U256,
         value: U256,
         kind: WriteKind,
-    ) -> Result<(), StorageActionReplayExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         // `Sstore` actions record only the new value. The transaction-start
         // value must already be established by a load, otherwise replay would
         // invent `original` from current state and reuse gas/refund data from a
@@ -448,7 +449,7 @@ impl StorageActionReplayState {
         address: Address,
         slot: U256,
         expected: U256,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
+    ) -> Result<U256, BlockExecutionError> {
         match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => {
                 if change.get().current != expected {
@@ -457,7 +458,9 @@ impl StorageActionReplayState {
                 Ok(change.get().current)
             }
             Entry::Vacant(change) => {
-                let current = state_storage(db, address, slot)?;
+                let current = db
+                    .storage(address, slot)
+                    .map_err(BlockExecutionError::other)?;
                 if current != expected {
                     return Err(StorageActionReplayFallback::ActionConflict.into());
                 }
@@ -481,11 +484,13 @@ impl StorageActionReplayState {
         db: &mut State<DB>,
         address: Address,
         slot: U256,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
+    ) -> Result<U256, BlockExecutionError> {
         match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => Ok(change.get().current),
             Entry::Vacant(change) => {
-                let current = state_storage(db, address, slot)?;
+                let current = db
+                    .storage(address, slot)
+                    .map_err(BlockExecutionError::other)?;
                 change.insert(SlotChange {
                     original: current,
                     current,
@@ -560,18 +565,16 @@ impl ExpiringNonceReplayState {
         }
     }
 
-    fn ring_ptr<DB: Database>(
-        &mut self,
-        db: &mut State<DB>,
-    ) -> Result<U256, StorageActionReplayExecutionError> {
+    fn ring_ptr<DB: Database>(&mut self, db: &mut State<DB>) -> Result<U256, BlockExecutionError> {
         Ok(match self.ring_ptr {
             Some(ptr) => ptr,
             None => {
-                let ptr = state_storage(
-                    db,
-                    NONCE_PRECOMPILE_ADDRESS,
-                    NonceManager::new().expiring_nonce_ring_ptr.slot(),
-                )?;
+                let ptr = db
+                    .storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        NonceManager::new().expiring_nonce_ring_ptr.slot(),
+                    )
+                    .map_err(BlockExecutionError::other)?;
                 self.ring_ptr = Some(ptr);
                 ptr
             }
@@ -583,33 +586,10 @@ impl ExpiringNonceReplayState {
     }
 }
 
-/// Returns the value of the storage slot.
-fn state_storage<DB: Database>(
-    db: &mut State<DB>,
-    address: Address,
-    slot: U256,
-) -> Result<U256, StorageActionReplayExecutionError> {
-    db.storage(address, slot)
-        .map_err(BlockExecutionError::other)
-        .map_err(StorageActionReplayExecutionError::Database)
-}
-
-/// Returns the account info for the given address.
-fn state_account_info<DB: StateDB>(
-    db: &mut DB,
-    address: Address,
-) -> Result<AccountInfo, StorageActionReplayExecutionError> {
-    db.basic(address)
-        .map_err(BlockExecutionError::other)
-        .map_err(StorageActionReplayExecutionError::Database)
-        .map(|account| account.unwrap_or_default())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::database::EmptyDB;
-    use std::assert_matches;
+    use revm::{database::EmptyDB, state::AccountInfo};
 
     fn state_with_storage(address: Address, slot: U256, value: U256) -> State<EmptyDB> {
         let mut db = State::builder().with_database(EmptyDB::default()).build();
@@ -628,11 +608,12 @@ mod tests {
         let mut db = state_with_storage(address, slot, U256::from(11));
         let mut replay_state = StorageActionReplayState::default();
 
-        assert_matches!(
-            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
-            Err(StorageActionReplayExecutionError::Fallback(
-                StorageActionReplayFallback::ActionConflict
-            ))
+        let err = replay_state
+            .sload_exact(&mut db, address, slot, U256::from(10))
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayFallback::from_block_execution_error(&err),
+            Some(StorageActionReplayFallback::ActionConflict)
         );
     }
 
@@ -653,11 +634,12 @@ mod tests {
             .sstore(address, slot, U256::from(11), WriteKind::Delta)
             .expect("store loaded slot");
 
-        assert_matches!(
-            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
-            Err(StorageActionReplayExecutionError::Fallback(
-                StorageActionReplayFallback::ActionConflict
-            ))
+        let err = replay_state
+            .sload_exact(&mut db, address, slot, U256::from(10))
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayFallback::from_block_execution_error(&err),
+            Some(StorageActionReplayFallback::ActionConflict)
         );
     }
 
@@ -673,11 +655,12 @@ mod tests {
             .or_default()
             .insert(slot, WriteKind::Delta);
 
-        assert_matches!(
-            replay_state.sload_exact(&mut db, address, slot, U256::from(10)),
-            Err(StorageActionReplayExecutionError::Fallback(
-                StorageActionReplayFallback::ActionConflict
-            ))
+        let err = replay_state
+            .sload_exact(&mut db, address, slot, U256::from(10))
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayFallback::from_block_execution_error(&err),
+            Some(StorageActionReplayFallback::ActionConflict)
         );
     }
 
@@ -687,11 +670,12 @@ mod tests {
         let slot = U256::from(7);
         let mut replay_state = StorageActionReplayState::default();
 
-        assert_matches!(
-            replay_state.sstore(address, slot, U256::from(11), WriteKind::Store,),
-            Err(StorageActionReplayExecutionError::Fallback(
-                StorageActionReplayFallback::ActionConflict
-            ))
+        let err = replay_state
+            .sstore(address, slot, U256::from(11), WriteKind::Store)
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayFallback::from_block_execution_error(&err),
+            Some(StorageActionReplayFallback::ActionConflict)
         );
     }
 

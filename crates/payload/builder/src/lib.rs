@@ -40,7 +40,9 @@ use reth_engine_tree::tree::{
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
+    block::{
+        BlockExecutionError, BlockExecutor, BlockValidationError, InternalBlockExecutionError,
+    },
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -69,9 +71,8 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
-    StorageActionReplay, StorageActionReplayExecutionError, StorageActionReplayFallback,
-    StorageActionReplayState, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxResult, evm::TempoEvm,
+    StorageActionReplay, StorageActionReplayFallback, StorageActionReplayState, TempoEvmConfig,
+    TempoNextBlockEnvAttributes, TempoStateAccess, TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
     TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
@@ -794,124 +795,106 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            if let Some(replay) = pool_tx.replay.take() {
+            let result_closure = |result: &TempoTxResult| {
+                cumulative_gas_used += result.block_gas_used();
+                cumulative_state_gas_used += result.state_gas_used();
+                if !is_payment {
+                    non_payment_gas_used += result.block_gas_used();
+                }
+
+                // Score payload value by the validator-credited fee amount that the
+                // FeeManager precompile actually wrote during this transaction.
+                total_fees += result.validator_fee();
+
+                // Notify transactions iterator about the new state.
+                best_txs.on_new_result(result);
+            };
+
+            let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 let execution_outcome = executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
                     &mut action_replay_state,
-                    pool_transactions_included as usize,
-                    |result| {
-                        cumulative_gas_used += result.block_gas_used();
-                        cumulative_state_gas_used += result.state_gas_used();
-                        if !is_payment {
-                            non_payment_gas_used += result.block_gas_used();
-                        }
-
-                        // Score payload value by the validator-credited fee amount that the
-                        // FeeManager precompile actually wrote during this transaction.
-                        total_fees += result.validator_fee();
-
-                        // Notify transactions iterator about the new state.
-                        best_txs.on_new_result(result);
-                    },
+                    result_closure,
                     bal_task_handle.is_some(),
                 );
                 best_txs.recycle_actions(execution_outcome.actions);
 
-                match execution_outcome.result {
-                    Ok(_) => {}
-                    Err(StorageActionReplayExecutionError::Fallback(
-                        StorageActionReplayFallback::Underflow,
-                    )) => {
+                parallel_transactions_executed += 1;
+                execution_outcome.result
+            } else {
+                action_replay_state.invalidate_expiring_nonce_cache();
+                executor
+                    .execute_transaction_with_result_closure(
+                        tx.transaction.executable(),
+                        result_closure,
+                    )
+                    .map(|_| ())
+            };
+
+            match execution_result {
+                Ok(_) => {}
+                Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                    error,
+                    ..
+                })) => {
+                    invalid_pool_transaction_execution_attempts += 1;
+
+                    if error.is_nonce_too_low() {
+                        // if the nonce is too low, we can skip this transaction
+                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                    } else {
+                        // if the transaction is invalid, we can skip it and all of its
+                        // descendants
+                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
                             InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::InsufficientFunds(
-                                    (U256::ZERO, tx.transaction.fee_token_cost()).into(),
-                                ),
+                                InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
-                        invalid_pool_transaction_execution_attempts += 1;
-                        self.metrics.inc_pool_tx_skipped("insufficient_balance");
-                        trace!(
-                            target: "payload_builder",
-                            tx_hash = ?tx.hash(),
-                            "Skipping replayed transaction with insufficient balance"
-                        );
-                        continue;
+                        self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
-                    Err(StorageActionReplayExecutionError::Fallback(
-                        StorageActionReplayFallback::ActionConflict,
-                    )) => {
-                        self.metrics.inc_pool_tx_skipped("parallel_action_conflict");
-                        trace!(
-                            target: "payload_builder",
-                            tx_hash = ?tx.hash(),
-                            "Skipping replayed transaction with conflicting storage actions"
-                        );
-                        continue;
-                    }
-                    Err(StorageActionReplayExecutionError::Fallback(reason)) => {
-                        return Err(PayloadBuilderError::evm(BlockExecutionError::msg(format!(
-                            "storage action replay failed: {reason:?}",
-                        ))));
-                    }
-                    Err(StorageActionReplayExecutionError::Validation { error, .. })
-                    | Err(StorageActionReplayExecutionError::Database(error)) => {
-                        return Err(PayloadBuilderError::evm(error));
-                    }
+                    continue;
                 }
-
-                parallel_transactions_executed += 1;
-            } else {
-                action_replay_state.invalidate_expiring_nonce_cache();
-                let execution_result = executor.execute_transaction_with_result_closure(
-                    tx.transaction.executable(),
-                    |result| {
-                        cumulative_gas_used += result.block_gas_used();
-                        cumulative_state_gas_used += result.state_gas_used();
-                        if !is_payment {
-                            non_payment_gas_used += result.block_gas_used();
-                        }
-
-                        // Score payload value by the validator-credited fee amount that the
-                        // FeeManager precompile actually wrote during this transaction.
-                        total_fees += result.validator_fee();
-
-                        // Notify transactions iterator about the new state.
-                        best_txs.on_new_result(result);
-                    },
-                );
-                if let Err(err) = execution_result {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        error,
+                Err(
+                    err @ (BlockExecutionError::Validation(_)
+                    | BlockExecutionError::Internal(InternalBlockExecutionError::EVM {
                         ..
-                    }) = &err
-                    {
-                        invalid_pool_transaction_execution_attempts += 1;
+                    })),
+                ) => {
+                    return Err(PayloadBuilderError::evm(err));
+                }
+                Err(err) => {
+                    invalid_pool_transaction_execution_attempts += 1;
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::Consensus(
+                            InvalidTransactionError::TxTypeNotSupported,
+                        ),
+                    );
 
-                        if error.is_nonce_too_low() {
-                            // if the nonce is too low, we can skip this transaction
-                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                        } else {
-                            // if the transaction is invalid, we can skip it and all of its
-                            // descendants
-                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
-                            self.metrics.inc_pool_tx_skipped("invalid_tx");
-                        }
-                        continue;
+                    if let Some(err) = StorageActionReplayFallback::from_block_execution_error(&err)
+                    {
+                        trace!(
+                            target: "payload_builder",
+                            tx_hash = ?tx.hash(),
+                            ?err,
+                            "Skipping invalid replay transaction"
+                        );
                     } else {
-                        return Err(PayloadBuilderError::evm(err));
+                        trace!(
+                            target: "payload_builder",
+                            tx_hash = ?tx.hash(),
+                            ?err,
+                            "Skipping invalid transaction"
+                        );
                     }
-                };
+                    continue;
+                }
             }
+
             trace!("Transaction executed");
             if let Some(bal_task_handle) = &bal_task_handle {
                 bal_task_handle.bump_bal_index();
