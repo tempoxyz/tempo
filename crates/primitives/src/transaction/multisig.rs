@@ -590,6 +590,8 @@ mod tests {
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
+    use alloy_rlp::{Decodable, Encodable};
+    use proptest::prelude::*;
 
     fn sorted_secp_config(owners: &[(Address, u32)], threshold: u32) -> InitMultisig {
         let mut owners = owners
@@ -605,6 +607,25 @@ mod tests {
             threshold,
             owners,
         }
+    }
+
+    fn encoded_multisig_without_init_slot(
+        account: Address,
+        config_id: B256,
+        signatures: Vec<Vec<u8>>,
+    ) -> Vec<u8> {
+        let signatures = signatures.into_iter().map(Bytes::from).collect::<Vec<_>>();
+        let payload_length = account.length() + config_id.length() + signatures.length();
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        account.encode(&mut encoded);
+        config_id.encode(&mut encoded);
+        signatures.encode(&mut encoded);
+        encoded
     }
 
     #[test]
@@ -733,5 +754,31 @@ mod tests {
             decoded.recover_signer(&signature_hash).unwrap(),
             signature.account
         );
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_multisig_signature_decode_encode_preserves_accepted_raw_bytes(
+            raw in prop_oneof![
+                proptest::collection::vec(any::<u8>(), 0..256),
+                (
+                    any::<Address>(),
+                    any::<B256>(),
+                    proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..128), 0..=MAX_MULTISIG_OWNERS),
+                ).prop_map(|(account, config_id, signatures)| {
+                    encoded_multisig_without_init_slot(account, config_id, signatures)
+                }),
+            ],
+        ) {
+            let mut input = raw.as_slice();
+            if let Ok(decoded) = MultisigSignature::decode(&mut input) {
+                prop_assert!(input.is_empty());
+
+                let mut reencoded = Vec::new();
+                decoded.encode(&mut reencoded);
+
+                prop_assert_eq!(reencoded, raw);
+            }
+        }
     }
 }
