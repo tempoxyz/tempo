@@ -8822,8 +8822,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb43f4858fef4e3b42b80954d2edf1ff67c8ad7498347083cdc7d0f6eff2f081"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Frlp-raw-byte-roundtrip-tests#98139deaacfdbad81e287b3ae1ae18654516fa1a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -8843,8 +8842,7 @@ dependencies = [
 [[package]]
 name = "reth-codecs-derive"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5798ae4d6b264764bc0d742468bd32c7fb515e774645d4930f95ff6311f3ae14"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Frlp-raw-byte-roundtrip-tests#98139deaacfdbad81e287b3ae1ae18654516fa1a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10405,8 +10403,7 @@ dependencies = [
 [[package]]
 name = "reth-primitives-traits"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f59c928b2865af5bcdbce94800270b7f7798f27a22ca0aabdd2b7d3e6587c9ce"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Frlp-raw-byte-roundtrip-tests#98139deaacfdbad81e287b3ae1ae18654516fa1a"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11317,8 +11314,7 @@ dependencies = [
 [[package]]
 name = "reth-zstd-compressors"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1bd4ae4f54a2ba813eef082910bc646bd31cab8ed134308fa71f1068331fb84"
+source = "git+https://github.com/paradigmxyz/reth-core?branch=mattsse%2Frlp-raw-byte-roundtrip-tests#98139deaacfdbad81e287b3ae1ae18654516fa1a"
 dependencies = [
  "zstd",
 ]
