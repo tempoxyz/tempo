@@ -376,13 +376,17 @@ impl SsmrReplayRecoveryState {
             completed_shards: 0,
         };
 
-        let Some(shard_len) = self
+        let Some((shard_len, recovered_count)) = self
             .pending_shards
             .get(&self.next_ready_shard_index)
-            .map(SsmrPendingRecoveredShard::len)
+            .map(|shard| (shard.len(), shard.recovered_count))
         else {
             return Ok(None);
         };
+
+        if recovered_count < shard_len {
+            return Ok(None);
+        }
 
         while self.next_ready_tx_index < shard_len {
             let tx = self
@@ -3094,6 +3098,76 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
+    fn ssmr_test_recovered_transaction(
+        shard_index: u64,
+        tx_index: usize,
+    ) -> SsmrRecoveredTransaction {
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: None,
+                nonce: tx_index as u64,
+                gas_price: 0,
+                gas_limit: 0,
+                to: Address::ZERO.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            TEMPO_SYSTEM_TX_SIGNATURE,
+        ));
+        SsmrRecoveredTransaction {
+            shard_index,
+            tx_index,
+            tx: SsmrRecoveredTx {
+                transaction: Recovered::new_unchecked(tx, TEMPO_SYSTEM_TX_SENDER),
+                tx_rlp_length: tx_index + 10,
+                pool_lookup_elapsed: Duration::ZERO,
+                pool_hit: false,
+                decode_elapsed: Duration::ZERO,
+                recover_elapsed: Duration::ZERO,
+                queue_wait_elapsed: Duration::ZERO,
+            },
+        }
+    }
+
+    #[test]
+    fn ssmr_replay_recovery_waits_for_complete_shard_before_drain() {
+        let mut state = SsmrReplayRecoveryState::default();
+        state.pending_shards.insert(
+            0,
+            SsmrPendingRecoveredShard::new(3, Some(Bytes::from_static(b"bal"))),
+        );
+
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(0, 0))
+            .unwrap();
+        assert!(state.drain_ready_batch(None).unwrap().is_none());
+        assert!(state.pending_shards[&0].transactions[0].is_some());
+
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(0, 2))
+            .unwrap();
+        assert!(state.drain_ready_batch(None).unwrap().is_none());
+        assert!(state.pending_shards[&0].transactions[0].is_some());
+        assert!(state.pending_shards[&0].transactions[2].is_some());
+
+        state
+            .insert_recovered_transaction(ssmr_test_recovered_transaction(0, 1))
+            .unwrap();
+        let batch = state
+            .drain_ready_batch(None)
+            .unwrap()
+            .expect("complete shard should drain");
+        let lengths = batch
+            .transactions
+            .iter()
+            .map(|tx| tx.tx_rlp_length)
+            .collect::<Vec<_>>();
+        assert_eq!(lengths, vec![10, 11, 12]);
+        assert_eq!(batch.block_access_list, Some(Bytes::from_static(b"bal")));
+        assert_eq!(batch.completed_shards, 1);
+        assert!(state.pending_shards.is_empty());
     }
 
     #[test]
